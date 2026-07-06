@@ -1091,7 +1091,8 @@ function roasBadge(cost, net){
   return `<span class="badge ${cls}">${v.toFixed(1)}倍</span>`;
 }
 function viewAd(){
-  const sc=scopeStores(); const scopeSet=new Set(sc);
+  const sc=scopeStores(); const selN=selStoreName();          // 店舗タブで選択中の店舗（全店なら null）
+  const scopeSet=new Set(selN?[selN]:sc);
   if(!D.ad.length){
     let h=`<div class="panel"><div class="panel-head"><div><h3>広告管理</h3><div class="sub">スプレッドシート接続で自動有効化</div></div></div>
     <div class="note-box">
@@ -1117,9 +1118,10 @@ function viewAd(){
   const adRate=totalSales>0?cur.ad/totalSales*100:0;
   const profit=cur.medNet-cur.ad;
   const mom=(c,p,invert)=>{ if(!(p>0)) return {t:'前月 —',cls:'mut'}; const d=(c-p)/p*100; const up=d>=0; return { t:'前月比 '+(up?'+':'▲')+Math.abs(d).toFixed(1)+'%', cls:(invert?!up:up)?'up':'dn' }; };
-  let h=`<div class="ctrl-bar no-print"><div class="mini-nav">
+  let h=storeSegHtml();
+  h+=`<div class="ctrl-bar no-print"><div class="mini-nav">
     <button onclick="App.adNav(-1)">‹</button><span class="lbl">${mLabel}</span><button onclick="App.adNav(1)">›</button></div>
-    <span class="period-label">広告費用対効果（${mLabel}）</span></div>`;
+    <span class="period-label">広告費用対効果（${mLabel}${selN?' ／ '+esc(selN):''}）</span></div>`;
   // データの出どころを見える化：この画面の数字がどこから来ているかを表示
   let a0=0,a1=0; for(const r of D.ad){ if(!a0||r.t<a0)a0=r.t; if(r.t>a1)a1=r.t; }
   const fmtD=(t)=>{ const d=new Date(t); return d.getFullYear()+'/'+(d.getMonth()+1)+'/'+d.getDate(); };
@@ -1144,7 +1146,7 @@ function viewAd(){
     <div class="kpi"><div class="lb">広告費率（対総売上）</div><div class="vl">${totalSales>0?adRate.toFixed(1)+'%':'—'}</div><div class="yy ${kP.cls}">${kP.t}</div></div>
   </div>`;
   // 店舗別
-  h+=`<div class="panel"><div class="panel-head"><div><h3>店舗別 広告費用対効果（${mLabel}）</h3>
+  h+=`<div class="panel"><div class="panel-head"><div><h3>${selN?esc(selN)+'の':'店舗別 '}広告費用対効果（${mLabel}）</h3>
     <div class="sub">ROAS: 3倍以上=良好 ／ 1〜3倍=要改善 ／ 1倍未満=広告費割れ</div></div></div>
   <div class="scroll-x"><table class="tbl"><thead><tr><th>店舗</th><th>広告費</th><th>媒体経由売上</th><th>ROAS</th><th>総売上（当月）</th><th>広告費率</th></tr></thead><tbody>`;
   const expA=[];
@@ -1183,7 +1185,7 @@ function viewAd(){
   }
   const series=[{name:'媒体経由売上',color:'#4c7d5c',data:netArr},{name:'広告費',color:'#b23b2e',data:adArr}];
   const legend=series.map(s=>`<span><span class="sw" style="background:${s.color}"></span>${esc(s.name)}</span>`).join('');
-  h+=`<div class="panel"><div class="panel-head"><div><h3>広告費と媒体経由売上の推移（直近12ヶ月）</h3>
+  h+=`<div class="panel"><div class="panel-head"><div><h3>広告費と媒体経由売上の推移（直近12ヶ月${selN?'・'+esc(selN):''}）</h3>
     <div class="sub">〜${mLabel}</div></div><div class="legend">${legend}</div></div>
     ${lineChart(cat,series,'sales')}
   <div class="scroll-x"><table class="tbl"><thead><tr><th>月</th><th>広告費</th><th>媒体経由売上</th><th>ROAS</th></tr></thead><tbody>`;
