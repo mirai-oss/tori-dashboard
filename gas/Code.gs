@@ -50,7 +50,6 @@ function handle(p) {
     if (action === 'accounts') return out(listAccounts(session));
     if (action === 'saveAccount')   return out(saveAccount(p, session));
     if (action === 'deleteAccount') return out(deleteAccount(p, session));
-    if (action === 'addAd')    return out(addAd(p, session));
     return out({ ok: false, error: 'unknown action: ' + action });
   } catch (err) {
     return out({ ok: false, error: String(err && err.message || err) });
@@ -111,6 +110,18 @@ function setupIfNeeded() {
         conf.getRange(i + 2, 2).setValue(fix[key]);
       }
     }
+  }
+
+  // 広告費入力シート（DB_広告）。無ければテンプレートを自動作成。
+  // 入力後「確認」列にチェックを入れた行だけがダッシュボードに反映される。
+  var adSh = ss.getSheetByName('DB_広告');
+  if (!adSh) {
+    adSh = ss.insertSheet('DB_広告');
+    adSh.getRange(1, 1, 1, 6).setValues([['日付', '店舗名', '媒体', '広告費', '確認', 'メモ']])
+      .setFontWeight('bold').setBackground('#efe9dd');
+    adSh.getRange(2, 5, 999, 1).insertCheckboxes();
+    adSh.setFrozenRows(1);
+    adSh.setColumnWidths(1, 6, 120);
   }
 }
 
@@ -187,7 +198,7 @@ function isAdmin(session) {
 
 // ================== データ配信 ==================
 
-// 配信対象のシート（キー→シート名）を接続設定＋DB_接頭辞から解決
+// 配信対象のシート（キー→シート名）を接続設定るDB_接頭辞から解決
 function configuredSheets(ss) {
   var list = [];
   var conf = ss.getSheetByName('接続設定');
@@ -304,31 +315,6 @@ function dataVersion() {
   var v = parts.join('|');
   try { v += '@' + DriveApp.getFileById(ss.getId()).getLastUpdated().getTime(); } catch (e) {} // 既存行の編集も検知（Drive権限があれば）
   return v;
-}
-
-// ================== 広告費の入力（ダッシュボードから） ==================
-
-// DB_広告 シートに1行追記する。シートが無ければ自動作成。
-function addAd(p, session) {
-  var date  = String(p.date  || '').trim();
-  var store = String(p.store || '').trim();
-  var media = String(p.media || '').trim();
-  var cost  = Number(p.cost);
-  if (!date || !store || !media || !(cost > 0)) return { ok: false, error: '日付・店舗・媒体・広告費をすべて入力してください' };
-  // 店舗権限のアカウントは自店舗のみ入力可
-  if (session.stores && String(session.stores).trim() && String(session.stores).indexOf('*') < 0) {
-    var allowed = String(session.stores).split(/[,、]/).map(function (s) { return s.trim(); });
-    if (allowed.indexOf(store) < 0) return { ok: false, error: 'この店舗への入力権限がありません' };
-  }
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var sh = ss.getSheetByName('DB_広告');
-  if (!sh) {
-    sh = ss.insertSheet('DB_広告');
-    sh.getRange(1, 1, 1, 6).setValues([['日付', '店舗名', '媒体', '広告費', '登録者', '登録日時']]);
-    sh.setFrozenRows(1);
-  }
-  sh.appendRow([date, store, media, cost, String(session.name || session.id || ''), new Date()]);
-  return { ok: true };
 }
 
 // ================== アカウント管理（社長・本部のみ） ==================
