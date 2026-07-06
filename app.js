@@ -15,7 +15,7 @@
  * 例: const DEFAULT_API_URL = 'https://script.google.com/macros/s/XXXX/exec';
  * 空のままなら、従来どおり各ブラウザの接続設定（社長のみ）で設定します。
  * ===================================================================== */
-const DEFAULT_API_URL = '';
+const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbz9rd37EZa6X8WRMVEBrXobN8DbYWkHRlhFNYU5rd1UZ0V8j0-6shMQjEeoi4HDWZ0B/exec';
 
 /* ---------------- 定数 ---------------- */
 const CANON_STORES = ['芝の鳥一代','鳥一代 はなれ','鳥一代 恵比寿','鳥一代 新橋','鳥一代 本店','鶏武者 新横浜','鶏武者 川崎店','黒霧屋 新横浜'];
