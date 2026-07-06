@@ -173,10 +173,14 @@ function ingestAd(rows){
   const H=rows[hi].map(h=>String(h).trim());
   const iD=colOf(H,'日付'), iS=colOf(H,'店舗'), iM=colOf(H,'媒体');
   let iC=colOf(H,'広告費'); if(iC<0)iC=colOf(H,'費用'); if(iC<0)iC=colOf(H,'金額');
+  let iOK=colOf(H,'確認'); if(iOK<0)iOK=colOf(H,'承認');
   if(iD<0||iC<0) return false;
+  // 確認列がある場合はチェック済み（TRUE/✓/○/済/OK/1）の行だけ集計する
+  const okVal=(v)=>{const s=String(v==null?'':v).trim().toUpperCase();return s==='TRUE'||s==='✓'||s==='✔'||s==='○'||s==='◯'||s==='済'||s==='OK'||s==='1'||s==='はい';};
   const recs=[];
   for(let i=hi+1;i<rows.length;i++){
     const c=rows[i]; const t=parseDateStr(c[iD]); if(!t)continue;
+    if(iOK>=0&&!okVal(c[iOK])) continue;
     recs.push({ store:String(iS>=0?c[iS]||'':'').trim(), t, media:String(iM>=0?c[iM]||'':'').trim(), cost:num(c[iC]) });
   }
   if(!recs.length) return false;
@@ -1114,19 +1118,9 @@ function viewAd(){
   let h=`<div class="ctrl-bar no-print"><div class="mini-nav">
     <button onclick="App.adNav(-1)">‹</button><span class="lbl">${mLabel}</span><button onclick="App.adNav(1)">›</button></div>
     <span class="period-label">広告費用対効果（${mLabel}）</span></div>`;
-  // 入力フォーム（スプレッドシート DB_広告 へ直接保存）
-  const stores=sc.slice();
-  const mediaOpts=['ホットペッパー','ぐるなび','食べログ','Retty','自社LP','Instagram','Google','チラシ','その他'];
-  const defMonth2=y+'-'+String(m+1).padStart(2,'0');
-  h+=`<div class="panel no-print"><div class="panel-head"><div><h3>広告費を入力</h3>
-    <div class="sub">${S.auth&&S.auth.token?'スプレッドシート（DB_広告）に即保存され、全端末に自動反映されます':'サンプルモード：この画面にだけ反映されます（保存にはスプレッドシート接続が必要）'}</div></div></div>
-  <div class="ad-form" style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end">
-    <label style="display:flex;flex-direction:column;gap:4px;font-size:11.5px">対象月<input type="month" id="ad-in-date" value="${S.adInDate||defMonth2}" onchange="S.adInDate=this.value"></label>
-    <label style="display:flex;flex-direction:column;gap:4px;font-size:11.5px">店舗<select id="ad-in-store">${stores.map(n2=>`<option ${S.adInStore===n2?'selected':''}>${esc(n2)}</option>`).join('')}</select></label>
-    <label style="display:flex;flex-direction:column;gap:4px;font-size:11.5px">媒体<input id="ad-in-media" list="ad-media-list" value="${esc(S.adInMedia||'')}" placeholder="例: ホットペッパー" style="width:150px"><datalist id="ad-media-list">${mediaOpts.map(n2=>`<option value="${esc(n2)}">`).join('')}</datalist></label>
-    <label style="display:flex;flex-direction:column;gap:4px;font-size:11.5px">広告費（月額・円）<input type="number" id="ad-in-cost" min="0" step="100" placeholder="50000" style="width:110px"></label>
-    <button class="btn-primary" id="ad-add-btn" onclick="App.adAdd()">追加する</button>
-  </div></div>`;
+  // 入力はスプレッドシートの DB_広告 シートで行う（確認列にチェックした行のみ集計）
+  h+=`<div class="panel no-print"><div class="panel-head"><div><h3>広告費の入力方法</h3>
+    <div class="sub">広告費はスプレッドシートの「DB_広告」シート（日付・店舗名・媒体・広告費・確認）に入力します。「確認」列にチェックを入れた行だけがダッシュボードに反映されます（チェック後、約1分で自動反映）。</div></div></div></div>`;
   // KPIカード
   const kA=mom(cur.ad,prv.ad,true), kN=mom(cur.medNet,prv.medNet,false);
   const kR=pRoas>0?{t:'前月 '+pRoas.toFixed(1)+'倍',cls:roas>=pRoas?'up':'dn'}:{t:'前月 —',cls:'mut'};
@@ -1513,28 +1507,6 @@ window.App = {
     if(d===0){ S.depMonth=''; render(); return; }
     const m0=depMonthDate(); const n=new Date(m0.getFullYear(),m0.getMonth()+d,1);
     S.depMonth=n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0'); render();
-  },
-  async adAdd(){
-    const dm=($('ad-in-date')||{}).value, st=($('ad-in-store')||{}).value, md=(($('ad-in-media')||{}).value||'').trim(), c=Number(($('ad-in-cost')||{}).value);
-    if(!dm||!st||!md||!(c>0)){ toast('対象月・店舗・媒体・広告費をすべて入力してください'); return; }
-    S.adInDate=dm; S.adInStore=st; S.adInMedia=md;
-    const [yy2,mm2]=dm.split('-').map(Number);
-    const t=dayMs(new Date(yy2,mm2-1,1));
-    const btn=$('ad-add-btn'); if(btn){ btn.disabled=true; btn.textContent='保存中…'; }
-    try{
-      const online=S.auth&&S.auth.token&&apiUrl();
-      if(online){
-        const r=await api({ action:'addAd', token:S.auth.token, date:dm+'-01', store:st, media:md, cost:c });
-        if(!r||!r.ok) throw new Error((r&&r.error)||'保存に失敗しました');
-      }
-      D.ad.push({ store:st, t, media:md, cost:c });
-      S.adMonth=dm; S.adInMedia=''; 
-      toast(online?'広告費を保存しました（DB_広告に追加済み・他端末にも自動反映）':'広告費を追加しました（サンプルモード・ページ再読込で消えます）');
-      render();
-    }catch(e){
-      toast('保存エラー: '+(e&&e.message||e));
-      if(btn){ btn.disabled=false; btn.textContent='追加する'; }
-    }
   },
   adNav(d){
     const ref=D.refDate||new Date();
