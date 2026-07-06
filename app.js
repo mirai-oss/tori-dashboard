@@ -203,6 +203,7 @@ function loadSampleData(){
   if(window.__SALES_CSV)   ingestMedia(csvToRows(window.__SALES_CSV));
   if(window.__DEPOSIT_CSV) ingestDeposit(csvToRows(window.__DEPOSIT_CSV));
   if(window.__REVIEW_CSV)  ingestReview(csvToRows(window.__REVIEW_CSV));
+  if(window.__AD_CSV)      ingestAd(csvToRows(window.__AD_CSV));
   if(!D.refDate) D.refDate=new Date();
 }
 
@@ -1032,6 +1033,39 @@ function viewDeposit(){
 }
 
 /* ---------------- 広告管理 ---------------- */
+function adAgg(scopeSet, a, b){
+  const byStore={}, byMedia={}, byStoreMedia={};
+  let ad=0;
+  const inScope=(r)=>!r.store||scopeSet.has(r.store);
+  for(const r of D.ad){
+    if(!inScope(r)) continue;
+    if(r.t<a||r.t>b) continue;
+    const st=r.store||'（店舗未指定）', md=r.media||'（媒体未指定）';
+    ad+=r.cost;
+    (byStore[st]=byStore[st]||{cost:0,net:0,guests:0}).cost+=r.cost;
+    (byMedia[md]=byMedia[md]||{cost:0,net:0,guests:0}).cost+=r.cost;
+    (byStoreMedia[st]=byStoreMedia[st]||{})[md]=(byStoreMedia[st][md]||0)+r.cost;
+  }
+  // 媒体経由売上：広告データに存在する媒体名と一致する媒体売上を突合
+  const adMediaSet=new Set(Object.keys(byMedia));
+  let medNet=0;
+  for(const r of D.media){
+    if(!scopeSet.has(r.store)) continue;
+    if(r.t<a||r.t>b) continue;
+    if(!adMediaSet.has(r.media)) continue;
+    medNet+=r.net;
+    if(byStore[r.store]){ byStore[r.store].net+=r.net; byStore[r.store].guests+=r.guests; }
+    const o=byMedia[r.media]; o.net+=r.net; o.guests+=r.guests;
+  }
+  return { ad, medNet, byStore, byMedia, byStoreMedia };
+}
+function roasBadge(cost, net){
+  if(!(cost>0)) return '<span class="badge zero">—</span>';
+  if(!(net>0)) return '<span class="badge zero">売上未突合</span>';
+  const v=net/cost;
+  const cls=v<1?'ng':(v<3?'mid':'ok');
+  return `<span class="badge ${cls}">${v.toFixed(1)}倍</span>`;
+}
 function viewAd(){
   const sc=scopeStores(); const scopeSet=new Set(sc);
   if(!D.ad.length){
@@ -1040,10 +1074,9 @@ function viewAd(){
       広告データはまだ接続されていません。スプレッドシートに <code>DB_広告</code> という名前のシートを追加するだけで、
       次回同期時からこのタブに自動で表示されます（接続設定シートに <code>ad</code> キーで登録してもOK）。<br><br>
       <b>シートの列（1行目にヘッダー）:</b><br>
-      <code>日付</code>（例 2026/07/01）／ <code>店舗名</code> ／ <code>媒体</code>（ホットペッパー等）／ <code>広告費</code><br><br>
-      売上データと自動で突き合わせ、店舗別・媒体別の広告費、売上対比（広告費率）を表示します。
+      <code>日付</code>（例 2026/07/01）／ <code>店舗名</code> ／ <code>媒体</code>（媒体別売上と同じ媒体名にすると自動でROASを計算）／ <code>広告費</code><br><br>
+      売上データと自動で突き合わせ、店舗別・媒体別のROAS（売上÷広告費）、広告費率、PL連携用の内訳を表示します。
     </div></div>`;
-    // その他の接続済みシート
     h+=extraSheetsHtml();
     return h;
   }
@@ -1051,37 +1084,93 @@ function viewAd(){
   const m0=S.adMonth?new Date(+S.adMonth.split('-')[0],+S.adMonth.split('-')[1]-1,1):new Date(ref.getFullYear(),ref.getMonth(),1);
   const y=m0.getFullYear(),m=m0.getMonth();
   const mS=dayMs(new Date(y,m,1)), mE=dayMs(new Date(y,m+1,0));
+  const pS=dayMs(new Date(y,m-1,1)), pE=dayMs(new Date(y,m,0));
   const mLabel=y+'年 '+(m+1)+'月';
-  const inScope=(r)=>!r.store||scopeSet.has(r.store);
+  const cur=adAgg(scopeSet,mS,mE), prv=adAgg(scopeSet,pS,pE);
+  const totalSales=stat(scopeSet,mS,mE,null).sales;
+  const roas=cur.ad>0?cur.medNet/cur.ad:0;
+  const pRoas=prv.ad>0?prv.medNet/prv.ad:0;
+  const adRate=totalSales>0?cur.ad/totalSales*100:0;
+  const profit=cur.medNet-cur.ad;
+  const mom=(c,p,invert)=>{ if(!(p>0)) return {t:'前月 —',cls:'mut'}; const d=(c-p)/p*100; const up=d>=0; return { t:'前月比 '+(up?'+':'▲')+Math.abs(d).toFixed(1)+'%', cls:(invert?!up:up)?'up':'dn' }; };
   let h=`<div class="ctrl-bar no-print"><div class="mini-nav">
     <button onclick="App.adNav(-1)">‹</button><span class="lbl">${mLabel}</span><button onclick="App.adNav(1)">›</button></div>
-    <span class="period-label">広告費と売上の対比（${mLabel}）</span></div>`;
+    <span class="period-label">広告費用対効果（${mLabel}）</span></div>`;
+  // KPIカード
+  const kA=mom(cur.ad,prv.ad,true), kN=mom(cur.medNet,prv.medNet,false);
+  const kR=pRoas>0?{t:'前月 '+pRoas.toFixed(1)+'倍',cls:roas>=pRoas?'up':'dn'}:{t:'前月 —',cls:'mut'};
+  const kP={t:'差引利益 '+(profit>=0?'':'▲')+yen(Math.abs(profit)).slice(1)+'円',cls:profit>=0?'up':'dn'};
+  h+=`<div class="kpi-grid">
+    <div class="kpi"><div class="lb">広告費（${m+1}月）</div><div class="vl">${yen(cur.ad)}</div><div class="yy ${kA.cls}">${kA.t}</div></div>
+    <div class="kpi"><div class="lb">媒体経由売上</div><div class="vl">${yen(cur.medNet)}</div><div class="yy ${kN.cls}">${kN.t}</div></div>
+    <div class="kpi"><div class="lb">ROAS（売上÷広告費）</div><div class="vl">${cur.ad>0?roas.toFixed(1)+'倍':'—'}</div><div class="yy ${kR.cls}">${kR.t}</div></div>
+    <div class="kpi"><div class="lb">広告費率（対総売上）</div><div class="vl">${totalSales>0?adRate.toFixed(1)+'%':'—'}</div><div class="yy ${kP.cls}">${kP.t}</div></div>
+  </div>`;
   // 店舗別
-  const byStore={};
-  for(const r of D.ad){ if(!inScope(r))continue; if(r.t<mS||r.t>mE)continue; const k=r.store||'（店舗未指定）'; byStore[k]=(byStore[k]||0)+r.cost; }
-  const totalAd=Object.values(byStore).reduce((s,v)=>s+v,0);
-  h+=`<div class="panel"><div class="panel-head"><h3>店舗別 広告費（${mLabel}）</h3></div>
-  <div class="scroll-x"><table class="tbl"><thead><tr><th>店舗</th><th>広告費</th><th>売上（当月）</th><th>広告費率</th></tr></thead><tbody>`;
+  h+=`<div class="panel"><div class="panel-head"><div><h3>店舗別 広告費用対効果（${mLabel}）</h3>
+    <div class="sub">ROAS: 3倍以上=良好 ／ 1〜3倍=要改善 ／ 1倍未満=広告費割れ</div></div></div>
+  <div class="scroll-x"><table class="tbl"><thead><tr><th>店舗</th><th>広告費</th><th>媒体経由売上</th><th>ROAS</th><th>総売上（当月）</th><th>広告費率</th></tr></thead><tbody>`;
   const expA=[];
-  Object.keys(byStore).sort((a2,b2)=>byStore[b2]-byStore[a2]).forEach(nm=>{
+  Object.keys(cur.byStore).sort((a2,b2)=>cur.byStore[b2].cost-cur.byStore[a2].cost).forEach(nm=>{
+    const o=cur.byStore[nm];
     const sl=stat(null,mS,mE,nm).sales;
-    const rate=sl>0?byStore[nm]/sl*100:0;
-    h+=`<tr><td>${esc(nm)}</td><td>${yen(byStore[nm])}</td><td>${yen(sl)}</td><td class="${rate>10?'warn':''}">${sl>0?rate.toFixed(1)+'%':'—'}</td></tr>`;
-    expA.push([nm,Math.round(byStore[nm]),Math.round(sl),sl>0?rate.toFixed(1)+'%':'']);
+    const rate=sl>0?o.cost/sl*100:0;
+    h+=`<tr><td>${esc(nm)}</td><td>${yen(o.cost)}</td><td>${yen(o.net)}</td><td>${roasBadge(o.cost,o.net)}</td><td>${yen(sl)}</td><td class="${rate>10?'warn':''}">${sl>0?rate.toFixed(1)+'%':'—'}</td></tr>`;
+    expA.push([nm,Math.round(o.cost),Math.round(o.net),o.cost>0&&o.net>0?(o.net/o.cost).toFixed(2):'',Math.round(sl),sl>0?rate.toFixed(1)+'%':'']);
   });
-  const totalSales=stat(scopeSet,mS,mE,null).sales;
-  h+=`<tr class="total"><td>合計</td><td>${yen(totalAd)}</td><td>${yen(totalSales)}</td><td>${totalSales>0?(totalAd/totalSales*100).toFixed(1)+'%':'—'}</td></tr></tbody></table></div></div>`;
-  EXPORT.push({ title:'店舗別広告費（'+mLabel+'）', headers:['店舗','広告費','売上','広告費率'], rows:expA });
+  h+=`<tr class="total"><td>合計</td><td>${yen(cur.ad)}</td><td>${yen(cur.medNet)}</td><td>${roasBadge(cur.ad,cur.medNet)}</td><td>${yen(totalSales)}</td><td>${totalSales>0?adRate.toFixed(1)+'%':'—'}</td></tr></tbody></table></div></div>`;
+  EXPORT.push({ title:'店舗別広告費用対効果（'+mLabel+'）', headers:['店舗','広告費','媒体経由売上','ROAS','総売上','広告費率'], rows:expA });
   // 媒体別
-  const byMedia={};
-  for(const r of D.ad){ if(!inScope(r))continue; if(r.t<mS||r.t>mE)continue; const k=r.media||'（媒体未指定）'; byMedia[k]=(byMedia[k]||0)+r.cost; }
-  if(Object.keys(byMedia).length>1){
-    h+=`<div class="panel"><div class="panel-head"><h3>媒体別 広告費（${mLabel}）</h3></div>
-    <div class="scroll-x"><table class="tbl"><thead><tr><th>媒体</th><th>広告費</th><th>構成比</th></tr></thead><tbody>`;
-    Object.keys(byMedia).sort((a2,b2)=>byMedia[b2]-byMedia[a2]).forEach(k=>{
-      h+=`<tr><td>${esc(k)}</td><td>${yen(byMedia[k])}</td><td>${totalAd>0?(byMedia[k]/totalAd*100).toFixed(1):'—'}%</td></tr>`;
+  const medKeys=Object.keys(cur.byMedia);
+  if(medKeys.length){
+    h+=`<div class="panel"><div class="panel-head"><div><h3>媒体別 広告費用対効果（${mLabel}）</h3>
+      <div class="sub">媒体別売上（DB_媒体別売上）と媒体名で自動突合</div></div></div>
+    <div class="scroll-x"><table class="tbl"><thead><tr><th>媒体</th><th>広告費</th><th>構成比</th><th>媒体経由売上</th><th>来店人数</th><th>ROAS</th></tr></thead><tbody>`;
+    const expM=[];
+    medKeys.sort((a2,b2)=>cur.byMedia[b2].cost-cur.byMedia[a2].cost).forEach(k=>{
+      const o=cur.byMedia[k];
+      h+=`<tr><td>${esc(k)}</td><td>${yen(o.cost)}</td><td>${cur.ad>0?(o.cost/cur.ad*100).toFixed(1)+'%':'—'}</td><td>${yen(o.net)}</td><td>${o.guests>0?cnt(o.guests)+'人':'—'}</td><td>${roasBadge(o.cost,o.net)}</td></tr>`;
+      expM.push([k,Math.round(o.cost),cur.ad>0?(o.cost/cur.ad*100).toFixed(1)+'%':'',Math.round(o.net),Math.round(o.guests),o.cost>0&&o.net>0?(o.net/o.cost).toFixed(2):'']);
     });
     h+=`</tbody></table></div></div>`;
+    EXPORT.push({ title:'媒体別広告費用対効果（'+mLabel+'）', headers:['媒体','広告費','構成比','媒体経由売上','来店人数','ROAS'], rows:expM });
+  }
+  // 12ヶ月推移
+  const cat=[],adArr=[],netArr=[],roasArr=[];
+  for(let i=11;i>=0;i--){
+    const d=new Date(y,m-i,1);
+    const a2=dayMs(d), b2=dayMs(new Date(d.getFullYear(),d.getMonth()+1,0));
+    const g=adAgg(scopeSet,a2,b2);
+    cat.push(String(d.getFullYear()).slice(2)+'/'+(d.getMonth()+1));
+    adArr.push(g.ad||null); netArr.push(g.medNet||null); roasArr.push(g.ad>0?g.medNet/g.ad:null);
+  }
+  const series=[{name:'媒体経由売上',color:'#4c7d5c',data:netArr},{name:'広告費',color:'#b23b2e',data:adArr}];
+  const legend=series.map(s=>`<span><span class="sw" style="background:${s.color}"></span>${esc(s.name)}</span>`).join('');
+  h+=`<div class="panel"><div class="panel-head"><div><h3>広告費と媒体経由売上の推移（直近12ヶ月）</h3>
+    <div class="sub">〜${mLabel}</div></div><div class="legend">${legend}</div></div>
+    ${lineChart(cat,series,'sales')}
+  <div class="scroll-x"><table class="tbl"><thead><tr><th>月</th><th>広告費</th><th>媒体経由売上</th><th>ROAS</th></tr></thead><tbody>`;
+  const expT=[];
+  cat.forEach((c,i)=>{
+    h+=`<tr><td>${c}</td><td>${adArr[i]!=null?yen(adArr[i]):'—'}</td><td>${netArr[i]!=null?yen(netArr[i]):'—'}</td><td>${roasArr[i]!=null?roasArr[i].toFixed(1)+'倍':'—'}</td></tr>`;
+    expT.push([c,adArr[i]!=null?Math.round(adArr[i]):'',netArr[i]!=null?Math.round(netArr[i]):'',roasArr[i]!=null?roasArr[i].toFixed(2):'']);
+  });
+  h+=`</tbody></table></div></div>`;
+  EXPORT.push({ title:'広告費・媒体経由売上 12ヶ月推移', headers:['月','広告費','媒体経由売上','ROAS'], rows:expT });
+  // PL連携（店舗×媒体マトリクス）
+  const plMedia=medKeys.slice().sort((a2,b2)=>cur.byMedia[b2].cost-cur.byMedia[a2].cost);
+  if(plMedia.length){
+    h+=`<div class="panel"><div class="panel-head"><div><h3>PL連携用 広告費内訳（${mLabel}）</h3>
+      <div class="sub">店舗×媒体の広告費マトリクス。右上の ⬇CSV でPL取込用にダウンロードできます</div></div></div>
+    <div class="scroll-x"><table class="tbl"><thead><tr><th>店舗</th>${plMedia.map(k=>`<th>${esc(k)}</th>`).join('')}<th>合計</th></tr></thead><tbody>`;
+    const expP=[];
+    Object.keys(cur.byStoreMedia).sort((a2,b2)=>cur.byStore[b2].cost-cur.byStore[a2].cost).forEach(nm=>{
+      const row=cur.byStoreMedia[nm];
+      h+=`<tr><td>${esc(nm)}</td>${plMedia.map(k=>`<td>${row[k]?yen(row[k]):'—'}</td>`).join('')}<td>${yen(cur.byStore[nm].cost)}</td></tr>`;
+      expP.push([nm].concat(plMedia.map(k=>Math.round(row[k]||0))).concat([Math.round(cur.byStore[nm].cost)]));
+    });
+    h+=`<tr class="total"><td>合計</td>${plMedia.map(k=>`<td>${yen(cur.byMedia[k].cost)}</td>`).join('')}<td>${yen(cur.ad)}</td></tr></tbody></table></div></div>`;
+    EXPORT.push({ title:'PL連携_店舗×媒体 広告費（'+mLabel+'）', headers:['店舗'].concat(plMedia).concat(['合計']), rows:expP });
   }
   h+=extraSheetsHtml();
   return h;
