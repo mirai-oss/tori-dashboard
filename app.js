@@ -36,10 +36,21 @@ const REVIEW_CHILDREN = {
   '鶏武者 新横浜': ['匠味 新横浜'],
   '鶏武者 川崎店': ['匠味 川崎'],
 };
-// 口コミ店舗名 → 親店舗 の逆引き
-const REVIEW_PARENT = (()=>{ const m={}; Object.keys(REVIEW_CHILDREN).forEach(p=>REVIEW_CHILDREN[p].forEach(c=>m[c]=p)); return m; })();
+// コード側の 子→親 逆引き（既定値）。実際の親子は下の関数でスプレッドシート(DB_店舗親子)とも合成する。
+const REVIEW_PARENT_CODE = (()=>{ const m={}; Object.keys(REVIEW_CHILDREN).forEach(p=>REVIEW_CHILDREN[p].forEach(c=>m[c]=p)); return m; })();
+// 親店舗にぶら下がる子店舗（サブブランド）一覧＝コード既定 ＋ スプレッドシート「DB_店舗親子」(D.storeParent)
+function childrenOfStore(parent){
+  const kids=(REVIEW_CHILDREN[parent]||[]).slice();
+  const sp=D.storeParent||{};
+  for(const c in sp){ if(sp[c]===parent && !kids.includes(c)) kids.push(c); }
+  return kids;
+}
+// 子店舗 → 親店舗（スプレッドシート優先）
+function parentOfStore(name){ return (D.storeParent&&D.storeParent[name]) || REVIEW_PARENT_CODE[name] || null; }
+// 全子店舗の一覧（コード＋シート）
+function allChildStores(){ const set=new Set(); Object.keys(REVIEW_CHILDREN).forEach(p=>REVIEW_CHILDREN[p].forEach(c=>set.add(c))); Object.keys(D.storeParent||{}).forEach(c=>set.add(c)); return [...set]; }
 // ある親店舗に表示すべき口コミ店舗名（親自身＋子）
-function reviewNamesFor(parent){ return [parent].concat(REVIEW_CHILDREN[parent]||[]); }
+function reviewNamesFor(parent){ return [parent].concat(childrenOfStore(parent)); }
 
 // 広告DBの店舗名 → 売上ダッシュボード(分析_日別店舗)の店舗名 のコード内対応表（通常は使わない）。
 // 対応表は基本スプレッドシートの「DB_店舗名対応」タブで管理します（D.storeAlias）。
@@ -59,19 +70,19 @@ function resolveStore(name){
   hit=all.find(s=>{ const ns=_norm(s); return ns.length>=2 && (ns.includes(nn)||nn.includes(ns)); }); // 部分一致
   return hit||null;
 }
-// 子店舗（サブブランド：匠味・うお蔵 等）の一覧。REVIEW_CHILDREN を流用（口コミと同じ親子関係）
-const ALL_CHILD_STORES = Object.keys(REVIEW_CHILDREN).reduce((a,p)=>a.concat(REVIEW_CHILDREN[p]),[]);
+// 名前がサブブランド(子店舗)に一致すれば、その正式な子店舗名を返す（スペース差も吸収）
 function matchChildStore(name){
   if(!name) return null;
   const nn=_norm(name);
-  return ALL_CHILD_STORES.find(c=>{ const nc=_norm(c); return nc===nn || (nc.length>=2 && (nc.includes(nn)||nn.includes(nc))); })||null;
+  return allChildStores().find(c=>{ const nc=_norm(c); return nc===nn || (nc.length>=2 && (nc.includes(nn)||nn.includes(nc))); })||null;
 }
 // 広告等の店舗名を { own:表示名, parent:売上側の親店舗 } に解決（子店舗は親の下に別表示）。見つからなければ null
 function resolveStoreEx(name){
   if(!name) return null;
   const mapped=(D.storeAlias&&D.storeAlias[name])||AD_STORE_ALIAS[name]||name;   // 対応表で別表記を吸収
   const child=matchChildStore(mapped);                                            // サブブランド判定
-  if(child && REVIEW_PARENT[child]) return { own:child, parent:REVIEW_PARENT[child] };
+  const cp=child?parentOfStore(child):null;
+  if(child && cp) return { own:child, parent:cp };
   const parent=resolveStore(mapped);
   return parent?{ own:parent, parent }:null;
 }
@@ -92,7 +103,7 @@ const S = {
   aiQ:'', aiResult:null, dataVersion:'',
   accounts:null, accErr:'', modal:null, loginErr:'',
 };
-const D = { daily:[], media:[], deposit:[], review:[], ad:[], extra:{}, storeAlias:{}, refDate:null, maxDate:null };
+const D = { daily:[], media:[], deposit:[], review:[], ad:[], extra:{}, storeAlias:{}, storeParent:{}, refDate:null, maxDate:null };
 let EXPORT = [];      // 現在タブのCSVエクスポート対象 [{title,headers,rows}]
 let pollTimer = null;
 
@@ -254,8 +265,24 @@ function ingestStoreMap(rows){
   for(let i=0;i<rows.length;i++){ const r=rows[i]||[]; const f=String(r[0]||'').trim(), t=String(r[1]||'').trim(); if(f&&t) map[f]=t; }
   return map;
 }
+// 店舗親子シート（左＝子店舗/サブブランド名 / 右＝親店舗＝売上側の店舗）を取り込む → { 子:親 }
+const isStoreParentKey=(k)=>/店舗親子|サブブランド|親子|店舗グループ|storeparent|storegroup/i.test(String(k));
+function ingestStoreParent(rows){
+  const map={};
+  if(!Array.isArray(rows)||rows.length<1) return map;
+  const h0=(rows[0]||[]).map(x=>String(x==null?'':x).trim());
+  let ci=0, pi=1, start=0;
+  if(h0.some(c=>/子|親|サブ|ブランド|まとめ|店舗|名/.test(c)) && !h0.join('').match(/[0-9]{3,}/)){
+    let a=h0.findIndex(c=>/子|サブ|ブランド|別|表示/.test(c));
+    let b=h0.findIndex(c=>/親|まとめ|売上|統合|正/.test(c));
+    if(a>=0)ci=a; if(b>=0&&b!==ci)pi=b; if(ci===pi)pi=ci===0?1:0;
+    start=1;
+  }
+  for(let i=start;i<rows.length;i++){ const r=rows[i]||[]; const c=String(r[ci]||'').trim(), p=String(r[pi]||'').trim(); if(c&&p&&c!==p) map[c]=p; }
+  return map;
+}
 function ingestSheets(sheets, partial){
-  if(!partial){ D.extra={}; D.diag={}; D.receivedKeys=Object.keys(sheets); D.ad=[]; D.adSrc=''; D.storeAlias={}; }  // 広告・対応表はフル受信のたびに入れ替え
+  if(!partial){ D.extra={}; D.diag={}; D.receivedKeys=Object.keys(sheets); D.ad=[]; D.adSrc=''; D.storeAlias={}; D.storeParent={}; }  // 広告・対応表・親子はフル受信のたびに入れ替え
   else { D.receivedKeys=(D.receivedKeys||[]).concat(Object.keys(sheets)); }
   const known=['daily','media','deposit','review','ad','広告'];
   if(!partial){ known.forEach(k=>{ if(!(k in sheets)) D.diag[k]='シート未受信（接続設定のシート名を確認）'; }); }
@@ -267,6 +294,7 @@ function ingestSheets(sheets, partial){
     else if(key==='deposit') ingestDeposit(rows);
     else if(key==='review') ingestReview(rows);
     else if(key==='ad'||key==='広告'){ if(ingestAd(rows)) D.adSrc='sheet'; }
+    else if(isStoreParentKey(key)){ D.storeParent=ingestStoreParent(rows); D.diag[key]='OK '+Object.keys(D.storeParent).length+'件の親子'; }
     else if(isStoreMapKey(key)){ D.storeAlias=ingestStoreMap(rows); D.diag[key]='OK '+Object.keys(D.storeAlias).length+'件の対応'; }
     else D.extra[key]=rows;
   }
@@ -1272,7 +1300,10 @@ function viewAd(){
     <div class="scroll-x"><table class="tbl"><thead><tr><th>広告DBの店舗名</th><th>広告費（当月）</th></tr></thead><tbody>`;
     umKeys.sort((a2,b2)=>cur.unmatched[b2]-cur.unmatched[a2]).forEach(nm=>{ h+=`<tr><td>${esc(nm||'（空欄）')}</td><td>${yen(cur.unmatched[nm])}</td></tr>`; });
     h+=`</tbody></table></div>
-    <div class="note-box" style="margin-top:12px"><b>対応表で紐づけできます（コード不要）。</b>スプレッドシートに <code>DB_店舗名対応</code> というタブを作り、<b>A列＝広告の店舗名</b>（上の表の名前をコピー）／<b>B列＝売上側の店舗名</b>（分析_日別店舗と同じ表記）を入力。1行目は見出し（例 <code>広告の店舗名 / 売上の店舗名</code>）でOK。保存して同期（最大1分／「↻更新」）すると自動で紐づきます。<br><span style="color:var(--mut2)">※スペース・全角/半角の違いは自動吸収済み。ここに残る＝完全に別表記の店舗名だけです。広告DB側の表記を売上側に直接揃えてもOK。</span></div></div>`;
+    <div class="note-box" style="margin-top:12px"><b>スプレッドシートで紐づけできます（コード不要）。用途で2つのタブを使い分け:</b><br>
+      ①同じ店舗の表記ゆれ（例 トリイチ本店＝鳥一代 本店）→ <code>DB_店舗名対応</code>（A列=広告の店舗名／B列=売上の店舗名）。売上店舗に<b>統合</b>されます。<br>
+      ②別ブランドで同じ場所（例 匠味 新横浜は鶏武者 新横浜の下）→ <code>DB_店舗親子</code>（A列=子店舗／B列=親店舗）。親の下に<b>別行</b>で表示されます。<br>
+      どちらも1行目は見出しでOK。保存して同期（最大1分／「↻更新」）で反映。<span style="color:var(--mut2)">※スペース・全角/半角差は自動吸収済み。</span></div></div>`;
     EXPORT.push({ title:'未突合の広告店舗名（要対応表）', headers:['広告DBの店舗名','広告費'], rows:umKeys.map(nm=>[nm,Math.round(cur.unmatched[nm])]) });
   }
   // 媒体別
@@ -1355,7 +1386,7 @@ function viewReview(){
   const revStores=new Set(D.review.map(r=>r.store));
   const targets=[];
   baseStores.forEach(nm=>{ reviewNamesFor(nm).forEach(rn=>{ if((rn===nm||revStores.has(rn))&&!targets.includes(rn)) targets.push(rn); }); });
-  const parentTag=(nm)=>REVIEW_PARENT[nm]?` <span class="mut" style="font-size:11px">（${esc(REVIEW_PARENT[nm])}）</span>`:'';
+  const parentTag=(nm)=>parentOfStore(nm)?` <span class="mut" style="font-size:11px">（${esc(parentOfStore(nm))}）</span>`:'';
   // 月次バケット（直近12ヶ月）
   const ref=D.refDate||new Date();
   const months=[];
@@ -1366,7 +1397,8 @@ function viewReview(){
     data:months.map(d=>starAt(nm,dayMs(new Date(d.getFullYear(),d.getMonth()+1,0)))) }));
   const legend=series.map(s=>`<span><span class="sw" style="background:${s.color}"></span>${esc(s.name)}</span>`).join('');
   let h=storeSegHtml();
-  const subNote=selName&&REVIEW_CHILDREN[selName]?`各月末時点のスナップショット ／ ${esc(selName)}に紐づく店舗（${REVIEW_CHILDREN[selName].map(esc).join('・')}）も表示`:'各月末時点のスナップショット';
+  const _kids=selName?childrenOfStore(selName):[];
+  const subNote=(_kids.length)?`各月末時点のスナップショット ／ ${esc(selName)}に紐づく店舗（${_kids.map(esc).join('・')}）も表示`:'各月末時点のスナップショット';
   h+=`<div class="panel"><div class="panel-head"><div><h3>Google口コミ 平均星 推移（直近12ヶ月）</h3><div class="sub">${subNote}</div></div><div class="legend">${legend}</div></div>
   ${lineChart(cat,series,'star',{zoom:true,axisFmt:(v)=>v.toFixed(2)})}</div>`;
   // 最新スナップショット表
