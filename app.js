@@ -59,6 +59,22 @@ function resolveStore(name){
   hit=all.find(s=>{ const ns=_norm(s); return ns.length>=2 && (ns.includes(nn)||nn.includes(ns)); }); // 部分一致
   return hit||null;
 }
+// 子店舗（サブブランド：匠味・うお蔵 等）の一覧。REVIEW_CHILDREN を流用（口コミと同じ親子関係）
+const ALL_CHILD_STORES = Object.keys(REVIEW_CHILDREN).reduce((a,p)=>a.concat(REVIEW_CHILDREN[p]),[]);
+function matchChildStore(name){
+  if(!name) return null;
+  const nn=_norm(name);
+  return ALL_CHILD_STORES.find(c=>{ const nc=_norm(c); return nc===nn || (nc.length>=2 && (nc.includes(nn)||nn.includes(nc))); })||null;
+}
+// 広告等の店舗名を { own:表示名, parent:売上側の親店舗 } に解決（子店舗は親の下に別表示）。見つからなければ null
+function resolveStoreEx(name){
+  if(!name) return null;
+  const mapped=(D.storeAlias&&D.storeAlias[name])||AD_STORE_ALIAS[name]||name;   // 対応表で別表記を吸収
+  const child=matchChildStore(mapped);                                            // サブブランド判定
+  if(child && REVIEW_PARENT[child]) return { own:child, parent:REVIEW_PARENT[child] };
+  const parent=resolveStore(mapped);
+  return parent?{ own:parent, parent }:null;
+}
 const DEMO_ACCOUNTS = [
   { id:'shacho',   pw:'tori2026',  name:'社長',           role:'社長',        stores:'全店', active:true, memo:'全店舗・全機能' },
   { id:'honbu',    pw:'torihq',    name:'本部 経営管理部', role:'本部',        stores:'全店', active:true, memo:'全店舗・全機能' },
@@ -1105,9 +1121,9 @@ function canonMedia(m){
   return s;
 }
 function adAgg(scopeSet, a, b){
-  const byStore={}, byMedia={}, byStoreMedia={}, unmatched={};
+  const byStore={}, byMedia={}, byStoreMedia={}, unmatched={}, ownParent={};
   let ad=0;
-  const pairSet=new Set();   // 店舗(解決後)|媒体（正規化後）
+  const pairSet=new Set();   // 表示店舗(own)|媒体（正規化後）
   const globalSet=new Set(); // 店舗未指定の広告の媒体
   const rcache={};
   for(const r of D.ad){
@@ -1119,20 +1135,20 @@ function adAgg(scopeSet, a, b){
       globalSet.add(md);
       continue;
     }
-    // 広告DBの店舗名を売上側の店舗名に解決（表記違いを自動吸収）
-    const resolved = (r.store in rcache)?rcache[r.store]:(rcache[r.store]=resolveStore(r.store));
-    if(!resolved || !scopeSet.has(resolved)){
-      if(!resolved) unmatched[r.store]=(unmatched[r.store]||0)+r.cost;  // どの店舗にも一致せず＝要確認
+    // 広告DBの店舗名を { own:表示名, parent:売上側の親店舗 } に解決（子店舗は親の下に別行で表示）
+    const res = (r.store in rcache)?rcache[r.store]:(rcache[r.store]=resolveStoreEx(r.store));
+    if(!res || !scopeSet.has(res.parent)){
+      if(!res) unmatched[r.store]=(unmatched[r.store]||0)+r.cost;  // どの店舗にも一致せず＝要確認
       continue;
     }
-    const st=resolved;
+    const own=res.own; ownParent[own]=res.parent;
     ad+=r.cost;
-    (byStore[st]=byStore[st]||{cost:0,net:0,guests:0}).cost+=r.cost;
+    (byStore[own]=byStore[own]||{cost:0,net:0,guests:0}).cost+=r.cost;
     (byMedia[md]=byMedia[md]||{cost:0,net:0,guests:0}).cost+=r.cost;
-    (byStoreMedia[st]=byStoreMedia[st]||{})[md]=(byStoreMedia[st][md]||0)+r.cost;
-    pairSet.add(st+'|'+md);
+    (byStoreMedia[own]=byStoreMedia[own]||{})[md]=(byStoreMedia[own][md]||0)+r.cost;
+    pairSet.add(own+'|'+md);
   }
-  // 媒体経由売上：媒体別売上（DB_媒体別売上）と店舗×媒体（正規化後）で自動突合
+  // 媒体経由売上：媒体別売上（分析_媒体別日次）と店舗×媒体（正規化後）で自動突合
   let medNet=0;
   for(const r of D.media){
     if(!scopeSet.has(r.store)) continue;
@@ -1144,7 +1160,7 @@ function adAgg(scopeSet, a, b){
     if(pair&&byStore[r.store]){ byStore[r.store].net+=r.net; byStore[r.store].guests+=r.guests; }
     if(byMedia[cm]){ byMedia[cm].net+=r.net; byMedia[cm].guests+=r.guests; }
   }
-  return { ad, medNet, byStore, byMedia, byStoreMedia, unmatched };
+  return { ad, medNet, byStore, byMedia, byStoreMedia, unmatched, ownParent };
 }
 function roasBadge(cost, net){
   if(!(cost>0)) return '<span class="badge zero">—</span>';
@@ -1223,17 +1239,28 @@ function viewAd(){
     <div class="kpi"><div class="lb">ROAS（売上÷広告費）</div><div class="vl">${cur.ad>0?roas.toFixed(1)+'倍':'—'}</div><div class="yy ${kR.cls}">${kR.t}</div></div>
     <div class="kpi"><div class="lb">広告費率（対総売上）</div><div class="vl">${totalSales>0?adRate.toFixed(1)+'%':'—'}</div><div class="yy ${kP.cls}">${kP.t}</div></div>
   </div>`;
-  // 店舗別
+  // 店舗別（子店舗＝サブブランドは親の下に別行で表示）
+  const parentOf=(nm)=>cur.ownParent[nm]||nm;
+  const isChild=(nm)=>cur.ownParent[nm]&&cur.ownParent[nm]!==nm;
   h+=`<div class="panel"><div class="panel-head"><div><h3>${selN?esc(selN)+'の':'店舗別 '}広告費用対効果（${mLabel}）</h3>
-    <div class="sub">ROAS: 3倍以上=良好 ／ 1〜3倍=要改善 ／ 1倍未満=広告費割れ</div></div></div>
+    <div class="sub">ROAS: 3倍以上=良好 ／ 1〜3倍=要改善 ／ 1倍未満=広告費割れ　※同一店舗のサブブランドは親店舗の下に別行で表示</div></div></div>
   <div class="scroll-x"><table class="tbl"><thead><tr><th>店舗</th><th>広告費</th><th>媒体経由売上</th><th>ROAS</th><th>総売上（当月）</th><th>広告費率</th></tr></thead><tbody>`;
   const expA=[];
-  Object.keys(cur.byStore).sort((a2,b2)=>cur.byStore[b2].cost-cur.byStore[a2].cost).forEach(nm=>{
+  // 親でグループ化 → 親を先頭、その下に子。グループは広告費合計の多い順
+  const grpCost={}; Object.keys(cur.byStore).forEach(nm=>{ const p=parentOf(nm); grpCost[p]=(grpCost[p]||0)+cur.byStore[nm].cost; });
+  const ordered=Object.keys(cur.byStore).sort((x,y)=>{
+    const px=parentOf(x), py=parentOf(y);
+    if(px!==py) return (grpCost[py]-grpCost[px])||(px<py?-1:1);
+    const cx=isChild(x)?1:0, cy=isChild(y)?1:0; if(cx!==cy) return cx-cy;   // 親→子
+    return cur.byStore[y].cost-cur.byStore[x].cost;
+  });
+  ordered.forEach(nm=>{
     const o=cur.byStore[nm];
     const sl=stat(null,mS,mE,nm).sales;
     const rate=sl>0?o.cost/sl*100:0;
-    h+=`<tr><td>${esc(nm)}</td><td>${yen(o.cost)}</td><td>${yen(o.net)}</td><td>${roasBadge(o.cost,o.net)}</td><td>${yen(sl)}</td><td class="${rate>10?'warn':''}">${sl>0?rate.toFixed(1)+'%':'—'}</td></tr>`;
-    expA.push([nm,Math.round(o.cost),Math.round(o.net),o.cost>0&&o.net>0?(o.net/o.cost).toFixed(2):'',Math.round(sl),sl>0?rate.toFixed(1)+'%':'']);
+    const tag=isChild(nm)?` <span class="mut" style="font-size:11px">（${esc(parentOf(nm))}）</span>`:'';
+    h+=`<tr><td style="${isChild(nm)?'padding-left:22px':''}">${esc(nm)}${tag}</td><td>${yen(o.cost)}</td><td>${yen(o.net)}</td><td>${roasBadge(o.cost,o.net)}</td><td>${sl>0?yen(sl):'—'}</td><td class="${rate>10?'warn':''}">${sl>0?rate.toFixed(1)+'%':'—'}</td></tr>`;
+    expA.push([nm+(isChild(nm)?'（'+parentOf(nm)+'）':''),Math.round(o.cost),Math.round(o.net),o.cost>0&&o.net>0?(o.net/o.cost).toFixed(2):'',Math.round(sl),sl>0?rate.toFixed(1)+'%':'']);
   });
   h+=`<tr class="total"><td>合計</td><td>${yen(cur.ad)}</td><td>${yen(cur.medNet)}</td><td>${roasBadge(cur.ad,cur.medNet)}</td><td>${yen(totalSales)}</td><td>${totalSales>0?adRate.toFixed(1)+'%':'—'}</td></tr></tbody></table></div></div>`;
   EXPORT.push({ title:'店舗別広告費用対効果（'+mLabel+'）', headers:['店舗','広告費','媒体経由売上','ROAS','総売上','広告費率'], rows:expA });
