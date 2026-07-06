@@ -198,7 +198,7 @@ function isAdmin(session) {
 
 // ================== データ配信 ==================
 
-// 配信対象のシート（キー→シート名）を接続設定るDB_接頭辞から解決
+// 配信対象のシート（キー→シート名）を接続設定＋DB_接頭辞から解決
 function configuredSheets(ss) {
   var list = [];
   var conf = ss.getSheetByName('接続設定');
