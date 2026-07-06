@@ -74,6 +74,8 @@ const WD = ['日','月','火','水','木','金','土'];
 const mdw = (d)=>(d.getMonth()+1)+'/'+d.getDate()+'('+WD[d.getDay()]+')';
 const compact = (v)=>{ v=v||0; if(v>=1e8)return (v/1e8).toFixed(2)+'億'; if(v>=1e4)return Math.round(v/1e4)+'万'; return Math.round(v).toLocaleString('ja-JP'); };
 const parseDateStr = (ds)=>{ const p=String(ds).replace(/-/g,'/').split('/'); if(p.length<3)return 0; const Y=+p[0],M=+p[1],Dd=+p[2]; if(!Y||!M||!Dd)return 0; return new Date(Y,M-1,Dd).getTime(); };
+// 「2025/01」「2025-1」「2025年1月」など年月だけの表記は月初日として解釈（広告費DB連携用）
+const parseYm = (ds)=>{ const m=String(ds==null?'':ds).trim().match(/^(\d{4})\s*[年\/\-\.]\s*(\d{1,2})/); if(!m)return 0; const M=+m[2]; if(M<1||M>12)return 0; return new Date(+m[1],M-1,1).getTime(); };
 
 function toast(msg){ const t=$('toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(t._tm); t._tm=setTimeout(()=>t.classList.remove('show'),2600); }
 
@@ -171,23 +173,23 @@ function ingestReview(rows){
 function ingestAd(rows){
   const hi=findHeader(rows,['日付','広告']);
   const H=rows[hi].map(h=>String(h).trim());
-  const iD=colOf(H,'日付'), iS=colOf(H,'店舗'), iM=colOf(H,'媒体');
+  const iD=colAny(H,['日付','年月']), iS=colOf(H,'店舗'), iM=colOf(H,'媒体');
   let iC=colOf(H,'広告費'); if(iC<0)iC=colOf(H,'費用'); if(iC<0)iC=colOf(H,'金額');
   let iOK=colOf(H,'確認'); if(iOK<0)iOK=colOf(H,'承認');
-  if(iD<0||iC<0) return false;
+  if(iD<0||iC<0){ D.diag['広告']='列が見つかりません（必要: 日付または年月・広告費）'; return false; }
   // 確認列がある場合はチェック済み（TRUE/✓/○/済/OK/1）の行だけ集計する
   const okVal=(v)=>{const s=String(v==null?'':v).trim().toUpperCase();return s==='TRUE'||s==='✓'||s==='✔'||s==='○'||s==='◯'||s==='済'||s==='OK'||s==='1'||s==='はい';};
   const recs=[];
   for(let i=hi+1;i<rows.length;i++){
-    const c=rows[i]; const t=parseDateStr(c[iD]); if(!t)continue;
+    const c=rows[i]; const t=parseDateStr(c[iD])||parseYm(c[iD]); if(!t)continue;
     if(iOK>=0&&!okVal(c[iOK])) continue;
     recs.push({ store:String(iS>=0?c[iS]||'':'').trim(), t, media:String(iM>=0?c[iM]||'':'').trim(), cost:num(c[iC]) });
   }
-  if(!recs.length) return false;
-  D.ad=recs; return true;
+  if(!recs.length){ D.diag['広告']='0件（確認列にチェック済みの行がないか、日付を読めていません）'; return false; }
+  D.ad=recs; D.diag['広告']='OK '+recs.length+'件'; return true;
 }
 function ingestSheets(sheets, partial){
-  if(!partial){ D.extra={}; D.diag={}; D.receivedKeys=Object.keys(sheets); }
+  if(!partial){ D.extra={}; D.diag={}; D.receivedKeys=Object.keys(sheets); D.ad=[]; D.adSrc=''; }  // 広告はフル受信のたびに入れ替え（サンプル残留を防ぐ）
   else { D.receivedKeys=(D.receivedKeys||[]).concat(Object.keys(sheets)); }
   const known=['daily','media','deposit','review','ad','広告'];
   if(!partial){ known.forEach(k=>{ if(!(k in sheets)) D.diag[k]='シート未受信（接続設定のシート名を確認）'; }); }
@@ -198,7 +200,7 @@ function ingestSheets(sheets, partial){
     else if(key==='media') ingestMedia(rows);
     else if(key==='deposit') ingestDeposit(rows);
     else if(key==='review') ingestReview(rows);
-    else if(key==='ad'||key==='広告') ingestAd(rows);
+    else if(key==='ad'||key==='広告'){ if(ingestAd(rows)) D.adSrc='sheet'; }
     else D.extra[key]=rows;
   }
 }
@@ -207,7 +209,7 @@ function loadSampleData(){
   if(window.__SALES_CSV)   ingestMedia(csvToRows(window.__SALES_CSV));
   if(window.__DEPOSIT_CSV) ingestDeposit(csvToRows(window.__DEPOSIT_CSV));
   if(window.__REVIEW_CSV)  ingestReview(csvToRows(window.__REVIEW_CSV));
-  if(window.__AD_CSV)      ingestAd(csvToRows(window.__AD_CSV));
+  if(window.__AD_CSV&&ingestAd(csvToRows(window.__AD_CSV))) D.adSrc='sample';   // 広告サンプルはソースを記録
   if(!D.refDate) D.refDate=new Date();
 }
 
@@ -1118,9 +1120,19 @@ function viewAd(){
   let h=`<div class="ctrl-bar no-print"><div class="mini-nav">
     <button onclick="App.adNav(-1)">‹</button><span class="lbl">${mLabel}</span><button onclick="App.adNav(1)">›</button></div>
     <span class="period-label">広告費用対効果（${mLabel}）</span></div>`;
-  // 入力はスプレッドシートの DB_広告 シートで行う（確認列にチェックした行のみ集計）
-  h+=`<div class="panel no-print"><div class="panel-head"><div><h3>広告費の入力方法</h3>
-    <div class="sub">広告費はスプレッドシートの「DB_広告」シート（日付・店舗名・媒体・広告費・確認）に入力します。「確認」列にチェックを入れた行だけがダッシュボードに反映されます（チェック後、約1分で自動反映）。</div></div></div></div>`;
+  // データの出どころを見える化：この画面の数字がどこから来ているかを表示
+  let a0=0,a1=0; for(const r of D.ad){ if(!a0||r.t<a0)a0=r.t; if(r.t>a1)a1=r.t; }
+  const fmtD=(t)=>{ const d=new Date(t); return d.getFullYear()+'/'+(d.getMonth()+1)+'/'+d.getDate(); };
+  const srcLine=D.adSrc==='sheet'
+    ?`<span style="color:#4c7d5c;font-weight:700">● スプレッドシート「DB_広告」シートの実データを表示中</span>（全${cnt(D.ad.length)}件 ／ データ期間 ${fmtD(a0)}〜${fmtD(a1)} ／ 最終同期 ${esc(S.lastSync||'—')}）`
+    :`<span style="color:#a2803f;font-weight:700">⚠ サンプル（架空）データを表示中</span> — スプレッドシートの「DB_広告」シートに実データが入ると自動で置き換わります`;
+  h+=`<div class="panel no-print"><div class="panel-head"><div><h3>この画面の数字の出どころ</h3>
+    <div class="sub">${srcLine}</div></div></div>
+    <div class="note-box">
+      <b>広告費</b> ← 「DB_広告」シート。①直接入力の場合は「確認」列にチェックした行のみ反映 ②広告費用対効果_管理シートとIMPORTRANGE連携の場合は、管理シート側で✓反映済みの💾広告費DBを自動取込（反映まで約1分）<br>
+      <b>媒体経由売上・来店人数</b> ← 媒体別売上シート（分析_媒体別日次）と媒体名で自動突合（例: 鶏HP→ホットペッパー、匠味GN→ぐるなび）<br>
+      <b>総売上（広告費率の分母）</b> ← 日別売上シート（分析_日別店舗）
+    </div></div>`;
   // KPIカード
   const kA=mom(cur.ad,prv.ad,true), kN=mom(cur.medNet,prv.medNet,false);
   const kR=pRoas>0?{t:'前月 '+pRoas.toFixed(1)+'倍',cls:roas>=pRoas?'up':'dn'}:{t:'前月 —',cls:'mut'};
