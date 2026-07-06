@@ -195,16 +195,21 @@ function ingestAd(rows){
   let iC=colOf(H,'広告費'); if(iC<0)iC=colOf(H,'費用'); if(iC<0)iC=colOf(H,'金額');
   let iOK=colOf(H,'確認'); if(iOK<0)iOK=colOf(H,'承認');
   if(iD<0||iC<0){ D.diag['広告']='列が見つかりません（必要: 日付または年月・広告費）'; return false; }
-  // 確認列がある場合はチェック済み（TRUE/✓/○/済/OK/1）の行だけ集計する
   const okVal=(v)=>{const s=String(v==null?'':v).trim().toUpperCase();return s==='TRUE'||s==='✓'||s==='✔'||s==='○'||s==='◯'||s==='済'||s==='OK'||s==='1'||s==='はい';};
-  const recs=[];
+  // 「確認」列は"使っている時だけ"フィルタに使う。1つもチェックが無い＝運用していないとみなし、全行を表示（数字を入れたのに未接続、を防ぐ）
+  let anyChecked=false;
+  if(iOK>=0){ for(let i=hi+1;i<rows.length;i++){ if(okVal(rows[i][iOK])){ anyChecked=true; break; } } }
+  const useConfirm = iOK>=0 && anyChecked;
+  const recs=[]; let dateSkipped=0;
   for(let i=hi+1;i<rows.length;i++){
-    const c=rows[i]; const t=parseDateStr(c[iD])||parseYm(c[iD]); if(!t)continue;
-    if(iOK>=0&&!okVal(c[iOK])) continue;
+    const c=rows[i];
+    if(useConfirm && !okVal(c[iOK])) continue;
+    const t=parseDateStr(c[iD])||parseYm(c[iD]);
+    if(!t){ if(String(c[iC]||'').trim()||String(c[iS]||'').trim()) dateSkipped++; continue; }
     recs.push({ store:String(iS>=0?c[iS]||'':'').trim(), t, media:String(iM>=0?c[iM]||'':'').trim(), cost:num(c[iC]) });
   }
-  if(!recs.length){ D.diag['広告']='0件（確認列にチェック済みの行がないか、日付を読めていません）'; return false; }
-  D.ad=recs; D.diag['広告']='OK '+recs.length+'件'; return true;
+  if(!recs.length){ D.diag['広告']='0件'+(dateSkipped>0?'（'+dateSkipped+'行あるが日付/年月列を読めていません）':'（データ行がありません）'); return false; }
+  D.ad=recs; D.diag['広告']='OK '+recs.length+'件'+(useConfirm?'（確認済みのみ）':''); return true;
 }
 function ingestSheets(sheets, partial){
   if(!partial){ D.extra={}; D.diag={}; D.receivedKeys=Object.keys(sheets); D.ad=[]; D.adSrc=''; }  // 広告はフル受信のたびに入れ替え（サンプル残留を防ぐ）
@@ -1124,16 +1129,31 @@ function viewAd(){
   const sc=scopeStores(); const selN=selStoreName();          // 店舗タブで選択中の店舗（全店なら null）
   const scopeSet=new Set(selN?[selN]:sc);
   if(!D.ad.length){
-    let h=`<div class="panel"><div class="panel-head"><div><h3>広告管理</h3><div class="sub">スプレッドシート接続で自動有効化</div></div></div>
-    <div class="note-box">
-      広告データはまだ接続されていません。スプレッドシートに <code>DB_広告</code> という名前のシートを追加するだけで、
-      次回同期時からこのタブに自動で表示されます（接続設定シートに <code>ad</code> キーで登録してもOK）。<br><br>
-      <b>シートの列（1行目にヘッダー）:</b><br>
-      <code>日付</code>（例 2026/07/01）／ <code>店舗名</code> ／ <code>媒体</code>（媒体別売上と同じ媒体名にすると自動でROASを計算）／ <code>広告費</code><br><br>
-      売上データと自動で突き合わせ、店舗別・媒体別のROAS（売上÷広告費）、広告費率、PL連携用の内訳を表示します。
-    </div></div>`;
-    h+=extraSheetsHtml();
-    return h;
+    const live=!!(S.auth&&S.auth.token);
+    const received=(D.receivedKeys||[]).includes('広告')||(D.receivedKeys||[]).includes('ad');
+    const diag=D.diag&&D.diag['広告'];
+    let diagBox='';
+    if(live){
+      if(received && diag && diag.indexOf('OK')!==0){
+        // シートは受信できたが取り込めていない＝原因を明示
+        diagBox=`<div class="note-box" style="border-color:#e8cfc2;background:#faf0ec;color:#5c5348">
+          <b style="color:#b5502f">⚠ 「DB_広告」シートは受信していますが、表示できる行がありません。</b><br>
+          取込結果：<b>${esc(diag)}</b><br>
+          よくある原因：①「日付」または「年月」列が空／形式が違う（例 2026/07/01 や 2026/07）　②広告費が数値でない　③「確認」列を使う運用で1行もチェックが無い（※チェックが1つも無ければ全行表示に変更済みです）<br>
+          「日付」と「広告費」列を確認してください。</div>`;
+      } else if(!received){
+        diagBox=`<div class="note-box" style="border-color:#e8cfc2;background:#faf0ec;color:#5c5348">
+          <b style="color:#b5502f">⚠ 「DB_広告」シートを受信できていません。</b><br>
+          チェック：①シート名が正確に <code>DB_広告</code>（アンダーバー付き）か　②別名なら「接続設定」タブに <code>ad</code> キーで実シート名を登録し「有効」を <code>TRUE</code> に　③GASを最新にして再デプロイ済みか　④更新後1分ほど待つ／「↻更新」<br>
+          受信済みキー：${esc((D.receivedKeys||[]).join(' , ')||'なし')}</div>`;
+      }
+    }
+    return storeSegHtml()+`<div class="panel"><div class="panel-head"><div><h3>広告管理</h3><div class="sub">実データ（DB_広告シート）のみ表示・サンプルは入っていません</div></div></div>
+    ${diagBox||`<div class="note-box">
+      広告データはまだ接続されていません。スプレッドシートに <code>DB_広告</code> という名前のシートを作り、
+      <code>日付</code>（例 2026/07/01）／ <code>店舗名</code> ／ <code>媒体</code> ／ <code>広告費</code> を入力すると、このタブに自動表示されます。<br>
+      店舗別・媒体別のROAS（売上÷広告費）・広告費率・12ヶ月推移を表示します。
+    </div>`}</div>`+extraSheetsHtml();
   }
   const ref=D.refDate||new Date();
   const m0=S.adMonth?new Date(+S.adMonth.split('-')[0],+S.adMonth.split('-')[1]-1,1):new Date(ref.getFullYear(),ref.getMonth(),1);
