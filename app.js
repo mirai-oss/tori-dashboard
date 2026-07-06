@@ -189,12 +189,18 @@ function ingestReview(rows){
   D.review=recs; D.diag.review='OK '+recs.length+'件'; return true;
 }
 function ingestAd(rows){
-  const hi=findHeader(rows,['日付','広告']);
+  // 見出し行を検出：広告費(広告/費用/金額) と 日付/年月/店舗 を含む行。タイトル行が上にあってもズレない
+  let hi=-1;
+  for(let i=0;i<Math.min(rows.length,12);i++){
+    const line=rows[i].map(x=>String(x==null?'':x)).join(',');
+    if(/広告費|広告|費用|金額/.test(line) && /年月|日付|店舗/.test(line)){ hi=i; break; }
+  }
+  if(hi<0) hi=0;
   const H=rows[hi].map(h=>String(h).trim());
-  const iD=colAny(H,['日付','年月']), iS=colOf(H,'店舗'), iM=colOf(H,'媒体');
-  let iC=colOf(H,'広告費'); if(iC<0)iC=colOf(H,'費用'); if(iC<0)iC=colOf(H,'金額');
+  const iD=colAny(H,['日付','年月','年月日']), iS=colOf(H,'店舗'), iM=colOf(H,'媒体');
+  let iC=colOf(H,'広告費'); if(iC<0)iC=colOf(H,'広告'); if(iC<0)iC=colOf(H,'費用'); if(iC<0)iC=colOf(H,'金額');
   let iOK=colOf(H,'確認'); if(iOK<0)iOK=colOf(H,'承認');
-  if(iD<0||iC<0){ D.diag['広告']='列が見つかりません（必要: 日付または年月・広告費）'; return false; }
+  if(iD<0||iC<0){ D.diag['広告']='列が見つかりません（必要: 日付または年月・広告費）／見出し行: '+H.filter(Boolean).join('|'); return false; }
   const okVal=(v)=>{const s=String(v==null?'':v).trim().toUpperCase();return s==='TRUE'||s==='✓'||s==='✔'||s==='○'||s==='◯'||s==='済'||s==='OK'||s==='1'||s==='はい';};
   // 「確認」列は"使っている時だけ"フィルタに使う。1つもチェックが無い＝運用していないとみなし、全行を表示（数字を入れたのに未接続、を防ぐ）
   let anyChecked=false;
