@@ -1033,29 +1033,47 @@ function viewDeposit(){
 }
 
 /* ---------------- 広告管理 ---------------- */
+// 媒体名の正規化：DB_広告とDB_媒体別売上で表記が違っても自動で突合できるようにする
+// 例: 鶏HP・黒HP・ホットペッパー → ホットペッパー ／ 匠味GN → ぐるなび ／ うおTL → 食べログ
+function canonMedia(m){
+  const s=String(m||'').trim(); if(!s) return '';
+  const u=s.toUpperCase();
+  if(u.indexOf('RETTY')>=0||/RT$/.test(u)) return 'Retty';
+  if(u.indexOf('ホットペッパー')>=0||u.indexOf('HP')>=0) return 'ホットペッパー';
+  if(u.indexOf('ぐるなび')>=0||u.indexOf('GN')>=0) return 'ぐるなび';
+  if(u.indexOf('食べログ')>=0||u.indexOf('TL')>=0) return '食べログ';
+  if(u.indexOf('LP')>=0) return '自社LP';
+  if(u.indexOf('インスタ')>=0||u.indexOf('INSTAGRAM')>=0) return 'Instagram';
+  if(u.indexOf('GOOGLE')>=0||u.indexOf('グーグル')>=0||u.indexOf('マップ')>=0) return 'Google';
+  return s;
+}
 function adAgg(scopeSet, a, b){
   const byStore={}, byMedia={}, byStoreMedia={};
   let ad=0;
   const inScope=(r)=>!r.store||scopeSet.has(r.store);
+  const pairSet=new Set();   // 店舗|媒体（正規化後）
+  const globalSet=new Set(); // 店舗未指定の広告の媒体
   for(const r of D.ad){
     if(!inScope(r)) continue;
     if(r.t<a||r.t>b) continue;
-    const st=r.store||'（店舗未指定）', md=r.media||'（媒体未指定）';
+    const st=r.store||'（店舗未指定）', md=canonMedia(r.media)||'（媒体未指定）';
     ad+=r.cost;
     (byStore[st]=byStore[st]||{cost:0,net:0,guests:0}).cost+=r.cost;
     (byMedia[md]=byMedia[md]||{cost:0,net:0,guests:0}).cost+=r.cost;
     (byStoreMedia[st]=byStoreMedia[st]||{})[md]=(byStoreMedia[st][md]||0)+r.cost;
+    if(r.store) pairSet.add(r.store+'|'+md); else globalSet.add(md);
   }
-  // 媒体経由売上：広告データに存在する媒体名と一致する媒体売上を突合
-  const adMediaSet=new Set(Object.keys(byMedia));
+  // 媒体経由売上：媒体別売上（DB_媒体別売上）と店舗×媒体（正規化後）で自動突合
   let medNet=0;
   for(const r of D.media){
     if(!scopeSet.has(r.store)) continue;
     if(r.t<a||r.t>b) continue;
-    if(!adMediaSet.has(r.media)) continue;
+    const cm=canonMedia(r.media);
+    const pair=pairSet.has(r.store+'|'+cm), glob=globalSet.has(cm);
+    if(!pair&&!glob) continue;
     medNet+=r.net;
-    if(byStore[r.store]){ byStore[r.store].net+=r.net; byStore[r.store].guests+=r.guests; }
-    const o=byMedia[r.media]; o.net+=r.net; o.guests+=r.guests;
+    if(pair&&byStore[r.store]){ byStore[r.store].net+=r.net; byStore[r.store].guests+=r.guests; }
+    if(byMedia[cm]){ byMedia[cm].net+=r.net; byMedia[cm].guests+=r.guests; }
   }
   return { ad, medNet, byStore, byMedia, byStoreMedia };
 }
@@ -1096,6 +1114,19 @@ function viewAd(){
   let h=`<div class="ctrl-bar no-print"><div class="mini-nav">
     <button onclick="App.adNav(-1)">‹</button><span class="lbl">${mLabel}</span><button onclick="App.adNav(1)">›</button></div>
     <span class="period-label">広告費用対効果（${mLabel}）</span></div>`;
+  // 入力フォーム（スプレッドシート DB_広告 へ直接保存）
+  const stores=sc.slice();
+  const mediaOpts=['ホットペッパー','ぐるなび','食べログ','Retty','自社LP','Instagram','Google','チラシ','その他'];
+  const defMonth2=y+'-'+String(m+1).padStart(2,'0');
+  h+=`<div class="panel no-print"><div class="panel-head"><div><h3>広告費を入力</h3>
+    <div class="sub">${S.auth&&S.auth.token?'スプレッドシート（DB_広告）に即保存され、全端末に自動反映されます':'サンプルモード：この画面にだけ反映されます（保存にはスプレッドシート接続が必要）'}</div></div></div>
+  <div class="ad-form" style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end">
+    <label style="display:flex;flex-direction:column;gap:4px;font-size:11.5px">対象月<input type="month" id="ad-in-date" value="${S.adInDate||defMonth2}" onchange="S.adInDate=this.value"></label>
+    <label style="display:flex;flex-direction:column;gap:4px;font-size:11.5px">店舗<select id="ad-in-store">${stores.map(n2=>`<option ${S.adInStore===n2?'selected':''}>${esc(n2)}</option>`).join('')}</select></label>
+    <label style="display:flex;flex-direction:column;gap:4px;font-size:11.5px">媒体<input id="ad-in-media" list="ad-media-list" value="${esc(S.adInMedia||'')}" placeholder="例: ホットペッパー" style="width:150px"><datalist id="ad-media-list">${mediaOpts.map(n2=>`<option value="${esc(n2)}">`).join('')}</datalist></label>
+    <label style="display:flex;flex-direction:column;gap:4px;font-size:11.5px">広告費（月額・円）<input type="number" id="ad-in-cost" min="0" step="100" placeholder="50000" style="width:110px"></label>
+    <button class="btn-primary" id="ad-add-btn" onclick="App.adAdd()">追加する</button>
+  </div></div>`;
   // KPIカード
   const kA=mom(cur.ad,prv.ad,true), kN=mom(cur.medNet,prv.medNet,false);
   const kR=pRoas>0?{t:'前月 '+pRoas.toFixed(1)+'倍',cls:roas>=pRoas?'up':'dn'}:{t:'前月 —',cls:'mut'};
@@ -1482,6 +1513,28 @@ window.App = {
     if(d===0){ S.depMonth=''; render(); return; }
     const m0=depMonthDate(); const n=new Date(m0.getFullYear(),m0.getMonth()+d,1);
     S.depMonth=n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0'); render();
+  },
+  async adAdd(){
+    const dm=($('ad-in-date')||{}).value, st=($('ad-in-store')||{}).value, md=(($('ad-in-media')||{}).value||'').trim(), c=Number(($('ad-in-cost')||{}).value);
+    if(!dm||!st||!md||!(c>0)){ toast('対象月・店舗・媒体・広告費をすべて入力してください'); return; }
+    S.adInDate=dm; S.adInStore=st; S.adInMedia=md;
+    const [yy2,mm2]=dm.split('-').map(Number);
+    const t=dayMs(new Date(yy2,mm2-1,1));
+    const btn=$('ad-add-btn'); if(btn){ btn.disabled=true; btn.textContent='保存中…'; }
+    try{
+      const online=S.auth&&S.auth.token&&apiUrl();
+      if(online){
+        const r=await api({ action:'addAd', token:S.auth.token, date:dm+'-01', store:st, media:md, cost:c });
+        if(!r||!r.ok) throw new Error((r&&r.error)||'保存に失敗しました');
+      }
+      D.ad.push({ store:st, t, media:md, cost:c });
+      S.adMonth=dm; S.adInMedia=''; 
+      toast(online?'広告費を保存しました（DB_広告に追加済み・他端末にも自動反映）':'広告費を追加しました（サンプルモード・ページ再読込で消えます）');
+      render();
+    }catch(e){
+      toast('保存エラー: '+(e&&e.message||e));
+      if(btn){ btn.disabled=false; btn.textContent='追加する'; }
+    }
   },
   adNav(d){
     const ref=D.refDate||new Date();
