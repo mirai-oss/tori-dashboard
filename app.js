@@ -352,7 +352,7 @@ async function api(params){
   return r.json();
 }
 function stampNow(){ const n=new Date(); return (n.getMonth()+1)+'/'+n.getDate()+' '+String(n.getHours()).padStart(2,'0')+':'+String(n.getMinutes()).padStart(2,'0'); }
-function monthsWindow(){ const v=localStorage.getItem(LS.months); return v==null?24:Number(v); } // 0=全期間, 既定24ヶ月
+function monthsWindow(){ const v=localStorage.getItem(LS.months); return v==null?13:Number(v); } // 0=全期間, 既定13ヶ月(前年比の最小)
 async function fetchData(silent, opts){
   if(!S.auth||!S.auth.token) return;
   opts=opts||{};
@@ -385,6 +385,8 @@ async function fetchDataFast(){
   await fetchData(true, { only:['media'], partial:true }); // 媒体別を裏で追加
   D.mediaPending=false;
   render();
+  // data は version を返さないので、初回に一度だけ署名を取得しておく（次の自動更新のムダ取得を防ぐ）
+  fetchVersion().then(v=>{ if(v!==null) S.dataVersion=v; });
 }
 // 軽量版：まず署名(version)だけ取り、変化があるときだけフル取得
 async function fetchVersion(){
@@ -1320,7 +1322,7 @@ function connectModal(){
     </select>
     <br><label style="font-size:11px;color:#8c8375">読み込む期間（短いほど軽い・前年比には13ヶ月以上必要）</label><br>
     <select id="cn-months" style="margin:6px 0 12px">
-      ${[[13,'直近13ヶ月'],[24,'直近24ヶ月（推奨）'],[36,'直近36ヶ月'],[0,'全期間']].map(([m,l])=>`<option value="${m}" ${monthsWindow()===m?'selected':''}>${l}</option>`).join('')}
+      ${[[13,'直近13ヶ月（推奨・速い）'],[24,'直近24ヶ月'],[36,'直近36ヶ月'],[0,'全期間（重い）']].map(([m,l])=>`<option value="${m}" ${monthsWindow()===m?'selected':''}>${l}</option>`).join('')}
     </select>
     <div id="cn-msg" style="font-size:12px;margin:4px 0"></div>
     <div class="modal-btns">

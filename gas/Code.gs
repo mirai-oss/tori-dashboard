@@ -217,17 +217,55 @@ var KEEP_COLUMNS = {
   deposit: ['店舗名', '店舗', '日付', '営業日', '入金日', '入金額', '入金合計', '入金'],
   review:  ['取得日', '日付', '店舗名', '店舗', '累計', '件数', '平均星', '星', '評価', '前回比']
 };
-function pruneColumns(vals, key) {
+// 残す列のインデックスを求める（見つからなければ全列）
+function keepColumnIdx(header, key) {
   var keep = KEEP_COLUMNS[key];
-  if (!keep || vals.length < 1) return vals;
-  var header = vals[0], idx = [];
-  for (var c = 0; c < header.length; c++) {
-    var h = String(header[c]);
-    for (var j = 0; j < keep.length; j++) { if (h.indexOf(keep[j]) >= 0) { idx.push(c); break; } }
+  if (!keep) { var all = []; for (var c = 0; c < header.length; c++) all.push(c); return all; }
+  var idx = [];
+  for (var c2 = 0; c2 < header.length; c2++) {
+    var h = String(header[c2]);
+    for (var j = 0; j < keep.length; j++) { if (h.indexOf(keep[j]) >= 0) { idx.push(c2); break; } }
   }
-  if (idx.length === 0) return vals; // 何も一致しなければ従来どおり全列
+  if (idx.length === 0) { var all2 = []; for (var c3 = 0; c3 < header.length; c3++) all2.push(c3); return all2; }
+  return idx;
+}
+
+// 【高速版】1回の読み込みで「必要列だけ・期間内だけ・日付を文字列化」までまとめて行う。
+// 以前は sheetValues→filterRecent→pruneColumns と全データを3回なめていたのを1回に集約。
+function readSheet(sh, months, key) {
+  var lr = sh.getLastRow(), lc = sh.getLastColumn();
+  if (lr < 1 || lc < 1) return [];
+  var vals = sh.getRange(1, 1, lr, lc).getValues();
+  var header = vals[0];
+  var keepIdx = keepColumnIdx(header, key);
+  // 日付列（絞り込み用）
+  var di = -1, dkeys = ['日付', '営業日', '取得日', '勤務日', '入金日', '年月日'];
+  for (var c = 0; c < lc && di < 0; c++) {
+    for (var k = 0; k < dkeys.length; k++) { if (String(header[c]).indexOf(dkeys[k]) >= 0) { di = c; break; } }
+  }
+  var ct = null;
+  if (months && months > 0 && di >= 0) { var co = new Date(); co.setMonth(co.getMonth() - months); ct = co.getTime(); }
+  var tz = Session.getScriptTimeZone() || 'Asia/Tokyo';
   var out = [];
-  for (var r = 0; r < vals.length; r++) { var row = []; for (var m = 0; m < idx.length; m++) row.push(vals[r][idx[m]]); out.push(row); }
+  // ヘッダー行
+  var hrow = []; for (var m0 = 0; m0 < keepIdx.length; m0++) hrow.push(header[keepIdx[m0]]);
+  out.push(hrow);
+  for (var r = 1; r < vals.length; r++) {
+    var row = vals[r];
+    if (ct !== null) {                    // 期間外は捨てる
+      var dv = row[di], t;
+      if (dv instanceof Date) t = new Date(dv.getFullYear(), dv.getMonth(), dv.getDate()).getTime();
+      else { var pp = String(dv).replace(/-/g, '/').split('/'); t = (pp.length >= 3) ? new Date(+pp[0], +pp[1] - 1, +pp[2]).getTime() : NaN; }
+      if (!isNaN(t) && t < ct) continue;
+    }
+    var o = [];
+    for (var m = 0; m < keepIdx.length; m++) {
+      var v = row[keepIdx[m]];
+      if (v instanceof Date) v = Utilities.formatDate(v, tz, 'yyyy/MM/dd');
+      o.push(v);
+    }
+    out.push(o);
+  }
   return out;
 }
 
@@ -243,33 +281,15 @@ function getData(p, session) {
     if (only && only.indexOf(key) < 0) continue;
     if (except && except.indexOf(key) >= 0) continue;
     var sh = ss.getSheetByName(list[i].name);
-    if (sh) sheets[key] = pruneColumns(filterRecent(sheetValues(sh), months), key);
+    if (sh) sheets[key] = readSheet(sh, months, key);
   }
+  // version は重い Drive 呼び出しを含むので data では返さない（クライアントは version アクションで別途取得）
   return {
     ok: true,
     updated: new Date().toISOString(),
-    version: dataVersion(),
     account: session,
     sheets: sheets
   };
-}
-
-// 日付列があるシートは直近 months ヶ月ぶんに絞る（転送量・描画を軽くする）
-function filterRecent(vals, months) {
-  if (!months || months <= 0 || vals.length < 2) return vals;
-  var header = vals[0], di = -1, keys = ['日付', '営業日', '取得日', '勤務日', '入金日', '年月日'];
-  for (var c = 0; c < header.length && di < 0; c++) {
-    for (var k = 0; k < keys.length; k++) { if (String(header[c]).indexOf(keys[k]) >= 0) { di = c; break; } }
-  }
-  if (di < 0) return vals; // 日付列なし → そのまま
-  var cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - months); var ct = cutoff.getTime();
-  var out = [header];
-  for (var i = 1; i < vals.length; i++) {
-    var p = String(vals[i][di]).replace(/-/g, '/').split('/');
-    if (p.length >= 3) { var t = new Date(+p[0], +p[1] - 1, +p[2]).getTime(); if (!isNaN(t) && t < ct) continue; }
-    out.push(vals[i]);
-  }
-  return out;
 }
 
 // 変更検知用の軽量な署名（全データを読まずに作る）
@@ -283,21 +303,6 @@ function dataVersion() {
   var v = parts.join('|');
   try { v += '@' + DriveApp.getFileById(ss.getId()).getLastUpdated().getTime(); } catch (e) {} // 既存行の編集も検知（Drive権限があれば）
   return v;
-}
-
-function sheetValues(sh) {
-  var lr = sh.getLastRow(), lc = sh.getLastColumn();
-  if (lr < 1 || lc < 1) return [];
-  var vals = sh.getRange(1, 1, lr, lc).getValues();
-  var tz = Session.getScriptTimeZone() || 'Asia/Tokyo';
-  // 日付セルは "yyyy/MM/dd" 文字列に統一して返す
-  for (var r = 0; r < vals.length; r++) {
-    for (var c = 0; c < vals[r].length; c++) {
-      var v = vals[r][c];
-      if (v instanceof Date) vals[r][c] = Utilities.formatDate(v, tz, 'yyyy/MM/dd');
-    }
-  }
-  return vals;
 }
 
 // ================== アカウント管理（社長・本部のみ） ==================
