@@ -41,18 +41,19 @@ const REVIEW_PARENT = (()=>{ const m={}; Object.keys(REVIEW_CHILDREN).forEach(p=
 // ある親店舗に表示すべき口コミ店舗名（親自身＋子）
 function reviewNamesFor(parent){ return [parent].concat(REVIEW_CHILDREN[parent]||[]); }
 
-// 広告DBの店舗名 → 売上ダッシュボード(分析_日別店舗)の店舗名 の対応表。
-// 自動照合(スペース違い等)で拾えない場合だけ、ここに手動で追記してください。例: '鳥一代本店': '鳥一代 本店'
+// 広告DBの店舗名 → 売上ダッシュボード(分析_日別店舗)の店舗名 のコード内対応表（通常は使わない）。
+// 対応表は基本スプレッドシートの「DB_店舗名対応」タブで管理します（D.storeAlias）。
 const AD_STORE_ALIAS = {
 };
 const _norm = (s)=>String(s==null?'':s).replace(/[\s　]/g,'').toLowerCase();
 // 広告DB等の店舗名を、売上側の正式な店舗名に解決する（見つからなければ null）
+// 優先順: スプレッドシートの対応表(D.storeAlias) → コード内対応表 → 完全一致 → スペース差 → 部分一致
 function resolveStore(name){
   if(!name) return null;
-  if(AD_STORE_ALIAS[name]) return AD_STORE_ALIAS[name];
+  const target = (D.storeAlias&&D.storeAlias[name]) || AD_STORE_ALIAS[name] || name;
   const all=allStores();
-  if(all.includes(name)) return name;                 // 完全一致
-  const nn=_norm(name);
+  if(all.includes(target)) return target;             // 完全一致（対応表の指定先も含む）
+  const nn=_norm(target);
   let hit=all.find(s=>_norm(s)===nn);                  // スペース・全半角の違いを無視
   if(hit) return hit;
   hit=all.find(s=>{ const ns=_norm(s); return ns.length>=2 && (ns.includes(nn)||nn.includes(ns)); }); // 部分一致
@@ -75,7 +76,7 @@ const S = {
   aiQ:'', aiResult:null, dataVersion:'',
   accounts:null, accErr:'', modal:null, loginErr:'',
 };
-const D = { daily:[], media:[], deposit:[], review:[], ad:[], extra:{}, refDate:null, maxDate:null };
+const D = { daily:[], media:[], deposit:[], review:[], ad:[], extra:{}, storeAlias:{}, refDate:null, maxDate:null };
 let EXPORT = [];      // 現在タブのCSVエクスポート対象 [{title,headers,rows}]
 let pollTimer = null;
 
@@ -217,8 +218,28 @@ function ingestAd(rows){
   if(!recs.length){ D.diag['広告']='0件'+(dateSkipped>0?'（'+dateSkipped+'行あるが日付/年月列を読めていません）':'（データ行がありません）'); return false; }
   D.ad=recs; D.diag['広告']='OK '+recs.length+'件'+(useConfirm?'（確認済みのみ）':''); return true;
 }
+// 店舗名対応表シート（左＝広告等の店舗名 / 右＝売上側の正式な店舗名）を取り込む
+const isStoreMapKey=(k)=>/店舗名対応|店舗マッピング|店舗名変換|店舗対応|storemap|storealias/i.test(String(k));
+function ingestStoreMap(rows){
+  const map={};
+  if(!Array.isArray(rows)||rows.length<1) return map;
+  let start=0;
+  const h0=(rows[0]||[]).map(x=>String(x==null?'':x).trim());
+  // 1行目が見出しっぽければスキップ
+  if(h0.some(c=>/店舗|別名|正式|広告|売上|対応|変換|名/.test(c)) && !h0.join('').match(/[0-9]{3,}/)){
+    // 列の特定（左＝別名/広告、右＝正式/売上）。見つからなければ 0,1 列
+    let fi=h0.findIndex(c=>/広告|別名|旧|表記|入力|元|マイビジ|変換前|左/.test(c));
+    let ti=h0.findIndex(c=>/売上|正式|統一|ダッシュ|分析|正|新|変換後|右/.test(c));
+    if(fi<0)fi=0; if(ti<0||ti===fi)ti=fi===0?1:0;
+    for(let i=1;i<rows.length;i++){ const r=rows[i]||[]; const f=String(r[fi]||'').trim(), t=String(r[ti]||'').trim(); if(f&&t) map[f]=t; }
+    return map;
+  }
+  // 見出し無し＝1列目→2列目
+  for(let i=0;i<rows.length;i++){ const r=rows[i]||[]; const f=String(r[0]||'').trim(), t=String(r[1]||'').trim(); if(f&&t) map[f]=t; }
+  return map;
+}
 function ingestSheets(sheets, partial){
-  if(!partial){ D.extra={}; D.diag={}; D.receivedKeys=Object.keys(sheets); D.ad=[]; D.adSrc=''; }  // 広告はフル受信のたびに入れ替え（サンプル残留を防ぐ）
+  if(!partial){ D.extra={}; D.diag={}; D.receivedKeys=Object.keys(sheets); D.ad=[]; D.adSrc=''; D.storeAlias={}; }  // 広告・対応表はフル受信のたびに入れ替え
   else { D.receivedKeys=(D.receivedKeys||[]).concat(Object.keys(sheets)); }
   const known=['daily','media','deposit','review','ad','広告'];
   if(!partial){ known.forEach(k=>{ if(!(k in sheets)) D.diag[k]='シート未受信（接続設定のシート名を確認）'; }); }
@@ -230,6 +251,7 @@ function ingestSheets(sheets, partial){
     else if(key==='deposit') ingestDeposit(rows);
     else if(key==='review') ingestReview(rows);
     else if(key==='ad'||key==='広告'){ if(ingestAd(rows)) D.adSrc='sheet'; }
+    else if(isStoreMapKey(key)){ D.storeAlias=ingestStoreMap(rows); D.diag[key]='OK '+Object.keys(D.storeAlias).length+'件の対応'; }
     else D.extra[key]=rows;
   }
 }
@@ -1223,7 +1245,8 @@ function viewAd(){
     <div class="scroll-x"><table class="tbl"><thead><tr><th>広告DBの店舗名</th><th>広告費（当月）</th></tr></thead><tbody>`;
     umKeys.sort((a2,b2)=>cur.unmatched[b2]-cur.unmatched[a2]).forEach(nm=>{ h+=`<tr><td>${esc(nm||'（空欄）')}</td><td>${yen(cur.unmatched[nm])}</td></tr>`; });
     h+=`</tbody></table></div>
-    <div class="note-box" style="margin-top:12px">対処：広告DB(DB_広告)の店舗名を、売上側（分析_日別店舗）と同じ表記に揃えるのが確実です。表記を変えられない場合は <code>app.js</code> の <code>AD_STORE_ALIAS</code> に「'広告DBの店舗名':'売上側の店舗名'」を追記すれば紐づきます。<br>※スペースや全角/半角の違いは自動で吸収済みです。それでも出る＝完全に別表記の店舗名です。</div></div>`;
+    <div class="note-box" style="margin-top:12px"><b>対応表で紐づけできます（コード不要）。</b>スプレッドシートに <code>DB_店舗名対応</code> というタブを作り、<b>A列＝広告の店舗名</b>（上の表の名前をコピー）／<b>B列＝売上側の店舗名</b>（分析_日別店舗と同じ表記）を入力。1行目は見出し（例 <code>広告の店舗名 / 売上の店舗名</code>）でOK。保存して同期（最大1分／「↻更新」）すると自動で紐づきます。<br><span style="color:var(--mut2)">※スペース・全角/半角の違いは自動吸収済み。ここに残る＝完全に別表記の店舗名だけです。広告DB側の表記を売上側に直接揃えてもOK。</span></div></div>`;
+    EXPORT.push({ title:'未突合の広告店舗名（要対応表）', headers:['広告DBの店舗名','広告費'], rows:umKeys.map(nm=>[nm,Math.round(cur.unmatched[nm])]) });
   }
   // 媒体別
   const medKeys=Object.keys(cur.byMedia);
