@@ -93,7 +93,7 @@ const mdw = (d)=>(d.getMonth()+1)+'/'+d.getDate()+'('+WD[d.getDay()]+')';
 const compact = (v)=>{ v=v||0; if(v>=1e8)return (v/1e8).toFixed(2)+'億'; if(v>=1e4)return Math.round(v/1e4)+'万'; return Math.round(v).toLocaleString('ja-JP'); };
 const parseDateStr = (ds)=>{ const p=String(ds).replace(/-/g,'/').split('/'); if(p.length<3)return 0; const Y=+p[0],M=+p[1],Dd=+p[2]; if(!Y||!M||!Dd)return 0; return new Date(Y,M-1,Dd).getTime(); };
 // 「2025/01」「2025-1」「2025年1月」など年月だけの表記は月初日として解釈（広告費DB連携用）
-const parseYm = (ds)=>{ const m=String(ds==null?'':ds).trim().match(/^(\d{4})\s*[年\/\-\.]\s*(\d{1,2})/); if(!m)return 0; const M=+m[2]; if(M<1||M>12)return 0; return new Date(+m[1],M-1,1).getTime(); };
+const parseYm = (ds)=>{ const s=String(ds==null?'':ds).trim(); let m=s.match(/^(\d{4})\s*[年\/\-\.]\s*(\d{1,2})/); if(!m)m=s.match(/^(\d{4})(\d{2})$/); if(!m)return 0; const M=+m[2]; if(M<1||M>12)return 0; return new Date(+m[1],M-1,1).getTime(); };
 
 function toast(msg){ const t=$('toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(t._tm); t._tm=setTimeout(()=>t.classList.remove('show'),2600); }
 
