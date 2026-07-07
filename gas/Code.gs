@@ -123,6 +123,25 @@ function setupIfNeeded() {
     adSh.setFrozenRows(1);
     adSh.setColumnWidths(1, 6, 120);
   }
+
+  // PL経費入力シート（DB_PL）。無ければテンプレートを自動作成。
+  // 1行＝年月×店舗×費目。売上/原価/人件費/広告費は自動連携されるため、ここには「それ以外の経費」を入力する。
+  var plSh = ss.getSheetByName('DB_PL');
+  if (!plSh) {
+    plSh = ss.insertSheet('DB_PL');
+    plSh.getRange(1, 1, 1, 5).setValues([['年月', '店舗名', '費目', '金額', 'メモ']])
+      .setFontWeight('bold').setBackground('#efe9dd');
+    plSh.getRange('A1').setNote(
+      '月次経費を1行ずつ入力してください。\n' +
+      '・年月: 2026/07 の形式（2026/07/01でも可）\n' +
+      '・店舗名: 分析_日別店舗と同じ表記（空欄＝全社共通経費）\n' +
+      '・費目: 家賃／水道光熱費／消耗品費／支払手数料／通信費／リース料／修繕費／保険料／減価償却費／本部費／雑費 など自由\n' +
+      '・金額: 数値（円）\n' +
+      '※売上・原価（仕入）・人件費・広告費は自動連携されるため入力不要です。'
+    );
+    plSh.setFrozenRows(1);
+    plSh.setColumnWidths(1, 5, 130);
+  }
 }
 
 // ================== 認証 ==================

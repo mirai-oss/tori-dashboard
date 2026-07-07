@@ -23,12 +23,12 @@ const PALETTE = ['#3d5163','#b5502f','#5f7052','#c9a86a','#7d8b6f','#2a6f8f','#9
 const C_NOW='#3d5163', C_PREV='#c9b7a0', C_MID='#7d8b6f';
 const LS = { api:'toriApiUrl', sess:'toriSession', acc:'toriDemoAccounts', poll:'toriPollSec', months:'toriMonths' };
 const ROLE_TABS = {
-  '社長':       ['dash','analysis','deposit','ad','review','ai','accounts'],
-  '本部':       ['dash','analysis','deposit','ad','review','ai','accounts'],
-  'マネージャー':['dash','analysis','deposit','ad','review','ai'],
-  '店舗':       ['dash','analysis','deposit','review','ai'],
+  '社長':       ['dash','analysis','pl','deposit','ad','review','ai','accounts'],
+  '本部':       ['dash','analysis','pl','deposit','ad','review','ai','accounts'],
+  'マネージャー':['dash','analysis','pl','deposit','ad','review','ai'],
+  '店舗':       ['dash','analysis','pl','deposit','review','ai'],
 };
-const TAB_LABELS = { dash:'ダッシュボード', analysis:'推移分析', deposit:'入金管理', ad:'広告管理', review:'口コミ', ai:'AI検索', accounts:'アカウント管理' };
+const TAB_LABELS = { dash:'ダッシュボード', analysis:'推移分析', pl:'PL（損益）', deposit:'入金管理', ad:'広告管理', review:'口コミ', ai:'AI検索', accounts:'アカウント管理' };
 // 口コミ集約：同じ実店舗にぶら下がる別名店舗（Googleマイビジネスが分かれているケース）
 // 親店舗（=分析_日別店舗の店舗名）に、口コミ上の子店舗名をぶら下げる
 const REVIEW_CHILDREN = {
@@ -98,12 +98,12 @@ const S = {
   auth:null, connState:'demo', lastSync:'', loading:false,
   tab:'dash', period:'month', store:'all',
   pDay:'', pMonth:'', pYear:'', pWeekIdx:null, cStart:'', cEnd:'',
-  depMonth:'', adMonth:'',
+  depMonth:'', adMonth:'', plMonth:'',
   aMetric:'sales', aGran:'day', aBreak:'total', aRange:'30', aYoY:true,
   aiQ:'', aiResult:null, dataVersion:'',
   accounts:null, accErr:'', modal:null, loginErr:'',
 };
-const D = { daily:[], media:[], deposit:[], review:[], ad:[], extra:{}, storeAlias:{}, storeParent:{}, refDate:null, maxDate:null };
+const D = { daily:[], media:[], deposit:[], review:[], ad:[], pl:[], extra:{}, storeAlias:{}, storeParent:{}, refDate:null, maxDate:null };
 let EXPORT = [];      // 現在タブのCSVエクスポート対象 [{title,headers,rows}]
 let pollTimer = null;
 
@@ -245,6 +245,32 @@ function ingestAd(rows){
   if(!recs.length){ D.diag['広告']='0件'+(dateSkipped>0?'（'+dateSkipped+'行あるが日付/年月列を読めていません）':'（データ行がありません）'); return false; }
   D.ad=recs; D.diag['広告']='OK '+recs.length+'件'+(useConfirm?'（確認済みのみ）':''); return true;
 }
+// PL経費シート（DB_PL: 年月×店舗×費目×金額の縦持ち）を取り込む
+const isPLKey=(k)=>/^pl$|^ＰＬ$|損益|pl経費|経費db/i.test(String(k).trim());
+function ingestPL(rows){
+  // 見出し行を検出（費目/科目 ＋ 年月/日付 ＋ 金額）。タイトル行が上にあってもズレない
+  let hi=-1;
+  for(let i=0;i<Math.min(rows.length,12);i++){
+    const line=rows[i].map(x=>String(x==null?'':x)).join(',');
+    if(/費目|科目|項目/.test(line) && /年月|日付/.test(line) && /金額|費用|円/.test(line)){ hi=i; break; }
+  }
+  if(hi<0) hi=0;
+  const H=rows[hi].map(h=>String(h).trim());
+  const iD=colAny(H,['年月','日付','年月日']), iS=colAny(H,['店舗名','店舗']), iI=colAny(H,['費目','科目','項目']);
+  const iA=colAny(H,['金額','費用','経費']);
+  if(iD<0||iI<0||iA<0){ D.diag['PL']='列が見つかりません（必要: 年月・費目・金額）／見出し行: '+H.filter(Boolean).join('|'); return false; }
+  const recs=[]; let dateSkipped=0;
+  for(let i=hi+1;i<rows.length;i++){
+    const c=rows[i];
+    const item=String(c[iI]||'').trim(); if(!item) continue;
+    const t0=parseYm(c[iD])||parseDateStr(c[iD]);
+    if(!t0){ dateSkipped++; continue; }
+    const d=new Date(t0);
+    recs.push({ store:String(iS>=0?c[iS]||'':'').trim(), t:new Date(d.getFullYear(),d.getMonth(),1).getTime(), item, amount:num(c[iA]) });
+  }
+  if(!recs.length){ D.diag['PL']='0件'+(dateSkipped>0?'（'+dateSkipped+'行あるが年月を読めていません）':'（データ行がありません）'); return false; }
+  D.pl=recs; D.diag['PL']='OK '+recs.length+'件'; return true;
+}
 // 店舗名対応表シート（左＝広告等の店舗名 / 右＝売上側の正式な店舗名）を取り込む
 const isStoreMapKey=(k)=>/店舗名対応|店舗マッピング|店舗名変換|店舗対応|storemap|storealias/i.test(String(k));
 function ingestStoreMap(rows){
@@ -282,7 +308,7 @@ function ingestStoreParent(rows){
   return map;
 }
 function ingestSheets(sheets, partial){
-  if(!partial){ D.extra={}; D.diag={}; D.receivedKeys=Object.keys(sheets); D.ad=[]; D.adSrc=''; D.storeAlias={}; D.storeParent={}; }  // 広告・対応表・親子はフル受信のたびに入れ替え
+  if(!partial){ D.extra={}; D.diag={}; D.receivedKeys=Object.keys(sheets); D.ad=[]; D.adSrc=''; D.pl=[]; D.storeAlias={}; D.storeParent={}; }  // 広告・PL・対応表・親子はフル受信のたびに入れ替え
   else { D.receivedKeys=(D.receivedKeys||[]).concat(Object.keys(sheets)); }
   const known=['daily','media','deposit','review','ad','広告'];
   if(!partial){ known.forEach(k=>{ if(!(k in sheets)) D.diag[k]='シート未受信（接続設定のシート名を確認）'; }); }
@@ -294,6 +320,7 @@ function ingestSheets(sheets, partial){
     else if(key==='deposit') ingestDeposit(rows);
     else if(key==='review') ingestReview(rows);
     else if(key==='ad'||key==='広告'){ if(ingestAd(rows)) D.adSrc='sheet'; }
+    else if(isPLKey(key)) ingestPL(rows);
     else if(isStoreParentKey(key)){ D.storeParent=ingestStoreParent(rows); D.diag[key]='OK '+Object.keys(D.storeParent).length+'件の親子'; }
     else if(isStoreMapKey(key)){ D.storeAlias=ingestStoreMap(rows); D.diag[key]='OK '+Object.keys(D.storeAlias).length+'件の対応'; }
     else D.extra[key]=rows;
@@ -601,6 +628,7 @@ function render(){
   if(S.tab==='dash') body=viewDash();
   else if(S.tab==='analysis') body=viewAnalysis();
   else if(S.tab==='deposit') body=viewDeposit();
+  else if(S.tab==='pl') body=viewPL();
   else if(S.tab==='ad') body=viewAd();
   else if(S.tab==='review') body=viewReview();
   else if(S.tab==='ai') body=viewAI();
@@ -1390,6 +1418,148 @@ function extraSheetsHtml(){
   return h;
 }
 
+/* ---------------- PL（損益） ---------------- */
+// 対象期間・対象店舗のPL経費（DB_PL）を費目別に集計。店舗名は売上側へ自動照合、子ブランドは親に合算。
+// 店舗名が空欄の行＝全社共通経費（全店/合算表示のときのみ算入）
+function plAgg(scopeSet, selN, a, b){
+  const by={}, unmatched={};
+  let total=0, common=0;
+  const rc={};
+  for(const r of D.pl){
+    if(r.t<a||r.t>b) continue;
+    if(!r.store){
+      if(selN) continue;                       // 店舗選択時は共通経費を含めない
+      by[r.item]=(by[r.item]||0)+r.amount; total+=r.amount; common+=r.amount;
+      continue;
+    }
+    const res=(r.store in rc)?rc[r.store]:(rc[r.store]=resolveStoreEx(r.store));
+    if(!res){ unmatched[r.store]=(unmatched[r.store]||0)+r.amount; continue; }
+    if(!scopeSet.has(res.parent)) continue;
+    by[r.item]=(by[r.item]||0)+r.amount; total+=r.amount;
+  }
+  return { by, total, common, unmatched };
+}
+function plMonthDate(){
+  if(S.plMonth){ const p=S.plMonth.split('-'); return new Date(+p[0],+p[1]-1,1); }
+  const ref=D.refDate||new Date(); return new Date(ref.getFullYear(),ref.getMonth(),1);
+}
+function viewPL(){
+  const sc=scopeStores(); const selN=selStoreName();
+  const scopeSet=new Set(selN?[selN]:sc);
+  const m0=plMonthDate();
+  const y=m0.getFullYear(), m=m0.getMonth();
+  const mS=dayMs(new Date(y,m,1)), mE=dayMs(new Date(y,m+1,0));
+  const pS=dayMs(new Date(y,m-1,1)), pE=dayMs(new Date(y,m,0));            // 前月
+  const yS=dayMs(new Date(y-1,m,1)), yE=dayMs(new Date(y-1,m+1,0));        // 前年同月
+  const mLabel=y+'年 '+(m+1)+'月';
+  const isAll=!selN&&sc.length===allStores().length;
+  const scopeLabel=selN||(isAll?'全店合算':'担当店舗合算');
+
+  // 自動項目（売上・原価・人件費・広告）
+  const cur=stat(scopeSet,mS,mE,null), prv=stat(scopeSet,pS,pE,null), lyr=stat(scopeSet,yS,yE,null);
+  const adCur=adAgg(scopeSet,mS,mE).ad, adPrv=adAgg(scopeSet,pS,pE).ad, adLyr=adAgg(scopeSet,yS,yE).ad;
+  // 手入力経費（DB_PL）
+  const exCur=plAgg(scopeSet,selN,mS,mE), exPrv=plAgg(scopeSet,selN,pS,pE), exLyr=plAgg(scopeSet,selN,yS,yE);
+
+  const gross=cur.sales-cur.cost;
+  const sga=cur.labor+adCur+exCur.total;                                    // 販管費計（人件費＋広告＋経費）
+  const op=cur.sales-cur.cost-sga;                                          // 営業利益
+  const opPrv=prv.sales-prv.cost-(prv.labor+adPrv+exPrv.total);
+  const opLyr=lyr.sales-lyr.cost-(lyr.labor+adLyr+exLyr.total);
+  const pct=(n)=>cur.sales>0?(n/cur.sales*100).toFixed(1)+'%':'—';
+  const mom=(c,p)=>{ if(!(Math.abs(p)>0)) return {t:'前月 —',cls:'mut'}; const d2=(c-p)/Math.abs(p)*100; return { t:'前月比 '+(d2>=0?'+':'▲')+Math.abs(d2).toFixed(1)+'%', cls:d2>=0?'up':'dn' }; };
+
+  let h=`<div class="ctrl-bar no-print"><div class="mini-nav">
+    <button onclick="App.plNav(-1)">‹</button><span class="lbl">${mLabel}</span><button onclick="App.plNav(1)">›</button>
+    <button onclick="App.plNav(0)" style="font-size:11px;color:#8c8375">今月</button></div>
+    <span class="period-label">月次損益（${mLabel} ／ ${esc(scopeLabel)}）</span></div>`+storeSegHtml();
+
+  // KPIカード
+  h+=`<div class="kpi-grid">
+    <div class="kpi"><div class="lb">売上高</div><div class="vl">${yen(cur.sales)}</div><div class="yy ${mom(cur.sales,prv.sales).cls}">${mom(cur.sales,prv.sales).t}</div></div>
+    <div class="kpi"><div class="lb">売上総利益（粗利）</div><div class="vl">${yen(gross)}</div><div class="yy">${pct(gross)}</div></div>
+    <div class="kpi"><div class="lb">販管費計（人件費＋広告＋経費）</div><div class="vl">${yen(sga)}</div><div class="yy">${pct(sga)}</div></div>
+    <div class="kpi"><div class="lb">営業利益</div><div class="vl" style="color:${op>=0?'#4c7d5c':'#b5502f'}">${yen(op)}</div><div class="yy ${mom(op,opPrv).cls}">${pct(op)} ／ ${mom(op,opPrv).t}</div></div>
+  </div>`;
+
+  // DB_PL未接続/当月データなしの案内
+  const plReceived=(D.receivedKeys||[]).some(k=>isPLKey(k));
+  if(!D.pl.length){
+    const diag=D.diag&&D.diag['PL'];
+    h+=`<div class="note-box no-print" style="${plReceived&&diag&&diag.indexOf('OK')!==0?'border-color:#e8cfc2;background:#faf0ec':''}">
+      ${plReceived&&diag&&diag.indexOf('OK')!==0?`<b style="color:#b5502f">⚠ 「DB_PL」シートは受信しましたが取り込めていません。</b> 取込結果：${esc(diag)}<br>`:
+        `<b>経費（家賃・水光熱費など）はまだ未接続です。</b>下のPLは自動取得できる項目（売上・原価・人件費・広告費）のみで計算しています。<br>`}
+      スプレッドシートに <code>DB_PL</code> というタブを作り、1行目に <code>年月 / 店舗名 / 費目 / 金額 / メモ</code>、2行目以降に
+      <code>2026/07 ｜ 鳥一代 本店 ｜ 家賃 ｜ 450000</code> のように月次経費を入力すると、自動でこのPLに反映されます（費目は自由。店舗名空欄＝全社共通経費）。</div>`;
+  } else if(!Object.keys(exCur.by).length){
+    h+=`<div class="note-box no-print">${mLabel}分の経費（DB_PL）はまだ入力されていません。売上・原価・人件費・広告費のみで計算しています。</div>`;
+  }
+
+  // ---- PL表 ----
+  const rows=[];   // {name, cur, prv, lyr, indent, bold, isRate}
+  rows.push({name:'売上高', c:cur.sales, p:prv.sales, l:lyr.sales, bold:true});
+  rows.push({name:'売上原価（仕入）', c:-cur.cost, p:-prv.cost, l:-lyr.cost});
+  rows.push({name:'売上総利益（粗利）', c:gross, p:prv.sales-prv.cost, l:lyr.sales-lyr.cost, bold:true, line:true});
+  rows.push({name:'人件費（社員）', c:-cur.emp, p:-prv.emp, l:-lyr.emp, indent:true});
+  rows.push({name:'人件費（アルバイト）', c:-cur.pa, p:-prv.pa, l:-lyr.pa, indent:true});
+  rows.push({name:'広告宣伝費', c:-adCur, p:-adPrv, l:-adLyr, indent:true});
+  const items=Object.keys(exCur.by).sort((a2,b2)=>exCur.by[b2]-exCur.by[a2]);
+  items.forEach(it=>{ rows.push({name:it, c:-(exCur.by[it]||0), p:-(exPrv.by[it]||0), l:-(exLyr.by[it]||0), indent:true}); });
+  rows.push({name:'販管費計', c:-sga, p:-(prv.labor+adPrv+exPrv.total), l:-(lyr.labor+adLyr+exLyr.total), bold:true, line:true});
+  rows.push({name:'営業利益', c:op, p:opPrv, l:opLyr, bold:true, line:true, profit:true});
+
+  h+=`<div class="panel"><div class="panel-head"><div><h3>月次PL（${mLabel} ／ ${esc(scopeLabel)}）</h3>
+    <div class="sub">売上・原価・人件費＝分析_日別店舗 ／ 広告費＝DB_広告 ／ その他経費＝DB_PL（自動連携）</div></div></div>
+  <div class="scroll-x"><table class="tbl"><thead><tr><th>項目</th><th>当月</th><th>売上比</th><th>前月</th><th>前年同月</th><th>前月比</th></tr></thead><tbody>`;
+  const expP=[];
+  rows.forEach(r2=>{
+    const v=(n)=>n===0?'—':(n<0?'▲'+yen(-n).slice(1):yen(n));
+    const momr=mom(r2.c,r2.p);
+    const color=r2.profit?(r2.c>=0?'color:#4c7d5c;font-weight:700':'color:#b5502f;font-weight:700'):'';
+    h+=`<tr class="${r2.line?'total':''}"><td style="${r2.indent?'padding-left:24px;':''}${r2.bold?'font-weight:700':''}">${esc(r2.name)}</td>
+      <td style="${color}">${v(r2.c)}</td><td class="mut">${pct(Math.abs(r2.c))}</td>
+      <td class="mut">${v(r2.p)}</td><td class="mut">${v(r2.l)}</td>
+      <td class="${momr.cls==='up'?'pos':momr.cls==='dn'?'neg':'mut'}">${momr.t.replace('前月比 ','')}</td></tr>`;
+    expP.push([r2.name,Math.round(r2.c),cur.sales>0?(Math.abs(r2.c)/cur.sales*100).toFixed(1)+'%':'',Math.round(r2.p),Math.round(r2.l)]);
+  });
+  h+=`</tbody></table></div></div>`;
+  EXPORT.push({ title:'月次PL（'+mLabel+'／'+scopeLabel+'）', headers:['項目','当月','売上比','前月','前年同月'], rows:expP });
+
+  // ---- 店舗別PL比較（全店/合算表示のときのみ） ----
+  if(!selN&&sc.length>1){
+    h+=`<div class="panel"><div class="panel-head"><div><h3>店舗別 損益比較（${mLabel}）</h3><div class="sub">行クリックで店舗のPLへ ／ 共通経費（店舗名空欄）は含みません</div></div></div>
+    <div class="scroll-x"><table class="tbl"><thead><tr><th>店舗</th><th>売上高</th><th>粗利</th><th>人件費</th><th>広告費</th><th>経費</th><th>営業利益</th><th>利益率</th></tr></thead><tbody>`;
+    const expC=[]; let tS=0,tG=0,tL=0,tA=0,tE=0,tO=0;
+    sc.forEach(nm=>{
+      const s1=new Set([nm]);
+      const c1=stat(s1,mS,mE,null);
+      const a1=adAgg(s1,mS,mE).ad;
+      const e1=plAgg(s1,nm,mS,mE).total;
+      const g1=c1.sales-c1.cost, o1=g1-c1.labor-a1-e1;
+      tS+=c1.sales;tG+=g1;tL+=c1.labor;tA+=a1;tE+=e1;tO+=o1;
+      const orate=c1.sales>0?(o1/c1.sales*100).toFixed(1)+'%':'—';
+      h+=`<tr class="click" onclick="App.store(this.dataset.n)" data-n="${esc(nm)}"><td>${esc(nm)}</td><td>${yen(c1.sales)}</td><td>${yen(g1)}</td><td>${yen(c1.labor)}</td><td>${yen(a1)}</td><td>${yen(e1)}</td>
+        <td class="${o1>=0?'pos':'neg'}" style="font-weight:700">${o1<0?'▲'+yen(-o1).slice(1):yen(o1)}</td><td class="${o1>=0?'pos':'neg'}">${orate}</td></tr>`;
+      expC.push([nm,Math.round(c1.sales),Math.round(g1),Math.round(c1.labor),Math.round(a1),Math.round(e1),Math.round(o1),orate]);
+    });
+    h+=`<tr class="total"><td>合計</td><td>${yen(tS)}</td><td>${yen(tG)}</td><td>${yen(tL)}</td><td>${yen(tA)}</td><td>${yen(tE)}</td>
+      <td class="${tO>=0?'pos':'neg'}">${tO<0?'▲'+yen(-tO).slice(1):yen(tO)}</td><td>${tS>0?(tO/tS*100).toFixed(1)+'%':'—'}</td></tr>`;
+    h+=`</tbody></table></div></div>`;
+    EXPORT.push({ title:'店舗別損益比較（'+mLabel+'）', headers:['店舗','売上高','粗利','人件費','広告費','経費','営業利益','利益率'], rows:expC });
+  }
+
+  // ---- 未突合のPL店舗名 ----
+  const umKeys=Object.keys(exCur.unmatched);
+  if(umKeys.length){
+    h+=`<div class="panel"><div class="panel-head"><div><h3 style="color:#b5502f">⚠ 売上店舗と一致しなかったPL店舗名（${mLabel}）</h3>
+      <div class="sub">下の店舗名は売上側と一致せず、上のPLに含まれていません。DB_店舗名対応（統合）または DB_店舗親子（サブブランド）で紐づけできます</div></div></div>
+    <div class="scroll-x"><table class="tbl"><thead><tr><th>DB_PLの店舗名</th><th>金額（当月）</th></tr></thead><tbody>`;
+    umKeys.sort((a2,b2)=>exCur.unmatched[b2]-exCur.unmatched[a2]).forEach(nm=>{ h+=`<tr><td>${esc(nm)}</td><td>${yen(exCur.unmatched[nm])}</td></tr>`; });
+    h+=`</tbody></table></div></div>`;
+  }
+  return h;
+}
+
 /* ---------------- 口コミ ---------------- */
 function viewReview(){
   const sc=scopeStores(); const selName=selStoreName();
@@ -1688,6 +1858,13 @@ window.App = {
     const m0=S.adMonth?new Date(+S.adMonth.split('-')[0],+S.adMonth.split('-')[1]-1,1):new Date(ref.getFullYear(),ref.getMonth(),1);
     const n=new Date(m0.getFullYear(),m0.getMonth()+d,1);
     S.adMonth=n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0'); render();
+  },
+  plNav(d){
+    if(d===0){ S.plMonth=''; render(); return; }
+    const ref=D.refDate||new Date();
+    const m0=S.plMonth?new Date(+S.plMonth.split('-')[0],+S.plMonth.split('-')[1]-1,1):new Date(ref.getFullYear(),ref.getMonth(),1);
+    const n=new Date(m0.getFullYear(),m0.getMonth()+d,1);
+    S.plMonth=n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0'); render();
   },
   refresh(){ if(S.auth&&S.auth.token) fetchData(); else { loadSampleData(); render(); toast('サンプルデータを再読込しました（API未接続）'); } },
   csv: downloadCsv,
