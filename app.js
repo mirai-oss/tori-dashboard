@@ -1610,27 +1610,27 @@ function viewPL(){
       const p2=plAgg(scopeSet,selN,a2,b2);
       const ad2=adAgg(scopeSet,a2,b2).ad+p2.catTotal.A;
       const cost2=c2.cost+p2.catTotal.F, labor2=c2.labor+p2.catTotal.L;
-      const g2=c2.sales-cost2, e2=p2.catTotal.R+p2.catTotal.O;
+      const g2=c2.sales-cost2, rent2=p2.catTotal.R, oth2=p2.catTotal.O;
       mrows.push({ label:(multiYear?String(mCur.getFullYear()).slice(2)+'/':'')+(mCur.getMonth()+1)+'月',
-        sales:c2.sales, cost:cost2, gross:g2, labor:labor2, ad:ad2, exp:e2, op:g2-labor2-ad2-e2 });
+        sales:c2.sales, cost:cost2, gross:g2, labor:labor2, ad:ad2, rent:rent2, oth:oth2, op:g2-labor2-ad2-rent2-oth2 });
       mCur=new Date(mCur.getFullYear(),mCur.getMonth()+1,1);
     }
     h+=`<div class="panel"><div class="panel-head"><div><h3>月別損益（${mLabel} ／ ${esc(scopeLabel)}）</h3>
       <div class="sub">売上高〜営業利益を月ごとに表示（区分F/L/Aの手入力分も各月に合算）</div></div></div>
-    <div class="scroll-x"><table class="tbl"><thead><tr><th>月</th><th>売上高</th><th>原価(F)</th><th>粗利</th><th>人件費(L)</th><th>広告費(A)</th><th>家賃・他(R+O)</th><th>営業利益</th><th>利益率</th></tr></thead><tbody>`;
+    <div class="scroll-x"><table class="tbl"><thead><tr><th>月</th><th>売上高</th><th>原価(F)</th><th>粗利</th><th>人件費(L)</th><th>広告費(A)</th><th>家賃(R)</th><th>他(O)</th><th>営業利益</th><th>利益率</th></tr></thead><tbody>`;
     const expM=[];
     const vfmt=(n)=>n===0?'—':(n<0?'▲'+yen(-n).slice(1):yen(n));
     mrows.forEach(r2=>{
       const orate=r2.sales>0?(r2.op/r2.sales*100).toFixed(1)+'%':'—';
-      h+=`<tr><td>${esc(r2.label)}</td><td>${vfmt(r2.sales)}</td><td>${vfmt(r2.cost)}</td><td>${vfmt(r2.gross)}</td><td>${vfmt(r2.labor)}</td><td>${vfmt(r2.ad)}</td><td>${vfmt(r2.exp)}</td>
+      h+=`<tr><td>${esc(r2.label)}</td><td>${vfmt(r2.sales)}</td><td>${vfmt(r2.cost)}</td><td>${vfmt(r2.gross)}</td><td>${vfmt(r2.labor)}</td><td>${vfmt(r2.ad)}</td><td>${vfmt(r2.rent)}</td><td>${vfmt(r2.oth)}</td>
         <td class="${r2.op>=0?'pos':'neg'}" style="font-weight:700">${r2.op<0?'▲'+yen(-r2.op).slice(1):yen(r2.op)}</td><td class="${r2.op>=0?'pos':'neg'}">${orate}</td></tr>`;
-      expM.push([r2.label,Math.round(r2.sales),Math.round(r2.cost),Math.round(r2.gross),Math.round(r2.labor),Math.round(r2.ad),Math.round(r2.exp),Math.round(r2.op),orate]);
+      expM.push([r2.label,Math.round(r2.sales),Math.round(r2.cost),Math.round(r2.gross),Math.round(r2.labor),Math.round(r2.ad),Math.round(r2.rent),Math.round(r2.oth),Math.round(r2.op),orate]);
     });
-    const tt=mrows.reduce((o,r2)=>{ o.sales+=r2.sales;o.cost+=r2.cost;o.gross+=r2.gross;o.labor+=r2.labor;o.ad+=r2.ad;o.exp+=r2.exp;o.op+=r2.op; return o; },{sales:0,cost:0,gross:0,labor:0,ad:0,exp:0,op:0});
-    h+=`<tr class="total"><td>合計</td><td>${yen(tt.sales)}</td><td>${yen(tt.cost)}</td><td>${yen(tt.gross)}</td><td>${yen(tt.labor)}</td><td>${yen(tt.ad)}</td><td>${yen(tt.exp)}</td>
+    const tt=mrows.reduce((o,r2)=>{ o.sales+=r2.sales;o.cost+=r2.cost;o.gross+=r2.gross;o.labor+=r2.labor;o.ad+=r2.ad;o.rent+=r2.rent;o.oth+=r2.oth;o.op+=r2.op; return o; },{sales:0,cost:0,gross:0,labor:0,ad:0,rent:0,oth:0,op:0});
+    h+=`<tr class="total"><td>合計</td><td>${yen(tt.sales)}</td><td>${yen(tt.cost)}</td><td>${yen(tt.gross)}</td><td>${yen(tt.labor)}</td><td>${yen(tt.ad)}</td><td>${yen(tt.rent)}</td><td>${yen(tt.oth)}</td>
       <td class="${tt.op>=0?'pos':'neg'}">${tt.op<0?'▲'+yen(-tt.op).slice(1):yen(tt.op)}</td><td>${tt.sales>0?(tt.op/tt.sales*100).toFixed(1)+'%':'—'}</td></tr>`;
     h+=`</tbody></table></div></div>`;
-    EXPORT.push({ title:'月別損益（'+mLabel+'／'+scopeLabel+'）', headers:['月','売上高','原価(F)','粗利','人件費(L)','広告費(A)','家賃・他(R+O)','営業利益','利益率'], rows:expM });
+    EXPORT.push({ title:'月別損益（'+mLabel+'／'+scopeLabel+'）', headers:['月','売上高','原価(F)','粗利','人件費(L)','広告費(A)','家賃(R)','他(O)','営業利益','利益率'], rows:expM });
   }
 
   // ---- PL表（区分ごとにセクション表示: F=原価 / L=人件費 / A=広告 / R=家賃 / O=他） ----
