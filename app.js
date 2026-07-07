@@ -1035,6 +1035,8 @@ function viewAnalysis(){
 }
 
 /* ---------------- 入金管理 ---------------- */
+// 店舗名のゆらぎ（半角/全角スペース・全角英数など）を吸収して照合するための正規化
+function normStore(s){ return String(s==null?'':s).normalize('NFKC').replace(/[\s　]/g,'').toLowerCase(); }
 function depMonthDate(){
   if(S.depMonth){ const p=S.depMonth.split('-'); return new Date(+p[0],+p[1]-1,1); }
   const ref=D.refDate||new Date(); return new Date(ref.getFullYear(),ref.getMonth(),1);
@@ -1044,7 +1046,7 @@ function viewDeposit(){
   const m0=depMonthDate();
   const y=m0.getFullYear(), m=m0.getMonth(), lastDay=new Date(y,m+1,0).getDate();
   const mS=dayMs(new Date(y,m,1)), mE=dayMs(new Date(y,m,lastDay));
-  const targets=selName?[selName]:sc; const tSet=new Set(targets);
+  const targets=selName?[selName]:sc; const tSet=new Set(targets); const tKey=new Set(targets.map(normStore));
   const maxT=D.maxDate?dayMs(D.maxDate):Infinity;
 
   // 入金記録が始まった日より前の現金売上は未入金の対象にしない
@@ -1054,16 +1056,16 @@ function viewDeposit(){
 
   // 繰越（入金記録開始日〜月初前日の 現金売上−入金）
   let carry=0;
-  for(const r of D.daily){ if(tSet.has(r.store)&&r.t>=depStart&&r.t<mS) carry+=r.cash||0; }
-  for(const r of D.deposit){ if(tSet.has(r.store)&&r.t<mS) carry-=r.amount||0; }
+  for(const r of D.daily){ if(tKey.has(normStore(r.store))&&r.t>=depStart&&r.t<mS) carry+=r.cash||0; }
+  for(const r of D.deposit){ if(tKey.has(normStore(r.store))&&r.t<mS) carry-=r.amount||0; }
 
   // 日別集計
   const days=[]; let cum=carry, tC=0,tD=0;
   for(let d=1;d<=lastDay;d++){
     const t=dayMs(new Date(y,m,d));
     let cash=0,dep=0;
-    for(const r of D.daily){ if(tSet.has(r.store)&&r.t===t) cash+=r.cash||0; }
-    for(const r of D.deposit){ if(tSet.has(r.store)&&r.t===t) dep+=r.amount||0; }
+    for(const r of D.daily){ if(tKey.has(normStore(r.store))&&r.t===t) cash+=r.cash||0; }
+    for(const r of D.deposit){ if(tKey.has(normStore(r.store))&&r.t===t) dep+=r.amount||0; }
     const diff=cash-dep;
     const future=t>maxT;
     if(!future){ cum+=diff; tC+=cash; tD+=dep; }
@@ -1098,8 +1100,8 @@ function viewDeposit(){
     const expS=[];
     sc.forEach(nm=>{
       let c=0,dp=0,cAll=0,dAll=0;
-      for(const r of D.daily){ if(r.store!==nm)continue; if(r.t>=mS&&r.t<=mE&&r.t<=maxT)c+=r.cash||0; if(r.t>=depStart&&r.t<=Math.min(mE,maxT))cAll+=r.cash||0; }
-      for(const r of D.deposit){ if(r.store!==nm)continue; if(r.t>=mS&&r.t<=mE)dp+=r.amount||0; if(r.t<=mE)dAll+=r.amount||0; }
+      for(const r of D.daily){ if(normStore(r.store)!==normStore(nm))continue; if(r.t>=mS&&r.t<=mE&&r.t<=maxT)c+=r.cash||0; if(r.t>=depStart&&r.t<=Math.min(mE,maxT))cAll+=r.cash||0; }
+      for(const r of D.deposit){ if(normStore(r.store)!==normStore(nm))continue; if(r.t>=mS&&r.t<=mE)dp+=r.amount||0; if(r.t<=mE)dAll+=r.amount||0; }
       const u=c-dp, cu=cAll-dAll;
       const badge=u<=0?(c>0||dp>0?'<span class="badge ok">完了</span>':'<span class="badge zero">—</span>'):'<span class="badge ng">未入金あり</span>';
       h+=`<tr class="click" onclick="App.store(this.dataset.n)" data-n="${esc(nm)}"><td>${esc(nm)}</td><td>${yen(c)}</td><td>${yen(dp)}</td>

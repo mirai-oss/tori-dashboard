@@ -38,7 +38,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'sessions-v2', time: new Date().toISOString() });
     setupIfNeeded();
     if (action === 'login')  return out(login(p));
     if (action === 'logout') return out(logout(p));
