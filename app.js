@@ -99,6 +99,7 @@ const S = {
   tab:'dash', period:'month', store:'all',
   pDay:'', pMonth:'', pYear:'', pWeekIdx:null, cStart:'', cEnd:'',
   depMonth:'', adMonth:'', plMonth:'', plPeriod:'month', plYear:'', plStart:'', plEnd:'',
+  revPeriod:'month', revMonth:'', revWeekIdx:null, revYear:'', revStart:'', revEnd:'',
   aMetric:'sales', aGran:'day', aBreak:'total', aRange:'30', aYoY:true,
   aiQ:'', aiResult:null, dataVersion:'',
   accounts:null, accErr:'', modal:null, loginErr:'',
@@ -1674,74 +1675,132 @@ function viewPL(){
 function viewReview(){
   const sc=scopeStores(); const selName=selStoreName();
   const baseStores=selName?[selName]:sc;
-  if(!D.review.length) return storeSegHtml()+`<div class="panel"><h3>口コミ推移</h3><div class="empty">口コミデータがありません</div></div>`;
+  if(!D.review.length&&!D.dinii.length) return storeSegHtml()+`<div class="panel"><h3>口コミ推移</h3><div class="empty">口コミデータがありません</div></div>`;
+
+  // ---- 期間選択（週 / 月 / 年間 / 期間指定） ----
+  const P=S.revPeriod||'month';
+  const ref=D.refDate||new Date();
+  const defMonth=ref.getFullYear()+'-'+String(ref.getMonth()+1).padStart(2,'0');
+  let s,e,label,ctrlHtml='';
+  if(P==='week'){
+    const pm=S.revMonth||defMonth;
+    const py=+pm.split('-')[0], pmn=+pm.split('-')[1];
+    const ld=new Date(py,pmn,0).getDate();
+    const isCur=(py===ref.getFullYear()&&pmn-1===ref.getMonth());
+    let idx=S.revWeekIdx; if(idx==null) idx=isCur?Math.min(4,Math.floor((ref.getDate()-1)/7)):0;
+    const sd=idx*7+1, ed=idx<4?Math.min(sd+6,ld):ld;
+    s=new Date(py,pmn-1,Math.min(sd,ld)); e=new Date(py,pmn-1,ed);
+    if(isCur&&dayMs(e)>dayMs(ref)) e=new Date(ref.getFullYear(),ref.getMonth(),ref.getDate());
+    label=py+'年'+pmn+'月 第'+(idx+1)+'週（'+sd+'日〜'+ed+'日）';
+    ctrlHtml=`<input type="month" value="${pm}" onchange="App.set('revMonth',this.value)">
+      <span class="seg">${[0,1,2,3,4].map(i2=>`<button class="${idx===i2?'on':''}" onclick="App.setRevWeek(${i2})">第${i2+1}週</button>`).join('')}</span>`;
+  } else if(P==='year'){
+    const yy=+(S.revYear||ref.getFullYear());
+    s=new Date(yy,0,1); e=(yy===ref.getFullYear())?new Date(ref.getFullYear(),ref.getMonth(),ref.getDate()):new Date(yy,11,31);
+    label=yy+'年（1/1〜'+(e.getMonth()+1)+'/'+e.getDate()+'）';
+    const years=[...new Set(D.review.map(x=>new Date(x.t).getFullYear()).filter(v=>v>2000))].sort();
+    if(!years.length) years.push(ref.getFullYear());
+    ctrlHtml=`<select onchange="App.set('revYear',this.value)">${years.map(v=>`<option ${String(yy)===String(v)?'selected':''}>${v}</option>`).join('')}</select>`;
+  } else if(P==='custom'){
+    const pI=(s2)=>{const p2=String(s2).split('-');return new Date(+p2[0],+p2[1]-1,+p2[2]);};
+    let s0=S.revStart?pI(S.revStart):addD(ref,-29), e0=S.revEnd?pI(S.revEnd):new Date(ref.getFullYear(),ref.getMonth(),ref.getDate());
+    if(dayMs(s0)>dayMs(e0)){ const t=s0;s0=e0;e0=t; }
+    s=s0; e=e0;
+    label=(s.getMonth()+1)+'/'+s.getDate()+'〜'+(e.getMonth()+1)+'/'+e.getDate();
+    ctrlHtml=`<input type="date" value="${S.revStart}" onchange="App.set('revStart',this.value)"> 〜 <input type="date" value="${S.revEnd}" onchange="App.set('revEnd',this.value)">`;
+  } else {
+    const pm=S.revMonth||defMonth;
+    const py=+pm.split('-')[0], pmn=+pm.split('-')[1];
+    s=new Date(py,pmn-1,1);
+    const isCur=(py===ref.getFullYear()&&pmn-1===ref.getMonth());
+    e=isCur?new Date(ref.getFullYear(),ref.getMonth(),ref.getDate()):new Date(py,pmn,0);
+    label=py+'年 '+pmn+'月';
+    ctrlHtml=`<div class="mini-nav"><button onclick="App.revNav(-1)">‹</button><span class="lbl">${label}</span><button onclick="App.revNav(1)">›</button><button onclick="App.revNav(0)" style="font-size:11px;color:#8c8375">今月</button></div>`;
+  }
+  const a=dayMs(s), b=dayMs(e);
+
+  let h=`<div class="ctrl-bar no-print">
+    <div class="seg">${[['week','週'],['month','月'],['year','年間'],['custom','期間指定']].map(([k,l])=>`<button class="${P===k?'on':''}" onclick="App.set('revPeriod','${k}')">${l}</button>`).join('')}</div>
+    ${ctrlHtml}
+    <span class="period-label">口コミ（${label}）</span></div>`+storeSegHtml();
+
   // 親店舗＋ぶら下がる別名店舗（口コミデータに存在するもののみ）を対象にする
   const revStores=new Set(D.review.map(r=>r.store));
   const targets=[];
   baseStores.forEach(nm=>{ reviewNamesFor(nm).forEach(rn=>{ if((rn===nm||revStores.has(rn))&&!targets.includes(rn)) targets.push(rn); }); });
   const parentTag=(nm)=>parentOfStore(nm)?` <span class="mut" style="font-size:11px">（${esc(parentOfStore(nm))}）</span>`:'';
-  // 月次バケット（直近12ヶ月）
-  const ref=D.refDate||new Date();
-  const months=[];
-  for(let i=11;i>=0;i--){ const d=new Date(ref.getFullYear(),ref.getMonth()-i,1); months.push(d); }
-  const cat=months.map(d=>(d.getMonth()+1)+'月');
-  const starAt=(nm,limit)=>{ let latest=null; for(const r of D.review){ if(r.store!==nm)continue; if(r.t>limit)continue; if(!latest||r.t>latest.t)latest=r; } return latest?latest.star:null; };
-  const series=targets.map((nm,i)=>({ name:nm, color:PALETTE[i%PALETTE.length],
-    data:months.map(d=>starAt(nm,dayMs(new Date(d.getFullYear(),d.getMonth()+1,0)))) }));
-  const legend=series.map(s=>`<span><span class="sw" style="background:${s.color}"></span>${esc(s.name)}</span>`).join('');
-  let h=storeSegHtml();
-  const _kids=selName?childrenOfStore(selName):[];
-  const subNote=(_kids.length)?`各月末時点のスナップショット ／ ${esc(selName)}に紐づく店舗（${_kids.map(esc).join('・')}）も表示`:'各月末時点のスナップショット';
-  h+=`<div class="panel"><div class="panel-head"><div><h3>Google口コミ 平均星 推移（直近12ヶ月）</h3><div class="sub">${subNote}</div></div><div class="legend">${legend}</div></div>
-  ${lineChart(cat,series,'star',{zoom:true,axisFmt:(v)=>v.toFixed(2)})}</div>`;
-  // 最新スナップショット表
-  const d30=dayMs(addD(ref,-30));
-  h+=`<div class="panel"><div class="panel-head"><h3>最新スナップショット</h3></div>
-  <div class="scroll-x"><table class="tbl"><thead><tr><th>店舗</th><th>平均星</th><th>累計件数</th><th>直近30日 増加</th><th>最終取得日</th></tr></thead><tbody>`;
-  const expR=[];
-  targets.forEach(nm=>{
-    let latest=null,inc=0;
-    for(const r of D.review){ if(r.store!==nm)continue; if(!latest||r.t>latest.t)latest=r; if(r.t>=d30)inc+=r.delta||0; }
-    if(!latest){ h+=`<tr><td>${esc(nm)}${parentTag(nm)}</td><td class="mut">—</td><td class="mut">—</td><td class="mut">—</td><td class="mut">—</td></tr>`; return; }
-    const dt=new Date(latest.t);
-    h+=`<tr><td>${esc(nm)}${parentTag(nm)}</td><td>${latest.star.toFixed(2)}</td><td>${cnt(latest.count)}件</td><td class="${inc>0?'pos':'mut'}">${inc>0?'+'+inc:'—'}</td><td class="mut">${dt.getFullYear()}/${dt.getMonth()+1}/${dt.getDate()}</td></tr>`;
-    expR.push([nm,latest.star.toFixed(2),latest.count,inc,dt.getFullYear()+'/'+(dt.getMonth()+1)+'/'+dt.getDate()]);
-  });
-  h+=`</tbody></table></div></div>`;
-  EXPORT.push({ title:'口コミ最新スナップショット', headers:['店舗','平均星','累計件数','直近30日増加','最終取得日'], rows:expR });
+  const snapAt=(nm,limit)=>{ let latest=null; for(const r of D.review){ if(r.store!==nm)continue; if(r.t>limit)continue; if(!latest||r.t>latest.t)latest=r; } return latest; };
+
+  // 期間に応じたバケット（45日以内=日別 / それ以上・年間=月別）
+  const span=Math.round((b-a)/86400000)+1;
+  const buckets=[];
+  if(P==='year'||span>45){
+    let m=new Date(s.getFullYear(),s.getMonth(),1);
+    while(dayMs(m)<=b){ buckets.push({label:(m.getMonth()+1)+'月', end:Math.min(dayMs(new Date(m.getFullYear(),m.getMonth()+1,0)),b), start:Math.max(dayMs(m),a)}); m=new Date(m.getFullYear(),m.getMonth()+1,1); }
+  } else {
+    for(let d=new Date(s); dayMs(d)<=b; d=addD(d,1)) buckets.push({label:(d.getMonth()+1)+'/'+d.getDate(), end:dayMs(d), start:dayMs(d)});
+  }
+
+  if(D.review.length){
+    const series=targets.map((nm,i)=>({ name:nm, color:PALETTE[i%PALETTE.length], data:buckets.map(bk=>{ const sn=snapAt(nm,bk.end); return sn?sn.star:null; }) }));
+    const legend=series.map(s2=>`<span><span class="sw" style="background:${s2.color}"></span>${esc(s2.name)}</span>`).join('');
+    const _kids=selName?childrenOfStore(selName):[];
+    const subNote=(_kids.length)?`各時点の最新スナップショット ／ ${esc(selName)}に紐づく店舗（${_kids.map(esc).join('・')}）も表示`:'各時点の最新スナップショット';
+    h+=`<div class="panel"><div class="panel-head"><div><h3>Google口コミ 平均星 推移（${esc(label)}）</h3><div class="sub">${subNote}</div></div><div class="legend">${legend}</div></div>
+    ${lineChart(buckets.map(bk=>bk.label),series,'star',{zoom:true,axisFmt:(v)=>v.toFixed(2)})}</div>`;
+
+    // 期間サマリー表
+    h+=`<div class="panel"><div class="panel-head"><div><h3>口コミサマリー（${esc(label)}）</h3><div class="sub">平均星と件数は期間末時点、増加は期間内の増減</div></div></div>
+    <div class="scroll-x"><table class="tbl"><thead><tr><th>店舗</th><th>平均星（期間末）</th><th>星の変化（期間）</th><th>累計件数</th><th>期間内 増加</th><th>最終取得日</th></tr></thead><tbody>`;
+    const expR=[];
+    targets.forEach(nm=>{
+      const endSnap=snapAt(nm,b)||snapAt(nm,Infinity);
+      const preSnap=snapAt(nm,a-1);
+      if(!endSnap){ h+=`<tr><td>${esc(nm)}${parentTag(nm)}</td><td class="mut">—</td><td class="mut">—</td><td class="mut">—</td><td class="mut">—</td><td class="mut">—</td></tr>`; return; }
+      let inc=null;
+      if(preSnap) inc=endSnap.count-preSnap.count;
+      else { inc=0; for(const r of D.review){ if(r.store===nm&&r.t>=a&&r.t<=b) inc+=r.delta||0; } }
+      const starDiff=preSnap?(endSnap.star-preSnap.star):null;
+      const dt=new Date(endSnap.t);
+      h+=`<tr><td>${esc(nm)}${parentTag(nm)}</td><td>${endSnap.star.toFixed(2)}</td>
+        <td class="${starDiff>0?'pos':starDiff<0?'neg':'mut'}">${starDiff==null?'—':(starDiff>=0?'+':'')+starDiff.toFixed(2)}</td>
+        <td>${cnt(endSnap.count)}件</td><td class="${inc>0?'pos':'mut'}">${inc>0?'+'+inc:(inc===0?'—':inc)}</td>
+        <td class="mut">${dt.getFullYear()}/${dt.getMonth()+1}/${dt.getDate()}</td></tr>`;
+      expR.push([nm,endSnap.star.toFixed(2),starDiff==null?'':starDiff.toFixed(2),endSnap.count,inc==null?'':inc,dt.getFullYear()+'/'+(dt.getMonth()+1)+'/'+dt.getDate()]);
+    });
+    h+=`</tbody></table></div></div>`;
+    EXPORT.push({ title:'口コミサマリー（'+label+'）', headers:['店舗','平均星(期間末)','星の変化','累計件数','期間内増加','最終取得日'], rows:expR });
+  }
 
   // ---- ダイニー来店アンケート（また来たいと思いますか？） ----
   if(D.dinii.length){
-    const d30b=dayMs(addD(ref,-30));
-    // 親店舗ごとに集計（別表記・子ブランドは自動で親に寄せる）
-    h+=`<div class="panel"><div class="panel-head"><div><h3>ダイニー来店アンケート「また来たいと思いますか？」</h3>
-      <div class="sub">ダイニーDBの回答点数を店舗ごとに平均（全${cnt(D.dinii.length)}件）</div></div></div>
-    <div class="scroll-x"><table class="tbl"><thead><tr><th>店舗</th><th>直近30日 平均</th><th>直近30日 回答数</th><th>累計 平均</th><th>累計 回答数</th></tr></thead><tbody>`;
-    const expDn=[]; let tS30=0,tN30=0,tSA=0,tNA=0;
+    h+=`<div class="panel"><div class="panel-head"><div><h3>ダイニー来店アンケート「また来たいと思いますか？」（${esc(label)}）</h3>
+      <div class="sub">期間内の回答点数を店舗ごとに平均（全${cnt(D.dinii.length)}件）</div></div></div>
+    <div class="scroll-x"><table class="tbl"><thead><tr><th>店舗</th><th>期間内 平均</th><th>期間内 回答数</th><th>累計 平均</th><th>累計 回答数</th></tr></thead><tbody>`;
+    const expDn=[]; let tSP=0,tNP=0,tSA=0,tNA=0;
     const baseTargets=selName?[selName]:sc;
     baseTargets.forEach(nm=>{
-      const s30=diniiStats([nm],d30b,dayMs(ref));
+      const sp=diniiStats([nm],a,b);
       const sAll=diniiStats([nm],0,Infinity);
-      tS30+=(s30.avg||0)*s30.count; tN30+=s30.count; tSA+=(sAll.avg||0)*sAll.count; tNA+=sAll.count;
-      h+=`<tr><td>${esc(nm)}</td><td>${s30.avg!=null?s30.avg.toFixed(2):'—'}</td><td>${cnt(s30.count)}件</td>
+      tSP+=(sp.avg||0)*sp.count; tNP+=sp.count; tSA+=(sAll.avg||0)*sAll.count; tNA+=sAll.count;
+      h+=`<tr><td>${esc(nm)}</td><td>${sp.avg!=null?sp.avg.toFixed(2):'—'}</td><td>${cnt(sp.count)}件</td>
         <td>${sAll.avg!=null?sAll.avg.toFixed(2):'—'}</td><td>${cnt(sAll.count)}件</td></tr>`;
-      expDn.push([nm,s30.avg!=null?s30.avg.toFixed(2):'',s30.count,sAll.avg!=null?sAll.avg.toFixed(2):'',sAll.count]);
+      expDn.push([nm,sp.avg!=null?sp.avg.toFixed(2):'',sp.count,sAll.avg!=null?sAll.avg.toFixed(2):'',sAll.count]);
     });
     if(baseTargets.length>1){
       h+=`<tr class="total"><td>${sc.length===allStores().length?'全店平均':'担当店舗平均'}</td>
-        <td>${tN30>0?(tS30/tN30).toFixed(2):'—'}</td><td>${cnt(tN30)}件</td>
+        <td>${tNP>0?(tSP/tNP).toFixed(2):'—'}</td><td>${cnt(tNP)}件</td>
         <td>${tNA>0?(tSA/tNA).toFixed(2):'—'}</td><td>${cnt(tNA)}件</td></tr>`;
     }
     h+=`</tbody></table></div></div>`;
-    EXPORT.push({ title:'ダイニー来店アンケート（また来たい）', headers:['店舗','直近30日平均','直近30日回答数','累計平均','累計回答数'], rows:expDn });
-    // 月次推移（直近12ヶ月・回答に日付がある場合のみ）
+    EXPORT.push({ title:'ダイニー来店アンケート（'+label+'）', headers:['店舗','期間内平均','期間内回答数','累計平均','累計回答数'], rows:expDn });
+    // 期間内の推移（回答に日付がある場合のみ・口コミと同じバケット）
     if(D.dinii.some(r2=>r2.t>0)){
-      const dcat=months.map(d=>(d.getMonth()+1)+'月');
       const dseries=baseTargets.map((nm,i)=>({ name:nm, color:PALETTE[i%PALETTE.length],
-        data:months.map(d=>{ const a2=dayMs(new Date(d.getFullYear(),d.getMonth(),1)), b2=dayMs(new Date(d.getFullYear(),d.getMonth()+1,0)); const st=diniiStats([nm],a2,b2); return st.avg; }) }));
-      const dlegend=dseries.map(s=>`<span><span class="sw" style="background:${s.color}"></span>${esc(s.name)}</span>`).join('');
-      h+=`<div class="panel"><div class="panel-head"><div><h3>ダイニー「また来たい」月次推移（直近12ヶ月）</h3><div class="sub">各月の回答平均</div></div><div class="legend">${dlegend}</div></div>
-      ${lineChart(dcat,dseries,'star',{zoom:true,axisFmt:(v)=>v.toFixed(2)})}</div>`;
+        data:buckets.map(bk=>{ const st=diniiStats([nm],bk.start,bk.end); return st.avg; }) }));
+      const dlegend=dseries.map(s2=>`<span><span class="sw" style="background:${s2.color}"></span>${esc(s2.name)}</span>`).join('');
+      h+=`<div class="panel"><div class="panel-head"><div><h3>ダイニー「また来たい」推移（${esc(label)}）</h3><div class="sub">${P==='year'||span>45?'各月':'各日'}の回答平均</div></div><div class="legend">${dlegend}</div></div>
+      ${lineChart(buckets.map(bk=>bk.label),dseries,'star',{zoom:true,axisFmt:(v)=>v.toFixed(2)})}</div>`;
     }
   }
   return h;
@@ -2011,6 +2070,14 @@ window.App = {
     const n=new Date(m0.getFullYear(),m0.getMonth()+d,1);
     S.plMonth=n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0'); render();
   },
+  revNav(d){
+    if(d===0){ S.revMonth=''; S.revWeekIdx=null; render(); return; }
+    const ref=D.refDate||new Date();
+    const m0=S.revMonth?new Date(+S.revMonth.split('-')[0],+S.revMonth.split('-')[1]-1,1):new Date(ref.getFullYear(),ref.getMonth(),1);
+    const n=new Date(m0.getFullYear(),m0.getMonth()+d,1);
+    S.revMonth=n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0'); render();
+  },
+  setRevWeek(i){ S.revWeekIdx=i; render(); },
   refresh(){ if(S.auth&&S.auth.token) fetchData(); else { loadSampleData(); render(); toast('サンプルデータを再読込しました（API未接続）'); } },
   csv: downloadCsv,
   pdf: downloadPdf,
