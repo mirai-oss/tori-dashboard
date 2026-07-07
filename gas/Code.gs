@@ -38,7 +38,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'sessions-v2', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'pl-dinii-v3', time: new Date().toISOString() });
     setupIfNeeded();
     if (action === 'login')  return out(login(p));
     if (action === 'logout') return out(logout(p));
@@ -104,11 +104,20 @@ function setupIfNeeded() {
     var fix = { media: '分析_媒体別日次', review: '口コミ推移ログ' };
     var oldName = { media: '媒体別DB', review: '口コミログ' };
     var cv = conf.getRange(2, 1, conf.getLastRow() - 1, 2).getValues();
+    var hasDinii = false;
     for (var i = 0; i < cv.length; i++) {
       var key = String(cv[i][0]).trim();
+      if (key === 'dinii') hasDinii = true;
       if (fix[key] && String(cv[i][1]).trim() === oldName[key]) {
         conf.getRange(i + 2, 2).setValue(fix[key]);
       }
+    }
+    // ダイニー来店アンケートの配信行が無ければ自動追加（シートが存在する場合のみ有効化）
+    if (!hasDinii) {
+      var diniiOn = ss.getSheetByName('ダイニーDB') ? 'TRUE' : 'FALSE';
+      conf.getRange(conf.getLastRow() + 1, 1, 1, 4).setValues([
+        ['dinii', 'ダイニーDB', diniiOn, 'ダイニー来店アンケート（また来たい点数）']
+      ]);
     }
   }
 
@@ -271,7 +280,8 @@ var KEEP_COLUMNS = {
   daily:   ['日付', '営業日', '店舗名', '店舗', '純売上', '総売上', '売上', '総客数', '客数', 'アルバイト人件費', '社員人件費', '人件費合計', '仕入', '原価', '現金'],
   media:   ['店舗名', '店舗', '営業日', '日付', '媒体', '人数', '客数', '純売上', '総売上', '売上'],
   deposit: ['店舗名', '店舗', '日付', '営業日', '入金日', '入金額', '入金合計', '入金'],
-  review:  ['取得日', '日付', '店舗名', '店舗', '累計', '件数', '平均星', '星', '評価', '前回比']
+  review:  ['取得日', '日付', '店舗名', '店舗', '累計', '件数', '平均星', '星', '評価', '前回比'],
+  dinii:   ['タイムスタンプ', '日付', '営業日', '回答日', '店舗名', '店舗', 'また来', 'またき', '点数', '評価']
 };
 // 残す列のインデックスを求める（見つからなければ全列）
 function keepColumnIdx(header, key) {
@@ -295,7 +305,7 @@ function readSheet(sh, months, key) {
   var header = vals[0];
   var keepIdx = keepColumnIdx(header, key);
   // 日付列（絞り込み用）
-  var di = -1, dkeys = ['日付', '営業日', '取得日', '勤務日', '入金日', '年月日'];
+  var di = -1, dkeys = ['日付', '営業日', '取得日', '勤務日', '入金日', '年月日', 'タイムスタンプ'];
   for (var c = 0; c < lc && di < 0; c++) {
     for (var k = 0; k < dkeys.length; k++) { if (String(header[c]).indexOf(dkeys[k]) >= 0) { di = c; break; } }
   }
@@ -311,7 +321,7 @@ function readSheet(sh, months, key) {
     if (ct !== null) {                    // 期間外は捨てる
       var dv = row[di], t;
       if (dv instanceof Date) t = new Date(dv.getFullYear(), dv.getMonth(), dv.getDate()).getTime();
-      else { var pp = String(dv).replace(/-/g, '/').split('/'); t = (pp.length >= 3) ? new Date(+pp[0], +pp[1] - 1, +pp[2]).getTime() : NaN; }
+      else { var mm2 = String(dv).match(/(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/); t = mm2 ? new Date(+mm2[1], +mm2[2] - 1, +mm2[3]).getTime() : NaN; }  // "2026/07/01 12:34"形式も対応
       if (!isNaN(t) && t < ct) continue;
     }
     var o = [];
