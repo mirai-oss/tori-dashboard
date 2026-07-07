@@ -284,6 +284,16 @@ function diniiStats(storeNames, a, b){
   }
   return { avg:n>0?sum/n:null, count:n, allAvg:allN>0?allSum/allN:null, allCount:allN };
 }
+// 区分（F=仕入れ / L=人件費 / A=広告 / R=家賃 / O=他）の正規化。全角・日本語表記も吸収
+function plCatOf(v){
+  const s=String(v==null?'':v).trim().toUpperCase().replace(/[Ａ-Ｚ]/g,c=>String.fromCharCode(c.charCodeAt(0)-0xFEE0));
+  if(!s) return 'O';
+  if(s[0]==='F'||/仕入|原価/.test(s)) return 'F';
+  if(s[0]==='L'||/人件/.test(s)) return 'L';
+  if(s[0]==='A'||/広告/.test(s)) return 'A';
+  if(s[0]==='R'||/家賃|賃料/.test(s)) return 'R';
+  return 'O';
+}
 function ingestPL(rows){
   // 見出し行を検出（費目/科目 ＋ 年月/日付 ＋ 金額）。タイトル行が上にあってもズレない
   let hi=-1;
@@ -293,9 +303,10 @@ function ingestPL(rows){
   }
   if(hi<0) hi=0;
   const H=rows[hi].map(h=>String(h).trim());
-  const iD=colAny(H,['年月','日付','年月日']), iS=colAny(H,['店舗名','店舗']), iI=colAny(H,['費目','科目','項目']);
+  const iD=colAny(H,['年月','日付','年月日']), iS=colAny(H,['店舗名','店舗']), iI=colAny(H,['勘定科目','費目','科目','項目']);
   const iA=colAny(H,['金額','費用','経費']);
-  if(iD<0||iI<0||iA<0){ D.diag['PL']='列が見つかりません（必要: 年月・費目・金額）／見出し行: '+H.filter(Boolean).join('|'); return false; }
+  const iK=colAny(H,['区分','分類','カテゴリ']);   // F/L/A/R/O（無ければ全てO=その他扱い）
+  if(iD<0||iI<0||iA<0){ D.diag['PL']='列が見つかりません（必要: 年月・勘定科目・金額）／見出し行: '+H.filter(Boolean).join('|'); return false; }
   const recs=[]; let dateSkipped=0;
   for(let i=hi+1;i<rows.length;i++){
     const c=rows[i];
@@ -303,7 +314,7 @@ function ingestPL(rows){
     const t0=parseYm(c[iD])||parseDateStr(c[iD]);
     if(!t0){ dateSkipped++; continue; }
     const d=new Date(t0);
-    recs.push({ store:String(iS>=0?c[iS]||'':'').trim(), t:new Date(d.getFullYear(),d.getMonth(),1).getTime(), item, amount:num(c[iA]) });
+    recs.push({ store:String(iS>=0?c[iS]||'':'').trim(), t:new Date(d.getFullYear(),d.getMonth(),1).getTime(), item, cat:iK>=0?plCatOf(c[iK]):'O', amount:num(c[iA]) });
   }
   if(!recs.length){ D.diag['PL']='0件'+(dateSkipped>0?'（'+dateSkipped+'行あるが年月を読めていません）':'（データ行がありません）'); return false; }
   D.pl=recs; D.diag['PL']='OK '+recs.length+'件'; return true;
@@ -1466,23 +1477,25 @@ function extraSheetsHtml(){
 /* ---------------- PL（損益） ---------------- */
 // 対象期間・対象店舗のPL経費（DB_PL）を費目別に集計。店舗名は売上側へ自動照合、子ブランドは親に合算。
 // 店舗名が空欄の行＝全社共通経費（全店/合算表示のときのみ算入）
+// 区分別に集計: byCat[区分][勘定科目]=金額, catTotal[区分]=合計（F=仕入れ/L=人件費/A=広告/R=家賃/O=他）
 function plAgg(scopeSet, selN, a, b){
-  const by={}, unmatched={};
+  const byCat={F:{},L:{},A:{},R:{},O:{}}, catTotal={F:0,L:0,A:0,R:0,O:0}, unmatched={};
   let total=0, common=0;
   const rc={};
+  const add=(r)=>{ const k=r.cat||'O'; byCat[k][r.item]=(byCat[k][r.item]||0)+r.amount; catTotal[k]+=r.amount; total+=r.amount; };
   for(const r of D.pl){
     if(r.t<a||r.t>b) continue;
     if(!r.store){
       if(selN) continue;                       // 店舗選択時は共通経費を含めない
-      by[r.item]=(by[r.item]||0)+r.amount; total+=r.amount; common+=r.amount;
+      add(r); common+=r.amount;
       continue;
     }
     const res=(r.store in rc)?rc[r.store]:(rc[r.store]=resolveStoreEx(r.store));
     if(!res){ unmatched[r.store]=(unmatched[r.store]||0)+r.amount; continue; }
     if(!scopeSet.has(res.parent)) continue;
-    by[r.item]=(by[r.item]||0)+r.amount; total+=r.amount;
+    add(r);
   }
-  return { by, total, common, unmatched };
+  return { byCat, catTotal, total, common, unmatched };
 }
 function plMonthDate(){
   if(S.plMonth){ const p=S.plMonth.split('-'); return new Date(+p[0],+p[1]-1,1); }
@@ -1533,11 +1546,15 @@ function viewPL(){
   // 手入力経費（DB_PL・月次）※期間指定のときは「月初日が期間内の月」の分を計上
   const exCur=plAgg(scopeSet,selN,mS,mE), exPrv=plAgg(scopeSet,selN,pS,pE), exLyr=plAgg(scopeSet,selN,yS,yE);
 
-  const gross=cur.sales-cur.cost;
-  const sga=cur.labor+adCur+exCur.total;                                    // 販管費計（人件費＋広告＋経費）
-  const op=cur.sales-cur.cost-sga;                                          // 営業利益
-  const opPrv=prv.sales-prv.cost-(prv.labor+adPrv+exPrv.total);
-  const opLyr=lyr.sales-lyr.cost-(lyr.labor+adLyr+exLyr.total);
+  // 区分の合成：F=自動仕入＋DB_PLのF行 ／ L=自動人件費＋L行 ／ A=DB_広告＋A行 ／ R=家賃 ／ O=他
+  const costT=cur.cost+exCur.catTotal.F,  costP=prv.cost+exPrv.catTotal.F,  costL=lyr.cost+exLyr.catTotal.F;
+  const laborT=cur.labor+exCur.catTotal.L, laborP=prv.labor+exPrv.catTotal.L, laborL=lyr.labor+exLyr.catTotal.L;
+  const adT=adCur+exCur.catTotal.A,        adP=adPrv+exPrv.catTotal.A,        adL=adLyr+exLyr.catTotal.A;
+  const gross=cur.sales-costT;
+  const sga=laborT+adT+exCur.catTotal.R+exCur.catTotal.O;                   // 販管費計（人件費＋広告＋家賃＋他）
+  const op=cur.sales-costT-sga;                                             // 営業利益
+  const opPrv=prv.sales-costP-(laborP+adP+exPrv.catTotal.R+exPrv.catTotal.O);
+  const opLyr=lyr.sales-costL-(laborL+adL+exLyr.catTotal.R+exLyr.catTotal.O);
   const pct=(n)=>cur.sales>0?(n/cur.sales*100).toFixed(1)+'%':'—';
   const mom=(c,p)=>{ if(!(Math.abs(p)>0)) return {t:prevName+' —',cls:'mut'}; const d2=(c-p)/Math.abs(p)*100; return { t:prevName+'比 '+(d2>=0?'+':'▲')+Math.abs(d2).toFixed(1)+'%', cls:d2>=0?'up':'dn' }; };
 
@@ -1550,7 +1567,7 @@ function viewPL(){
   h+=`<div class="kpi-grid">
     <div class="kpi"><div class="lb">売上高</div><div class="vl">${yen(cur.sales)}</div><div class="yy ${mom(cur.sales,prv.sales).cls}">${mom(cur.sales,prv.sales).t}</div></div>
     <div class="kpi"><div class="lb">売上総利益（粗利）</div><div class="vl">${yen(gross)}</div><div class="yy">${pct(gross)}</div></div>
-    <div class="kpi"><div class="lb">販管費計（人件費＋広告＋経費）</div><div class="vl">${yen(sga)}</div><div class="yy">${pct(sga)}</div></div>
+    <div class="kpi"><div class="lb">販管費計（人件費＋広告＋家賃＋他）</div><div class="vl">${yen(sga)}</div><div class="yy">${pct(sga)}</div></div>
     <div class="kpi"><div class="lb">営業利益</div><div class="vl" style="color:${op>=0?'#4c7d5c':'#b5502f'}">${yen(op)}</div><div class="yy ${mom(op,opPrv).cls}">${pct(op)} ／ ${mom(op,opPrv).t}</div></div>
   </div>`;
 
@@ -1561,23 +1578,39 @@ function viewPL(){
     h+=`<div class="note-box no-print" style="${plReceived&&diag&&diag.indexOf('OK')!==0?'border-color:#e8cfc2;background:#faf0ec':''}">
       ${plReceived&&diag&&diag.indexOf('OK')!==0?`<b style="color:#b5502f">⚠ 「DB_PL」シートは受信しましたが取り込めていません。</b> 取込結果：${esc(diag)}<br>`:
         `<b>経費（家賃・水光熱費など）はまだ未接続です。</b>下のPLは自動取得できる項目（売上・原価・人件費・広告費）のみで計算しています。<br>`}
-      スプレッドシートに <code>DB_PL</code> というタブを作り、1行目に <code>年月 / 店舗名 / 費目 / 金額 / メモ</code>、2行目以降に
-      <code>2026/07 ｜ 鳥一代 本店 ｜ 家賃 ｜ 450000</code> のように月次経費を入力すると、自動でこのPLに反映されます（費目は自由。店舗名空欄＝全社共通経費）。</div>`;
-  } else if(!Object.keys(exCur.by).length){
+      スプレッドシートの <code>DB_PL</code> タブに、1行目 <code>年月 / 店舗名 / 勘定科目 / 区分 / 金額 / メモ</code>、2行目以降に
+      <code>2026/07 ｜ 鳥一代 本店 ｜ 家賃 ｜ R ｜ 450000</code> のように月次経費を入力すると自動で反映されます。<br>
+      区分: <b>F</b>=仕入れ ／ <b>L</b>=人件費 ／ <b>A</b>=広告 ／ <b>R</b>=家賃 ／ <b>O</b>=他（店舗名空欄＝全社共通経費）</div>`;
+  } else if(!exCur.total){
     h+=`<div class="note-box no-print">${mLabel}分の経費（DB_PL）はまだ入力されていません。売上・原価・人件費・広告費のみで計算しています。</div>`;
   }
 
-  // ---- PL表 ----
-  const rows=[];   // {name, cur, prv, lyr, indent, bold, isRate}
+  // ---- PL表（区分ごとにセクション表示: F=原価 / L=人件費 / A=広告 / R=家賃 / O=他） ----
+  const rows=[];   // {name, c, p, l, indent, bold, line, profit}
+  // 区分内の勘定科目を行として追加（当期・前期・前年同期を突き合わせ）
+  const pushCatItems=(cat)=>{
+    const keys=[...new Set([].concat(Object.keys(exCur.byCat[cat]),Object.keys(exPrv.byCat[cat]),Object.keys(exLyr.byCat[cat])))]
+      .sort((a2,b2)=>(exCur.byCat[cat][b2]||0)-(exCur.byCat[cat][a2]||0));
+    keys.forEach(it=>rows.push({name:it, c:-(exCur.byCat[cat][it]||0), p:-(exPrv.byCat[cat][it]||0), l:-(exLyr.byCat[cat][it]||0), indent:true}));
+    return keys.length;
+  };
   rows.push({name:'売上高', c:cur.sales, p:prv.sales, l:lyr.sales, bold:true});
-  rows.push({name:'売上原価（仕入）', c:-cur.cost, p:-prv.cost, l:-lyr.cost});
-  rows.push({name:'売上総利益（粗利）', c:gross, p:prv.sales-prv.cost, l:lyr.sales-lyr.cost, bold:true, line:true});
-  rows.push({name:'人件費（社員）', c:-cur.emp, p:-prv.emp, l:-lyr.emp, indent:true});
-  rows.push({name:'人件費（アルバイト）', c:-cur.pa, p:-prv.pa, l:-lyr.pa, indent:true});
-  rows.push({name:'広告宣伝費', c:-adCur, p:-adPrv, l:-adLyr, indent:true});
-  const items=Object.keys(exCur.by).sort((a2,b2)=>exCur.by[b2]-exCur.by[a2]);
-  items.forEach(it=>{ rows.push({name:it, c:-(exCur.by[it]||0), p:-(exPrv.by[it]||0), l:-(exLyr.by[it]||0), indent:true}); });
-  rows.push({name:'販管費計', c:-sga, p:-(prv.labor+adPrv+exPrv.total), l:-(lyr.labor+adLyr+exLyr.total), bold:true, line:true});
+  rows.push({name:'仕入（自動連携）', c:-cur.cost, p:-prv.cost, l:-lyr.cost, indent:true});
+  const nF=pushCatItems('F');
+  rows.push({name:'売上原価計（F）', c:-costT, p:-costP, l:-costL, bold:nF>0, line:false});
+  rows.push({name:'売上総利益（粗利）', c:gross, p:prv.sales-costP, l:lyr.sales-costL, bold:true, line:true});
+  rows.push({name:'人件費（社員・自動連携）', c:-cur.emp, p:-prv.emp, l:-lyr.emp, indent:true});
+  rows.push({name:'人件費（アルバイト・自動連携）', c:-cur.pa, p:-prv.pa, l:-lyr.pa, indent:true});
+  pushCatItems('L');
+  rows.push({name:'人件費計（L）', c:-laborT, p:-laborP, l:-laborL, bold:true});
+  rows.push({name:'広告費（DB_広告・自動連携）', c:-adCur, p:-adPrv, l:-adLyr, indent:true});
+  const nA=pushCatItems('A');
+  rows.push({name:'広告宣伝費計（A）', c:-adT, p:-adP, l:-adL, bold:true});
+  const nR=pushCatItems('R');
+  rows.push({name:'家賃計（R）', c:-exCur.catTotal.R, p:-exPrv.catTotal.R, l:-exLyr.catTotal.R, bold:true});
+  const nO=pushCatItems('O');
+  rows.push({name:'その他経費計（O）', c:-exCur.catTotal.O, p:-exPrv.catTotal.O, l:-exLyr.catTotal.O, bold:true});
+  rows.push({name:'販管費計（L＋A＋R＋O）', c:-sga, p:-(laborP+adP+exPrv.catTotal.R+exPrv.catTotal.O), l:-(laborL+adL+exLyr.catTotal.R+exLyr.catTotal.O), bold:true, line:true});
   rows.push({name:'営業利益', c:op, p:opPrv, l:opLyr, bold:true, line:true, profit:true});
 
   const plTitle=(P==='year'?'年間PL':P==='custom'?'期間PL':'月次PL');
@@ -1602,19 +1635,22 @@ function viewPL(){
   // ---- 店舗別PL比較（全店/合算表示のときのみ） ----
   if(!selN&&sc.length>1){
     h+=`<div class="panel"><div class="panel-head"><div><h3>店舗別 損益比較（${mLabel}）</h3><div class="sub">行クリックで店舗のPLへ ／ 共通経費（店舗名空欄）は含みません</div></div></div>
-    <div class="scroll-x"><table class="tbl"><thead><tr><th>店舗</th><th>売上高</th><th>粗利</th><th>人件費</th><th>広告費</th><th>経費</th><th>営業利益</th><th>利益率</th></tr></thead><tbody>`;
+    <div class="scroll-x"><table class="tbl"><thead><tr><th>店舗</th><th>売上高</th><th>粗利</th><th>人件費</th><th>広告費</th><th>家賃・他経費</th><th>営業利益</th><th>利益率</th></tr></thead><tbody>`;
     const expC=[]; let tS=0,tG=0,tL=0,tA=0,tE=0,tO=0;
     sc.forEach(nm=>{
       const s1=new Set([nm]);
       const c1=stat(s1,mS,mE,null);
-      const a1=adAgg(s1,mS,mE).ad;
-      const e1=plAgg(s1,nm,mS,mE).total;
-      const g1=c1.sales-c1.cost, o1=g1-c1.labor-a1-e1;
-      tS+=c1.sales;tG+=g1;tL+=c1.labor;tA+=a1;tE+=e1;tO+=o1;
+      const p1=plAgg(s1,nm,mS,mE);
+      const a1=adAgg(s1,mS,mE).ad + p1.catTotal.A;           // 広告費 = DB_広告 + DB_PLのA区分
+      const l1=c1.labor + p1.catTotal.L;                     // 人件費 = 自動 + L区分
+      const g1=c1.sales - (c1.cost + p1.catTotal.F);         // 粗利 = 売上 - (自動仕入 + F区分)
+      const e1=p1.catTotal.R + p1.catTotal.O;                // 経費 = 家賃 + 他
+      const o1=g1-l1-a1-e1;
+      tS+=c1.sales;tG+=g1;tL+=l1;tA+=a1;tE+=e1;tO+=o1;
       const orate=c1.sales>0?(o1/c1.sales*100).toFixed(1)+'%':'—';
-      h+=`<tr class="click" onclick="App.store(this.dataset.n)" data-n="${esc(nm)}"><td>${esc(nm)}</td><td>${yen(c1.sales)}</td><td>${yen(g1)}</td><td>${yen(c1.labor)}</td><td>${yen(a1)}</td><td>${yen(e1)}</td>
+      h+=`<tr class="click" onclick="App.store(this.dataset.n)" data-n="${esc(nm)}"><td>${esc(nm)}</td><td>${yen(c1.sales)}</td><td>${yen(g1)}</td><td>${yen(l1)}</td><td>${yen(a1)}</td><td>${yen(e1)}</td>
         <td class="${o1>=0?'pos':'neg'}" style="font-weight:700">${o1<0?'▲'+yen(-o1).slice(1):yen(o1)}</td><td class="${o1>=0?'pos':'neg'}">${orate}</td></tr>`;
-      expC.push([nm,Math.round(c1.sales),Math.round(g1),Math.round(c1.labor),Math.round(a1),Math.round(e1),Math.round(o1),orate]);
+      expC.push([nm,Math.round(c1.sales),Math.round(g1),Math.round(l1),Math.round(a1),Math.round(e1),Math.round(o1),orate]);
     });
     h+=`<tr class="total"><td>合計</td><td>${yen(tS)}</td><td>${yen(tG)}</td><td>${yen(tL)}</td><td>${yen(tA)}</td><td>${yen(tE)}</td>
       <td class="${tO>=0?'pos':'neg'}">${tO<0?'▲'+yen(-tO).slice(1):yen(tO)}</td><td>${tS>0?(tO/tS*100).toFixed(1)+'%':'—'}</td></tr>`;
