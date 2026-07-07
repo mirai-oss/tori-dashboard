@@ -1662,18 +1662,21 @@ function viewPL(){
   rows.push({name:'営業利益', c:op, p:opPrv, l:opLyr, bold:true, line:true, profit:true});
 
   const plTitle=(P==='year'?'年間PL':P==='custom'?'期間PL':'月次PL');
+  // 最右列は常に「前年比」。月次/期間指定は前年同期(r2.l)、年間は前年(r2.p)を基準にする
+  const yoyBase=(r2)=>showYoY?r2.l:r2.p;
+  const cmp=(c,base)=>{ if(!(Math.abs(base)>0)) return {t:'—',cls:'mut'}; const d2=(c-base)/Math.abs(base)*100; return {t:(d2>=0?'+':'▲')+Math.abs(d2).toFixed(1)+'%', cls:d2>=0?'up':'dn'}; };
   h+=`<div class="panel"><div class="panel-head"><div><h3>${plTitle}（${mLabel} ／ ${esc(scopeLabel)}）</h3>
     <div class="sub">売上・原価・人件費＝分析_日別店舗 ／ 広告費＝DB_広告 ／ その他経費＝DB_PL（自動連携）${P==='custom'?' ※経費は月単位のため、月初日が期間内の月分を計上':''}</div></div></div>
-  <div class="scroll-x"><table class="tbl"><thead><tr><th>項目</th><th>当期</th><th>売上比</th><th>${prevName}</th>${showYoY?'<th>前年同期</th>':''}<th>${prevName}比</th></tr></thead><tbody>`;
+  <div class="scroll-x"><table class="tbl"><thead><tr><th>項目</th><th>当期</th><th>売上比</th><th>${prevName}</th>${showYoY?'<th>前年同期</th>':''}<th>前年比</th></tr></thead><tbody>`;
   const expP=[];
   rows.forEach(r2=>{
     const v=(n)=>n===0?'—':(n<0?'▲'+yen(-n).slice(1):yen(n));
-    const momr=mom(r2.c,r2.p);
+    const yc=cmp(r2.c,yoyBase(r2));
     const color=r2.profit?(r2.c>=0?'color:#4c7d5c;font-weight:700':'color:#b5502f;font-weight:700'):'';
     h+=`<tr class="${r2.line?'total':''}"><td style="${r2.indent?'padding-left:24px;':''}${r2.bold?'font-weight:700':''}">${esc(r2.name)}</td>
       <td style="${color}">${v(r2.c)}</td><td class="mut">${pct(Math.abs(r2.c))}</td>
       <td class="mut">${v(r2.p)}</td>${showYoY?`<td class="mut">${v(r2.l)}</td>`:''}
-      <td class="${momr.cls==='up'?'pos':momr.cls==='dn'?'neg':'mut'}">${momr.t.replace(prevName+'比 ','')}</td></tr>`;
+      <td class="${yc.cls==='up'?'pos':yc.cls==='dn'?'neg':'mut'}">${yc.t}</td></tr>`;
     expP.push(showYoY?[r2.name,Math.round(r2.c),cur.sales>0?(Math.abs(r2.c)/cur.sales*100).toFixed(1)+'%':'',Math.round(r2.p),Math.round(r2.l)]
                      :[r2.name,Math.round(r2.c),cur.sales>0?(Math.abs(r2.c)/cur.sales*100).toFixed(1)+'%':'',Math.round(r2.p)]);
   });
