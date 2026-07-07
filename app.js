@@ -266,8 +266,10 @@ function ingestDinii(rows){
   const recs=[];
   for(let i=hi+1;i<rows.length;i++){
     const c=rows[i]; const st=String(c[iS]||'').trim(); if(!st)continue;
-    const sc=num(c[iQ]); if(!(sc>0))continue;                 // 未回答・0は除外
-    recs.push({ store:st, t:iD>=0?(parseDateStr(c[iD])||0):0, score:sc });
+    // 0点も有効回答としてカウントする。除外するのは「空欄」と「数字を含まないテキスト（未回答等）」のみ
+    const raw=String(c[iQ]==null?'':c[iQ]).trim().replace(/[０-９]/g,ch=>String.fromCharCode(ch.charCodeAt(0)-0xFEE0));  // 全角数字→半角
+    if(raw===''||!/[0-9]/.test(raw)) continue;
+    recs.push({ store:st, t:iD>=0?(parseDateStr(c[iD])||0):0, score:num(raw) });
   }
   if(!recs.length){ D.diag['dinii']='0件（また来たい点数の列に数値がありません）'; return false; }
   D.dinii=recs; D.diag['dinii']='OK '+recs.length+'件'; return true;
