@@ -1086,6 +1086,15 @@ function viewDeposit(){
     <span class="period-label">現金売上（入金予定）と ATM入金の照合 ／ ${esc(scopeLabel)}</span>
   </div>`+storeSegHtml();
 
+  // 🔧 診断モード（URLに ?debug=1 を付けた時だけ表示）
+  if(typeof location!=='undefined' && new URLSearchParams(location.search).has('debug')){
+    const dm=D.deposit.filter(r=>r.t>=mS&&r.t<=mE).sort((a,b)=>a.t-b.t);
+    h+=`<div class="panel"><div class="panel-head"><div><h3>🔧 診断：今月の入金データ（生）</h3><div class="sub">入金総件数 ${D.deposit.length} 件 ／ 診断 ${esc(D.diag.deposit||'(なし)')}</div></div></div>
+    <div class="scroll-x"><table class="tbl"><thead><tr><th>日付</th><th>店舗（生）</th><th>正規化</th><th>スコープ内</th><th>金額</th></tr></thead><tbody>`;
+    dm.forEach(r=>{ const dt=new Date(r.t); h+=`<tr><td>${dt.getMonth()+1}/${dt.getDate()}</td><td>${esc(JSON.stringify(r.store))}</td><td>${esc(normStore(r.store))}</td><td>${tKey.has(normStore(r.store))?'○':'×'}</td><td>${yen(r.amount)}</td></tr>`; });
+    h+=`</tbody></table></div><div class="sub">スコープ内の店舗: ${esc([...tKey].join(' / '))}</div></div>`;
+  }
+
   // サマリーカード
   const unpaid=tC-tD;
   h+=`<div class="kpi-grid">
