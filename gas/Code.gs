@@ -38,7 +38,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'pl-dinii-v3', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'pl-dinii-v4', time: new Date().toISOString() });
     setupIfNeeded();
     if (action === 'login')  return out(login(p));
     if (action === 'logout') return out(logout(p));
@@ -285,7 +285,7 @@ var KEEP_COLUMNS = {
   media:   ['店舗名', '店舗', '営業日', '日付', '媒体', '人数', '客数', '純売上', '総売上', '売上'],
   deposit: ['店舗名', '店舗', '日付', '営業日', '入金日', '入金額', '入金合計', '入金'],
   review:  ['取得日', '日付', '店舗名', '店舗', '累計', '件数', '平均星', '星', '評価', '前回比'],
-  dinii:   ['タイムスタンプ', '日付', '営業日', '回答日', '店舗名', '店舗', 'また来', 'またき', '点数', '評価']
+  dinii:   ['来店', 'タイムスタンプ', '日付', '営業日', '回答日', '店舗名', '店舗', 'また来', 'またき', '点数', '評価']
 };
 // 残す列のインデックスを求める（見つからなければ全列）
 function keepColumnIdx(header, key) {
@@ -309,7 +309,7 @@ function readSheet(sh, months, key) {
   var header = vals[0];
   var keepIdx = keepColumnIdx(header, key);
   // 日付列（絞り込み用）
-  var di = -1, dkeys = ['日付', '営業日', '取得日', '勤務日', '入金日', '年月日', 'タイムスタンプ'];
+  var di = -1, dkeys = ['日付', '営業日', '取得日', '勤務日', '入金日', '年月日', '来店日', 'タイムスタンプ'];
   for (var c = 0; c < lc && di < 0; c++) {
     for (var k = 0; k < dkeys.length; k++) { if (String(header[c]).indexOf(dkeys[k]) >= 0) { di = c; break; } }
   }

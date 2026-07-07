@@ -259,7 +259,7 @@ function ingestDinii(rows){
   }
   if(hi<0) hi=0;
   const H=rows[hi].map(h=>String(h).trim());
-  const iS=colAny(H,['店舗名','店舗']), iD=colAny(H,['タイムスタンプ','日付','営業日','回答日']);
+  const iS=colAny(H,['店舗名','店舗']), iD=colAny(H,['来店日','来店','日付','営業日','タイムスタンプ','回答日']);  // 来店日時を最優先（回答日時より前）
   let iQ=H.findIndex(h=>/また来|またき/.test(h));
   if(iQ<0&&H.length>6) iQ=6;   // 見出しで見つからなければG列を採用
   if(iS<0||iQ<0){ D.diag['dinii']='列が見つかりません（必要: 店舗名・また来たい点数）／見出し行: '+H.filter(Boolean).join('|'); return false; }
@@ -1776,26 +1776,51 @@ function viewReview(){
 
   // ---- ダイニー来店アンケート（また来たいと思いますか？） ----
   if(D.dinii.length){
-    h+=`<div class="panel"><div class="panel-head"><div><h3>ダイニー来店アンケート「また来たいと思いますか？」（${esc(label)}）</h3>
-      <div class="sub">期間内の回答点数を店舗ごとに平均（全${cnt(D.dinii.length)}件）</div></div></div>
-    <div class="scroll-x"><table class="tbl"><thead><tr><th>店舗</th><th>期間内 平均</th><th>期間内 回答数</th><th>累計 平均</th><th>累計 回答数</th></tr></thead><tbody>`;
-    const expDn=[]; let tSP=0,tNP=0,tSA=0,tNA=0;
     const baseTargets=selName?[selName]:sc;
-    baseTargets.forEach(nm=>{
-      const sp=diniiStats([nm],a,b);
-      const sAll=diniiStats([nm],0,Infinity);
-      tSP+=(sp.avg||0)*sp.count; tNP+=sp.count; tSA+=(sAll.avg||0)*sAll.count; tNA+=sAll.count;
-      h+=`<tr><td>${esc(nm)}</td><td>${sp.avg!=null?sp.avg.toFixed(2):'—'}</td><td>${cnt(sp.count)}件</td>
-        <td>${sAll.avg!=null?sAll.avg.toFixed(2):'—'}</td><td>${cnt(sAll.count)}件</td></tr>`;
-      expDn.push([nm,sp.avg!=null?sp.avg.toFixed(2):'',sp.count,sAll.avg!=null?sAll.avg.toFixed(2):'',sAll.count]);
-    });
-    if(baseTargets.length>1){
-      h+=`<tr class="total"><td>${sc.length===allStores().length?'全店平均':'担当店舗平均'}</td>
-        <td>${tNP>0?(tSP/tNP).toFixed(2):'—'}</td><td>${cnt(tNP)}件</td>
-        <td>${tNA>0?(tSA/tNA).toFixed(2):'—'}</td><td>${cnt(tNA)}件</td></tr>`;
+    const monthly=(P==='year'||span>45);   // 年間・長い期間指定 → 月ごとの点数推移マトリクス
+    if(monthly){
+      h+=`<div class="panel"><div class="panel-head"><div><h3>ダイニー「また来たいと思いますか？」月別推移（${esc(label)}）</h3>
+        <div class="sub">各月の回答平均（下段は回答数）／ 来店日時ベース</div></div></div>
+      <div class="scroll-x"><table class="tbl"><thead><tr><th>店舗</th>${buckets.map(bk=>`<th>${esc(bk.label)}</th>`).join('')}<th>期間計</th></tr></thead><tbody>`;
+      const expDn=[];
+      baseTargets.forEach(nm=>{
+        const cells=buckets.map(bk=>diniiStats([nm],bk.start,bk.end));
+        const tot=diniiStats([nm],a,b);
+        h+=`<tr><td>${esc(nm)}</td>${cells.map(c2=>`<td>${c2.count>0?c2.avg.toFixed(2)+'<br><span class="mut" style="font-size:10px">'+cnt(c2.count)+'件</span>':'<span class="mut">—</span>'}</td>`).join('')}
+          <td style="font-weight:700">${tot.count>0?tot.avg.toFixed(2)+'<br><span class="mut" style="font-size:10px;font-weight:400">'+cnt(tot.count)+'件</span>':'—'}</td></tr>`;
+        expDn.push([nm].concat(cells.map(c2=>c2.count>0?c2.avg.toFixed(2)+'('+c2.count+'件)':'')).concat([tot.count>0?tot.avg.toFixed(2)+'('+tot.count+'件)':'']));
+      });
+      if(baseTargets.length>1){
+        const tCells=buckets.map(bk=>diniiStats(baseTargets,bk.start,bk.end));
+        const tTot=diniiStats(baseTargets,a,b);
+        h+=`<tr class="total"><td>${sc.length===allStores().length?'全店平均':'担当店舗平均'}</td>
+          ${tCells.map(c2=>`<td>${c2.count>0?c2.avg.toFixed(2)+'<br><span class="mut" style="font-size:10px;font-weight:400">'+cnt(c2.count)+'件</span>':'—'}</td>`).join('')}
+          <td>${tTot.count>0?tTot.avg.toFixed(2)+'<br><span class="mut" style="font-size:10px;font-weight:400">'+cnt(tTot.count)+'件</span>':'—'}</td></tr>`;
+        expDn.push(['全体'].concat(tCells.map(c2=>c2.count>0?c2.avg.toFixed(2)+'('+c2.count+'件)':'')).concat([tTot.count>0?tTot.avg.toFixed(2)+'('+tTot.count+'件)':'']));
+      }
+      h+=`</tbody></table></div></div>`;
+      EXPORT.push({ title:'ダイニー月別推移（'+label+'）', headers:['店舗'].concat(buckets.map(bk=>bk.label)).concat(['期間計']), rows:expDn });
+    } else {
+      h+=`<div class="panel"><div class="panel-head"><div><h3>ダイニー来店アンケート「また来たいと思いますか？」（${esc(label)}）</h3>
+        <div class="sub">期間内の回答点数を店舗ごとに平均（来店日時ベース・全${cnt(D.dinii.length)}件）</div></div></div>
+      <div class="scroll-x"><table class="tbl"><thead><tr><th>店舗</th><th>期間内 平均</th><th>期間内 回答数</th><th>累計 平均</th><th>累計 回答数</th></tr></thead><tbody>`;
+      const expDn=[]; let tSP=0,tNP=0,tSA=0,tNA=0;
+      baseTargets.forEach(nm=>{
+        const sp=diniiStats([nm],a,b);
+        const sAll=diniiStats([nm],0,Infinity);
+        tSP+=(sp.avg||0)*sp.count; tNP+=sp.count; tSA+=(sAll.avg||0)*sAll.count; tNA+=sAll.count;
+        h+=`<tr><td>${esc(nm)}</td><td>${sp.avg!=null?sp.avg.toFixed(2):'—'}</td><td>${cnt(sp.count)}件</td>
+          <td>${sAll.avg!=null?sAll.avg.toFixed(2):'—'}</td><td>${cnt(sAll.count)}件</td></tr>`;
+        expDn.push([nm,sp.avg!=null?sp.avg.toFixed(2):'',sp.count,sAll.avg!=null?sAll.avg.toFixed(2):'',sAll.count]);
+      });
+      if(baseTargets.length>1){
+        h+=`<tr class="total"><td>${sc.length===allStores().length?'全店平均':'担当店舗平均'}</td>
+          <td>${tNP>0?(tSP/tNP).toFixed(2):'—'}</td><td>${cnt(tNP)}件</td>
+          <td>${tNA>0?(tSA/tNA).toFixed(2):'—'}</td><td>${cnt(tNA)}件</td></tr>`;
+      }
+      h+=`</tbody></table></div></div>`;
+      EXPORT.push({ title:'ダイニー来店アンケート（'+label+'）', headers:['店舗','期間内平均','期間内回答数','累計平均','累計回答数'], rows:expDn });
     }
-    h+=`</tbody></table></div></div>`;
-    EXPORT.push({ title:'ダイニー来店アンケート（'+label+'）', headers:['店舗','期間内平均','期間内回答数','累計平均','累計回答数'], rows:expDn });
     // 期間内の推移（回答に日付がある場合のみ・口コミと同じバケット）
     if(D.dinii.some(r2=>r2.t>0)){
       const dseries=baseTargets.map((nm,i)=>({ name:nm, color:PALETTE[i%PALETTE.length],
