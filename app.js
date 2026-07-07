@@ -1035,8 +1035,10 @@ function viewAnalysis(){
 }
 
 /* ---------------- 入金管理 ---------------- */
-// 店舗名のゆらぎ（半角/全角スペース・全角英数など）を吸収して照合するための正規化
-function normStore(s){ return String(s==null?'':s).normalize('NFKC').replace(/[\s　]/g,'').toLowerCase(); }
+// 店舗名のゆらぎを吸収して照合するための正規化。
+// 意味のある文字（英数・ひらがな・カタカナ・漢字）だけ残し、
+// 空白・記号・ゼロ幅スペースなどの「見えない文字」は全て除去する（自動取込の混入対策）。
+function normStore(s){ return String(s==null?'':s).normalize('NFKC').replace(/[^0-9A-Za-z぀-ヿ㐀-鿿豈-﫿]/g,'').toLowerCase(); }
 function depMonthDate(){
   if(S.depMonth){ const p=S.depMonth.split('-'); return new Date(+p[0],+p[1]-1,1); }
   const ref=D.refDate||new Date(); return new Date(ref.getFullYear(),ref.getMonth(),1);
