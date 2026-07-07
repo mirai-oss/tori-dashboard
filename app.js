@@ -1574,18 +1574,63 @@ function viewPL(){
     <div class="kpi"><div class="lb">営業利益</div><div class="vl" style="color:${op>=0?'#4c7d5c':'#b5502f'}">${yen(op)}</div><div class="yy ${mom(op,opPrv).cls}">${pct(op)} ／ ${mom(op,opPrv).t}</div></div>
   </div>`;
 
-  // DB_PL未接続/当月データなしの案内
+  // DB_PL未接続/当月データなしの案内（未受信か・受信したが取り込めないかを明示）
   const plReceived=(D.receivedKeys||[]).some(k=>isPLKey(k));
+  const plLive=!!(S.auth&&S.auth.token);
   if(!D.pl.length){
     const diag=D.diag&&D.diag['PL'];
-    h+=`<div class="note-box no-print" style="${plReceived&&diag&&diag.indexOf('OK')!==0?'border-color:#e8cfc2;background:#faf0ec':''}">
-      ${plReceived&&diag&&diag.indexOf('OK')!==0?`<b style="color:#b5502f">⚠ 「DB_PL」シートは受信しましたが取り込めていません。</b> 取込結果：${esc(diag)}<br>`:
-        `<b>経費（家賃・水光熱費など）はまだ未接続です。</b>下のPLは自動取得できる項目（売上・原価・人件費・広告費）のみで計算しています。<br>`}
+    let cause='';
+    if(plLive&&plReceived&&diag&&diag.indexOf('OK')!==0){
+      cause=`<b style="color:#b5502f">⚠ 「DB_PL」シートは受信しましたが取り込めていません。</b> 取込結果：${esc(diag)}<br>
+        1行目の見出しに <code>年月</code>・<code>勘定科目</code>・<code>金額</code> が含まれているか、2行目以降の年月が <code>2026/07</code> 形式かを確認してください。<br>`;
+    } else if(plLive&&!plReceived){
+      cause=`<b style="color:#b5502f">⚠ 「DB_PL」シートを受信できていません。</b><br>
+        チェック：①タブ名が正確に <code>DB_PL</code>（DBのあとに半角アンダーバー「_」、PLは半角大文字）か　②別名のタブなら「接続設定」に <code>pl</code> キーで実シート名を登録し「有効」を<code>TRUE</code>に　③保存後1分待つ／「↻更新」<br>
+        受信済みキー：${esc((D.receivedKeys||[]).join(' , ')||'なし')}<br>`;
+    } else {
+      cause=`<b>経費（家賃・水光熱費など）はまだ未接続です。</b>下のPLは自動取得できる項目（売上・原価・人件費・広告費）のみで計算しています。<br>`;
+    }
+    h+=`<div class="note-box no-print" style="${plLive&&(!plReceived||(diag&&diag.indexOf('OK')!==0))?'border-color:#e8cfc2;background:#faf0ec':''}">
+      ${cause}
       スプレッドシートの <code>DB_PL</code> タブに、1行目 <code>年月 / 店舗名 / 勘定科目 / 区分 / 金額 / メモ</code>、2行目以降に
       <code>2026/07 ｜ 鳥一代 本店 ｜ 家賃 ｜ R ｜ 450000</code> のように月次経費を入力すると自動で反映されます。<br>
       区分: <b>F</b>=仕入れ ／ <b>L</b>=人件費 ／ <b>A</b>=広告 ／ <b>R</b>=家賃 ／ <b>O</b>=他（店舗名空欄＝全社共通経費）</div>`;
   } else if(!exCur.total){
     h+=`<div class="note-box no-print">${mLabel}分の経費（DB_PL）はまだ入力されていません。売上・原価・人件費・広告費のみで計算しています。</div>`;
+  }
+
+  // ---- 月別損益（年間・45日超の期間指定のとき：合計ではなく月別で見せる） ----
+  const spanDays=Math.round((mE-mS)/86400000)+1;
+  if(P==='year'||(P==='custom'&&spanDays>45)){
+    const mrows=[]; let mCur=new Date(new Date(mS).getFullYear(),new Date(mS).getMonth(),1);
+    const multiYear=new Date(mS).getFullYear()!==new Date(mE).getFullYear();
+    while(dayMs(mCur)<=mE){
+      const a2=Math.max(dayMs(mCur),mS), b2=Math.min(dayMs(new Date(mCur.getFullYear(),mCur.getMonth()+1,0)),mE);
+      const c2=stat(scopeSet,a2,b2,null);
+      const p2=plAgg(scopeSet,selN,a2,b2);
+      const ad2=adAgg(scopeSet,a2,b2).ad+p2.catTotal.A;
+      const cost2=c2.cost+p2.catTotal.F, labor2=c2.labor+p2.catTotal.L;
+      const g2=c2.sales-cost2, e2=p2.catTotal.R+p2.catTotal.O;
+      mrows.push({ label:(multiYear?String(mCur.getFullYear()).slice(2)+'/':'')+(mCur.getMonth()+1)+'月',
+        sales:c2.sales, cost:cost2, gross:g2, labor:labor2, ad:ad2, exp:e2, op:g2-labor2-ad2-e2 });
+      mCur=new Date(mCur.getFullYear(),mCur.getMonth()+1,1);
+    }
+    h+=`<div class="panel"><div class="panel-head"><div><h3>月別損益（${mLabel} ／ ${esc(scopeLabel)}）</h3>
+      <div class="sub">売上高〜営業利益を月ごとに表示（区分F/L/Aの手入力分も各月に合算）</div></div></div>
+    <div class="scroll-x"><table class="tbl"><thead><tr><th>月</th><th>売上高</th><th>原価(F)</th><th>粗利</th><th>人件費(L)</th><th>広告費(A)</th><th>家賃・他(R+O)</th><th>営業利益</th><th>利益率</th></tr></thead><tbody>`;
+    const expM=[];
+    const vfmt=(n)=>n===0?'—':(n<0?'▲'+yen(-n).slice(1):yen(n));
+    mrows.forEach(r2=>{
+      const orate=r2.sales>0?(r2.op/r2.sales*100).toFixed(1)+'%':'—';
+      h+=`<tr><td>${esc(r2.label)}</td><td>${vfmt(r2.sales)}</td><td>${vfmt(r2.cost)}</td><td>${vfmt(r2.gross)}</td><td>${vfmt(r2.labor)}</td><td>${vfmt(r2.ad)}</td><td>${vfmt(r2.exp)}</td>
+        <td class="${r2.op>=0?'pos':'neg'}" style="font-weight:700">${r2.op<0?'▲'+yen(-r2.op).slice(1):yen(r2.op)}</td><td class="${r2.op>=0?'pos':'neg'}">${orate}</td></tr>`;
+      expM.push([r2.label,Math.round(r2.sales),Math.round(r2.cost),Math.round(r2.gross),Math.round(r2.labor),Math.round(r2.ad),Math.round(r2.exp),Math.round(r2.op),orate]);
+    });
+    const tt=mrows.reduce((o,r2)=>{ o.sales+=r2.sales;o.cost+=r2.cost;o.gross+=r2.gross;o.labor+=r2.labor;o.ad+=r2.ad;o.exp+=r2.exp;o.op+=r2.op; return o; },{sales:0,cost:0,gross:0,labor:0,ad:0,exp:0,op:0});
+    h+=`<tr class="total"><td>合計</td><td>${yen(tt.sales)}</td><td>${yen(tt.cost)}</td><td>${yen(tt.gross)}</td><td>${yen(tt.labor)}</td><td>${yen(tt.ad)}</td><td>${yen(tt.exp)}</td>
+      <td class="${tt.op>=0?'pos':'neg'}">${tt.op<0?'▲'+yen(-tt.op).slice(1):yen(tt.op)}</td><td>${tt.sales>0?(tt.op/tt.sales*100).toFixed(1)+'%':'—'}</td></tr>`;
+    h+=`</tbody></table></div></div>`;
+    EXPORT.push({ title:'月別損益（'+mLabel+'／'+scopeLabel+'）', headers:['月','売上高','原価(F)','粗利','人件費(L)','広告費(A)','家賃・他(R+O)','営業利益','利益率'], rows:expM });
   }
 
   // ---- PL表（区分ごとにセクション表示: F=原価 / L=人件費 / A=広告 / R=家賃 / O=他） ----
@@ -1700,7 +1745,12 @@ function viewReview(){
     const yy=+(S.revYear||ref.getFullYear());
     s=new Date(yy,0,1); e=(yy===ref.getFullYear())?new Date(ref.getFullYear(),ref.getMonth(),ref.getDate()):new Date(yy,11,31);
     label=yy+'年（1/1〜'+(e.getMonth()+1)+'/'+e.getDate()+'）';
-    const years=[...new Set(D.review.map(x=>new Date(x.t).getFullYear()).filter(v=>v>2000))].sort();
+    // 年の選択肢は売上・口コミ・ダイニー全データの年から生成
+    const years=[...new Set([].concat(
+      D.daily.map(x=>new Date(x.t).getFullYear()),
+      D.review.map(x=>new Date(x.t).getFullYear()),
+      D.dinii.filter(x=>x.t>0).map(x=>new Date(x.t).getFullYear())
+    ).filter(v=>v>2000))].sort();
     if(!years.length) years.push(ref.getFullYear());
     ctrlHtml=`<select onchange="App.set('revYear',this.value)">${years.map(v=>`<option ${String(yy)===String(v)?'selected':''}>${v}</option>`).join('')}</select>`;
   } else if(P==='custom'){
@@ -1776,50 +1826,55 @@ function viewReview(){
 
   // ---- ダイニー来店アンケート（また来たいと思いますか？） ----
   if(D.dinii.length){
-    const baseTargets=selName?[selName]:sc;
+    // 期間内平均の高い順にランキング（回答なしは最後）
+    const ranked=(selName?[selName]:sc).map(nm=>({nm, tot:diniiStats([nm],a,b)}))
+      .sort((x,y)=>{ const ax=x.tot.count>0?x.tot.avg:-1, ay=y.tot.count>0?y.tot.avg:-1; return ay-ax || y.tot.count-x.tot.count; });
+    const baseTargets=ranked.map(r2=>r2.nm);
+    const multi=baseTargets.length>1;
+    const rankTag=(i)=>multi?`<span class="mut" style="font-size:10.5px;margin-right:6px">${i+1}位</span>`:'';
     const monthly=(P==='year'||span>45);   // 年間・長い期間指定 → 月ごとの点数推移マトリクス
     if(monthly){
       h+=`<div class="panel"><div class="panel-head"><div><h3>ダイニー「また来たいと思いますか？」月別推移（${esc(label)}）</h3>
-        <div class="sub">各月の回答平均（下段は回答数）／ 来店日時ベース</div></div></div>
-      <div class="scroll-x"><table class="tbl"><thead><tr><th>店舗</th>${buckets.map(bk=>`<th>${esc(bk.label)}</th>`).join('')}<th>期間計</th></tr></thead><tbody>`;
+        <div class="sub">各月の回答平均（下段は回答数）／ 来店日時ベース${multi?' ／ 期間平均の高い順':''}</div></div></div>
+      <div class="scroll-x"><table class="tbl"><thead><tr>${multi?'<th>順位</th>':''}<th>店舗</th>${buckets.map(bk=>`<th>${esc(bk.label)}</th>`).join('')}<th>期間計</th></tr></thead><tbody>`;
       const expDn=[];
-      baseTargets.forEach(nm=>{
+      ranked.forEach((r2,i)=>{
+        const nm=r2.nm, tot=r2.tot;
         const cells=buckets.map(bk=>diniiStats([nm],bk.start,bk.end));
-        const tot=diniiStats([nm],a,b);
-        h+=`<tr><td>${esc(nm)}</td>${cells.map(c2=>`<td>${c2.count>0?c2.avg.toFixed(2)+'<br><span class="mut" style="font-size:10px">'+cnt(c2.count)+'件</span>':'<span class="mut">—</span>'}</td>`).join('')}
+        h+=`<tr>${multi?`<td style="font-weight:700">${i+1}</td>`:''}<td>${esc(nm)}</td>${cells.map(c2=>`<td>${c2.count>0?c2.avg.toFixed(2)+'<br><span class="mut" style="font-size:10px">'+cnt(c2.count)+'件</span>':'<span class="mut">—</span>'}</td>`).join('')}
           <td style="font-weight:700">${tot.count>0?tot.avg.toFixed(2)+'<br><span class="mut" style="font-size:10px;font-weight:400">'+cnt(tot.count)+'件</span>':'—'}</td></tr>`;
-        expDn.push([nm].concat(cells.map(c2=>c2.count>0?c2.avg.toFixed(2)+'('+c2.count+'件)':'')).concat([tot.count>0?tot.avg.toFixed(2)+'('+tot.count+'件)':'']));
+        expDn.push([multi?i+1:'',nm].concat(cells.map(c2=>c2.count>0?c2.avg.toFixed(2)+'('+c2.count+'件)':'')).concat([tot.count>0?tot.avg.toFixed(2)+'('+tot.count+'件)':'']));
       });
-      if(baseTargets.length>1){
+      if(multi){
         const tCells=buckets.map(bk=>diniiStats(baseTargets,bk.start,bk.end));
         const tTot=diniiStats(baseTargets,a,b);
-        h+=`<tr class="total"><td>${sc.length===allStores().length?'全店平均':'担当店舗平均'}</td>
+        h+=`<tr class="total"><td></td><td>${sc.length===allStores().length?'全店平均':'担当店舗平均'}</td>
           ${tCells.map(c2=>`<td>${c2.count>0?c2.avg.toFixed(2)+'<br><span class="mut" style="font-size:10px;font-weight:400">'+cnt(c2.count)+'件</span>':'—'}</td>`).join('')}
           <td>${tTot.count>0?tTot.avg.toFixed(2)+'<br><span class="mut" style="font-size:10px;font-weight:400">'+cnt(tTot.count)+'件</span>':'—'}</td></tr>`;
-        expDn.push(['全体'].concat(tCells.map(c2=>c2.count>0?c2.avg.toFixed(2)+'('+c2.count+'件)':'')).concat([tTot.count>0?tTot.avg.toFixed(2)+'('+tTot.count+'件)':'']));
+        expDn.push(['','全体'].concat(tCells.map(c2=>c2.count>0?c2.avg.toFixed(2)+'('+c2.count+'件)':'')).concat([tTot.count>0?tTot.avg.toFixed(2)+'('+tTot.count+'件)':'']));
       }
       h+=`</tbody></table></div></div>`;
-      EXPORT.push({ title:'ダイニー月別推移（'+label+'）', headers:['店舗'].concat(buckets.map(bk=>bk.label)).concat(['期間計']), rows:expDn });
+      EXPORT.push({ title:'ダイニー月別推移（'+label+'）', headers:['順位','店舗'].concat(buckets.map(bk=>bk.label)).concat(['期間計']), rows:expDn });
     } else {
       h+=`<div class="panel"><div class="panel-head"><div><h3>ダイニー来店アンケート「また来たいと思いますか？」（${esc(label)}）</h3>
-        <div class="sub">期間内の回答点数を店舗ごとに平均（来店日時ベース・全${cnt(D.dinii.length)}件）</div></div></div>
-      <div class="scroll-x"><table class="tbl"><thead><tr><th>店舗</th><th>期間内 平均</th><th>期間内 回答数</th><th>累計 平均</th><th>累計 回答数</th></tr></thead><tbody>`;
+        <div class="sub">期間内の回答点数を店舗ごとに平均（来店日時ベース・全${cnt(D.dinii.length)}件）${multi?' ／ 期間平均の高い順':''}</div></div></div>
+      <div class="scroll-x"><table class="tbl"><thead><tr>${multi?'<th>順位</th>':''}<th>店舗</th><th>期間内 平均</th><th>期間内 回答数</th><th>累計 平均</th><th>累計 回答数</th></tr></thead><tbody>`;
       const expDn=[]; let tSP=0,tNP=0,tSA=0,tNA=0;
-      baseTargets.forEach(nm=>{
-        const sp=diniiStats([nm],a,b);
+      ranked.forEach((r2,i)=>{
+        const nm=r2.nm, sp=r2.tot;
         const sAll=diniiStats([nm],0,Infinity);
         tSP+=(sp.avg||0)*sp.count; tNP+=sp.count; tSA+=(sAll.avg||0)*sAll.count; tNA+=sAll.count;
-        h+=`<tr><td>${esc(nm)}</td><td>${sp.avg!=null?sp.avg.toFixed(2):'—'}</td><td>${cnt(sp.count)}件</td>
+        h+=`<tr>${multi?`<td style="font-weight:700">${i+1}</td>`:''}<td>${esc(nm)}</td><td>${sp.avg!=null?sp.avg.toFixed(2):'—'}</td><td>${cnt(sp.count)}件</td>
           <td>${sAll.avg!=null?sAll.avg.toFixed(2):'—'}</td><td>${cnt(sAll.count)}件</td></tr>`;
-        expDn.push([nm,sp.avg!=null?sp.avg.toFixed(2):'',sp.count,sAll.avg!=null?sAll.avg.toFixed(2):'',sAll.count]);
+        expDn.push([multi?i+1:'',nm,sp.avg!=null?sp.avg.toFixed(2):'',sp.count,sAll.avg!=null?sAll.avg.toFixed(2):'',sAll.count]);
       });
-      if(baseTargets.length>1){
-        h+=`<tr class="total"><td>${sc.length===allStores().length?'全店平均':'担当店舗平均'}</td>
+      if(multi){
+        h+=`<tr class="total"><td></td><td>${sc.length===allStores().length?'全店平均':'担当店舗平均'}</td>
           <td>${tNP>0?(tSP/tNP).toFixed(2):'—'}</td><td>${cnt(tNP)}件</td>
           <td>${tNA>0?(tSA/tNA).toFixed(2):'—'}</td><td>${cnt(tNA)}件</td></tr>`;
       }
       h+=`</tbody></table></div></div>`;
-      EXPORT.push({ title:'ダイニー来店アンケート（'+label+'）', headers:['店舗','期間内平均','期間内回答数','累計平均','累計回答数'], rows:expDn });
+      EXPORT.push({ title:'ダイニー来店アンケート（'+label+'）', headers:['順位','店舗','期間内平均','期間内回答数','累計平均','累計回答数'], rows:expDn });
     }
     // 期間内の推移（回答に日付がある場合のみ・口コミと同じバケット）
     if(D.dinii.some(r2=>r2.t>0)){
