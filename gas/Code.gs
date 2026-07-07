@@ -149,6 +149,33 @@ function accountRows() {
   return rows;
 }
 
+// === セッション保存（消えない場所=ScriptProperties に保存）===
+function sessionStore(){ return PropertiesService.getScriptProperties(); }
+function sessionPut(token, sess){
+  var exp = new Date().getTime() + TOKEN_HOURS * 3600 * 1000;
+  sessionStore().setProperty('tok_' + token, JSON.stringify({ sess: sess, exp: exp }));
+}
+function sessionGet(token){
+  var store = sessionStore();
+  var raw = store.getProperty('tok_' + token);
+  if (!raw) return null;
+  var obj; try { obj = JSON.parse(raw); } catch (e) { return null; }
+  if (!obj.exp || new Date().getTime() > obj.exp) { store.deleteProperty('tok_' + token); return null; }
+  obj.exp = new Date().getTime() + TOKEN_HOURS * 3600 * 1000; // 使うたびに期限を延長
+  store.setProperty('tok_' + token, JSON.stringify(obj));
+  return obj.sess;
+}
+function sessionDel(token){ sessionStore().deleteProperty('tok_' + token); }
+function sessionCleanup(){ // 期限切れの古いトークンを掃除
+  var store = sessionStore(), all = store.getProperties(), now = new Date().getTime();
+  for (var k in all) {
+    if (k.indexOf('tok_') === 0) {
+      try { var o = JSON.parse(all[k]); if (!o.exp || now > o.exp) store.deleteProperty(k); }
+      catch (e) { store.deleteProperty(k); }
+    }
+  }
+}
+
 function login(p) {
   var id = String(p.id || '').trim();
   var pw = String(p.pw || '');
@@ -165,9 +192,10 @@ function login(p) {
     var a = rows[i];
     if (a.id === id && a.pw === pw) {
       if (!a.active) return { ok: false, error: 'このアカウントは無効化されています' };
+      sessionCleanup();
       var token = Utilities.getUuid();
       var sess = { id: a.id, name: a.name, role: a.role, stores: a.stores };
-      cache.put('tok_' + token, JSON.stringify(sess), TOKEN_HOURS * 3600);
+      sessionPut(token, sess);
       cache.remove(failKey);
       return { ok: true, token: token, account: sess };
     }
@@ -177,19 +205,16 @@ function login(p) {
 }
 
 function logout(p) {
-  if (p.token) CacheService.getScriptCache().remove('tok_' + p.token);
+  if (p.token) sessionDel(p.token);
   return { ok: true };
 }
 
 function requireSession(p) {
   var token = String(p.token || '');
   if (!token) throw new Error('unauthorized');
-  var cache = CacheService.getScriptCache();
-  var raw = cache.get('tok_' + token);
-  if (!raw) throw new Error('unauthorized');
-  // 利用のたびに有効期限を延長
-  cache.put('tok_' + token, raw, TOKEN_HOURS * 3600);
-  return JSON.parse(raw);
+  var sess = sessionGet(token);
+  if (!sess) throw new Error('unauthorized');
+  return sess;
 }
 
 function isAdmin(session) {
