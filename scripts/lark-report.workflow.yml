@@ -1,0 +1,74 @@
+name: Lark自動レポート（日報・週報・月報）
+
+on:
+  schedule:
+    # UTC指定（JST = UTC+9）
+    - cron: '0 3 * * *'            # 日報   毎日 12:00 JST（前日分）
+    - cron: '10 3 1,8,15,22,29 * *' # 週報   週ブロック明けの 12:10 JST（直前の週分）
+    - cron: '20 3 1 * *'           # 月報   毎月1日 12:20 JST（前月分）
+  workflow_dispatch:
+    inputs:
+      kind:
+        description: 'レポート種別'
+        required: true
+        default: 'daily'
+        type: choice
+        options: [daily, weekly, monthly]
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Secrets設定チェック（未設定ならスキップ）
+        run: |
+          if [ -z "${{ secrets.LARK_WEBHOOK }}" ] || [ -z "${{ secrets.DASH_ID }}" ]; then
+            echo "::notice::LARK_WEBHOOK / DASH_ID が未設定のためスキップします（Lark日報設定.md を参照）"
+            echo "SKIP=1" >> "$GITHUB_ENV"
+          fi
+
+      - name: レポート種別を決定
+        if: env.SKIP != '1'
+        run: |
+          K="${{ github.event.inputs.kind }}"
+          if [ -z "$K" ]; then
+            case "${{ github.event.schedule }}" in
+              '0 3 * * *') K=daily ;;
+              '10 3 1,8,15,22,29 * *') K=weekly ;;
+              '20 3 1 * *') K=monthly ;;
+              *) K=daily ;;
+            esac
+          fi
+          echo "REPORT_KIND=$K" >> "$GITHUB_ENV"
+          echo "kind=$K"
+
+      - name: puppeteer をインストール
+        if: env.SKIP != '1'
+        run: npm install puppeteer --no-save
+
+      - name: レポート生成 → Lark送信
+        if: env.SKIP != '1'
+        env:
+          REPORT_KIND: ${{ env.REPORT_KIND }}
+          DASH_ID: ${{ secrets.DASH_ID }}
+          DASH_PW: ${{ secrets.DASH_PW }}
+          LARK_WEBHOOK: ${{ secrets.LARK_WEBHOOK }}
+          LARK_APP_ID: ${{ secrets.LARK_APP_ID }}
+          LARK_APP_SECRET: ${{ secrets.LARK_APP_SECRET }}
+          LARK_DOMAIN: ${{ secrets.LARK_DOMAIN }}
+        run: node scripts/lark-report.mjs
+
+      - name: スクリーンショットを保存（確認用）
+        if: always() && env.SKIP != '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-${{ env.REPORT_KIND }}-${{ github.run_id }}
+          path: report.png
+          if-no-files-found: ignore
+          retention-days: 14

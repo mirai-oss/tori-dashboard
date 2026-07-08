@@ -102,6 +102,7 @@ const S = {
   revPeriod:'month', revMonth:'', revWeekIdx:null, revYear:'', revStart:'', revEnd:'',
   aMetric:'sales', aGran:'day', aBreak:'total', aRange:'30', aYoY:true,
   aiQ:'', aiResult:null, dataVersion:'',
+  reportMode:null,   // {kind:'daily'|'weekly'|'monthly', date:'YYYY-MM-DD'} Lark日報用の1枚カード表示
   accounts:null, accErr:'', modal:null, loginErr:'',
 };
 const D = { daily:[], media:[], deposit:[], review:[], ad:[], pl:[], dinii:[], extra:{}, storeAlias:{}, storeParent:{}, refDate:null, maxDate:null };
@@ -673,6 +674,7 @@ function downloadPdf(){ window.print(); }
 function render(){
   const root=$('root');
   if(!S.auth){ root.innerHTML=viewLogin(); return; }
+  if(S.reportMode){ root.innerHTML=viewReport(S.reportMode.kind, S.reportMode.date); return; }
   EXPORT=[];
   const tabs=myTabs();
   if(!tabs.includes(S.tab)) S.tab=tabs[0];
@@ -1891,6 +1893,123 @@ function viewReview(){
   return h;
 }
 
+/* ---------------- 日報/週報/月報カード（Lark配信用・1枚画像レイアウト） ---------------- */
+// 対象期間のレポートデータを生成（店舗別・売上降順）
+function reportData(kind, dateStr){
+  const ref0=D.refDate||new Date();
+  const pI=(s2)=>{const p2=String(s2).split('-');return new Date(+p2[0],+p2[1]-1,+p2[2]);};
+  const ref=dateStr?pI(dateStr):new Date(ref0.getFullYear(),ref0.getMonth(),ref0.getDate());
+  const stores=allStores();
+  let s,e,ps,pe,title,sub;
+  if(kind==='weekly'){
+    // 月内ブロック週（1-7/8-14/15-21/22-28/29-末）: refを含む週
+    const y=ref.getFullYear(),m=ref.getMonth(),d=ref.getDate();
+    const idx=Math.min(4,Math.floor((d-1)/7));
+    const ld=new Date(y,m+1,0).getDate();
+    const sd=idx*7+1, ed=idx<4?Math.min(sd+6,ld):ld;
+    s=new Date(y,m,sd); e=new Date(y,m,Math.min(ed,d));
+    ps=sub1y(s); pe=sub1y(e);
+    title='週報'; sub=y+'年'+(m+1)+'月 第'+(idx+1)+'週（'+(m+1)+'/'+sd+'〜'+(m+1)+'/'+ed+'）';
+  } else if(kind==='monthly'){
+    const y=ref.getFullYear(),m=ref.getMonth();
+    s=new Date(y,m,1); e=new Date(y,m+1,0);
+    ps=sub1y(s); pe=sub1y(e);
+    title='月報'; sub=y+'年'+(m+1)+'月度（'+(m+1)+'/1〜'+(m+1)+'/'+e.getDate()+'）';
+  } else {
+    s=ref; e=ref;
+    ps=addD(ref,-364); pe=ps;                       // 前年同曜日
+    title='日報'; sub=ref.getFullYear()+'年'+(ref.getMonth()+1)+'月'+ref.getDate()+'日（'+WD[ref.getDay()]+'）';
+  }
+  const a=dayMs(s), b=dayMs(e), pa=dayMs(ps), pb=dayMs(pe);
+  // 月間累計（期間末日まで）
+  const mcS=new Date(e.getFullYear(),e.getMonth(),1);
+  const rows=stores.map(nm=>{
+    const c=stat(null,a,b,nm), pv=stat(null,pa,pb,nm);
+    const cum=stat(null,dayMs(mcS),b,nm), cumPv=stat(null,dayMs(sub1y(mcS)),dayMs(sub1y(e)),nm);
+    return { store:nm, sales:c.sales, prevSales:pv.sales, guests:c.guests,
+      spend:c.guests>0?c.sales/c.guests:0, cost:c.cost, labor:c.labor,
+      cum:cum.sales, cumPrev:cumPv.sales };
+  }).sort((x,y)=>y.sales-x.sales);
+  const tot=rows.reduce((o,r)=>{o.sales+=r.sales;o.prevSales+=r.prevSales;o.guests+=r.guests;o.cost+=r.cost;o.labor+=r.labor;o.cum+=r.cum;o.cumPrev+=r.cumPrev;return o;},
+    {sales:0,prevSales:0,guests:0,cost:0,labor:0,cum:0,cumPrev:0});
+  const data={ kind, title, sub, rows, tot,
+    gen:new Date().toLocaleString('ja-JP',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}) };
+  try{ window.__REPORT_JSON=data; }catch(err){}
+  return data;
+}
+function viewReport(kind, dateStr){
+  if(!D.daily.length) return `<div style="padding:60px;text-align:center;color:#8c8375;font-size:15px" id="report-loading">データ読込中…</div>`;
+  const d=reportData(kind||'daily', dateStr);
+  const yoy=(c,p)=>{ if(!(p>0)) return {t:'—',cls:''}; const v=(c-p)/p*100; return {t:(v>=0?'+':'▲')+Math.abs(v).toFixed(1)+'%', cls:v>=0?'#4c7d5c':'#b5502f'}; };
+  const totYoy=yoy(d.tot.sales,d.tot.prevSales), cumYoy=yoy(d.tot.cum,d.tot.cumPrev);
+  const spend=d.tot.guests>0?d.tot.sales/d.tot.guests:0;
+  const fl=d.tot.sales>0?((d.tot.cost+d.tot.labor)/d.tot.sales*100).toFixed(1)+'%':'—';
+  const showFl=(kind!=='daily'||d.tot.cost>0||d.tot.labor>0);
+  // 店舗別バーチャート（売上降順）
+  const chartRows=d.rows.filter(r=>r.sales>0||r.prevSales>0);
+  const chart=chartRows.length?barChart(chartRows.map(r=>r.store.replace(/[\s　]/,'\n')),
+    [{name:'当期',color:'#3d5163',data:chartRows.map(r=>r.sales)},{name:'前年',color:'#c9b7a0',data:chartRows.map(r=>r.prevSales)}],{twoLine:true}):'';
+  const salesLabel=kind==='monthly'?'月売上':kind==='weekly'?'週売上':'売上';
+  let h=`<div id="report-card" style="width:1080px;margin:0 auto;background:#faf9f5;border:1px solid #e5ddcc;font-family:'Zen Kaku Gothic New',sans-serif;color:#3d3a33">
+    <div style="background:#2a2420;padding:22px 32px;display:flex;align-items:center;gap:16px">
+      <div style="width:44px;height:44px;border-radius:10px;background:#3a332c;display:flex;align-items:center;justify-content:center;font-family:'Shippori Mincho',serif;font-size:24px;color:#c9a86a">鳥</div>
+      <div><div style="font-family:'Shippori Mincho',serif;font-size:21px;color:#f3ede1;letter-spacing:.1em">鳥一代グループ ${esc(d.title)}</div>
+      <div style="font-size:13px;color:#9a8f7c;margin-top:3px">${esc(d.sub)}</div></div>
+      <div style="margin-left:auto;font-size:11px;color:#9a8f7c">自動生成 ${esc(d.gen)}</div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;padding:20px 32px 4px">
+      ${[['全店'+salesLabel,yen(d.tot.sales),'前年比 '+totYoy.t,totYoy.cls],
+         ['客数',cnt(d.tot.guests)+'人','客単価 '+yen(spend),''],
+         showFl?['FL率',fl,'原価+人件費',''] : ['客単価',yen(spend),'',''],
+         [ (kind==='monthly'?'年間累計':'月間累計'),yen(kind==='monthly'?d.tot.sales:d.tot.cum),'前年比 '+(kind==='monthly'?totYoy.t:cumYoy.t),(kind==='monthly'?totYoy.cls:cumYoy.cls)]
+        ].map(k=>`<div style="background:#fff;border:1px solid #efe9dd;border-radius:12px;padding:14px 16px">
+          <div style="font-size:12px;color:#8c8375">${esc(k[0])}</div>
+          <div style="font-size:23px;font-weight:700;margin:4px 0 2px">${k[1]}</div>
+          <div style="font-size:12px;color:${k[3]||'#a99f8c'}">${k[2]}</div></div>`).join('')}
+    </div>
+    <div style="padding:14px 32px 0">${chart?`<div style="background:#fff;border:1px solid #efe9dd;border-radius:12px;padding:14px 16px 6px">
+      <div style="font-size:12.5px;color:#8c8375;margin-bottom:6px">店舗別 ${salesLabel}（■当期 ■前年）</div>${chart}</div>`:''}</div>
+    <div style="padding:14px 32px 20px">
+      <table style="width:100%;border-collapse:collapse;background:#fff;border:1px solid #efe9dd;border-radius:12px;overflow:hidden">
+        <thead><tr style="background:#efe9dd">
+          <th style="text-align:left;padding:9px 14px;font-size:12px;color:#5c5348">店舗</th>
+          <th style="text-align:right;padding:9px 14px;font-size:12px;color:#5c5348">${salesLabel}</th>
+          <th style="text-align:right;padding:9px 14px;font-size:12px;color:#5c5348">前年比</th>
+          <th style="text-align:right;padding:9px 14px;font-size:12px;color:#5c5348">客数</th>
+          <th style="text-align:right;padding:9px 14px;font-size:12px;color:#5c5348">客単価</th>
+          ${kind!=='monthly'?`<th style="text-align:right;padding:9px 14px;font-size:12px;color:#5c5348">月間累計</th>
+          <th style="text-align:right;padding:9px 14px;font-size:12px;color:#5c5348">累計前年比</th>`:`<th style="text-align:right;padding:9px 14px;font-size:12px;color:#5c5348">FL率</th>`}
+        </tr></thead><tbody>`;
+  d.rows.forEach((r,i)=>{
+    const ry=yoy(r.sales,r.prevSales), cy=yoy(r.cum,r.cumPrev);
+    const rfl=r.sales>0?((r.cost+r.labor)/r.sales*100).toFixed(1)+'%':'—';
+    h+=`<tr style="border-top:1px solid #efe9dd${i%2?';background:#fbf9f4':''}">
+      <td style="padding:8px 14px;font-size:13.5px;font-weight:500">${esc(r.store)}</td>
+      <td style="padding:8px 14px;font-size:13.5px;text-align:right;font-variant-numeric:tabular-nums">${yen(r.sales)}</td>
+      <td style="padding:8px 14px;font-size:13px;text-align:right;color:${ry.cls||'#a99f8c'}">${ry.t}</td>
+      <td style="padding:8px 14px;font-size:13.5px;text-align:right">${cnt(r.guests)}人</td>
+      <td style="padding:8px 14px;font-size:13.5px;text-align:right">${yen(r.spend)}</td>
+      ${kind!=='monthly'?`<td style="padding:8px 14px;font-size:13.5px;text-align:right">${yen(r.cum)}</td>
+      <td style="padding:8px 14px;font-size:13px;text-align:right;color:${cy.cls||'#a99f8c'}">${cy.t}</td>`
+      :`<td style="padding:8px 14px;font-size:13.5px;text-align:right">${rfl}</td>`}
+    </tr>`;
+  });
+  h+=`<tr style="border-top:2px solid #d8cfbd;background:#efe9dd;font-weight:700">
+      <td style="padding:9px 14px;font-size:13.5px">全店合計</td>
+      <td style="padding:9px 14px;font-size:13.5px;text-align:right">${yen(d.tot.sales)}</td>
+      <td style="padding:9px 14px;font-size:13px;text-align:right;color:${totYoy.cls||'#5c5348'}">${totYoy.t}</td>
+      <td style="padding:9px 14px;font-size:13.5px;text-align:right">${cnt(d.tot.guests)}人</td>
+      <td style="padding:9px 14px;font-size:13.5px;text-align:right">${yen(spend)}</td>
+      ${kind!=='monthly'?`<td style="padding:9px 14px;font-size:13.5px;text-align:right">${yen(d.tot.cum)}</td>
+      <td style="padding:9px 14px;font-size:13px;text-align:right;color:${cumYoy.cls||'#5c5348'}">${cumYoy.t}</td>`
+      :`<td style="padding:9px 14px;font-size:13.5px;text-align:right">${fl}</td>`}
+    </tr></tbody></table>
+    <div style="font-size:11px;color:#a99f8c;margin-top:10px;text-align:right">鳥一代グループ 経営ダッシュボード ／ ${esc(d.gen)} 自動生成</div>
+    </div></div>
+    <div class="no-print" style="text-align:center;padding:14px"><button class="icon-btn" onclick="App.reportExit()">← ダッシュボードに戻る</button></div>`;
+  return h;
+}
+
 /* ---------------- AI検索 ---------------- */
 // 質問文から店舗を推定（scope内のみ）
 function detectStore(q, allowed){
@@ -2163,6 +2282,8 @@ window.App = {
     S.revMonth=n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0'); render();
   },
   setRevWeek(i){ S.revWeekIdx=i; render(); },
+  report(kind,date){ S.reportMode={kind:kind||'daily',date:date||''}; render(); },
+  reportExit(){ S.reportMode=null; render(); },
   refresh(){ if(S.auth&&S.auth.token) fetchData(); else { loadSampleData(); render(); toast('サンプルデータを再読込しました（API未接続）'); } },
   csv: downloadCsv,
   pdf: downloadPdf,
@@ -2271,6 +2392,11 @@ window.App = {
 /* ---------------- 起動 ---------------- */
 (function init(){
   loadSampleData();
+  // URLパラメータ ?report=daily|weekly|monthly(&date=YYYY-MM-DD) でレポートカード表示（Lark日報の撮影用）
+  try{
+    const q=new URLSearchParams(location.search);
+    if(q.get('report')) S.reportMode={ kind:q.get('report'), date:q.get('date')||'' };
+  }catch(e){}
   try{
     const raw=localStorage.getItem(LS.sess);
     if(raw){
