@@ -274,6 +274,32 @@ function ingestAdFx(rows){
   if(!recs.length){ D.diag['広告効果']='0件'; return false; }
   D.adfx=recs; D.diag['広告効果']='OK '+recs.length+'件'; return true;
 }
+// 予約明細（管理シート💾予約DB: 予約一覧CSV貼り付け）。曜日別・当日予約の時刻分析用
+const isRsvKey=(k)=>/予約DB|予約明細|予約一覧|reserv/i.test(String(k))||String(k)==='予約';
+function ingestRsv(rows){
+  if(!rows||!rows.length) return false;
+  let hi=-1;
+  for(let i=0;i<Math.min(rows.length,5);i++){ const line=rows[i].map(x=>String(x==null?'':x)).join(','); if(/来店日/.test(line)){hi=i;break;} }
+  if(hi<0){ D.diag['予約']='見出し行（来店日）が見つかりません'; return false; }
+  const H=rows[hi].map(h=>String(h).trim());
+  const iD=colOf(H,'来店日'), iT=colOf(H,'来店時間');
+  let iP=H.findIndex(h=>h==='人数'); if(iP<0)iP=H.findIndex(h=>/人数/.test(h)&&!/子/.test(h));
+  const iS=colOf(H,'ステータス'), iW=colAny(H,['受付窓口','経路','媒体']);
+  const iC=colOf(H,'作成日'), iCT=colOf(H,'作成時間');
+  const iSt=H.findIndex(h=>/店舗/.test(h));
+  if(iD<0){ D.diag['予約']='来店日列がありません／見出し行: '+H.filter(Boolean).join('|'); return false; }
+  const hhmm=(v)=>{ const m2=String(v==null?'':v).match(/(\d{1,2}):(\d{2})/); return m2?(+m2[1]+(+m2[2])/60):-1; };
+  const recs=[];
+  for(let i=hi+1;i<rows.length;i++){
+    const c=rows[i]; const t=parseDateStr(c[iD]); if(!t)continue;
+    recs.push({ t, hh:iT>=0?hhmm(c[iT]):-1, n:iP>=0?num(c[iP])||0:0,
+      st:String(iS>=0?c[iS]||'':'').trim(), win:String(iW>=0?c[iW]||'':'').trim(),
+      ct:iC>=0?parseDateStr(c[iC]):0, ch:iCT>=0?hhmm(c[iCT]):-1,
+      store:String(iSt>=0?c[iSt]||'':'').trim() });
+  }
+  if(!recs.length){ D.diag['予約']='0件'; return false; }
+  D.rsv=recs; D.diag['予約']='OK '+recs.length+'件'; return true;
+}
 // 設定単価シート（DB_単価設定: 店舗×媒体の想定客単価）。予想売上＝ネット予約人数×設定単価
 const isTankaKey=(k)=>/単価/.test(String(k))||/tanka|unit_?price/i.test(String(k));
 function ingestTanka(rows){
@@ -409,7 +435,7 @@ function ingestStoreParent(rows){
   return map;
 }
 function ingestSheets(sheets, partial){
-  if(!partial){ D.extra={}; D.diag={}; D.receivedKeys=Object.keys(sheets); D.ad=[]; D.adSrc=''; D.adfx=[]; D.tanka={}; D.pl=[]; D.dinii=[]; D.storeAlias={}; D.storeParent={}; }  // 広告・PL・ダイニー・対応表・親子はフル受信のたびに入れ替え
+  if(!partial){ D.extra={}; D.diag={}; D.receivedKeys=Object.keys(sheets); D.ad=[]; D.adSrc=''; D.adfx=[]; D.tanka={}; D.rsv=[]; D.pl=[]; D.dinii=[]; D.storeAlias={}; D.storeParent={}; }  // 広告・PL・ダイニー・対応表・親子はフル受信のたびに入れ替え
   else { D.receivedKeys=(D.receivedKeys||[]).concat(Object.keys(sheets)); }
   const known=['daily','media','deposit','review','ad','広告'];
   if(!partial){ known.forEach(k=>{ if(!(k in sheets)) D.diag[k]='シート未受信（接続設定のシート名を確認）'; }); }
@@ -423,6 +449,7 @@ function ingestSheets(sheets, partial){
     else if(key==='ad'||key==='広告'){ if(ingestAd(rows)) D.adSrc='sheet'; }
     else if(isAdFxKey(key)) ingestAdFx(rows);
     else if(isTankaKey(key)) ingestTanka(rows);
+    else if(isRsvKey(key)) ingestRsv(rows);
     else if(isPLKey(key)) ingestPL(rows);
     else if(isDiniiKey(key)) ingestDinii(rows);
     else if(isStoreParentKey(key)){ D.storeParent=ingestStoreParent(rows); D.diag[key]='OK '+Object.keys(D.storeParent).length+'件の親子'; }
@@ -1433,7 +1460,8 @@ function viewAd(){
       <b>広告費</b> ← 広告費用対効果_管理シートの「💾広告費DB」を自動取込（転記・IMPORTRANGE不要）。管理シートが空のときはダッシュボード側「DB_広告」シート（確認列チェック行のみ）<br>
       <b>媒体経由売上・来店人数</b> ← 媒体別売上シート（分析_媒体別日次）と媒体名で自動突合（例: 鶏HP→ホットペッパー、匠味GN→ぐるなび）<br>
       <b>総売上（広告費率の分母）</b> ← 日別売上シート（分析_日別店舗）<br>
-      <b>アクセス数・ネット予約（CVR／CPA／予想売上）</b> ← 管理シートの「💾売上DB」を自動取込　<b>設定単価</b> ← 管理シートの「⚙単価設定」タブ（GAS更新で自動作成）。どちらも管理シートが空のときはDB_広告効果／DB_単価設定を使用
+      <b>アクセス数・ネット予約（CVR／CPA／予想売上）</b> ← 管理シートの「💾売上DB」を自動取込　<b>設定単価</b> ← 管理シートの「⚙単価設定」タブ（GAS更新で自動作成）。どちらも管理シートが空のときはDB_広告効果／DB_単価設定を使用<br>
+      <b>予約分析（曜日別・当日予約の時刻）</b> ← 管理シートの「💾予約DB」タブ（予約一覧CSVをそのまま貼り付け。タブはGAS更新で自動作成）
     </div></div>`;
   // KPIカード
   const kA=mom(cur.ad,prv.ad,true), kN=mom(cur.medNet,prv.medNet,false);
@@ -1532,6 +1560,71 @@ function viewAd(){
       ① <code>💾売上DB</code> ＝ 年月／店舗／媒体／アクセス数／予約件数／来店人数／電話数<br>
       ② <code>⚙単価設定</code> ＝ 店舗名／媒体／設定単価（予想売上＝ネット予約人数×設定単価。タブはGAS更新で自動作成）<br>
       ※GAS（Code.gs）を最新版に更新してください。ダッシュボード側の <code>DB_広告効果</code>／<code>DB_単価設定</code> は予備の入力先として残ります。</div></div>`;
+  }
+  // 予約分析（曜日別×当日予約の申込時刻）— 管理シート「💾予約DB」（予約一覧CSV貼り付け）
+  if((D.rsv||[]).length){
+    const rsv=D.rsv.filter(r=>{
+      if(r.t<mS||r.t>mE) return false;
+      if(r.store){ const res=resolveStoreEx(r.store); if(res&&!scopeSet.has(res.parent)) return false; }
+      return true;
+    });
+    if(rsv.length){
+      const isCxl=(st)=>/キャンセル/.test(st);
+      const wnames=['日','月','火','水','木','金','土'];
+      const wd=Array.from({length:7},()=>({grp:0,ppl:0,net:0,same:0,cxl:0}));
+      let tGrp=0,tPpl=0,tNet=0,tSame=0,tCxl=0,tWalk=0;
+      const hist=new Array(24).fill(0); const sameWin={};
+      for(const r of rsv){
+        const w=new Date(r.t).getDay(); const o=wd[w]; const cx=isCxl(r.st); const walk=/ウォークイン/.test(r.win);
+        o.grp++; tGrp++;
+        if(!cx){ o.ppl+=r.n; tPpl+=r.n; }
+        if(cx){ o.cxl++; tCxl++; }
+        if(/ネット/.test(r.win)){ o.net++; tNet++; }
+        if(walk) tWalk++;
+        if(!cx&&!walk&&r.ct&&r.ct===r.t){
+          o.same++; tSame++;
+          if(r.ch>=0&&r.ch<24) hist[Math.floor(r.ch)]++;
+          const wk=r.win||'（不明）'; sameWin[wk]=(sameWin[wk]||0)+1;
+        }
+      }
+      const pc=(x2,z2)=>z2>0?(x2/z2*100).toFixed(0)+'%':'—';
+      const maxGrp=Math.max.apply(null,wd.map(o=>o.grp).concat([1]));
+      h+=`<div class="panel"><div class="panel-head"><div><h3>予約分析：曜日別（${mLabel}${selN?' ／ '+esc(selN):''}）</h3>
+        <div class="sub">出典：管理シート「💾予約DB」全${cnt(rsv.length)}件 ／ 当日予約率 ${pc(tSame,Math.max(tGrp-tCxl-tWalk,0))}（ウォークイン・キャンセル除く）／ キャンセル率 ${pc(tCxl,tGrp)}</div></div></div>
+      <div class="scroll-x"><table class="tbl"><thead><tr><th>曜日</th><th>予約組数</th><th></th><th>人数</th><th>ネット予約</th><th>当日予約</th><th>キャンセル</th><th>キャンセル率</th></tr></thead><tbody>`;
+      const expW=[];
+      [1,2,3,4,5,6,0].forEach(w=>{
+        const o=wd[w];
+        h+=`<tr><td>${wnames[w]}</td><td>${cnt(o.grp)}</td><td style="min-width:120px"><div style="background:#4c7d5c;height:10px;border-radius:3px;width:${Math.round(o.grp/maxGrp*100)}%"></div></td><td>${cnt(o.ppl)}</td><td>${cnt(o.net)}</td><td>${cnt(o.same)}</td><td>${cnt(o.cxl)}</td><td>${pc(o.cxl,o.grp)}</td></tr>`;
+        expW.push([wnames[w],o.grp,o.ppl,o.net,o.same,o.cxl,o.grp>0?(o.cxl/o.grp*100).toFixed(1)+'%':'']);
+      });
+      h+=`<tr class="total"><td>合計</td><td>${cnt(tGrp)}</td><td></td><td>${cnt(tPpl)}</td><td>${cnt(tNet)}</td><td>${cnt(tSame)}</td><td>${cnt(tCxl)}</td><td>${pc(tCxl,tGrp)}</td></tr></tbody></table></div></div>`;
+      EXPORT.push({ title:'予約分析 曜日別（'+mLabel+'）', headers:['曜日','予約組数','人数','ネット予約','当日予約','キャンセル','キャンセル率'], rows:expW });
+      const hmax=Math.max.apply(null,hist.concat([1])), hTot=hist.reduce((a2,b3)=>a2+b3,0);
+      if(hTot>0){
+        let lo=hist.findIndex(v=>v>0), hi2=23; while(hi2>0&&!hist[hi2])hi2--;
+        lo=Math.min(lo,10); hi2=Math.max(hi2,21);
+        const winTxt=Object.keys(sameWin).sort((a2,b3)=>sameWin[b3]-sameWin[a2]).map(k=>esc(k)+' '+sameWin[k]+'件').join('、');
+        h+=`<div class="panel"><div class="panel-head"><div><h3>当日予約：申込時刻の分布（${mLabel}）</h3>
+          <div class="sub">作成日＝来店日の予約 ${cnt(hTot)}件（ウォークイン・キャンセル除く）が何時に入ったか ／ 窓口内訳：${winTxt}</div></div></div>
+        <div style="display:flex;align-items:flex-end;gap:4px;height:130px;padding:8px 4px 0">`;
+        for(let hh2=lo;hh2<=hi2;hh2++){
+          h+=`<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:2px;height:100%"><div style="font-size:10px;color:#8a7f6f">${hist[hh2]||''}</div><div style="width:70%;background:${hist[hh2]===hmax?'#b23b2e':'#4c7d5c'};border-radius:3px 3px 0 0;height:${Math.max(hist[hh2]/hmax*80,2)}px"></div><div style="font-size:10px;color:#8a7f6f">${hh2}時</div></div>`;
+        }
+        h+=`</div><div class="note-box" style="margin-top:8px">当日予約のピークは <b>${hist.indexOf(hmax)}時台</b>。その少し前の時間帯に空席情報の更新・SNS投稿・掲載枠の見直しを行うと当日集客に効きやすくなります。</div></div>`;
+        EXPORT.push({ title:'当日予約 申込時刻分布（'+mLabel+'）', headers:['時台','件数'], rows:hist.map((v,i2)=>[i2+'時',v]).filter(r2=>r2[1]>0) });
+      }
+    } else {
+      let r0=0,r1=0; for(const r of D.rsv){ if(!r0||r.t<r0)r0=r.t; if(r.t>r1)r1=r.t; }
+      h+=`<div class="panel no-print"><div class="panel-head"><div><h3>予約分析（${mLabel}：データなし）</h3>
+        <div class="sub">予約データの期間：${fmtD(r0)}〜${fmtD(r1)}（‹ › で月を切り替えると表示されます）</div></div></div></div>`;
+    }
+  } else {
+    h+=`<div class="panel no-print"><div class="panel-head"><div><h3>予約分析（曜日別・当日予約の時刻）— 未接続</h3>
+      <div class="sub">予約一覧CSVを貼り付けると曜日別の予約傾向と当日予約の申込時刻分布を自動表示します</div></div></div>
+    <div class="note-box">管理シートの <code>💾予約DB</code> タブ（GAS更新で自動作成）に、食べログ等の管理画面からエクスポートした<b>予約一覧CSVをそのまま貼り付け</b>るだけでOK（ヘッダー行ごと・列の並びは自由・列名で自動判定）。<br>
+      使う列：<code>来店日</code>／<code>来店時間</code>／<code>人数</code>／<code>ステータス</code>／<code>受付窓口</code>／<code>作成日</code>／<code>作成時間</code>（複数店舗ぶんを貼る場合は<code>店舗名</code>列を追加）<br>
+      ※GAS（Code.gs）を最新版に更新してください。</div></div>`;
   }
   // 12ヶ月推移
   const cat=[],adArr=[],netArr=[],roasArr=[];
