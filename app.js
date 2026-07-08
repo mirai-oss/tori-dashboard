@@ -105,7 +105,7 @@ const S = {
   reportMode:null,   // {kind:'daily'|'weekly'|'monthly', date:'YYYY-MM-DD'} Lark日報用の1枚カード表示
   accounts:null, accErr:'', modal:null, loginErr:'',
 };
-const D = { daily:[], media:[], deposit:[], review:[], ad:[], pl:[], dinii:[], extra:{}, storeAlias:{}, storeParent:{}, refDate:null, maxDate:null };
+const D = { daily:[], media:[], deposit:[], review:[], ad:[], adfx:[], tanka:{}, pl:[], dinii:[], extra:{}, storeAlias:{}, storeParent:{}, refDate:null, maxDate:null };
 let EXPORT = [];      // 現在タブのCSVエクスポート対象 [{title,headers,rows}]
 let pollTimer = null;
 
@@ -247,6 +247,55 @@ function ingestAd(rows){
   if(!recs.length){ D.diag['広告']='0件'+(dateSkipped>0?'（'+dateSkipped+'行あるが日付/年月列を読めていません）':'（データ行がありません）'); return false; }
   D.ad=recs; D.diag['広告']='OK '+recs.length+'件'+(useConfirm?'（確認済みのみ）':''); return true;
 }
+// 広告効果シート（DB_広告効果: 年月×店舗×媒体のアクセス数・ネット予約組数/人数・電話数）を取り込む
+const isAdFxKey=(k)=>/広告効果|adfx|ad_?kpi|広告kpi/i.test(String(k));
+function ingestAdFx(rows){
+  let hi=-1;
+  for(let i=0;i<Math.min(rows.length,12);i++){
+    const line=rows[i].map(x=>String(x==null?'':x)).join(',');
+    if(/アクセス/.test(line)&&/予約|組数/.test(line)){ hi=i; break; }
+  }
+  if(hi<0) hi=0;
+  const H=rows[hi].map(h=>String(h).trim());
+  const iD=colAny(H,['年月','日付']), iS=colOf(H,'店舗'), iM=colOf(H,'媒体');
+  const iA=colOf(H,'アクセス');
+  const iG=colAny(H,['ネット予約組数','予約組数','組数','ネット予約件数','予約件数']);
+  let iP=colAny(H,['ネット予約人数','予約人数']); if(iP<0){const x=colOf(H,'人数'); if(x>=0&&x!==iG)iP=x;}
+  const iT=colOf(H,'電話');
+  if(iD<0||(iA<0&&iG<0)){ D.diag['広告効果']='列が見つかりません（必要: 年月・アクセス数または予約組数）／見出し行: '+H.filter(Boolean).join('|'); return false; }
+  const recs=[];
+  for(let i=hi+1;i<rows.length;i++){
+    const c=rows[i];
+    const t=parseDateStr(c[iD])||parseYm(c[iD]); if(!t)continue;
+    const access=iA>=0?num(c[iA]):0, grp=iG>=0?num(c[iG]):0, ppl=iP>=0?num(c[iP]):0, tel=iT>=0?num(c[iT]):0;
+    if(!(access||grp||ppl||tel))continue;
+    recs.push({ store:String(iS>=0?c[iS]||'':'').trim(), t, media:String(iM>=0?c[iM]||'':'').trim(), access, grp, ppl, tel });
+  }
+  if(!recs.length){ D.diag['広告効果']='0件'; return false; }
+  D.adfx=recs; D.diag['広告効果']='OK '+recs.length+'件'; return true;
+}
+// 設定単価シート（DB_単価設定: 店舗×媒体の想定客単価）。予想売上＝ネット予約人数×設定単価
+const isTankaKey=(k)=>/単価/.test(String(k))||/tanka|unit_?price/i.test(String(k));
+function ingestTanka(rows){
+  if(!rows||!rows.length) return false;
+  const H=rows[0].map(h=>String(h).trim());
+  let iS=colOf(H,'店舗'), iM=colOf(H,'媒体'), iV=colAny(H,['設定単価','客単価','単価']);
+  let start=1;
+  if(iV<0){ iS=0;iM=1;iV=2;start=0; }   // 見出しなし＝A:店舗 B:媒体 C:単価とみなす
+  const map={}; let n=0;
+  for(let i=start;i<rows.length;i++){
+    const c=rows[i]; const v=num(c[iV]); if(!(v>0))continue;
+    const st=String(iS>=0?c[iS]||'':'').trim(), md=canonMedia(String(iM>=0?c[iM]||'':'').trim());
+    map[st+'|'+md]=v; n++;
+  }
+  if(!n){ D.diag['単価設定']='0件'; return false; }
+  D.tanka=map; D.diag['単価設定']='OK '+n+'件'; return true;
+}
+// 設定単価を引く：店舗×媒体 → 店舗のみ → 全店×媒体 → 全店共通 の順
+function tankaOf(store,cm){
+  const t=D.tanka||{};
+  return t[store+'|'+cm]||t[store+'|']||t['|'+cm]||t['|']||0;
+}
 // PL経費シート（DB_PL: 年月×店舗×費目×金額の縦持ち）を取り込む
 const isPLKey=(k)=>/^pl$|^ＰＬ$|損益|pl経費|経費db/i.test(String(k).trim());
 // ダイニー来店アンケート（また来たいと思いますか？の点数）を取り込む
@@ -360,7 +409,7 @@ function ingestStoreParent(rows){
   return map;
 }
 function ingestSheets(sheets, partial){
-  if(!partial){ D.extra={}; D.diag={}; D.receivedKeys=Object.keys(sheets); D.ad=[]; D.adSrc=''; D.pl=[]; D.dinii=[]; D.storeAlias={}; D.storeParent={}; }  // 広告・PL・ダイニー・対応表・親子はフル受信のたびに入れ替え
+  if(!partial){ D.extra={}; D.diag={}; D.receivedKeys=Object.keys(sheets); D.ad=[]; D.adSrc=''; D.adfx=[]; D.tanka={}; D.pl=[]; D.dinii=[]; D.storeAlias={}; D.storeParent={}; }  // 広告・PL・ダイニー・対応表・親子はフル受信のたびに入れ替え
   else { D.receivedKeys=(D.receivedKeys||[]).concat(Object.keys(sheets)); }
   const known=['daily','media','deposit','review','ad','広告'];
   if(!partial){ known.forEach(k=>{ if(!(k in sheets)) D.diag[k]='シート未受信（接続設定のシート名を確認）'; }); }
@@ -372,6 +421,8 @@ function ingestSheets(sheets, partial){
     else if(key==='deposit') ingestDeposit(rows);
     else if(key==='review') ingestReview(rows);
     else if(key==='ad'||key==='広告'){ if(ingestAd(rows)) D.adSrc='sheet'; }
+    else if(isAdFxKey(key)) ingestAdFx(rows);
+    else if(isTankaKey(key)) ingestTanka(rows);
     else if(isPLKey(key)) ingestPL(rows);
     else if(isDiniiKey(key)) ingestDinii(rows);
     else if(isStoreParentKey(key)){ D.storeParent=ingestStoreParent(rows); D.diag[key]='OK '+Object.keys(D.storeParent).length+'件の親子'; }
@@ -1299,6 +1350,30 @@ function roasBadge(cost, net){
   const cls=v<1?'ng':(v<3?'mid':'ok');
   return `<span class="badge ${cls}">${v.toFixed(1)}倍</span>`;
 }
+// 広告効果（アクセス・ネット予約）を店舗解決つきで集計。単価設定から予想売上も算出
+function adFxAgg(scopeSet,a,b){
+  const mk=()=>({access:0,grp:0,ppl:0,tel:0,exp:0});
+  const byMedia={}, byStore={}, rc={}, tot=mk(), noTanka=new Set(); let rows=0;
+  for(const r of D.adfx){
+    if(r.t<a||r.t>b) continue;
+    const cm=canonMedia(r.media)||'（媒体未指定）';
+    let own='';
+    if(r.store){
+      const res=(r.store in rc)?rc[r.store]:(rc[r.store]=resolveStoreEx(r.store));
+      if(!res||!scopeSet.has(res.parent)) continue;
+      own=res.own;
+    }
+    const tk=tankaOf(own,r.media?cm:'');
+    const exp=r.ppl*tk;
+    if(r.ppl>0&&!(tk>0)) noTanka.add((own||'全店')+'×'+cm);
+    rows++;
+    const add=(o)=>{ o.access+=r.access;o.grp+=r.grp;o.ppl+=r.ppl;o.tel+=r.tel;o.exp+=exp; };
+    add(tot);
+    add(byMedia[cm]=byMedia[cm]||mk());
+    if(own) add(byStore[own]=byStore[own]||mk());
+  }
+  return {byMedia,byStore,tot,noTanka,rows};
+}
 function viewAd(){
   const sc=scopeStores(); const selN=selStoreName();          // 店舗タブで選択中の店舗（全店なら null）
   const scopeSet=new Set(selN?[selN]:sc);
@@ -1357,7 +1432,8 @@ function viewAd(){
     <div class="note-box">
       <b>広告費</b> ← 「DB_広告」シート。①直接入力の場合は「確認」列にチェックした行のみ反映 ②広告費用対効果_管理シートとIMPORTRANGE連携の場合は、管理シート側で✓反映済みの💾広告費DBを自動取込（反映まで約1分）<br>
       <b>媒体経由売上・来店人数</b> ← 媒体別売上シート（分析_媒体別日次）と媒体名で自動突合（例: 鶏HP→ホットペッパー、匠味GN→ぐるなび）<br>
-      <b>総売上（広告費率の分母）</b> ← 日別売上シート（分析_日別店舗）
+      <b>総売上（広告費率の分母）</b> ← 日別売上シート（分析_日別店舗）<br>
+      <b>アクセス数・ネット予約（CVR／CPA／予想売上）</b> ← 「DB_広告効果」シート（管理シートの💾売上DBとIMPORTRANGE連携可）　<b>設定単価</b> ← 「DB_単価設定」シート
     </div></div>`;
   // KPIカード
   const kA=mom(cur.ad,prv.ad,true), kN=mom(cur.medNet,prv.medNet,false);
@@ -1422,6 +1498,40 @@ function viewAd(){
     });
     h+=`</tbody></table></div></div>`;
     EXPORT.push({ title:'媒体別広告費用対効果（'+mLabel+'）', headers:['媒体','広告費','構成比','媒体経由売上','来店人数','ROAS'], rows:expM });
+  }
+  // ネット予約ベースの費用対効果（DB_広告効果 × DB_単価設定）— 成果＝その月の広告に対するネット予約
+  const fx=adFxAgg(scopeSet,mS,mE);
+  if(D.adfx.length){
+    const fmt0=(v)=>v>0?cnt(Math.round(v)):'—';
+    const pct=(x2,z2)=>z2>0?(x2/z2*100).toFixed(1)+'%':'—';
+    const cpa=(cost,n)=>(cost>0&&n>0)?yen(Math.round(cost/n)):'—';
+    const mset=new Set(Object.keys(fx.byMedia)); Object.keys(cur.byMedia).forEach(k=>mset.add(k));
+    const mks=Array.from(mset).sort((x2,z2)=>((fx.byMedia[z2]||{}).exp||0)-((fx.byMedia[x2]||{}).exp||0)||(((cur.byMedia[z2]||{}).cost||0)-((cur.byMedia[x2]||{}).cost||0)));
+    h+=`<div class="panel"><div class="panel-head"><div><h3>ネット予約ベースの費用対効果（${mLabel}${selN?' ／ '+esc(selN):''}）</h3>
+      <div class="sub">成果＝その月の広告へのネット予約。CVR＝予約組数÷アクセス ／ CPA＝広告費÷予約 ／ 予想売上＝予約人数×設定単価（DB_単価設定）／ レジ実績は参考値</div></div></div>
+    <div class="scroll-x"><table class="tbl"><thead><tr><th>媒体</th><th>広告費</th><th>アクセス</th><th>予約組数</th><th>予約人数</th><th>電話</th><th>CVR</th><th>CPA(組)</th><th>CPA(人)</th><th>予想売上</th><th>想定ROAS</th><th>参考:レジ実績</th></tr></thead><tbody>`;
+    const expF=[];
+    mks.forEach(k=>{
+      const o=fx.byMedia[k]||{access:0,grp:0,ppl:0,tel:0,exp:0};
+      const cost=(cur.byMedia[k]||{}).cost||0, reg=(cur.byMedia[k]||{}).net||0;
+      h+=`<tr><td>${esc(k)}</td><td>${cost>0?yen(cost):'—'}</td><td>${fmt0(o.access)}</td><td>${fmt0(o.grp)}</td><td>${fmt0(o.ppl)}</td><td>${fmt0(o.tel)}</td><td>${pct(o.grp,o.access)}</td><td>${cpa(cost,o.grp)}</td><td>${cpa(cost,o.ppl)}</td><td>${o.exp>0?yen(o.exp):'—'}</td><td>${roasBadge(cost,o.exp)}</td><td class="mut">${reg>0?yen(reg):'—'}</td></tr>`;
+      expF.push([k,Math.round(cost),Math.round(o.access),Math.round(o.grp),Math.round(o.ppl),Math.round(o.tel),o.access>0?(o.grp/o.access*100).toFixed(1)+'%':'',cost>0&&o.grp>0?Math.round(cost/o.grp):'',cost>0&&o.ppl>0?Math.round(cost/o.ppl):'',Math.round(o.exp),cost>0&&o.exp>0?(o.exp/cost).toFixed(2):'',Math.round(reg)]);
+    });
+    const T=fx.tot;
+    h+=`<tr class="total"><td>合計</td><td>${yen(cur.ad)}</td><td>${fmt0(T.access)}</td><td>${fmt0(T.grp)}</td><td>${fmt0(T.ppl)}</td><td>${fmt0(T.tel)}</td><td>${pct(T.grp,T.access)}</td><td>${cpa(cur.ad,T.grp)}</td><td>${cpa(cur.ad,T.ppl)}</td><td>${T.exp>0?yen(T.exp):'—'}</td><td>${roasBadge(cur.ad,T.exp)}</td><td class="mut">${cur.medNet>0?yen(cur.medNet):'—'}</td></tr></tbody></table></div>`;
+    if(fx.noTanka.size){
+      h+=`<div class="note-box" style="margin-top:12px"><b style="color:#b5502f">⚠ 設定単価が未登録のため予想売上に入っていない組合せ：</b>${Array.from(fx.noTanka).slice(0,8).map(esc).join('、')}${fx.noTanka.size>8?' ほか':''}<br>
+      <code>DB_単価設定</code> シート（店舗名／媒体／設定単価）に行を追加してください（店舗名空欄＝全店共通）。</div>`;
+    }
+    h+=`</div>`;
+    EXPORT.push({ title:'ネット予約ベース費用対効果（'+mLabel+'）', headers:['媒体','広告費','アクセス','予約組数','予約人数','電話','CVR','CPA組','CPA人','予想売上','想定ROAS','参考レジ実績'], rows:expF });
+  } else {
+    h+=`<div class="panel no-print"><div class="panel-head"><div><h3>ネット予約ベースの費用対効果（未設定）</h3>
+      <div class="sub">アクセス数・ネット予約を入れると CVR／CPA（一人当たり獲得費用）／予想売上／想定ROAS を自動計算します</div></div></div>
+    <div class="note-box">スプレッドシートに2つのシートを追加すると、この場所に自動表示されます：<br>
+      ① <code>DB_広告効果</code> ＝ <code>年月／店舗名／媒体／アクセス数／ネット予約組数／ネット予約人数／電話数</code>（管理シートの💾売上DBからIMPORTRANGE連携推奨）<br>
+      ② <code>DB_単価設定</code> ＝ <code>店舗名／媒体／設定単価</code>（予想売上＝ネット予約人数×設定単価）<br>
+      GASを最新版に更新すると、この2シートの雛形は自動で作成されます。</div></div>`;
   }
   // 12ヶ月推移
   const cat=[],adArr=[],netArr=[],roasArr=[];
