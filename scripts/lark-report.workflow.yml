@@ -4,7 +4,7 @@ on:
   schedule:
     # UTC指定（JST = UTC+9）
     - cron: '0 3 * * *'            # 日報   毎日 12:00 JST（前日分）
-    - cron: '10 3 1,8,15,22,29 * *' # 週報   週ブロック明けの 12:10 JST（直前の週分）
+    - cron: '10 3 1,8,15,22,29 * *' # 週報   1,8,15,22,29日 12:10 JST（直前の週分）
     - cron: '20 3 1 * *'           # 月報   毎月1日 12:20 JST（前月分）
   workflow_dispatch:
     inputs:
@@ -15,21 +15,23 @@ on:
         type: choice
         options: [daily, weekly, monthly]
 
+permissions:
+  contents: write   # 画像をGitHub Releaseにアップロードするため
+
 jobs:
   report:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: 20
 
-      - name: Secrets設定チェック（未設定ならスキップ）
+      - name: 設定チェック（未設定ならスキップ）
         run: |
           if [ -z "${{ secrets.LARK_WEBHOOK }}" ] || [ -z "${{ secrets.DASH_ID }}" ]; then
-            echo "::notice::LARK_WEBHOOK / DASH_ID が未設定のためスキップします（Lark日報設定.md を参照）"
+            echo "::notice::LARK_WEBHOOK / DASH_ID が未設定のためスキップ（Lark日報設定.md 参照）"
             echo "SKIP=1" >> "$GITHUB_ENV"
           fi
 
@@ -52,17 +54,33 @@ jobs:
         if: env.SKIP != '1'
         run: npm install puppeteer --no-save
 
-      - name: レポート生成 → Lark送信
+      - name: 日報画像を生成（スクリーンショット）
         if: env.SKIP != '1'
         env:
           REPORT_KIND: ${{ env.REPORT_KIND }}
           DASH_ID: ${{ secrets.DASH_ID }}
           DASH_PW: ${{ secrets.DASH_PW }}
+        run: node scripts/lark-report.mjs capture
+
+      - name: 画像を GitHub Release にアップロード（公開URL化）
+        if: env.SKIP != '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          KEY=$(node -e "console.log(require('./report-meta.json').fileKey)")
+          cp report.png "$KEY.png"
+          gh release view reports >/dev/null 2>&1 || gh release create reports --title "自動レポート画像" --notes "日報/週報/月報の画像置き場（自動更新）"
+          gh release upload reports "$KEY.png" --clobber
+          echo "IMAGE_URL=https://github.com/${{ github.repository }}/releases/download/reports/$KEY.png" >> "$GITHUB_ENV"
+          echo "画像URL: https://github.com/${{ github.repository }}/releases/download/reports/$KEY.png"
+
+      - name: Lark にカード送信（要約＋画像リンク）
+        if: env.SKIP != '1'
+        env:
+          REPORT_KIND: ${{ env.REPORT_KIND }}
           LARK_WEBHOOK: ${{ secrets.LARK_WEBHOOK }}
-          LARK_APP_ID: ${{ secrets.LARK_APP_ID }}
-          LARK_APP_SECRET: ${{ secrets.LARK_APP_SECRET }}
-          LARK_DOMAIN: ${{ secrets.LARK_DOMAIN }}
-        run: node scripts/lark-report.mjs
+          IMAGE_URL: ${{ env.IMAGE_URL }}
+        run: node scripts/lark-report.mjs send
 
       - name: スクリーンショットを保存（確認用）
         if: always() && env.SKIP != '1'

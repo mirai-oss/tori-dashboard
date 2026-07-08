@@ -1,52 +1,45 @@
 /**
- * 鳥一代グループ ダッシュボード → Lark 自動日報/週報/月報
- * =========================================================
- * GitHub Actions から定時実行される。
- *  1. ヘッドレスブラウザで公開ダッシュボードにログイン（専用アカウント）
- *  2. レポートカード（1枚レイアウト）を描画してスクリーンショット
- *  3. Lark にアップロードしてグループのWebhookボットへ投稿
+ * 鳥一代グループ ダッシュボード → Lark 自動日報/週報/月報（画像リンク方式）
+ * =====================================================================
+ * サブコマンド:
+ *   node scripts/lark-report.mjs capture   … ログイン→カード撮影→ report.png + report-meta.json 出力
+ *   node scripts/lark-report.mjs send      … report-meta.json + 環境変数 IMAGE_URL からLarkへカード送信
  *
- * 必要な環境変数（GitHub Secrets で設定）:
- *  - DASH_ID / DASH_PW : ダッシュボードのログインID/パスワード（本部権限のBot用アカウント推奨）
- *  - LARK_WEBHOOK      : Larkグループのカスタムボット Webhook URL
- *  - LARK_APP_ID / LARK_APP_SECRET : （画像送信に必要）Larkカスタムアプリの認証情報
- *  - LARK_DOMAIN       : 省略時 https://open.larksuite.com（Feishuなら https://open.feishu.cn）
- *  - REPORT_KIND       : daily | weekly | monthly
- *  - SITE_URL          : 省略時 https://mirai-oss.github.io/tori-dashboard/
- * アプリ認証情報が無い場合は、画像の代わりにテキストカード（数値サマリー）を送る。
+ * GitHub Actions では capture → 画像をReleaseにアップロード → send の順で実行する。
+ * 送るのは「要約テキスト＋画像リンクボタン」のカード（Larkのボット機能不要）。
+ *
+ * 環境変数:
+ *   DASH_ID / DASH_PW  : ダッシュボードのログイン
+ *   LARK_WEBHOOK       : Larkカスタムボットの Webhook URL
+ *   REPORT_KIND        : daily | weekly | monthly
+ *   SITE_URL           : 省略時 https://mirai-oss.github.io/tori-dashboard/
+ *   IMAGE_URL          : send時、公開された日報画像のURL（capture後にActionsが渡す）
  */
-import puppeteer from 'puppeteer';
 import fs from 'node:fs';
 
+const MODE = (process.argv[2] || 'send').trim();
 const SITE_URL = process.env.SITE_URL || 'https://mirai-oss.github.io/tori-dashboard/';
 const KIND = (process.env.REPORT_KIND || 'daily').trim();
-const DASH_ID = process.env.DASH_ID || '';
-const DASH_PW = process.env.DASH_PW || '';
 const WEBHOOK = process.env.LARK_WEBHOOK || '';
-const APP_ID = process.env.LARK_APP_ID || '';
-const APP_SECRET = process.env.LARK_APP_SECRET || '';
-const DOMAIN = (process.env.LARK_DOMAIN || 'https://open.larksuite.com').replace(/\/$/, '');
+const META = 'report-meta.json';
 
 const yen = (n) => '¥' + Math.round(n || 0).toLocaleString('ja-JP');
+const cnt = (n) => Math.round(n || 0).toLocaleString('ja-JP');
+const yoy = (c, p) => (p > 0 ? `${(c - p) / p >= 0 ? '+' : '▲'}${Math.abs((c - p) / p * 100).toFixed(1)}%` : '—');
 const log = (...a) => console.log('[lark-report]', ...a);
 
-if (!DASH_ID || !DASH_PW) { console.error('DASH_ID / DASH_PW が未設定です'); process.exit(1); }
-if (!WEBHOOK) { console.error('LARK_WEBHOOK が未設定です'); process.exit(1); }
-
-// ---------- 1. スクリーンショット取得 ----------
+// ---------- capture: スクリーンショット + メタ ----------
 async function capture() {
+  const { default: puppeteer } = await import('puppeteer');
+  const DASH_ID = process.env.DASH_ID || '', DASH_PW = process.env.DASH_PW || '';
+  if (!DASH_ID || !DASH_PW) { console.error('DASH_ID / DASH_PW が未設定です'); process.exit(1); }
   log('browser起動 / kind =', KIND);
-  const browser = await puppeteer.launch({
-    headless: 'new',
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--font-render-hinting=none', '--lang=ja-JP'],
-  });
+  const browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox', '--disable-setuid-sandbox', '--font-render-hinting=none', '--lang=ja-JP'] });
   try {
     const page = await browser.newPage();
     await page.setViewport({ width: 1240, height: 1800, deviceScaleFactor: 2 });
-    log('open:', SITE_URL);
     await page.goto(SITE_URL, { waitUntil: 'networkidle2', timeout: 90000 });
 
-    // ログイン（セッション切れ等の間欠エラーに備えて最大3回リトライ）
     const loginOnce = async () => {
       await page.waitForSelector('#li-id', { timeout: 60000 });
       await page.$eval('#li-id', (el) => { el.value = ''; });
@@ -54,121 +47,82 @@ async function capture() {
       await page.type('#li-id', DASH_ID);
       await page.type('#li-pw', DASH_PW);
       await page.click('#li-btn');
-      log('ログイン送信、データ読込待ち…（GASの応答に1〜2分かかることがあります）');
+      log('ログイン送信、データ読込待ち…');
       await Promise.race([
-        page.waitForFunction(
-          () => typeof S !== 'undefined' && S.auth && S.connState === 'live' && typeof D !== 'undefined' && D.daily.length > 0,
-          { timeout: 150000, polling: 2000 }
-        ),
-        page.waitForFunction(
-          () => { const el = document.querySelector('.login-err'); return el && el.textContent.length > 0 ? el.textContent : false; },
-          { timeout: 150000, polling: 2000 }
-        ).then(async (h) => { throw new Error('ログイン失敗: ' + (await h.jsonValue())); }),
+        page.waitForFunction(() => typeof S !== 'undefined' && S.auth && S.connState === 'live' && typeof D !== 'undefined' && D.daily.length > 0, { timeout: 150000, polling: 2000 }),
+        page.waitForFunction(() => { const el = document.querySelector('.login-err'); return el && el.textContent.length > 0 ? el.textContent : false; }, { timeout: 150000, polling: 2000 })
+          .then(async (h) => { throw new Error('ログイン失敗: ' + (await h.jsonValue())); }),
       ]);
     };
-    let loggedIn = false, lastErr;
-    for (let attempt = 1; attempt <= 3 && !loggedIn; attempt++) {
+    let ok = false, lastErr;
+    for (let attempt = 1; attempt <= 3 && !ok; attempt++) {
       try {
-        if (attempt > 1) { log('再読み込みしてログイン再試行 (' + attempt + '/3)'); await page.goto(SITE_URL, { waitUntil: 'networkidle2', timeout: 90000 }); await new Promise((r) => setTimeout(r, 2500)); }
-        await loginOnce();
-        loggedIn = true;
+        if (attempt > 1) { log('再読み込みして再試行 (' + attempt + '/3)'); await page.goto(SITE_URL, { waitUntil: 'networkidle2', timeout: 90000 }); await new Promise((r) => setTimeout(r, 2500)); }
+        await loginOnce(); ok = true;
       } catch (e) { lastErr = e; log('ログイン試行' + attempt + '失敗:', e.message); await new Promise((r) => setTimeout(r, 6000)); }
     }
-    if (!loggedIn) throw lastErr;
-    log('データ読込完了。レポート描画:', KIND);
+    if (!ok) throw lastErr;
 
     await page.evaluate((k) => { App.report(k); }, KIND);
     await page.waitForSelector('#report-card', { timeout: 30000 });
     await page.evaluate(async () => { await document.fonts.ready; });
-    await new Promise((r) => setTimeout(r, 1200)); // フォント・描画の安定待ち
+    await new Promise((r) => setTimeout(r, 1200));
 
     const data = await page.evaluate(() => window.__REPORT_JSON);
     const el = await page.$('#report-card');
     await el.screenshot({ path: 'report.png' });
-    log('スクリーンショット保存: report.png /', data.title, data.sub);
-    return data;
-  } finally {
-    await browser.close();
+    fs.writeFileSync(META, JSON.stringify(data));
+    log('保存: report.png / メタ:', data.title, data.sub, '/ fileKey:', data.fileKey);
+  } finally { await browser.close(); }
+}
+
+// ---------- send: Larkカード（要約テキスト＋画像リンク） ----------
+async function send() {
+  if (!WEBHOOK) { console.error('LARK_WEBHOOK が未設定です'); process.exit(1); }
+  const d = JSON.parse(fs.readFileSync(META, 'utf8'));
+  const imageUrl = process.env.IMAGE_URL || '';
+  const t = d.tot;
+  const spend = t.guests > 0 ? t.sales / t.guests : 0;
+  const up = d.rows.filter((r) => r.prevSales > 0 && r.sales >= r.prevSales).length;
+  const down = d.rows.filter((r) => r.prevSales > 0 && r.sales < r.prevSales).length;
+  const medal = ['🥇', '🥈', '🥉'];
+  const topLines = d.rows.filter((r) => r.sales > 0).slice(0, 3)
+    .map((r, i) => `${medal[i] || '　'} **${r.store}**　${yen(r.sales)}（前年比 ${yoy(r.sales, r.prevSales)}）`).join('\n');
+
+  // 「日報」はWebhookのカスタムキーワード。ヘッダーにも入るが note でも必ず含める
+  const headline = `【${d.title}】${d.sub}`;
+  const summary =
+    `**全店${d.salesLabel} ${yen(t.sales)}**（前年比 ${yoy(t.sales, t.prevSales)}）\n` +
+    `客数 ${cnt(t.guests)}人 ／ 客単価 ${yen(spend)}` +
+    (d.kind === 'monthly' ? '' : `\n月間累計 ${yen(t.cum)}（前年比 ${yoy(t.cum, t.cumPrev)}）`) +
+    `\n<font color="green">前年超え ${up}店</font> ／ <font color="red">前年割れ ${down}店</font>`;
+
+  const elements = [
+    { tag: 'markdown', content: summary },
+    { tag: 'hr' },
+    { tag: 'markdown', content: `**店舗別トップ**\n${topLines}` },
+  ];
+  if (imageUrl) {
+    elements.push({
+      tag: 'action',
+      actions: [{ tag: 'button', text: { tag: 'plain_text', content: '📊 日報の全体画像を見る（全店）' }, type: 'primary', url: imageUrl }],
+    });
   }
-}
+  elements.push({ tag: 'note', elements: [{ tag: 'plain_text', content: `自動日報Bot ／ ダッシュボード: ${SITE_URL} ／ 生成 ${d.gen}` }] });
 
-// ---------- 2. Lark 送信 ----------
-async function larkJson(url, body, headers = {}) {
-  const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
-  const j = await r.json().catch(() => ({}));
-  return { status: r.status, j };
-}
-
-async function tenantToken() {
-  const { j } = await larkJson(`${DOMAIN}/open-apis/auth/v3/tenant_access_token/internal`, { app_id: APP_ID, app_secret: APP_SECRET });
-  if (!j.tenant_access_token) throw new Error('tenant_access_token取得失敗: ' + JSON.stringify(j));
-  return j.tenant_access_token;
-}
-
-async function uploadImage(token) {
-  const buf = fs.readFileSync('report.png');
-  const fd = new FormData();
-  fd.append('image_type', 'message');
-  fd.append('image', new Blob([buf], { type: 'image/png' }), 'report.png');
-  const r = await fetch(`${DOMAIN}/open-apis/im/v1/images`, { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: fd });
-  const j = await r.json().catch(() => ({}));
-  if (!j.data || !j.data.image_key) throw new Error('画像アップロード失敗: ' + JSON.stringify(j));
-  return j.data.image_key;
-}
-
-function summaryTitle(d) {
-  const t = d.tot; const p = t.prevSales;
-  const yoy = p > 0 ? ((t.sales - p) / p * 100) : null;
-  const yoyTxt = yoy == null ? '' : `（前年比 ${yoy >= 0 ? '+' : '▲'}${Math.abs(yoy).toFixed(1)}%）`;
-  return `【${d.title}】${d.sub}　全店売上 ${yen(t.sales)}${yoyTxt}`;
-}
-
-async function sendImageCard(d, imageKey) {
   const card = {
     config: { wide_screen_mode: true },
-    header: { title: { tag: 'plain_text', content: summaryTitle(d) }, template: d.kind === 'monthly' ? 'purple' : d.kind === 'weekly' ? 'green' : 'blue' },
-    elements: [
-      { tag: 'img', img_key: imageKey, alt: { tag: 'plain_text', content: d.title } },
-      // 「日報」はWebhookのカスタムキーワード。週報・月報でも必ず本文に含める
-      { tag: 'note', elements: [{ tag: 'plain_text', content: `自動日報Bot ／ 詳細: ${SITE_URL} ／ 生成 ${d.gen}` }] },
-    ],
+    header: { title: { tag: 'plain_text', content: headline }, template: d.kind === 'monthly' ? 'purple' : d.kind === 'weekly' ? 'green' : 'blue' },
+    elements,
   };
-  const { j } = await larkJson(WEBHOOK, { msg_type: 'interactive', card });
+  const r = await fetch(WEBHOOK, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ msg_type: 'interactive', card }) });
+  const j = await r.json().catch(() => ({}));
   if (j.code !== 0 && j.StatusCode !== 0) throw new Error('Webhook送信失敗: ' + JSON.stringify(j));
+  log('✓ カードを送信しました', imageUrl ? '（画像リンク付き）' : '（画像リンクなし）');
 }
 
-async function sendTextCard(d) {
-  // 画像なしフォールバック：数値サマリーのカード
-  const lines = d.rows.filter((r) => r.sales > 0).map((r, i) => {
-    const yoy = r.prevSales > 0 ? `（前年 ${((r.sales - r.prevSales) / r.prevSales * 100) >= 0 ? '+' : '▲'}${Math.abs((r.sales - r.prevSales) / r.prevSales * 100).toFixed(1)}%）` : '';
-    return `**${i + 1}. ${r.store}**　${yen(r.sales)} ${yoy}`;
-  }).join('\n');
-  const card = {
-    config: { wide_screen_mode: true },
-    header: { title: { tag: 'plain_text', content: summaryTitle(d) }, template: 'blue' },
-    elements: [
-      { tag: 'markdown', content: lines || 'データなし' },
-      { tag: 'hr' },
-      // 「日報」はWebhookのカスタムキーワード。週報・月報でも必ず本文に含める
-      { tag: 'note', elements: [{ tag: 'plain_text', content: `自動日報Bot ／ 詳細: ${SITE_URL} ／ 画像送信にはLARK_APP_ID/SECRETの設定が必要です` }] },
-    ],
-  };
-  const { j } = await larkJson(WEBHOOK, { msg_type: 'interactive', card });
-  if (j.code !== 0 && j.StatusCode !== 0) throw new Error('Webhook送信失敗: ' + JSON.stringify(j));
-}
-
-// ---------- main ----------
 (async () => {
-  const data = await capture();
-  if (APP_ID && APP_SECRET) {
-    log('Larkアプリ認証 → 画像アップロード → カード送信');
-    const token = await tenantToken();
-    const key = await uploadImage(token);
-    await sendImageCard(data, key);
-    log('✓ 画像カードを送信しました');
-  } else {
-    log('LARK_APP_ID/SECRET未設定 → テキストカードで送信（画像なし）');
-    await sendTextCard(data);
-    log('✓ テキストカードを送信しました');
-  }
+  if (MODE === 'capture') await capture();
+  else if (MODE === 'send') await send();
+  else { console.error('使い方: node lark-report.mjs capture | send'); process.exit(1); }
 })().catch((e) => { console.error('[lark-report] 失敗:', e); process.exit(1); });

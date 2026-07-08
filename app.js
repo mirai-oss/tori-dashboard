@@ -2042,7 +2042,10 @@ function reportData(kind, dateStr){
   }).sort((x,y)=>y.sales-x.sales);
   const tot=rows.reduce((o,r)=>{o.sales+=r.sales;o.prevSales+=r.prevSales;o.guests+=r.guests;o.cost+=r.cost;o.labor+=r.labor;o.cum+=r.cum;o.cumPrev+=r.cumPrev;return o;},
     {sales:0,prevSales:0,guests:0,cost:0,labor:0,cum:0,cumPrev:0});
-  const data={ kind, title, sub, rows, tot,
+  const salesLabel=kind==='monthly'?'月売上':kind==='weekly'?'週売上':'売上';
+  const pad=(n)=>String(n).padStart(2,'0');
+  const fileKey=kind+'-'+e.getFullYear()+pad(e.getMonth()+1)+pad(e.getDate());   // 例 daily-20260707
+  const data={ kind, title, sub, salesLabel, fileKey, rows, tot,
     gen:new Date().toLocaleString('ja-JP',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}) };
   try{ window.__REPORT_JSON=data; }catch(err){}
   return data;
