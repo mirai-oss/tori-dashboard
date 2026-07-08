@@ -2107,7 +2107,8 @@ function viewReport(kind, dateStr){
           ${d.hasDinii?`<th style="text-align:right;padding:9px 12px;font-size:11.5px;color:#5c5348">ダイニー</th>`:''}
           <th style="text-align:right;padding:9px 12px;font-size:11.5px;color:#5c5348">客数</th>
           <th style="text-align:right;padding:9px 12px;font-size:11.5px;color:#5c5348">客単価</th>
-          ${kind!=='monthly'?`<th style="text-align:right;padding:9px 12px;font-size:11.5px;color:#5c5348">月間累計</th>`:''}
+          ${kind!=='monthly'?`<th style="text-align:right;padding:9px 12px;font-size:11.5px;color:#5c5348">月間累計</th>
+          <th style="text-align:right;padding:9px 12px;font-size:11.5px;color:#5c5348">累計前年比</th>`:''}
         </tr></thead><tbody>`;
   const flCell=(v)=>v==null?'<span style="color:#a99f8c">—</span>':(v>0.6?`<span style="color:#b5502f">${(v*100).toFixed(1)}%</span>`:(v*100).toFixed(1)+'%');
   const dnCell=(r)=>r.dinii==null?'<span style="color:#a99f8c">—</span>':`${r.dinii.toFixed(2)}<span style="color:#a99f8c;font-size:10px"> /${cnt(r.diniiCount)}</span>`;
@@ -2121,7 +2122,8 @@ function viewReport(kind, dateStr){
       ${d.hasDinii?`<td style="padding:8px 12px;font-size:13px;text-align:right">${dnCell(r)}</td>`:''}
       <td style="padding:8px 12px;font-size:13px;text-align:right">${cnt(r.guests)}人</td>
       <td style="padding:8px 12px;font-size:13px;text-align:right">${yen(r.spend)}</td>
-      ${kind!=='monthly'?`<td style="padding:8px 12px;font-size:13px;text-align:right">${yen(r.cum)}</td>`:''}
+      ${kind!=='monthly'?`<td style="padding:8px 12px;font-size:13px;text-align:right">${yen(r.cum)}</td>
+      <td style="padding:8px 12px;font-size:12.5px;text-align:right;color:${yoy(r.cum,r.cumPrev).cls||'#a99f8c'}">${yoy(r.cum,r.cumPrev).t}</td>`:''}
     </tr>`;
   });
   h+=`<tr style="border-top:2px solid #d8cfbd;background:#efe9dd;font-weight:700">
@@ -2132,7 +2134,8 @@ function viewReport(kind, dateStr){
       ${d.hasDinii?`<td style="padding:9px 12px;font-size:13px;text-align:right">${d.tot.dinii!=null?d.tot.dinii.toFixed(2):'—'}<span style="font-weight:400;color:#8c8375;font-size:10px"> /${cnt(d.tot.diniiCount)}</span></td>`:''}
       <td style="padding:9px 12px;font-size:13px;text-align:right">${cnt(d.tot.guests)}人</td>
       <td style="padding:9px 12px;font-size:13px;text-align:right">${yen(spend)}</td>
-      ${kind!=='monthly'?`<td style="padding:9px 12px;font-size:13px;text-align:right">${yen(d.tot.cum)}</td>`:''}
+      ${kind!=='monthly'?`<td style="padding:9px 12px;font-size:13px;text-align:right">${yen(d.tot.cum)}</td>
+      <td style="padding:9px 12px;font-size:12.5px;text-align:right;color:${cumYoy.cls||'#5c5348'}">${cumYoy.t}</td>`:''}
     </tr></tbody></table>
     <div style="font-size:11px;color:#a99f8c;margin-top:10px;text-align:right">鳥一代グループ 経営ダッシュボード ／ ${esc(d.gen)} 自動生成</div>
     </div></div>
