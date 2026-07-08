@@ -65,7 +65,8 @@ async function capture() {
 
     const stores = (process.env.REPORT_STORES || '').trim();   // カンマ区切りで店舗を絞る（空=全店）
     const group = (process.env.REPORT_GROUP || '').trim();     // 画像ファイル名の識別子（例 tori）
-    await page.evaluate((k, st, g) => { App.report(k, '', st || null, g || ''); }, KIND, stores, group);
+    const dateOverride = (process.env.REPORT_DATE || '').trim(); // 過去の期間を指定して再送したい時（例 2026-06-15）。空=最新日
+    await page.evaluate((k, dt, st, g) => { App.report(k, dt || '', st || null, g || ''); }, KIND, dateOverride, stores, group);
     await page.waitForSelector('#report-card', { timeout: 30000 });
     await page.evaluate(async () => { await document.fonts.ready; });
     await new Promise((r) => setTimeout(r, 1200));
