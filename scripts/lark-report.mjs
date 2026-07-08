@@ -118,7 +118,8 @@ async function sendImageCard(d, imageKey) {
     header: { title: { tag: 'plain_text', content: summaryTitle(d) }, template: d.kind === 'monthly' ? 'purple' : d.kind === 'weekly' ? 'green' : 'blue' },
     elements: [
       { tag: 'img', img_key: imageKey, alt: { tag: 'plain_text', content: d.title } },
-      { tag: 'note', elements: [{ tag: 'plain_text', content: `詳細: ${SITE_URL} ／ 自動生成 ${d.gen}` }] },
+      // 「日報」はWebhookのカスタムキーワード。週報・月報でも必ず本文に含める
+      { tag: 'note', elements: [{ tag: 'plain_text', content: `自動日報Bot ／ 詳細: ${SITE_URL} ／ 生成 ${d.gen}` }] },
     ],
   };
   const { j } = await larkJson(WEBHOOK, { msg_type: 'interactive', card });
@@ -137,7 +138,8 @@ async function sendTextCard(d) {
     elements: [
       { tag: 'markdown', content: lines || 'データなし' },
       { tag: 'hr' },
-      { tag: 'note', elements: [{ tag: 'plain_text', content: `詳細: ${SITE_URL} ／ 画像送信にはLARK_APP_ID/SECRETの設定が必要です` }] },
+      // 「日報」はWebhookのカスタムキーワード。週報・月報でも必ず本文に含める
+      { tag: 'note', elements: [{ tag: 'plain_text', content: `自動日報Bot ／ 詳細: ${SITE_URL} ／ 画像送信にはLARK_APP_ID/SECRETの設定が必要です` }] },
     ],
   };
   const { j } = await larkJson(WEBHOOK, { msg_type: 'interactive', card });
