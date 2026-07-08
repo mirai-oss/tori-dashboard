@@ -133,6 +133,39 @@ function setupIfNeeded() {
     adSh.setColumnWidths(1, 6, 120);
   }
 
+  // 広告効果入力シート（DB_広告効果）。無ければテンプレートを自動作成。
+  // アクセス数・ネット予約を入れると、ダッシュボード側で CVR・CPA・予想売上・想定ROAS を自動計算。
+  var fxSh = ss.getSheetByName('DB_広告効果');
+  if (!fxSh) {
+    fxSh = ss.insertSheet('DB_広告効果');
+    fxSh.getRange(1, 1, 1, 8).setValues([['年月', '店舗名', '媒体', 'アクセス数', 'ネット予約組数', 'ネット予約人数', '電話数', 'メモ']])
+      .setFontWeight('bold').setBackground('#efe9dd');
+    fxSh.getRange('A1').setNote(
+      '1行＝年月×店舗×媒体。\n' +
+      '・年月: 2026/07 の形式（2026/07/01でも可）\n' +
+      '・管理シートの💾売上DBからIMPORTRANGEで自動連携もできます\n' +
+      '・CVR・CPA・予想売上はダッシュボード側で自動計算（入力不要）'
+    );
+    fxSh.setFrozenRows(1);
+    fxSh.setColumnWidths(1, 8, 120);
+  }
+
+  // 設定単価シート（DB_単価設定）。無ければテンプレートを自動作成。
+  // 予想売上＝ネット予約人数×設定単価。
+  var tkSh = ss.getSheetByName('DB_単価設定');
+  if (!tkSh) {
+    tkSh = ss.insertSheet('DB_単価設定');
+    tkSh.getRange(1, 1, 1, 4).setValues([['店舗名', '媒体', '設定単価', 'メモ']])
+      .setFontWeight('bold').setBackground('#efe9dd');
+    tkSh.getRange('A1').setNote(
+      '店舗×媒体ごとの想定客単価（円）。\n' +
+      '・店舗名を空欄＝全店共通、媒体を空欄＝その店舗の全媒体に適用\n' +
+      '・予想売上＝ネット予約人数×設定単価'
+    );
+    tkSh.setFrozenRows(1);
+    tkSh.setColumnWidths(1, 4, 130);
+  }
+
   // PL経費入力シート（DB_PL）。無ければテンプレートを自動作成。
   // 1行＝年月×店舗×勘定科目。区分: F=仕入れ/L=人件費/A=広告/R=家賃/O=他
   var plSh = ss.getSheetByName('DB_PL');
