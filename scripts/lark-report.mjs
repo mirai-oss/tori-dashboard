@@ -46,24 +46,35 @@ async function capture() {
     log('open:', SITE_URL);
     await page.goto(SITE_URL, { waitUntil: 'networkidle2', timeout: 90000 });
 
-    // ログイン
-    await page.waitForSelector('#li-id', { timeout: 60000 });
-    await page.type('#li-id', DASH_ID);
-    await page.type('#li-pw', DASH_PW);
-    await page.click('#li-btn');
-    log('ログイン送信、データ読込待ち…（GASの応答に1〜2分かかることがあります）');
-
-    // 認証エラーの即時検知
-    await Promise.race([
-      page.waitForFunction(
-        () => typeof S !== 'undefined' && S.auth && S.connState === 'live' && typeof D !== 'undefined' && D.daily.length > 0,
-        { timeout: 180000, polling: 2000 }
-      ),
-      page.waitForFunction(
-        () => { const el = document.querySelector('.login-err'); return el && el.textContent.length > 0 ? el.textContent : false; },
-        { timeout: 180000, polling: 2000 }
-      ).then(async (h) => { throw new Error('ログイン失敗: ' + (await h.jsonValue())); }),
-    ]);
+    // ログイン（セッション切れ等の間欠エラーに備えて最大3回リトライ）
+    const loginOnce = async () => {
+      await page.waitForSelector('#li-id', { timeout: 60000 });
+      await page.$eval('#li-id', (el) => { el.value = ''; });
+      await page.$eval('#li-pw', (el) => { el.value = ''; });
+      await page.type('#li-id', DASH_ID);
+      await page.type('#li-pw', DASH_PW);
+      await page.click('#li-btn');
+      log('ログイン送信、データ読込待ち…（GASの応答に1〜2分かかることがあります）');
+      await Promise.race([
+        page.waitForFunction(
+          () => typeof S !== 'undefined' && S.auth && S.connState === 'live' && typeof D !== 'undefined' && D.daily.length > 0,
+          { timeout: 150000, polling: 2000 }
+        ),
+        page.waitForFunction(
+          () => { const el = document.querySelector('.login-err'); return el && el.textContent.length > 0 ? el.textContent : false; },
+          { timeout: 150000, polling: 2000 }
+        ).then(async (h) => { throw new Error('ログイン失敗: ' + (await h.jsonValue())); }),
+      ]);
+    };
+    let loggedIn = false, lastErr;
+    for (let attempt = 1; attempt <= 3 && !loggedIn; attempt++) {
+      try {
+        if (attempt > 1) { log('再読み込みしてログイン再試行 (' + attempt + '/3)'); await page.goto(SITE_URL, { waitUntil: 'networkidle2', timeout: 90000 }); await new Promise((r) => setTimeout(r, 2500)); }
+        await loginOnce();
+        loggedIn = true;
+      } catch (e) { lastErr = e; log('ログイン試行' + attempt + '失敗:', e.message); await new Promise((r) => setTimeout(r, 6000)); }
+    }
+    if (!loggedIn) throw lastErr;
     log('データ読込完了。レポート描画:', KIND);
 
     await page.evaluate((k) => { App.report(k); }, KIND);
