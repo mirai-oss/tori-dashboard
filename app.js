@@ -2033,19 +2033,28 @@ function reportData(kind, dateStr){
   const a=dayMs(s), b=dayMs(e), pa=dayMs(ps), pb=dayMs(pe);
   // 月間累計（期間末日まで）
   const mcS=new Date(e.getFullYear(),e.getMonth(),1);
+  // ダイニー点数の集計範囲：日報＝その月の頭〜当日 ／ 週報・月報＝その期間内
+  const dnS=(kind==='daily')?dayMs(mcS):a, dnE=b;
+  const hasDinii=D.dinii.length>0;
   const rows=stores.map(nm=>{
     const c=stat(null,a,b,nm), pv=stat(null,pa,pb,nm);
     const cum=stat(null,dayMs(mcS),b,nm), cumPv=stat(null,dayMs(sub1y(mcS)),dayMs(sub1y(e)),nm);
+    const dn=hasDinii?diniiStats([nm],dnS,dnE):{avg:null,count:0};
     return { store:nm, sales:c.sales, prevSales:pv.sales, guests:c.guests,
       spend:c.guests>0?c.sales/c.guests:0, cost:c.cost, labor:c.labor,
+      fl:c.sales>0?(c.cost+c.labor)/c.sales:null, dinii:dn.avg, diniiCount:dn.count,
       cum:cum.sales, cumPrev:cumPv.sales };
   }).sort((x,y)=>y.sales-x.sales);
   const tot=rows.reduce((o,r)=>{o.sales+=r.sales;o.prevSales+=r.prevSales;o.guests+=r.guests;o.cost+=r.cost;o.labor+=r.labor;o.cum+=r.cum;o.cumPrev+=r.cumPrev;return o;},
     {sales:0,prevSales:0,guests:0,cost:0,labor:0,cum:0,cumPrev:0});
+  tot.fl=tot.sales>0?(tot.cost+tot.labor)/tot.sales:null;
+  const dnTot=hasDinii?diniiStats(stores,dnS,dnE):{avg:null,count:0};
+  tot.dinii=dnTot.avg; tot.diniiCount=dnTot.count;
+  const diniiRangeLabel=(kind==='daily')?(e.getMonth()+1)+'月（1日〜'+e.getDate()+'日）':'期間内';
   const salesLabel=kind==='monthly'?'月売上':kind==='weekly'?'週売上':'売上';
   const pad=(n)=>String(n).padStart(2,'0');
   const fileKey=kind+'-'+e.getFullYear()+pad(e.getMonth()+1)+pad(e.getDate());   // 例 daily-20260707
-  const data={ kind, title, sub, salesLabel, fileKey, rows, tot,
+  const data={ kind, title, sub, salesLabel, fileKey, rows, tot, hasDinii, diniiRangeLabel,
     gen:new Date().toLocaleString('ja-JP',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}) };
   try{ window.__REPORT_JSON=data; }catch(err){}
   return data;
@@ -2070,52 +2079,60 @@ function viewReport(kind, dateStr){
       <div style="font-size:13px;color:#9a8f7c;margin-top:3px">${esc(d.sub)}</div></div>
       <div style="margin-left:auto;font-size:11px;color:#9a8f7c">自動生成 ${esc(d.gen)}</div>
     </div>
-    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;padding:20px 32px 4px">
-      ${[['全店'+salesLabel,yen(d.tot.sales),'前年比 '+totYoy.t,totYoy.cls],
-         ['客数',cnt(d.tot.guests)+'人','客単価 '+yen(spend),''],
-         showFl?['FL率',fl,'原価+人件費',''] : ['客単価',yen(spend),'',''],
-         [ (kind==='monthly'?'年間累計':'月間累計'),yen(kind==='monthly'?d.tot.sales:d.tot.cum),'前年比 '+(kind==='monthly'?totYoy.t:cumYoy.t),(kind==='monthly'?totYoy.cls:cumYoy.cls)]
-        ].map(k=>`<div style="background:#fff;border:1px solid #efe9dd;border-radius:12px;padding:14px 16px">
+    ${(()=>{
+      const flTxt=d.tot.fl!=null?(d.tot.fl*100).toFixed(1)+'%':'—';
+      const dnTxt=d.tot.dinii!=null?d.tot.dinii.toFixed(2):'—';
+      const cards=[
+        ['全店'+salesLabel,yen(d.tot.sales),'前年比 '+totYoy.t,totYoy.cls],
+        ['客数',cnt(d.tot.guests)+'人','客単価 '+yen(spend),''],
+        ['FL率',flTxt,'原価+人件費',''],
+      ];
+      if(d.hasDinii) cards.push(['ダイニー再来店',dnTxt,d.diniiRangeLabel+'・'+cnt(d.tot.diniiCount)+'件','']);
+      cards.push([(kind==='monthly'?'年間累計':'月間累計'),yen(kind==='monthly'?d.tot.sales:d.tot.cum),'前年比 '+(kind==='monthly'?totYoy.t:cumYoy.t),(kind==='monthly'?totYoy.cls:cumYoy.cls)]);
+      return `<div style="display:grid;grid-template-columns:repeat(${cards.length},1fr);gap:12px;padding:20px 32px 4px">`+
+        cards.map(k=>`<div style="background:#fff;border:1px solid #efe9dd;border-radius:12px;padding:14px 16px">
           <div style="font-size:12px;color:#8c8375">${esc(k[0])}</div>
-          <div style="font-size:23px;font-weight:700;margin:4px 0 2px">${k[1]}</div>
-          <div style="font-size:12px;color:${k[3]||'#a99f8c'}">${k[2]}</div></div>`).join('')}
-    </div>
+          <div style="font-size:22px;font-weight:700;margin:4px 0 2px">${k[1]}</div>
+          <div style="font-size:11.5px;color:${k[3]||'#a99f8c'}">${k[2]}</div></div>`).join('')+`</div>`;
+    })()}
     <div style="padding:14px 32px 0">${chart?`<div style="background:#fff;border:1px solid #efe9dd;border-radius:12px;padding:14px 16px 6px">
       <div style="font-size:12.5px;color:#8c8375;margin-bottom:6px">店舗別 ${salesLabel}（■当期 ■前年）</div>${chart}</div>`:''}</div>
     <div style="padding:14px 32px 20px">
       <table style="width:100%;border-collapse:collapse;background:#fff;border:1px solid #efe9dd;border-radius:12px;overflow:hidden">
         <thead><tr style="background:#efe9dd">
-          <th style="text-align:left;padding:9px 14px;font-size:12px;color:#5c5348">店舗</th>
-          <th style="text-align:right;padding:9px 14px;font-size:12px;color:#5c5348">${salesLabel}</th>
-          <th style="text-align:right;padding:9px 14px;font-size:12px;color:#5c5348">前年比</th>
-          <th style="text-align:right;padding:9px 14px;font-size:12px;color:#5c5348">客数</th>
-          <th style="text-align:right;padding:9px 14px;font-size:12px;color:#5c5348">客単価</th>
-          ${kind!=='monthly'?`<th style="text-align:right;padding:9px 14px;font-size:12px;color:#5c5348">月間累計</th>
-          <th style="text-align:right;padding:9px 14px;font-size:12px;color:#5c5348">累計前年比</th>`:`<th style="text-align:right;padding:9px 14px;font-size:12px;color:#5c5348">FL率</th>`}
+          <th style="text-align:left;padding:9px 12px;font-size:11.5px;color:#5c5348">店舗</th>
+          <th style="text-align:right;padding:9px 12px;font-size:11.5px;color:#5c5348">${salesLabel}</th>
+          <th style="text-align:right;padding:9px 12px;font-size:11.5px;color:#5c5348">前年比</th>
+          <th style="text-align:right;padding:9px 12px;font-size:11.5px;color:#5c5348">FL率</th>
+          ${d.hasDinii?`<th style="text-align:right;padding:9px 12px;font-size:11.5px;color:#5c5348">ダイニー</th>`:''}
+          <th style="text-align:right;padding:9px 12px;font-size:11.5px;color:#5c5348">客数</th>
+          <th style="text-align:right;padding:9px 12px;font-size:11.5px;color:#5c5348">客単価</th>
+          ${kind!=='monthly'?`<th style="text-align:right;padding:9px 12px;font-size:11.5px;color:#5c5348">月間累計</th>`:''}
         </tr></thead><tbody>`;
+  const flCell=(v)=>v==null?'<span style="color:#a99f8c">—</span>':(v>0.6?`<span style="color:#b5502f">${(v*100).toFixed(1)}%</span>`:(v*100).toFixed(1)+'%');
+  const dnCell=(r)=>r.dinii==null?'<span style="color:#a99f8c">—</span>':`${r.dinii.toFixed(2)}<span style="color:#a99f8c;font-size:10px"> /${cnt(r.diniiCount)}</span>`;
   d.rows.forEach((r,i)=>{
-    const ry=yoy(r.sales,r.prevSales), cy=yoy(r.cum,r.cumPrev);
-    const rfl=r.sales>0?((r.cost+r.labor)/r.sales*100).toFixed(1)+'%':'—';
+    const ry=yoy(r.sales,r.prevSales);
     h+=`<tr style="border-top:1px solid #efe9dd${i%2?';background:#fbf9f4':''}">
-      <td style="padding:8px 14px;font-size:13.5px;font-weight:500">${esc(r.store)}</td>
-      <td style="padding:8px 14px;font-size:13.5px;text-align:right;font-variant-numeric:tabular-nums">${yen(r.sales)}</td>
-      <td style="padding:8px 14px;font-size:13px;text-align:right;color:${ry.cls||'#a99f8c'}">${ry.t}</td>
-      <td style="padding:8px 14px;font-size:13.5px;text-align:right">${cnt(r.guests)}人</td>
-      <td style="padding:8px 14px;font-size:13.5px;text-align:right">${yen(r.spend)}</td>
-      ${kind!=='monthly'?`<td style="padding:8px 14px;font-size:13.5px;text-align:right">${yen(r.cum)}</td>
-      <td style="padding:8px 14px;font-size:13px;text-align:right;color:${cy.cls||'#a99f8c'}">${cy.t}</td>`
-      :`<td style="padding:8px 14px;font-size:13.5px;text-align:right">${rfl}</td>`}
+      <td style="padding:8px 12px;font-size:13px;font-weight:500">${esc(r.store)}</td>
+      <td style="padding:8px 12px;font-size:13px;text-align:right;font-variant-numeric:tabular-nums">${yen(r.sales)}</td>
+      <td style="padding:8px 12px;font-size:12.5px;text-align:right;color:${ry.cls||'#a99f8c'}">${ry.t}</td>
+      <td style="padding:8px 12px;font-size:13px;text-align:right">${flCell(r.fl)}</td>
+      ${d.hasDinii?`<td style="padding:8px 12px;font-size:13px;text-align:right">${dnCell(r)}</td>`:''}
+      <td style="padding:8px 12px;font-size:13px;text-align:right">${cnt(r.guests)}人</td>
+      <td style="padding:8px 12px;font-size:13px;text-align:right">${yen(r.spend)}</td>
+      ${kind!=='monthly'?`<td style="padding:8px 12px;font-size:13px;text-align:right">${yen(r.cum)}</td>`:''}
     </tr>`;
   });
   h+=`<tr style="border-top:2px solid #d8cfbd;background:#efe9dd;font-weight:700">
-      <td style="padding:9px 14px;font-size:13.5px">全店合計</td>
-      <td style="padding:9px 14px;font-size:13.5px;text-align:right">${yen(d.tot.sales)}</td>
-      <td style="padding:9px 14px;font-size:13px;text-align:right;color:${totYoy.cls||'#5c5348'}">${totYoy.t}</td>
-      <td style="padding:9px 14px;font-size:13.5px;text-align:right">${cnt(d.tot.guests)}人</td>
-      <td style="padding:9px 14px;font-size:13.5px;text-align:right">${yen(spend)}</td>
-      ${kind!=='monthly'?`<td style="padding:9px 14px;font-size:13.5px;text-align:right">${yen(d.tot.cum)}</td>
-      <td style="padding:9px 14px;font-size:13px;text-align:right;color:${cumYoy.cls||'#5c5348'}">${cumYoy.t}</td>`
-      :`<td style="padding:9px 14px;font-size:13.5px;text-align:right">${fl}</td>`}
+      <td style="padding:9px 12px;font-size:13px">全店合計</td>
+      <td style="padding:9px 12px;font-size:13px;text-align:right">${yen(d.tot.sales)}</td>
+      <td style="padding:9px 12px;font-size:12.5px;text-align:right;color:${totYoy.cls||'#5c5348'}">${totYoy.t}</td>
+      <td style="padding:9px 12px;font-size:13px;text-align:right">${d.tot.fl!=null?(d.tot.fl*100).toFixed(1)+'%':'—'}</td>
+      ${d.hasDinii?`<td style="padding:9px 12px;font-size:13px;text-align:right">${d.tot.dinii!=null?d.tot.dinii.toFixed(2):'—'}<span style="font-weight:400;color:#8c8375;font-size:10px"> /${cnt(d.tot.diniiCount)}</span></td>`:''}
+      <td style="padding:9px 12px;font-size:13px;text-align:right">${cnt(d.tot.guests)}人</td>
+      <td style="padding:9px 12px;font-size:13px;text-align:right">${yen(spend)}</td>
+      ${kind!=='monthly'?`<td style="padding:9px 12px;font-size:13px;text-align:right">${yen(d.tot.cum)}</td>`:''}
     </tr></tbody></table>
     <div style="font-size:11px;color:#a99f8c;margin-top:10px;text-align:right">鳥一代グループ 経営ダッシュボード ／ ${esc(d.gen)} 自動生成</div>
     </div></div>

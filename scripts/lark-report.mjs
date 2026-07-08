@@ -90,10 +90,13 @@ async function send() {
     .map((r, i) => `${medal[i] || '　'} **${r.store}**　${yen(r.sales)}（前年比 ${yoy(r.sales, r.prevSales)}）`).join('\n');
 
   // 「日報」はWebhookのカスタムキーワード。ヘッダーにも入るが note でも必ず含める
+  const flTxt = t.fl != null ? (t.fl * 100).toFixed(1) + '%' : '—';
+  const dnTxt = t.dinii != null ? t.dinii.toFixed(2) : '—';
   const headline = `【${d.title}】${d.sub}`;
   const summary =
     `**全店${d.salesLabel} ${yen(t.sales)}**（前年比 ${yoy(t.sales, t.prevSales)}）\n` +
-    `客数 ${cnt(t.guests)}人 ／ 客単価 ${yen(spend)}` +
+    `客数 ${cnt(t.guests)}人 ／ 客単価 ${yen(spend)} ／ FL率 ${flTxt}` +
+    (d.hasDinii ? `\nダイニー再来店 **${dnTxt}**（${d.diniiRangeLabel}・${cnt(t.diniiCount)}件）` : '') +
     (d.kind === 'monthly' ? '' : `\n月間累計 ${yen(t.cum)}（前年比 ${yoy(t.cum, t.cumPrev)}）`) +
     `\n<font color="green">前年超え ${up}店</font> ／ <font color="red">前年割れ ${down}店</font>`;
 
