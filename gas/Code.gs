@@ -17,7 +17,7 @@
  *     リアルタイム取得できます。
  *
  * ★管理シート連携（入力の一元化）:
- *   広告費用対効果_管理シート（MGMT_SHEET_ID）の 💾広告費DB／💾売上DB／⚙単価設定 を
+ *   広告費用対効果_管理シート（MGMT_SHEET_ID）の 💾広告費DB／💾売上DB／💾予約DB／⚙単価設定 を
  *   GASが直接読み込んでダッシュボードに配信します。IMPORTRANGEや転記は不要。
  *   管理シートにデータがあればそちらを優先し、無ければローカルのDB_シートを使います。
  */
@@ -43,7 +43,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'mgmt-v5', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'rsv-v6', time: new Date().toISOString() });
     setupIfNeeded();
     if (action === 'login')  return out(login(p));
     if (action === 'logout') return out(logout(p));
@@ -298,7 +298,8 @@ var MGMT_SHEET_ID = '1y-Lb5ynzJ-5tRDKgQAapoxmpqkfO1o5gNWcPR2WLxCI';
 var MGMT_TABS = [
   { key: '広告',     re: /広告費DB/ },        // 💾広告費DB → 広告費
   { key: '広告効果', re: /売上DB|広告効果/ },  // 💾売上DB → アクセス数・ネット予約・電話数
-  { key: '単価設定', re: /単価設定/ }          // ⚙単価設定 → 想定客単価
+  { key: '単価設定', re: /単価設定/ },         // ⚙単価設定 → 想定客単価
+  { key: '予約',     re: /予約DB|予約明細|予約一覧/ }  // 💾予約DB → 曜日別・当日予約の時刻分析
 ];
 
 function mgmtOpen() {
@@ -325,6 +326,14 @@ function mgmtEnsure(mss) {
       );
       tk.setFrozenRows(1);
       tk.setColumnWidths(1, 4, 130);
+    }
+    // 💾予約DB タブ（予約一覧CSVの貼り付け先）が無ければ自動作成
+    if (!mgmtFindTab(mss, /予約DB|予約明細|予約一覧/)) {
+      var tr = mss.insertSheet('💾予約DB');
+      tr.getRange(1, 1, 1, 9).setValues([['店舗名', '予約No', '来店日', '来店時間', '人数', 'ステータス', '受付窓口', '作成日', '作成時間']]).setFontWeight('bold').setBackground('#efe9dd');
+      tr.getRange('A1').setNote('予約一覧CSV（食べログ等の管理画面からエクスポート）をそのまま貼り付けてOK（ヘッダー行ごと・列の並びは自由。列名で自動判定します）。\n・複数店舗ぶんを貼る場合は「店舗名」列を追加してください（1店舗なら不要）\n・曜日別の予約傾向と当日予約の申込時刻分布がダッシュボードに自動反映されます');
+      tr.setFrozenRows(1);
+      tr.setColumnWidths(1, 9, 110);
     }
     // 💾売上DB に「電話数」列が無ければ末尾に追加
     var up = mgmtFindTab(mss, /売上DB/);
@@ -415,7 +424,7 @@ function readSheet(sh, months, key) {
     var o = [];
     for (var m = 0; m < keepIdx.length; m++) {
       var v = row[keepIdx[m]];
-      if (v instanceof Date) v = Utilities.formatDate(v, tz, 'yyyy/MM/dd');
+      if (v instanceof Date) v = (v.getFullYear() > 1970) ? Utilities.formatDate(v, tz, 'yyyy/MM/dd') : Utilities.formatDate(v, tz, 'HH:mm');  // 時刻だけのセル（1899年基点）はHH:mm
       o.push(v);
     }
     out.push(o);
