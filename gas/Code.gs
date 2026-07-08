@@ -15,6 +15,11 @@
  * 「DB_」で始まる名前のシートは接続設定に書かなくても自動で配信されます。
  * 例: 「DB_広告」というシートを作れば、ダッシュボード側でキー「広告」として
  *     リアルタイム取得できます。
+ *
+ * ★管理シート連携（入力の一元化）:
+ *   広告費用対効果_管理シート（MGMT_SHEET_ID）の 💾広告費DB／💾売上DB／⚙単価設定 を
+ *   GASが直接読み込んでダッシュボードに配信します。IMPORTRANGEや転記は不要。
+ *   管理シートにデータがあればそちらを優先し、無ければローカルのDB_シートを使います。
  */
 
 var TOKEN_HOURS = 12; // ログイントークンの有効時間
@@ -38,7 +43,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'pl-dinii-v4', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'mgmt-v5', time: new Date().toISOString() });
     setupIfNeeded();
     if (action === 'login')  return out(login(p));
     if (action === 'logout') return out(logout(p));
@@ -143,7 +148,7 @@ function setupIfNeeded() {
     fxSh.getRange('A1').setNote(
       '1行＝年月×店舗×媒体。\n' +
       '・年月: 2026/07 の形式（2026/07/01でも可）\n' +
-      '・管理シートの💾売上DBからIMPORTRANGEで自動連携もできます\n' +
+      '・通常は管理シート（💾売上DB）に入力すればOK。GASが直接読むためこのシートは予備\n' +
       '・CVR・CPA・予想売上はダッシュボード側で自動計算（入力不要）'
     );
     fxSh.setFrozenRows(1);
@@ -286,6 +291,52 @@ function isAdmin(session) {
   return session.role === '社長' || session.role === '本部';
 }
 
+// ================== 管理シート連携 ==================
+// 広告費用対効果_管理シート。ここに入力すれば転記・IMPORTRANGE不要でダッシュボードに自動反映。
+var MGMT_SHEET_ID = '1y-Lb5ynzJ-5tRDKgQAapoxmpqkfO1o5gNWcPR2WLxCI';
+// 管理シートのタブ → 配信キー（タブ名は部分一致。絵文字付きでもOK）
+var MGMT_TABS = [
+  { key: '広告',     re: /広告費DB/ },        // 💾広告費DB → 広告費
+  { key: '広告効果', re: /売上DB|広告効果/ },  // 💾売上DB → アクセス数・ネット予約・電話数
+  { key: '単価設定', re: /単価設定/ }          // ⚙単価設定 → 想定客単価
+];
+
+function mgmtOpen() {
+  if (!MGMT_SHEET_ID) return null;
+  try { return SpreadsheetApp.openById(MGMT_SHEET_ID); } catch (e) { return null; }
+}
+function mgmtFindTab(mss, re) {
+  var shs = mss.getSheets();
+  for (var i = 0; i < shs.length; i++) if (re.test(shs[i].getName())) return shs[i];
+  return null;
+}
+// 管理シート側の不足を自動で整える（何度呼んでも安全）
+function mgmtEnsure(mss) {
+  try {
+    // ⚙単価設定タブが無ければ作成
+    if (!mgmtFindTab(mss, /単価設定/)) {
+      var tk = mss.insertSheet('⚙単価設定');
+      tk.getRange(1, 1, 1, 4).setValues([['店舗名', '媒体', '設定単価', 'メモ']])
+        .setFontWeight('bold').setBackground('#efe9dd');
+      tk.getRange('A1').setNote(
+        '店舗×媒体ごとの想定客単価（円）。入力するとダッシュボードに自動反映。\n' +
+        '・店舗名を空欄＝全店共通、媒体を空欄＝その店舗の全媒体に適用\n' +
+        '・予想売上＝ネット予約人数×設定単価'
+      );
+      tk.setFrozenRows(1);
+      tk.setColumnWidths(1, 4, 130);
+    }
+    // 💾売上DB に「電話数」列が無ければ末尾に违加
+    var up = mgmtFindTab(mss, /売上DB/);
+    if (up && up.getLastRow() >= 1 && up.getLastColumn() >= 1) {
+      var hdr = up.getRange(1, 1, 1, up.getLastColumn()).getValues()[0];
+      var has = false;
+      for (var i = 0; i < hdr.length; i++) if (String(hdr[i]).indexOf('電話') >= 0) { has = true; break; }
+      if (!has) up.getRange(1, up.getLastColumn() + 1).setValue('電話数').setFontWeight('bold').setBackground('#efe9dd');
+    }
+  } catch (e) {}
+}
+
 // ================== データ配信 ==================
 
 // 配信対象のシート（キー→シート名）を接続設定＋DB_接頭辞から解決
@@ -379,8 +430,21 @@ function getData(p, session) {
   var only = p.keys ? String(p.keys).split(',') : null;     // このキーだけ返す
   var except = p.exclude ? String(p.exclude).split(',') : null; // このキーは除外
   var list = configuredSheets(ss);
+  // ① 管理シート（入力の一元化）を最優先で読む。タブにデータがあればローカルDB_シートより優先。
+  var mss = null;
+  for (var t = 0; t < MGMT_TABS.length; t++) {
+    var mt = MGMT_TABS[t];
+    if (only && only.indexOf(mt.key) < 0) continue;
+    if (except && except.indexOf(mt.key) >= 0) continue;
+    if (mss === null) { mss = mgmtOpen() || false; if (mss) mgmtEnsure(mss); }
+    if (!mss) break;
+    var msh = mgmtFindTab(mss, mt.re);
+    if (msh && msh.getLastRow() > 1) sheets[mt.key] = readSheet(msh, months, mt.key);
+  }
+  // ② ローカル（このスプレッドシート）のシート。管理シートから取得済みのキーはスキップ。
   for (var i = 0; i < list.length; i++) {
     var key = list[i].key;
+    if (sheets[key]) continue;
     if (only && only.indexOf(key) < 0) continue;
     if (except && except.indexOf(key) >= 0) continue;
     var sh = ss.getSheetByName(list[i].name);
@@ -405,6 +469,7 @@ function dataVersion() {
   }
   var v = parts.join('|');
   try { v += '@' + DriveApp.getFileById(ss.getId()).getLastUpdated().getTime(); } catch (e) {} // 既存行の編集も検知（Drive権限があれば）
+  try { v += '@M' + DriveApp.getFileById(MGMT_SHEET_ID).getLastUpdated().getTime(); } catch (e) {} // 管理シートの編集も検知
   return v;
 }
 
