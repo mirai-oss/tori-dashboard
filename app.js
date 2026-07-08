@@ -1425,15 +1425,15 @@ function viewAd(){
   let a0=0,a1=0; for(const r of D.ad){ if(!a0||r.t<a0)a0=r.t; if(r.t>a1)a1=r.t; }
   const fmtD=(t)=>{ const d=new Date(t); return d.getFullYear()+'/'+(d.getMonth()+1)+'/'+d.getDate(); };
   const srcLine=D.adSrc==='sheet'
-    ?`<span style="color:#4c7d5c;font-weight:700">● スプレッドシート「DB_広告」シートの実データを表示中</span>（全${cnt(D.ad.length)}件 ／ データ期間 ${fmtD(a0)}〜${fmtD(a1)} ／ 最終同期 ${esc(S.lastSync||'—')}）`
-    :`<span style="color:#a2803f;font-weight:700">⚠ サンプル（架空）データを表示中</span> — スプレッドシートの「DB_広告」シートに実データが入ると自動で置き換わります`;
+    ?`<span style="color:#4c7d5c;font-weight:700">● スプレッドシート（管理シート💾広告費DB／DB_広告）の実データを表示中</span>（全${cnt(D.ad.length)}件 ／ データ期間 ${fmtD(a0)}〜${fmtD(a1)} ／ 最終同期 ${esc(S.lastSync||'—')}）`
+    :`<span style="color:#a2803f;font-weight:700">⚠ サンプル（架空）データを表示中</span> — 管理シートの「💾広告費DB」に実データが入ると自動で置き換わります`;
   h+=`<div class="panel no-print"><div class="panel-head"><div><h3>この画面の数字の出どころ</h3>
     <div class="sub">${srcLine}</div></div></div>
     <div class="note-box">
-      <b>広告費</b> ← 「DB_広告」シート。①直接入力の場合は「確認」列にチェックした行のみ反映 ②広告費用対効果_管理シートとIMPORTRANGE連携の場合は、管理シート側で✓反映済みの💾広告費DBを自動取込（反映まで約1分）<br>
+      <b>広告費</b> ← 広告費用対効果_管理シートの「💾広告費DB」を自動取込（転記・IMPORTRANGE不要）。管理シートが空のときはダッシュボード側「DB_広告」シート（確認列チェック行のみ）<br>
       <b>媒体経由売上・来店人数</b> ← 媒体別売上シート（分析_媒体別日次）と媒体名で自動突合（例: 鶏HP→ホットペッパー、匠味GN→ぐるなび）<br>
       <b>総売上（広告費率の分母）</b> ← 日別売上シート（分析_日別店舗）<br>
-      <b>アクセス数・ネット予約（CVR／CPA／予想売上）</b> ← 「DB_広告効果」シート（管理シートの💾売上DBとIMPORTRANGE連携可）　<b>設定単価</b> ← 「DB_単価設定」シート
+      <b>アクセス数・ネット予約（CVR／CPA／予想売上）</b> ← 管理シートの「💾売上DB」を自動取込　<b>設定単価</b> ← 管理シートの「⚙単価設定」タブ（GAS更新で自動作成）。どちらも管理シートが空のときはDB_広告効果／DB_単価設定を使用
     </div></div>`;
   // KPIカード
   const kA=mom(cur.ad,prv.ad,true), kN=mom(cur.medNet,prv.medNet,false);
@@ -1528,10 +1528,10 @@ function viewAd(){
   } else {
     h+=`<div class="panel no-print"><div class="panel-head"><div><h3>ネット予約ベースの費用対効果（未設定）</h3>
       <div class="sub">アクセス数・ネット予約を入れると CVR／CPA（一人当たり獲得費用）／予想売上／想定ROAS を自動計算します</div></div></div>
-    <div class="note-box">スプレッドシートに2つのシートを追加すると、この場所に自動表示されます：<br>
-      ① <code>DB_広告効果</code> ＝ <code>年月／店舗名／媒体／アクセス数／ネット予約組数／ネット予約人数／電話数</code>（管理シートの💾売上DBからIMPORTRANGE連携推奨）<br>
-      ② <code>DB_単価設定</code> ＝ <code>店舗名／媒体／設定単価</code>（予想売上＝ネット予約人数×設定単価）<br>
-      GASを最新版に更新すると、この2シートの雛形は自動で作成されます。</div></div>`;
+    <div class="note-box">広告費用対効果_管理シートに入力すると、この場所に自動表示されます（転記・IMPORTRANGE不要）：<br>
+      ① <code>💾売上DB</code> ＝ 年月／店舗／媒体／アクセス数／予約件数／来店人数／電話数<br>
+      ② <code>⚙単価設定</code> ＝ 店舗名／媒体／設定単価（予想売上＝ネット予約人数×設定単価。タブはGAS更新で自動作成）<br>
+      ※GAS（Code.gs）を最新版に更新してください。ダッシュボード側の <code>DB_広告効果</code>／<code>DB_単価設定</code> は予備の入力先として残ります。</div></div>`;
   }
   // 12ヶ月推移
   const cat=[],adArr=[],netArr=[],roasArr=[];
