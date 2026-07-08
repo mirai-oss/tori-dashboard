@@ -326,7 +326,7 @@ function mgmtEnsure(mss) {
       tk.setFrozenRows(1);
       tk.setColumnWidths(1, 4, 130);
     }
-    // 💾売上DB に「電話数」列が無ければ末尾に违加
+    // 💾売上DB に「電話数」列が無ければ末尾に追加
     var up = mgmtFindTab(mss, /売上DB/);
     if (up && up.getLastRow() >= 1 && up.getLastColumn() >= 1) {
       var hdr = up.getRange(1, 1, 1, up.getLastColumn()).getValues()[0];
