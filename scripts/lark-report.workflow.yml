@@ -82,6 +82,44 @@ jobs:
           IMAGE_URL: ${{ env.IMAGE_URL }}
         run: node scripts/lark-report.mjs send
 
+      # ================= 第2レポート: 鳥一代グループ8店舗のみ =================
+      # 別のLarkグループへ、対象店舗を絞った日報を送る（LARK_WEBHOOK2 が未設定ならスキップ）
+      - name: 第2レポートの設定チェック
+        if: env.SKIP != '1'
+        run: |
+          if [ -z "${{ secrets.LARK_WEBHOOK2 }}" ]; then
+            echo "::notice::LARK_WEBHOOK2 未設定のため第2レポート（店舗絞り込み）はスキップ"
+            echo "SKIP2=1" >> "$GITHUB_ENV"
+          fi
+
+      - name: 第2レポート画像を生成（8店舗）
+        if: env.SKIP != '1' && env.SKIP2 != '1'
+        env:
+          REPORT_KIND: ${{ env.REPORT_KIND }}
+          DASH_ID: ${{ secrets.DASH_ID }}
+          DASH_PW: ${{ secrets.DASH_PW }}
+          REPORT_GROUP: tori
+          REPORT_STORES: 芝の鳥一代,鳥一代 はなれ,鳥一代 恵比寿,鳥一代 新橋,鳥一代 本店,鶏武者 新横浜,鶏武者 川崎店,黒霧屋 新横浜
+        run: node scripts/lark-report.mjs capture
+
+      - name: 第2レポート画像を Release にアップロード
+        if: env.SKIP != '1' && env.SKIP2 != '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          KEY=$(node -e "console.log(require('./report-meta.json').fileKey)")
+          cp report.png "$KEY.png"
+          gh release upload reports "$KEY.png" --clobber
+          echo "IMAGE_URL2=https://github.com/${{ github.repository }}/releases/download/reports/$KEY.png" >> "$GITHUB_ENV"
+
+      - name: 第2レポートを Lark に送信
+        if: env.SKIP != '1' && env.SKIP2 != '1'
+        env:
+          REPORT_KIND: ${{ env.REPORT_KIND }}
+          LARK_WEBHOOK: ${{ secrets.LARK_WEBHOOK2 }}
+          IMAGE_URL: ${{ env.IMAGE_URL2 }}
+        run: node scripts/lark-report.mjs send
+
       - name: スクリーンショットを保存（確認用）
         if: always() && env.SKIP != '1'
         uses: actions/upload-artifact@v4

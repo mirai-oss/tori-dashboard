@@ -752,7 +752,7 @@ function downloadPdf(){ window.print(); }
 function render(){
   const root=$('root');
   if(!S.auth){ root.innerHTML=viewLogin(); return; }
-  if(S.reportMode){ root.innerHTML=viewReport(S.reportMode.kind, S.reportMode.date); return; }
+  if(S.reportMode){ root.innerHTML=viewReport(S.reportMode.kind, S.reportMode.date, S.reportMode.stores, S.reportMode.group); return; }
   EXPORT=[];
   const tabs=myTabs();
   if(!tabs.includes(S.tab)) S.tab=tabs[0];
@@ -2098,11 +2098,18 @@ function viewReview(){
 
 /* ---------------- 日報/週報/月報カード（Lark配信用・1枚画像レイアウト） ---------------- */
 // 対象期間のレポートデータを生成（店舗別・売上降順）
-function reportData(kind, dateStr){
+function reportData(kind, dateStr, storeFilter, group){
   const ref0=D.refDate||new Date();
   const pI=(s2)=>{const p2=String(s2).split('-');return new Date(+p2[0],+p2[1]-1,+p2[2]);};
   const ref=dateStr?pI(dateStr):new Date(ref0.getFullYear(),ref0.getMonth(),ref0.getDate());
-  const stores=allStores();
+  // 店舗フィルタ（配信先グループごとに対象店舗を絞れる）。表記ゆれはresolveStoreで吸収
+  let stores=allStores();
+  if(storeFilter&&storeFilter.length){
+    const wanted=new Set(storeFilter.map(n=>resolveStore(String(n).trim())||String(n).trim()));
+    const filtered=stores.filter(n=>wanted.has(n));
+    if(filtered.length) stores=filtered;
+  }
+  const isFiltered=stores.length!==allStores().length;
   let s,e,ps,pe,title,sub;
   if(kind==='weekly'){
     // 月内ブロック週（1-7/8-14/15-21/22-28/29-末）: refを含む週
@@ -2135,26 +2142,31 @@ function reportData(kind, dateStr){
     const dn=hasDinii?diniiStats([nm],dnS,dnE):{avg:null,count:0};
     return { store:nm, sales:c.sales, prevSales:pv.sales, guests:c.guests,
       spend:c.guests>0?c.sales/c.guests:0, cost:c.cost, labor:c.labor,
+      fr:c.sales>0?c.cost/c.sales:null, lr:c.sales>0?c.labor/c.sales:null,
       fl:c.sales>0?(c.cost+c.labor)/c.sales:null, dinii:dn.avg, diniiCount:dn.count,
       cum:cum.sales, cumPrev:cumPv.sales };
   }).sort((x,y)=>y.sales-x.sales);
   const tot=rows.reduce((o,r)=>{o.sales+=r.sales;o.prevSales+=r.prevSales;o.guests+=r.guests;o.cost+=r.cost;o.labor+=r.labor;o.cum+=r.cum;o.cumPrev+=r.cumPrev;return o;},
     {sales:0,prevSales:0,guests:0,cost:0,labor:0,cum:0,cumPrev:0});
   tot.fl=tot.sales>0?(tot.cost+tot.labor)/tot.sales:null;
+  tot.fr=tot.sales>0?tot.cost/tot.sales:null;
+  tot.lr=tot.sales>0?tot.labor/tot.sales:null;
   const dnTot=hasDinii?diniiStats(stores,dnS,dnE):{avg:null,count:0};
   tot.dinii=dnTot.avg; tot.diniiCount=dnTot.count;
   const diniiRangeLabel=(kind==='daily')?(e.getMonth()+1)+'月（1日〜'+e.getDate()+'日）':'期間内';
   const salesLabel=kind==='monthly'?'月売上':kind==='weekly'?'週売上':'売上';
   const pad=(n)=>String(n).padStart(2,'0');
-  const fileKey=kind+'-'+e.getFullYear()+pad(e.getMonth()+1)+pad(e.getDate());   // 例 daily-20260707
-  const data={ kind, title, sub, salesLabel, fileKey, rows, tot, hasDinii, diniiRangeLabel,
+  const grp=String(group||'').replace(/[^a-zA-Z0-9_-]/g,'');
+  const fileKey=kind+'-'+e.getFullYear()+pad(e.getMonth()+1)+pad(e.getDate())+(grp?'-'+grp:'');   // 例 daily-20260707-tori
+  if(isFiltered) sub+='（'+stores.length+'店舗）';
+  const data={ kind, title, sub, salesLabel, fileKey, rows, tot, hasDinii, diniiRangeLabel, isFiltered,
     gen:new Date().toLocaleString('ja-JP',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}) };
   try{ window.__REPORT_JSON=data; }catch(err){}
   return data;
 }
-function viewReport(kind, dateStr){
+function viewReport(kind, dateStr, storeFilter, group){
   if(!D.daily.length) return `<div style="padding:60px;text-align:center;color:#8c8375;font-size:15px" id="report-loading">データ読込中…</div>`;
-  const d=reportData(kind||'daily', dateStr);
+  const d=reportData(kind||'daily', dateStr, storeFilter, group);
   const yoy=(c,p)=>{ if(!(p>0)) return {t:'—',cls:''}; const v=(c-p)/p*100; return {t:(v>=0?'+':'▲')+Math.abs(v).toFixed(1)+'%', cls:v>=0?'#4c7d5c':'#b5502f'}; };
   const totYoy=yoy(d.tot.sales,d.tot.prevSales), cumYoy=yoy(d.tot.cum,d.tot.cumPrev);
   const spend=d.tot.guests>0?d.tot.sales/d.tot.guests:0;
@@ -2173,20 +2185,21 @@ function viewReport(kind, dateStr){
       <div style="margin-left:auto;font-size:11px;color:#9a8f7c">自動生成 ${esc(d.gen)}</div>
     </div>
     ${(()=>{
-      const flTxt=d.tot.fl!=null?(d.tot.fl*100).toFixed(1)+'%':'—';
+      const pctTxt=(v)=>v!=null?(v*100).toFixed(1)+'%':'—';
       const dnTxt=d.tot.dinii!=null?d.tot.dinii.toFixed(2):'—';
       const cards=[
         ['全店'+salesLabel,yen(d.tot.sales),'前年比 '+totYoy.t,totYoy.cls],
         ['客数',cnt(d.tot.guests)+'人','客単価 '+yen(spend),''],
-        ['FL率',flTxt,'原価+人件費',''],
+        ['F率（原価）',pctTxt(d.tot.fr),'FL計 '+pctTxt(d.tot.fl),''],
+        ['L率（人件費）',pctTxt(d.tot.lr),'FL計 '+pctTxt(d.tot.fl),''],
       ];
       if(d.hasDinii) cards.push(['ダイニー再来店',dnTxt,d.diniiRangeLabel+'・'+cnt(d.tot.diniiCount)+'件','']);
       cards.push([(kind==='monthly'?'年間累計':'月間累計'),yen(kind==='monthly'?d.tot.sales:d.tot.cum),'前年比 '+(kind==='monthly'?totYoy.t:cumYoy.t),(kind==='monthly'?totYoy.cls:cumYoy.cls)]);
-      return `<div style="display:grid;grid-template-columns:repeat(${cards.length},1fr);gap:12px;padding:20px 32px 4px">`+
-        cards.map(k=>`<div style="background:#fff;border:1px solid #efe9dd;border-radius:12px;padding:14px 16px">
-          <div style="font-size:12px;color:#8c8375">${esc(k[0])}</div>
-          <div style="font-size:22px;font-weight:700;margin:4px 0 2px">${k[1]}</div>
-          <div style="font-size:11.5px;color:${k[3]||'#a99f8c'}">${k[2]}</div></div>`).join('')+`</div>`;
+      return `<div style="display:grid;grid-template-columns:repeat(${cards.length},1fr);gap:10px;padding:20px 32px 4px">`+
+        cards.map(k=>`<div style="background:#fff;border:1px solid #efe9dd;border-radius:12px;padding:13px 14px">
+          <div style="font-size:11.5px;color:#8c8375">${esc(k[0])}</div>
+          <div style="font-size:21px;font-weight:700;margin:4px 0 2px">${k[1]}</div>
+          <div style="font-size:11px;color:${k[3]||'#a99f8c'}">${k[2]}</div></div>`).join('')+`</div>`;
     })()}
     <div style="padding:14px 32px 0">${chart?`<div style="background:#fff;border:1px solid #efe9dd;border-radius:12px;padding:14px 16px 6px">
       <div style="font-size:12.5px;color:#8c8375;margin-bottom:6px">店舗別 ${salesLabel}（■当期 ■前年）</div>${chart}</div>`:''}</div>
@@ -2196,14 +2209,15 @@ function viewReport(kind, dateStr){
           <th style="text-align:left;padding:9px 12px;font-size:11.5px;color:#5c5348">店舗</th>
           <th style="text-align:right;padding:9px 12px;font-size:11.5px;color:#5c5348">${salesLabel}</th>
           <th style="text-align:right;padding:9px 12px;font-size:11.5px;color:#5c5348">前年比</th>
-          <th style="text-align:right;padding:9px 12px;font-size:11.5px;color:#5c5348">FL率</th>
+          <th style="text-align:right;padding:9px 12px;font-size:11.5px;color:#5c5348">F率</th>
+          <th style="text-align:right;padding:9px 12px;font-size:11.5px;color:#5c5348">L率</th>
           ${d.hasDinii?`<th style="text-align:right;padding:9px 12px;font-size:11.5px;color:#5c5348">ダイニー</th>`:''}
           <th style="text-align:right;padding:9px 12px;font-size:11.5px;color:#5c5348">客数</th>
           <th style="text-align:right;padding:9px 12px;font-size:11.5px;color:#5c5348">客単価</th>
           ${kind!=='monthly'?`<th style="text-align:right;padding:9px 12px;font-size:11.5px;color:#5c5348">月間累計</th>
           <th style="text-align:right;padding:9px 12px;font-size:11.5px;color:#5c5348">累計前年比</th>`:''}
         </tr></thead><tbody>`;
-  const flCell=(v)=>v==null?'<span style="color:#a99f8c">—</span>':(v>0.6?`<span style="color:#b5502f">${(v*100).toFixed(1)}%</span>`:(v*100).toFixed(1)+'%');
+  const rateCell=(v)=>v==null?'<span style="color:#a99f8c">—</span>':(v*100).toFixed(1)+'%';
   const dnCell=(r)=>r.dinii==null?'<span style="color:#a99f8c">—</span>':`${r.dinii.toFixed(2)}<span style="color:#a99f8c;font-size:10px"> /${cnt(r.diniiCount)}</span>`;
   d.rows.forEach((r,i)=>{
     const ry=yoy(r.sales,r.prevSales);
@@ -2211,7 +2225,8 @@ function viewReport(kind, dateStr){
       <td style="padding:8px 12px;font-size:13px;font-weight:500">${esc(r.store)}</td>
       <td style="padding:8px 12px;font-size:13px;text-align:right;font-variant-numeric:tabular-nums">${yen(r.sales)}</td>
       <td style="padding:8px 12px;font-size:12.5px;text-align:right;color:${ry.cls||'#a99f8c'}">${ry.t}</td>
-      <td style="padding:8px 12px;font-size:13px;text-align:right">${flCell(r.fl)}</td>
+      <td style="padding:8px 12px;font-size:13px;text-align:right">${rateCell(r.fr)}</td>
+      <td style="padding:8px 12px;font-size:13px;text-align:right">${rateCell(r.lr)}</td>
       ${d.hasDinii?`<td style="padding:8px 12px;font-size:13px;text-align:right">${dnCell(r)}</td>`:''}
       <td style="padding:8px 12px;font-size:13px;text-align:right">${cnt(r.guests)}人</td>
       <td style="padding:8px 12px;font-size:13px;text-align:right">${yen(r.spend)}</td>
@@ -2223,7 +2238,8 @@ function viewReport(kind, dateStr){
       <td style="padding:9px 12px;font-size:13px">全店合計</td>
       <td style="padding:9px 12px;font-size:13px;text-align:right">${yen(d.tot.sales)}</td>
       <td style="padding:9px 12px;font-size:12.5px;text-align:right;color:${totYoy.cls||'#5c5348'}">${totYoy.t}</td>
-      <td style="padding:9px 12px;font-size:13px;text-align:right">${d.tot.fl!=null?(d.tot.fl*100).toFixed(1)+'%':'—'}</td>
+      <td style="padding:9px 12px;font-size:13px;text-align:right">${d.tot.fr!=null?(d.tot.fr*100).toFixed(1)+'%':'—'}</td>
+      <td style="padding:9px 12px;font-size:13px;text-align:right">${d.tot.lr!=null?(d.tot.lr*100).toFixed(1)+'%':'—'}</td>
       ${d.hasDinii?`<td style="padding:9px 12px;font-size:13px;text-align:right">${d.tot.dinii!=null?d.tot.dinii.toFixed(2):'—'}<span style="font-weight:400;color:#8c8375;font-size:10px"> /${cnt(d.tot.diniiCount)}</span></td>`:''}
       <td style="padding:9px 12px;font-size:13px;text-align:right">${cnt(d.tot.guests)}人</td>
       <td style="padding:9px 12px;font-size:13px;text-align:right">${yen(spend)}</td>
@@ -2508,7 +2524,11 @@ window.App = {
     S.revMonth=n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0'); render();
   },
   setRevWeek(i){ S.revWeekIdx=i; render(); },
-  report(kind,date){ S.reportMode={kind:kind||'daily',date:date||''}; render(); },
+  report(kind,date,stores,group){
+    // stores: カンマ区切り文字列 or 配列（配信グループごとの店舗絞り込み）
+    const list=Array.isArray(stores)?stores:(stores?String(stores).split(',').map(s2=>s2.trim()).filter(Boolean):null);
+    S.reportMode={kind:kind||'daily',date:date||'',stores:list,group:group||''}; render();
+  },
   reportExit(){ S.reportMode=null; render(); },
   refresh(){ if(S.auth&&S.auth.token) fetchData(); else { loadSampleData(); render(); toast('サンプルデータを再読込しました（API未接続）'); } },
   csv: downloadCsv,
@@ -2621,7 +2641,8 @@ window.App = {
   // URLパラメータ ?report=daily|weekly|monthly(&date=YYYY-MM-DD) でレポートカード表示（Lark日報の撮影用）
   try{
     const q=new URLSearchParams(location.search);
-    if(q.get('report')) S.reportMode={ kind:q.get('report'), date:q.get('date')||'' };
+    if(q.get('report')) S.reportMode={ kind:q.get('report'), date:q.get('date')||'',
+      stores:q.get('stores')?q.get('stores').split(',').map(s2=>s2.trim()).filter(Boolean):null, group:q.get('group')||'' };
   }catch(e){}
   try{
     const raw=localStorage.getItem(LS.sess);
