@@ -16,6 +16,16 @@
 
 ## セットアップ（1回だけ・約15分）
 
+### STEP 0: 定時実行ワークフローを配置する（GitHubの画面で1回だけ）
+※権限の都合でこのファイルだけ手動配置が必要です。
+
+1. このリンクを開く（新規ファイル作成画面が開きます）:
+   **https://github.com/mirai-oss/tori-dashboard/new/main?filename=.github/workflows/lark-report.yml**
+2. 内容には、リポジトリ内の **[scripts/lark-report.workflow.yml](https://github.com/mirai-oss/tori-dashboard/blob/main/scripts/lark-report.workflow.yml)** を開いて「Raw」→全文コピーして貼り付け
+3. 右上の「Commit changes...」→ そのまま Commit
+
+これで毎日12:00（JST）に自動起動するようになります（Secrets未設定の間は安全にスキップされます）。
+
 ### STEP 1: Bot用のログインアカウントを作る
 スプレッドシートの「アカウント」タブに1行追加：
 
