@@ -2113,11 +2113,15 @@ function reportData(kind, dateStr, storeFilter, group){
   let s,e,ps,pe,title,sub;
   if(kind==='weekly'){
     // 月内ブロック週（1-7/8-14/15-21/22-28/29-末）: refを含む週
+    // ※進行中の「今週」だけは今日までで打ち切り、過去週(dateStr指定時含む)は満週で集計する（今日=ref0基準）
     const y=ref.getFullYear(),m=ref.getMonth(),d=ref.getDate();
     const idx=Math.min(4,Math.floor((d-1)/7));
     const ld=new Date(y,m+1,0).getDate();
     const sd=idx*7+1, ed=idx<4?Math.min(sd+6,ld):ld;
-    s=new Date(y,m,sd); e=new Date(y,m,Math.min(ed,d));
+    const todayMs=dayMs(new Date(ref0.getFullYear(),ref0.getMonth(),ref0.getDate()));
+    s=new Date(y,m,sd);
+    const eFull=new Date(y,m,ed);
+    e=(dayMs(eFull)>todayMs)?new Date(ref0.getFullYear(),ref0.getMonth(),ref0.getDate()):eFull;
     ps=sub1y(s); pe=sub1y(e);
     title='週報'; sub=y+'年'+(m+1)+'月 第'+(idx+1)+'週（'+(m+1)+'/'+sd+'〜'+(m+1)+'/'+ed+'）';
   } else if(kind==='monthly'){
