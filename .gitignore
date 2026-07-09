@@ -1,3 +1,8 @@
 .DS_Store
 node_modules/
 *.log
+
+# ローカルのLarkレポート生成物（Actionsで都度生成）
+report.png
+report-meta.json
+node_modules/
