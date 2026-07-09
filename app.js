@@ -2112,23 +2112,33 @@ function reportData(kind, dateStr, storeFilter, group){
   const isFiltered=stores.length!==allStores().length;
   let s,e,ps,pe,title,sub;
   if(kind==='weekly'){
-    // 月内ブロック週（1-7/8-14/15-21/22-28/29-末）: refを含む週
-    // ※進行中の「今週」だけは今日までで打ち切り、過去週(dateStr指定時含む)は満週で集計する（今日=ref0基準）
-    const y=ref.getFullYear(),m=ref.getMonth(),d=ref.getDate();
-    const idx=Math.min(4,Math.floor((d-1)/7));
-    const ld=new Date(y,m+1,0).getDate();
-    const sd=idx*7+1, ed=idx<4?Math.min(sd+6,ld):ld;
-    const todayMs=dayMs(new Date(ref0.getFullYear(),ref0.getMonth(),ref0.getDate()));
-    s=new Date(y,m,sd);
-    const eFull=new Date(y,m,ed);
-    e=(dayMs(eFull)>todayMs)?new Date(ref0.getFullYear(),ref0.getMonth(),ref0.getDate()):eFull;
+    // 月内ブロック週（1-7 / 8-14 / 15-21 / 22-28 / 29-末）のうち
+    // ref時点で「直近に完了した週」を対象にする（8日→1-7, 15日→8-14 … 1日→前月末週）
+    let wy=ref.getFullYear(), wm=ref.getMonth();
+    const d=ref.getDate();
+    const ends=[7,14,21,28,new Date(wy,wm+1,0).getDate()];   // 月内各ブロックの末日
+    const done=ends.filter(x=>x<=d);                          // 完了済みブロックの末日
+    let bs,be;
+    if(done.length){
+      be=done[done.length-1];
+      bs=(be>=29)?29:{7:1,14:8,21:15,28:22}[be];
+    } else {
+      // 今月はまだ1週も完了していない（d<7）→ 前月の最終ブロック
+      const pm=new Date(wy,wm,0); wy=pm.getFullYear(); wm=pm.getMonth();
+      const pld=pm.getDate(); bs=(pld>=29)?29:22; be=pld;
+    }
+    s=new Date(wy,wm,bs); e=new Date(wy,wm,be);
     ps=sub1y(s); pe=sub1y(e);
-    title='週報'; sub=y+'年'+(m+1)+'月 第'+(idx+1)+'週（'+(m+1)+'/'+sd+'〜'+(m+1)+'/'+ed+'）';
+    const wk={1:1,8:2,15:3,22:4,29:5}[bs]||5;
+    title='週報'; sub=wy+'年'+(wm+1)+'月 第'+wk+'週（'+(wm+1)+'/'+bs+'〜'+(wm+1)+'/'+be+'）';
   } else if(kind==='monthly'){
-    const y=ref.getFullYear(),m=ref.getMonth();
-    s=new Date(y,m,1); e=new Date(y,m+1,0);
+    // ref時点で「直近に完了した月」を対象（当月がまだ途中なら前月＝月初に走らせても前月分になる）
+    let ty=ref.getFullYear(), tm=ref.getMonth();
+    const lastDay=new Date(ty,tm+1,0).getDate();
+    if(ref.getDate()<lastDay){ const pm=new Date(ty,tm,0); ty=pm.getFullYear(); tm=pm.getMonth(); }
+    s=new Date(ty,tm,1); e=new Date(ty,tm+1,0);
     ps=sub1y(s); pe=sub1y(e);
-    title='月報'; sub=y+'年'+(m+1)+'月度（'+(m+1)+'/1〜'+(m+1)+'/'+e.getDate()+'）';
+    title='月報'; sub=ty+'年'+(tm+1)+'月度（'+(tm+1)+'/1〜'+(tm+1)+'/'+e.getDate()+'）';
   } else {
     s=ref; e=ref;
     ps=addD(ref,-364); pe=ps;                       // 前年同曜日
