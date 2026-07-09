@@ -120,6 +120,17 @@ const addD = (d,n)=>new Date(d.getFullYear(),d.getMonth(),d.getDate()+n);
 const sub1y = (d)=>new Date(d.getFullYear()-1,d.getMonth(),d.getDate());
 const WD = ['日','月','火','水','木','金','土'];
 const mdw = (d)=>(d.getMonth()+1)+'/'+d.getDate()+'('+WD[d.getDay()]+')';
+// 日本の祝日（2024〜2027年・振替休日/国民の休日含む）
+const JP_HOLIDAYS=new Set(('2024:1/1,1/8,2/11,2/12,2/23,3/20,4/29,5/3,5/4,5/5,5/6,7/15,8/11,8/12,9/16,9/22,9/23,10/14,11/3,11/4,11/23|'+
+ '2025:1/1,1/13,2/11,2/23,2/24,3/20,4/29,5/3,5/4,5/5,5/6,7/21,8/11,9/15,9/23,10/13,11/3,11/23,11/24|'+
+ '2026:1/1,1/12,2/11,2/23,3/20,4/29,5/3,5/4,5/5,5/6,7/20,8/11,9/21,9/22,9/23,10/12,11/3,11/23|'+
+ '2027:1/1,1/11,2/11,2/23,3/21,3/22,4/29,5/3,5/4,5/5,7/19,8/11,9/20,9/23,10/11,11/3,11/23')
+ .split('|').flatMap(y=>{ const[Y,ds]=y.split(':'); return ds.split(',').map(md=>Y+'-'+md); }));
+const isJpHoliday=(d)=>JP_HOLIDAYS.has(d.getFullYear()+'-'+(d.getMonth()+1)+'/'+d.getDate());
+const isRedDay=(d)=>d.getDay()===0||d.getDay()===6||isJpHoliday(d);   // 土日祝
+// HTML用の日付表示：M/D(曜) — 土日祝は曜日を赤に。祝日は「祝」を付記
+const mdwH=(d)=>{ const wd=WD[d.getDay()]+(isJpHoliday(d)?'・祝':'');
+  return (d.getMonth()+1)+'/'+d.getDate()+'(<span'+(isRedDay(d)?' class="wd-hol"':'')+'>'+wd+'</span>)'; };
 const compact = (v)=>{ v=v||0; if(v>=1e8)return (v/1e8).toFixed(2)+'億'; if(v>=1e4)return Math.round(v/1e4)+'万'; return Math.round(v).toLocaleString('ja-JP'); };
 const parseDateStr = (ds)=>{ const m=String(ds==null?'':ds).match(/(\d{4})[\/\-年.](\d{1,2})[\/\-月.](\d{1,2})/); if(!m)return 0; const Y=+m[1],M=+m[2],Dd=+m[3]; if(!Y||!M||!Dd)return 0; return new Date(Y,M-1,Dd).getTime(); };  // "2026/07/01 12:34"や"2026年7月1日"も対応
 // 「2025/01」「2025-1」「2025年1月」など年月だけの表記は月初日として解釈（広告費DB連携用）
@@ -338,6 +349,17 @@ function ingestDinii(rows){
   const iS=colAny(H,['店舗名','店舗']), iD=colAny(H,['来店日','来店','日付','営業日','タイムスタンプ','回答日']);  // 来店日時を最優先（回答日時より前）
   let iQ=H.findIndex(h=>/また来|またき/.test(h));
   if(iQ<0&&H.length>6) iQ=6;   // 見出しで見つからなければG列を採用
+  // コメント列（自由記述）：見出しで探す。見つからなければ「点数列より後ろで一番文章が長い列」を推定
+  let iC=colAny(H,['コメント','ご意見','ご感想','感想','自由記述','自由回答','メッセージ','その他']);
+  if(iC<0){
+    let best=-1,bestLen=0;
+    for(let col=iQ+1;col<H.length;col++){
+      let len=0,n2=0;
+      for(let i=hi+1;i<Math.min(rows.length,hi+80);i++){ const v=String(rows[i]&&rows[i][col]!=null?rows[i][col]:'').trim(); if(v&&!/^[0-9.]+$/.test(v)){ len+=v.length; n2++; } }
+      if(n2>0&&len>bestLen){ bestLen=len; best=col; }
+    }
+    if(bestLen>=20) iC=best;   // 文章らしき列があった時だけ採用
+  }
   if(iS<0||iQ<0){ D.diag['dinii']='列が見つかりません（必要: 店舗名・また来たい点数）／見出し行: '+H.filter(Boolean).join('|'); return false; }
   const recs=[];
   for(let i=hi+1;i<rows.length;i++){
@@ -345,7 +367,8 @@ function ingestDinii(rows){
     // 0点も有効回答としてカウントする。除外するのは「空欄」と「数字を含まないテキスト（未回答等）」のみ
     const raw=String(c[iQ]==null?'':c[iQ]).trim().replace(/[０-９]/g,ch=>String.fromCharCode(ch.charCodeAt(0)-0xFEE0));  // 全角数字→半角
     if(raw===''||!/[0-9]/.test(raw)) continue;
-    recs.push({ store:st, t:iD>=0?(parseDateStr(c[iD])||0):0, score:num(raw) });
+    const cm=iC>=0?String(c[iC]==null?'':c[iC]).trim():'';
+    recs.push({ store:st, t:iD>=0?(parseDateStr(c[iD])||0):0, score:num(raw), cm });
   }
   if(!recs.length){ D.diag['dinii']='0件（また来たい点数の列に数値がありません）'; return false; }
   D.dinii=recs; D.diag['dinii']='OK '+recs.length+'件'; return true;
@@ -572,7 +595,9 @@ function barChart(cat, series, opts){
 }
 function fmtAxis(v,M){ if(M==='guests')return cnt(v); if(v>=1e8)return (v/1e8).toFixed(1)+'億'; if(v>=1e4)return Math.round(v/1e4)+'万'; return Math.round(v); }
 function lineChart(cat, series, M, opts){
-  const W=1240,H=(opts&&opts.h)||300,padT=16,padB=34,padL=58,padR=16;
+  // 線の右端に系列名（今年/前年など）を直接表示して見分けやすくする
+  const nameLabels=series.filter(s=>s.name&&s.data.some(v=>v!=null)).length>0;
+  const W=1240,H=(opts&&opts.h)||300,padT=16,padB=34,padL=58,padR=nameLabels?92:16;
   const plotW=W-padL-padR, plotH=H-padT-padB;
   let max=0,min=Infinity;
   series.forEach(s=>s.data.forEach(v=>{ if(v==null)return; if(v>max)max=v; if(v<min)min=v; }));
@@ -590,13 +615,21 @@ function lineChart(cat, series, M, opts){
     const gv=lo+(max-lo)*(4-g)/4;
     els+=`<text x="${padL-8}" y="${yy+4}" fill="#a99f8c" font-size="10" text-anchor="end" font-family="Zen Kaku Gothic New">${(opts&&opts.axisFmt)?opts.axisFmt(gv):fmtAxis(gv,M)}</text>`;
   }
+  const endLbs=[];
   series.forEach(s=>{
     const pts=[];
     s.data.forEach((v,i)=>{ if(v!=null) pts.push([x(i),yv(v)]); });
     if(!pts.length) return;
     els+=`<polyline points="${pts.map(p=>p[0].toFixed(1)+','+p[1].toFixed(1)).join(' ')}" fill="none" stroke="${s.color}" stroke-width="${s.dash?2:2.6}" ${s.dash?'stroke-dasharray="5 4"':''} stroke-linejoin="round"/>`;
     if(n<=40) pts.forEach(p=>{ els+=`<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="2.8" fill="${s.color}"/>`; });
+    if(nameLabels&&s.name){ const last=pts[pts.length-1];
+      const nm=String(s.name).length>7?String(s.name).slice(0,6)+'…':String(s.name);
+      endLbs.push({ x:last[0]+7, y:last[1]+4, nm, color:s.color }); }
   });
+  // ラベル同士の重なりを回避（近いものを上下にずらす）
+  endLbs.sort((a2,b2)=>a2.y-b2.y);
+  for(let i=1;i<endLbs.length;i++){ if(endLbs[i].y-endLbs[i-1].y<13) endLbs[i].y=endLbs[i-1].y+13; }
+  endLbs.forEach(l=>{ els+=`<text x="${l.x.toFixed(1)}" y="${l.y.toFixed(1)}" fill="${l.color}" font-size="11.5" font-weight="700" font-family="Zen Kaku Gothic New">${esc(l.nm)}</text>`; });
   const step=Math.max(1,Math.ceil(n/12));
   cat.forEach((c,i)=>{ if(i%step===0||i===n-1) els+=`<text x="${x(i).toFixed(1)}" y="${H-12}" fill="#8c8375" font-size="10.5" text-anchor="middle" font-family="Zen Kaku Gothic New">${esc(c)}</text>`; });
   return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">${els}</svg>`;
@@ -765,9 +798,37 @@ function render(){
   else if(S.tab==='review') body=viewReview();
   else if(S.tab==='ai') body=viewAI();
   else if(S.tab==='accounts') body=viewAccounts();
-  root.innerHTML=`<div class="app">${viewHeader()}${diagBanner()}${viewNav()}${body}</div>${S.modal?viewModal():''}`;
+  root.innerHTML=`<div class="app">${viewHeader()}${diagBanner()}${viewNav()}${body}</div>${ctxBarHtml()}${S.modal?viewModal():''}`;
 }
 function renderHeaderOnly(){ /* 軽量更新は全再描画で十分 */ }
+
+// スマホ用：画面下に「いま見ている店舗と期間」を常時表示（タップで先頭へ戻る）
+function ctxBarHtml(){
+  if(!S.auth||S.reportMode) return '';
+  const selName=selStoreName(); const sc=scopeStores();
+  const storeLb=selName||(sc.length===allStores().length?'全店':'担当店舗 合算');
+  let periodLb='';
+  try{
+    if(S.tab==='dash') periodLb=periodRange().label;
+    else if(S.tab==='analysis'){
+      if(S.aView==='dow'){ const m0=anaDowMonth(); periodLb=m0.getFullYear()+'年 '+(m0.getMonth()+1)+'月（曜日別）'; }
+      else periodLb=({'30':'直近30日','90':'直近90日','year':'年初来'})[S.aRange]||(S.cStart&&S.cEnd?S.cStart+'〜'+S.cEnd:'期間指定');
+    }
+    else if(S.tab==='deposit'){ const m0=depMonthDate(); periodLb=m0.getFullYear()+'年 '+(m0.getMonth()+1)+'月'; }
+    else if(S.tab==='pl'){
+      const P=S.plPeriod||'month';
+      if(P==='year') periodLb=(S.plYear||(D.refDate||new Date()).getFullYear())+'年';
+      else if(P==='custom') periodLb=(S.plStart||'')+'〜'+(S.plEnd||'');
+      else { const m0=plMonthDate(); periodLb=m0.getFullYear()+'年 '+(m0.getMonth()+1)+'月'; }
+    }
+    else if(S.tab==='ad'){ const ref=D.refDate||new Date(); const m0=S.adMonth?new Date(+S.adMonth.split('-')[0],+S.adMonth.split('-')[1]-1,1):new Date(ref.getFullYear(),ref.getMonth(),1); periodLb=m0.getFullYear()+'年 '+(m0.getMonth()+1)+'月'; }
+    else if(S.tab==='review') periodLb=({week:'週',month:'月',year:'年間',custom:'期間指定'})[S.revPeriod||'month']||'';
+  }catch(e){ periodLb=''; }
+  if(!periodLb&&!storeLb) return '';
+  return `<div class="ctx-bar no-print" onclick="window.scrollTo({top:0,behavior:'smooth'})">
+    <span class="cb-store">🏪 ${esc(storeLb)}</span>${periodLb?`<span class="cb-sep">｜</span><span class="cb-period">📅 ${esc(periodLb)}</span>`:''}
+    <span class="cb-up">▲ 上へ</span></div>`;
+}
 
 function connBadge(){
   if(S.connState==='live') return `<span class="st-live">● スプレッドシート連携中</span>（自動更新）<br>最終同期 ${esc(S.lastSync)}`;
@@ -872,13 +933,13 @@ function periodCtrlHtml(){
   const defMonth=ref.getFullYear()+'-'+String(ref.getMonth()+1).padStart(2,'0');
   const defDay=defMonth+'-'+String(ref.getDate()).padStart(2,'0');
   let picker='';
-  if(P==='day') picker=`<input type="date" value="${S.pDay||defDay}" onchange="App.set('pDay',this.value)">`;
+  if(P==='day') picker=`<input type="date" value="${S.pDay||defDay}" onchange="App.set('pDay',this.value)"><button class="icon-btn" onclick="App.thisMonth()">今日</button>`;
   else if(P==='week'){
     const wk=r.weekIdx;
-    picker=`<input type="month" value="${S.pMonth||defMonth}" onchange="App.set('pMonth',this.value)">
+    picker=`<input type="month" value="${S.pMonth||defMonth}" onchange="App.set('pMonth',this.value)"><button class="icon-btn" onclick="App.thisMonth()">今月</button>
       <span class="seg">${[0,1,2,3,4].map(i=>`<button class="${wk===i?'on':''}" onclick="App.setWeek(${i})">第${i+1}週</button>`).join('')}</span>`;
   }
-  else if(P==='month') picker=`<input type="month" value="${S.pMonth||defMonth}" onchange="App.set('pMonth',this.value)">`;
+  else if(P==='month') picker=`<input type="month" value="${S.pMonth||defMonth}" onchange="App.set('pMonth',this.value)"><button class="icon-btn" onclick="App.thisMonth()">今月</button>`;
   else if(P==='year'){
     const years=[...new Set(D.daily.map(x=>new Date(x.t).getFullYear()))].sort();
     if(!years.length)years.push(ref.getFullYear());
@@ -917,12 +978,22 @@ function viewDash(){
   const pS=prev.sales, pFood=pS>0?prev.cost/pS:0, pLabor=pS>0?prev.labor/pS:0;
   const spend=cur.guests>0?Ssl/cur.guests:0, pSpend=prev.guests>0?pS/prev.guests:0;
 
-  // 口コミ（対象店舗の最新スナップショット加重平均）
+  // 口コミ（対象店舗のスナップショット加重平均）— 期間末時点と前期間末時点を比較
   const revOf=(nm,limit)=>{ let latest=null; for(const rr of D.review){ if(rr.store!==nm)continue; if(limit&&rr.t>limit)continue; if(!latest||rr.t>latest.t)latest=rr; } return latest; };
   const targetStores=selName?[selName]:sc;
   // 同じ実店舗にぶら下がる別名店舗（うお蔵・匠味など）も合算
-  let ws=0,cs=0; targetStores.forEach(nm=>{ reviewNamesFor(nm).forEach(rn=>{ const l=revOf(rn); if(l&&l.count>0){ws+=l.star*l.count;cs+=l.count;} }); });
-  const revScore=cs>0?(ws/cs).toFixed(2):'—', revCount=cs>0?cnt(cs)+'件':'—';
+  const revAt=(limit)=>{ let ws=0,cs=0; targetStores.forEach(nm=>{ reviewNamesFor(nm).forEach(rn=>{ const l=revOf(rn,limit); if(l&&l.count>0){ws+=l.star*l.count;cs+=l.count;} }); }); return cs>0?{star:ws/cs,count:cs}:null; };
+  const revCur=revAt(b)||revAt(0);                            // 期間末時点（無ければ最新）
+  const prevEnd=dayMs(addD(r.s,-1));                          // 前期間の末日（前月末・前週末・前日…）
+  const revPrev=revAt(prevEnd);
+  const prevLb=S.period==='month'?'前月':S.period==='week'?'前週':S.period==='day'?'前日':S.period==='year'?'前年':'前期間';
+  const revScore=revCur?revCur.star.toFixed(2):'—', revCount=revCur?cnt(revCur.count)+'件':'—';
+  let revScoreYY={t:'Google加重平均',cls:'mut'}, revCountYY={t:'累計',cls:'mut'};
+  if(revCur&&revPrev){
+    const dS=revCur.star-revPrev.star, dC=revCur.count-revPrev.count;
+    revScoreYY={ t:prevLb+' '+(dS>=0?'+':'▲')+Math.abs(dS).toFixed(2)+'点', cls:dS>0?'up':dS<0?'dn':'mut' };
+    revCountYY={ t:prevLb+' '+(dC>=0?'+':'▲')+Math.abs(dC)+'件', cls:dC>0?'up':dC<0?'dn':'mut' };
+  }
 
   const y1=yoyStr(Ssl,pS), yG=yoyStr(cur.guests,prev.guests,'前年 '), ySp=yoyStr(spend,pSpend,'前年 ');
   const yF=ptStr(foodR,pFood,true), yL=ptStr(laborR,pLabor,true), yFL=ptStr(flR,pFood+pLabor,true);
@@ -933,8 +1004,8 @@ function viewDash(){
     { lb:'FL合計', vl:Ssl>0?(flR*100).toFixed(1)+'%':'—', yy:yFL },
     { lb:'客数', vl:cnt(cur.guests)+'人', yy:yG },
     { lb:'客単価', vl:yen(spend), yy:ySp },
-    { lb:'口コミ点数', vl:revScore, yy:{t:'Google加重平均',cls:'mut'} },
-    { lb:'口コミ件数', vl:revCount, yy:{t:'累計',cls:'mut'} },
+    { lb:'口コミ点数', vl:revScore, yy:revScoreYY },
+    { lb:'口コミ件数', vl:revCount, yy:revCountYY },
   ];
   // ダイニー来店アンケート「また来たいと思いますか？」の平均（接続時のみ表示）
   if(D.dinii.length){
@@ -970,7 +1041,7 @@ function dailyStorePanel(r,selName){
     const pv=stat(null,dayMs(addD(d,-364)),dayMs(addD(d,-364)),selName);
     const future=t>maxT;
     if(future){
-      h+=`<tr><td class="mut">${mdw(d)}</td><td class="mut">—</td><td class="mut">—</td><td class="mut">—</td><td class="mut">—</td><td class="mut">—</td><td class="mut">—</td></tr>`;
+      h+=`<tr><td class="mut">${mdwH(d)}</td><td class="mut">—</td><td class="mut">—</td><td class="mut">—</td><td class="mut">—</td><td class="mut">—</td><td class="mut">—</td></tr>`;
       return;
     }
     cumCur+=c.sales; cumPrev+=pv.sales; tS+=c.sales; tG+=c.guests; tCost+=c.cost; tLabor+=c.labor;
@@ -978,7 +1049,7 @@ function dailyStorePanel(r,selName){
     const yy=yoyStr(c.sales,pv.sales,'');
     const cumDiff=cumCur-cumPrev;
     const fl=c.sales>0?(c.cost+c.labor)/c.sales:0;
-    h+=`<tr><td>${mdw(d)}</td><td>${yen(c.sales)}</td><td>${cnt(c.guests)}人</td><td>${yen(sp)}</td>
+    h+=`<tr><td>${mdwH(d)}</td><td>${yen(c.sales)}</td><td>${cnt(c.guests)}人</td><td>${yen(sp)}</td>
       <td class="${yy.cls==='up'?'pos':yy.cls==='dn'?'neg':'mut'}">${yy.t||'—'}</td>
       <td class="${cumDiff>=0?'pos':'neg'}">${(cumDiff>=0?'+':'▲')+yen(Math.abs(cumDiff)).slice(1)}</td>
       <td class="${fl>0.6?'warn':''}">${c.sales>0?(fl*100).toFixed(1)+'%':'—'}</td></tr>`;
@@ -1064,13 +1135,13 @@ function flPanel(cur,prev){
   ];
   const fl=cur.cost+cur.labor, flR=fl/Ssl, pFlR=prev.sales>0?(prev.cost+prev.labor)/prev.sales:0;
   const profit=Ssl-fl;
-  let h=`<div class="panel"><div class="panel-head"><div><h3>FL（原価・人件費）内訳</h3><div class="sub">集約シート実績</div></div></div><table class="tbl"><thead><tr><th>項目</th><th>金額</th><th>比率</th><th>前年</th></tr></thead><tbody>`;
+  let h=`<div class="panel"><div class="panel-head"><div><h3>FL（原価・人件費）内訳</h3><div class="sub">集約シート実績</div></div></div><div class="scroll-x"><table class="tbl"><thead><tr><th>項目</th><th>金額</th><th>比率</th><th>前年</th></tr></thead><tbody>`;
   rows.forEach(x=>{ const pt=ptStr(x.r,x.pr,true);
     h+=`<tr><td><span class="sw" style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${x.c};margin-right:8px"></span>${esc(x.nm)}</td><td>${yen(x.amt)}</td><td>${(x.r*100).toFixed(1)}%</td><td class="${pt.cls==='up'?'pos':pt.cls==='dn'?'neg':'mut'}">${pt.t}</td></tr>`; });
   const ptFL=ptStr(flR,pFlR,true);
   h+=`<tr class="total"><td>FL合計</td><td>${yen(fl)}</td><td>${(flR*100).toFixed(1)}%</td><td class="${ptFL.cls==='up'?'pos':'neg'}">${ptFL.t}</td></tr>`;
   h+=`<tr><td>利益（FL後）</td><td class="${profit>=0?'pos':'neg'}">${yen(profit)}</td><td>${(profit/Ssl*100).toFixed(1)}%</td><td class="mut">—</td></tr>`;
-  h+=`</tbody></table></div>`;
+  h+=`</tbody></table></div></div>`;
   EXPORT.push({ title:'FL内訳', headers:['項目','金額','比率','前年'],
     rows:rows.map(x=>[x.nm,Math.round(x.amt),(x.r*100).toFixed(1)+'%',ptStr(x.r,x.pr,true).t]).concat([['FL合計',Math.round(fl),(flR*100).toFixed(1)+'%',ptFL.t],['利益(FL後)',Math.round(profit),(profit/Ssl*100).toFixed(1)+'%','']]) });
   return h;
@@ -1139,6 +1210,7 @@ function comparePanel(r,p,sc,selName){
 
 /* ---------------- 推移分析 ---------------- */
 function viewAnalysis(){
+  if(S.aView==='dow') return viewDowCompare();
   const sc=scopeStores(); const selName=selStoreName();
   const names=selName?[selName]:sc;
   const M=S.aMetric,G=S.aGran,B=S.aBreak,RG=S.aRange;
@@ -1160,7 +1232,7 @@ function viewAnalysis(){
         const a2=Math.max(dayMs(new Date(m.getFullYear(),m.getMonth(),sd)),dayMs(s)); const b2=Math.min(dayMs(new Date(m.getFullYear(),m.getMonth(),ed)),dayMs(e));
         if(a2>b2)continue; buckets.push({label:(m.getMonth()+1)+'/'+sd,a:a2,b:b2}); }
       m=new Date(m.getFullYear(),m.getMonth()+1,1); } }
-  else { for(let d=new Date(s); dayMs(d)<=dayMs(e); d=addD(d,1)) buckets.push({label:(d.getMonth()+1)+'/'+d.getDate(),a:dayMs(d),b:dayMs(d)}); }
+  else { for(let d=new Date(s); dayMs(d)<=dayMs(e); d=addD(d,1)) buckets.push({label:mdw(d),dt:new Date(d),a:dayMs(d),b:dayMs(d)}); }
 
   const nameSet=new Set(names);
   const dailyIn=D.daily.filter(x=>nameSet.has(x.store));
@@ -1183,6 +1255,7 @@ function viewAnalysis(){
   const legend=series.map(x=>`<span><span class="${x.dash?'ln':'sw'}" style="${x.dash?'border-top:2px dashed '+x.color:'background:'+x.color}"></span>${esc(x.name)}</span>`).join('');
   let h=`
   <div class="ctrl-bar no-print">
+    <div class="seg">${[['trend','推移'],['dow','曜日別比較']].map(([k,l])=>`<button class="${(S.aView||'trend')===k?'on':''}" onclick="App.set('aView','${k}')">${l}</button>`).join('')}</div>
     <div class="seg">${[['sales','売上'],['guests','客数'],['spend','客単価']].map(([k,l])=>`<button class="${M===k?'on':''}" onclick="App.set('aMetric','${k}')">${l}</button>`).join('')}</div>
     <div class="seg">${[['day','日別'],['week','週別'],['month','月別']].map(([k,l])=>`<button class="${G===k?'on':''}" onclick="App.set('aGran','${k}')">${l}</button>`).join('')}</div>
     <div class="seg">${[['total','合計'],['store','店舗別'],['media','媒体別']].map(([k,l])=>`<button class="${B===k?'on':''}" onclick="App.set('aBreak','${k}')">${l}</button>`).join('')}</div>
@@ -1193,11 +1266,131 @@ function viewAnalysis(){
   h+=`<div class="panel"><div class="panel-head"><div><h3>${ml} の推移（${G==='day'?'日別':G==='week'?'週別':'月別'}・${B==='total'?'合計':B==='store'?'店舗別':'媒体別'}）</h3>
     <div class="sub">${(s.getMonth()+1)}/${s.getDate()}〜${(e.getMonth()+1)}/${e.getDate()} ／ ${buckets.length}区間</div></div><div class="legend">${legend}</div></div>
     ${lineChart(buckets.map(b2=>b2.label),series,M)}</div>`;
-  h+=`<div class="panel"><div class="panel-head"><h3>明細</h3></div><div class="scroll-x"><table class="tbl"><thead><tr><th>期間</th>${series.map(x=>`<th>${esc(x.name)}</th>`).join('')}</tr></thead><tbody>`;
-  buckets.forEach((bk,i)=>{ h+=`<tr><td>${esc(bk.label)}</td>${series.map(x=>`<td>${fmtV(x.data[i])}</td>`).join('')}</tr>`; });
+  // 明細：前年重ね時は差異列＋最下段に合計差異
+  const hasYoY=B==='total'&&S.aYoY&&series.length>=2;
+  const diffTxt=(d2)=>`<span class="${d2>0?'pos':d2<0?'neg':'mut'}">${d2===0?'—':(d2>0?'+':'▲')+(M==='guests'?cnt(Math.abs(d2))+'人':yen(Math.abs(d2)))}</span>`;
+  h+=`<div class="panel"><div class="panel-head"><h3>明細</h3></div><div class="scroll-x"><table class="tbl"><thead><tr><th>期間</th>${series.map(x=>`<th>${esc(x.name)}</th>`).join('')}${hasYoY?'<th>差異（対前年）</th>':''}</tr></thead><tbody>`;
+  buckets.forEach((bk,i)=>{
+    const dateCell=bk.dt?mdwH(bk.dt):esc(bk.label);
+    h+=`<tr><td>${dateCell}</td>${series.map(x=>`<td>${fmtV(x.data[i])}</td>`).join('')}${hasYoY?`<td>${diffTxt(series[0].data[i]-series[1].data[i])}</td>`:''}</tr>`;
+  });
+  // 合計行（客単価は加重平均で算出）
+  const totOf=(gp)=>val(gp.recs,dayMs(s),dayMs(e));
+  const totals=groups.map(gp=>totOf(gp));
+  if(hasYoY){
+    const prevTot=val(dailyIn,dayMs(sub1y(s)),dayMs(sub1y(e)));
+    h+=`<tr class="total"><td>合計</td><td>${fmtV(totals[0])}</td><td>${fmtV(prevTot)}</td><td>${diffTxt(totals[0]-prevTot)}</td></tr>`;
+  } else {
+    h+=`<tr class="total"><td>合計</td>${totals.map(v=>`<td>${fmtV(v)}</td>`).join('')}</tr>`;
+  }
   h+=`</tbody></table></div></div>`;
-  EXPORT.push({ title:ml+'の推移', headers:['期間'].concat(series.map(x=>x.name)),
-    rows:buckets.map((bk,i)=>[bk.label].concat(series.map(x=>Math.round(x.data[i])))) });
+  EXPORT.push({ title:ml+'の推移', headers:['期間'].concat(series.map(x=>x.name)).concat(hasYoY?['差異(対前年)']:[]),
+    rows:buckets.map((bk,i)=>[bk.label].concat(series.map(x=>Math.round(x.data[i]))).concat(hasYoY?[Math.round(series[0].data[i]-series[1].data[i])]:[])) });
+  return h;
+}
+
+/* ---------------- 曜日別比較（第N週×曜日・前年対比・祝日は別枠） ---------------- */
+function anaDowMonth(){
+  if(S.aDowMonth){ const p=S.aDowMonth.split('-'); return new Date(+p[0],+p[1]-1,1); }
+  const ref=D.refDate||new Date(); return new Date(ref.getFullYear(),ref.getMonth(),1);
+}
+function viewDowCompare(){
+  const sc=scopeStores(); const selName=selStoreName();
+  const names=selName?[selName]:sc; const nameSet=new Set(names);
+  const M=S.aMetric||'sales';
+  const ml=M==='sales'?'売上':(M==='guests'?'客数':'客単価');
+  const fmtV=(v)=>v==null?'—':(M==='guests'?cnt(v)+'人':yen(v));
+  const m0=anaDowMonth(); const y=m0.getFullYear(), m=m0.getMonth();
+  const ref=D.refDate||new Date();
+  const maxT=D.maxDate?dayMs(D.maxDate):dayMs(ref);
+  const mLabel=y+'年 '+(m+1)+'月';
+  const defMonth=ref.getFullYear()+'-'+String(ref.getMonth()+1).padStart(2,'0');
+
+  // 集計：日ごとに {sales,guests} を当年・前年同月で作る
+  const dayAgg=(yy,mm)=>{
+    const ld=new Date(yy,mm+1,0).getDate(); const out=[];
+    for(let d2=1;d2<=ld;d2++){
+      const t=dayMs(new Date(yy,mm,d2));
+      let sl=0,g=0;
+      for(const r2 of D.daily){ if(r2.t===t&&nameSet.has(r2.store)){ sl+=r2.sales; g+=r2.guests; } }
+      out.push({ d:d2, dt:new Date(yy,mm,d2), t, sl, g });
+    }
+    return out;
+  };
+  const curDays=dayAgg(y,m), prvDays=dayAgg(y-1,m);
+  const vOf=(o)=>o?(M==='sales'?o.sl:(M==='guests'?o.g:(o.g>0?o.sl/o.g:null))):null;
+
+  // 曜日キー：祝日は「祝」に分離（土日でも祝日優先）
+  const dowKey=(dt)=>isJpHoliday(dt)?7:dt.getDay();   // 0-6=日〜土, 7=祝
+  const DOW_LB=['日','月','火','水','木','金','土','祝'];
+  const ORDER=[1,2,3,4,5,6,0,7];                       // 月→日→祝 の表示順
+
+  // ① 曜日別サマリー（当月 vs 前年同月）
+  const sum9=()=>({sl:0,g:0,n:0});
+  const curBy={},prvBy={};
+  // 実績のある日だけ集計（定休日・未来日・データ未取込日は日数に含めない）
+  curDays.forEach(o=>{ if(o.t>maxT||(o.sl===0&&o.g===0))return; const k=dowKey(o.dt); (curBy[k]=curBy[k]||sum9()); curBy[k].sl+=o.sl; curBy[k].g+=o.g; curBy[k].n++; });
+  prvDays.forEach(o=>{ if(o.sl===0&&o.g===0)return; const k=dowKey(o.dt); (prvBy[k]=prvBy[k]||sum9()); prvBy[k].sl+=o.sl; prvBy[k].g+=o.g; prvBy[k].n++; });
+  const aggV=(o)=>o?(M==='sales'?o.sl:(M==='guests'?o.g:(o.g>0?o.sl/o.g:null))):null;
+  const avgV=(o)=>o&&o.n>0?(M==='spend'?aggV(o):(aggV(o)||0)/o.n):null;
+
+  let h=`
+  <div class="ctrl-bar no-print">
+    <div class="seg">${[['trend','推移'],['dow','曜日別比較']].map(([k,l])=>`<button class="${(S.aView||'trend')===k?'on':''}" onclick="App.set('aView','${k}')">${l}</button>`).join('')}</div>
+    <div class="seg">${[['sales','売上'],['guests','客数'],['spend','客単価']].map(([k,l])=>`<button class="${M===k?'on':''}" onclick="App.set('aMetric','${k}')">${l}</button>`).join('')}</div>
+    <div class="mini-nav"><button onclick="App.dowNav(-1)">‹</button>
+      <input type="month" value="${S.aDowMonth||defMonth}" onchange="App.set('aDowMonth',this.value)" style="border:none;padding:2px 4px;font-weight:700">
+      <button onclick="App.dowNav(1)">›</button><button onclick="App.dowNav(0)" style="font-size:11px;color:#8c8375">今月</button></div>
+    <span class="period-label">${mLabel} vs 前年同月（${y-1}年${m+1}月）</span>
+  </div>`+storeSegHtml();
+
+  h+=`<div class="panel"><div class="panel-head"><div><h3>曜日別 ${ml}比較（${mLabel}）</h3>
+    <div class="sub">祝日は曜日に含めず「祝」として別集計 ／ 1日平均で前年同月と比較</div></div></div>
+  <div class="scroll-x"><table class="tbl"><thead><tr><th>曜日</th><th>今年 合計</th><th>日数</th><th>今年 1日平均</th><th>前年 1日平均</th><th>前年比</th></tr></thead><tbody>`;
+  const expDow=[];
+  ORDER.forEach(k=>{
+    const c=curBy[k], p=prvBy[k];
+    if(!c&&!p) return;
+    const ca=avgV(c), pa=avgV(p);
+    const yy=(ca!=null&&pa>0)?yoyStr(ca,pa,''):{t:'—',cls:'mut'};
+    const red=k===0||k===6||k===7;
+    h+=`<tr><td><span class="${red?'wd-hol':''}" style="font-weight:700">${DOW_LB[k]}</span></td>
+      <td>${c?fmtV(aggV(c)):'—'}</td><td>${c?c.n+'日':'—'}</td>
+      <td style="font-weight:700">${ca!=null?fmtV(ca):'—'}</td><td class="mut">${pa!=null?fmtV(pa):'—'}</td>
+      <td class="${yy.cls==='up'?'pos':yy.cls==='dn'?'neg':'mut'}">${yy.t}</td></tr>`;
+    expDow.push([DOW_LB[k],c?Math.round(aggV(c)||0):'',c?c.n:'',ca!=null?Math.round(ca):'',pa!=null?Math.round(pa):'',yy.t]);
+  });
+  h+=`</tbody></table></div></div>`;
+  EXPORT.push({ title:'曜日別'+ml+'比較（'+mLabel+'）', headers:['曜日','今年合計','日数','今年1日平均','前年1日平均','前年比'], rows:expDow });
+
+  // ② 第N週 × 曜日 マトリクス（前年は同月同週・同曜日ブロックと比較）
+  const wkIdx=(d2)=>Math.min(4,Math.floor((d2-1)/7));
+  const cellPut=(map,o)=>{ if(o.sl===0&&o.g===0)return; const k=wkIdx(o.d)+'|'+dowKey(o.dt); (map[k]=map[k]||{sl:0,g:0,n:0}); map[k].sl+=o.sl; map[k].g+=o.g; map[k].n++; };
+  const curCell={},prvCell={};
+  curDays.forEach(o=>{ if(o.t<=maxT) cellPut(curCell,o); });
+  prvDays.forEach(o=>cellPut(prvCell,o));
+  h+=`<div class="panel"><div class="panel-head"><div><h3>週×曜日 ${ml}マトリクス（${mLabel}）</h3>
+    <div class="sub">上段=今年 ／ 下段=前年比（前年同月の同じ週・同じ曜日と比較）。祝日は「祝」列。第N週=1-7 / 8-14 / 15-21 / 22-28 / 29-末</div></div></div>
+  <div class="scroll-x"><table class="tbl"><thead><tr><th>週</th>${ORDER.map(k=>`<th><span class="${k===0||k===6||k===7?'wd-hol':''}">${DOW_LB[k]}</span></th>`).join('')}</tr></thead><tbody>`;
+  const expMx=[];
+  for(let w=0;w<5;w++){
+    const sd=w*7+1, ld=new Date(y,m+1,0).getDate();
+    if(sd>ld) break;
+    const ed=w<4?Math.min(sd+6,ld):ld;
+    let row=`<tr><td style="font-weight:700;white-space:nowrap">第${w+1}週<br><span class="mut" style="font-size:10px">${m+1}/${sd}〜${ed}</span></td>`;
+    const expRow=['第'+(w+1)+'週('+(m+1)+'/'+sd+'〜'+ed+')'];
+    ORDER.forEach(k=>{
+      const c=curCell[w+'|'+k], p=prvCell[w+'|'+k];
+      const cv=aggV(c), pv2=aggV(p);
+      if(cv==null&&pv2==null){ row+='<td class="mut">—</td>'; expRow.push(''); return; }
+      const yy=(cv!=null&&pv2>0)?yoyStr(cv,pv2,''):null;
+      row+=`<td>${cv!=null?fmtV(cv):'<span class="mut">—</span>'}${yy?`<br><span class="${yy.cls==='up'?'pos':yy.cls==='dn'?'neg':'mut'}" style="font-size:10.5px">${yy.t}</span>`:(pv2!=null?`<br><span class="mut" style="font-size:10.5px">前年 ${fmtV(pv2)}</span>`:'')}</td>`;
+      expRow.push((cv!=null?Math.round(cv):'')+(yy?' ('+yy.t+')':''));
+    });
+    h+=row+'</tr>'; expMx.push(expRow);
+  }
+  h+=`</tbody></table></div></div>`;
+  EXPORT.push({ title:'週×曜日'+ml+'マトリクス（'+mLabel+'）', headers:['週'].concat(ORDER.map(k=>DOW_LB[k])), rows:expMx });
   return h;
 }
 
@@ -1247,7 +1440,9 @@ function viewDeposit(){
   let h=`
   <div class="ctrl-bar no-print">
     <div class="mini-nav">
-      <button onclick="App.depNav(-1)">‹</button><span class="lbl">${mLabel}</span><button onclick="App.depNav(1)">›</button>
+      <button onclick="App.depNav(-1)">‹</button>
+      <input type="month" value="${y+'-'+String(m+1).padStart(2,'0')}" onchange="App.set('depMonth',this.value)" style="border:none;padding:2px 4px;font-weight:700">
+      <button onclick="App.depNav(1)">›</button>
       <button onclick="App.depNav(0)" style="font-size:11px;color:#8c8375">今月</button>
     </div>
     <span class="period-label">現金売上（入金予定）と ATM入金の照合 ／ ${esc(scopeLabel)}</span>
@@ -1268,7 +1463,7 @@ function viewDeposit(){
     <div class="kpi"><div class="lb">繰越未入金（前月まで）</div><div class="vl" style="color:${carry>0?'#b5502f':'#3d3a33'}">${yen(carry)}</div><div class="yy">入金記録開始以降の累計</div></div>
     <div class="kpi"><div class="lb">当月 入金予定（現金売上）</div><div class="vl">${yen(tC)}</div><div class="yy">${mLabel}実績分</div></div>
     <div class="kpi"><div class="lb">当月 入金済（ATM）</div><div class="vl">${yen(tD)}</div><div class="yy">${mLabel}実績分</div></div>
-    <div class="kpi"><div class="lb">当月 未入金</div><div class="vl ${unpaid>0?'':''}" style="color:${unpaid>0?'#b5502f':'#4c7d5c'}">${yen(unpaid)}</div><div class="yy">累計残 ${yen(days.length?days[days.length-1].future?cum:days[days.length-1].cum:carry)}</div></div>
+    <div class="kpi"><div class="lb">当月 未入金</div><div class="vl ${unpaid>0?'':''}" style="color:${unpaid>0?'#b5502f':'#4c7d5c'}">${yen(unpaid)}</div><div class="yy" style="font-weight:700;font-size:13px;color:${(days.length?(days[days.length-1].future?cum:days[days.length-1].cum):carry)>0?'#b5502f':'#4c7d5c'}">累計残 ${yen(days.length?days[days.length-1].future?cum:days[days.length-1].cum:carry)}</div></div>
   </div>`;
 
   // 店舗別サマリー（合算表示時のみ）
@@ -1277,14 +1472,17 @@ function viewDeposit(){
     <div class="scroll-x"><table class="tbl"><thead><tr><th>店舗</th><th>入金予定(現金売上)</th><th>入金(ATM)</th><th>未入金(当月)</th><th>累計未入金</th><th>状態</th></tr></thead><tbody>`;
     const expS=[];
     sc.forEach(nm=>{
-      let c=0,dp=0,cAll=0,dAll=0;
-      for(const r of D.daily){ if(normStore(r.store)!==normStore(nm))continue; if(r.t>=mS&&r.t<=mE&&r.t<=maxT)c+=r.cash||0; if(r.t>=depStart&&r.t<=Math.min(mE,maxT))cAll+=r.cash||0; }
+      let c=0,dp=0,cAll=0,dAll=0; const cashByDay={};
+      for(const r of D.daily){ if(normStore(r.store)!==normStore(nm))continue; if(r.t>=mS&&r.t<=mE&&r.t<=maxT){ c+=r.cash||0; cashByDay[r.t]=(cashByDay[r.t]||0)+(r.cash||0); } if(r.t>=depStart&&r.t<=Math.min(mE,maxT))cAll+=r.cash||0; }
       for(const r of D.deposit){ if(normStore(r.store)!==normStore(nm))continue; if(r.t>=mS&&r.t<=mE)dp+=r.amount||0; if(r.t<=mE)dAll+=r.amount||0; }
       const u=c-dp, cu=cAll-dAll;
-      const badge=u<=0?(c>0||dp>0?'<span class="badge ok">完了</span>':'<span class="badge zero">—</span>'):'<span class="badge ng">未入金あり</span>';
+      // 完了判定：各日の入金予定を千円未満切捨てした合計以上が入っていれば「完了」（端数は許容）
+      const cFloor=Object.values(cashByDay).reduce((s2,v)=>s2+Math.floor(v/1000)*1000,0);
+      const okDone=dp>=cFloor;
+      const badge=okDone?(c>0||dp>0?'<span class="badge ok">完了</span>':'<span class="badge zero">—</span>'):'<span class="badge ng">未入金あり</span>';
       h+=`<tr class="click" onclick="App.store(this.dataset.n)" data-n="${esc(nm)}"><td>${esc(nm)}</td><td>${yen(c)}</td><td>${yen(dp)}</td>
         <td class="${u>0?'neg':u<0?'pos':'mut'}">${yen(u)}</td><td class="${cu>0?'neg':'mut'}">${yen(cu)}</td><td>${badge}</td></tr>`;
-      expS.push([nm,Math.round(c),Math.round(dp),Math.round(u),Math.round(cu),u>0?'未入金あり':'完了']);
+      expS.push([nm,Math.round(c),Math.round(dp),Math.round(u),Math.round(cu),okDone?'完了':'未入金あり']);
     });
     h+=`</tbody></table></div></div>`;
     EXPORT.push({ title:'店舗別入金状況（'+mLabel+'）', headers:['店舗','入金予定(現金売上)','入金(ATM)','未入金(当月)','累計未入金','状態'], rows:expS });
@@ -1297,11 +1495,13 @@ function viewDeposit(){
   const expD=[];
   days.forEach(x=>{
     if(x.future){
-      h+=`<tr><td class="mut">${mdw(x.dt)}</td><td class="mut">—</td><td class="mut">—</td><td class="mut">—</td><td class="mut">—</td><td><span class="badge zero">データ待ち</span></td></tr>`;
+      h+=`<tr><td class="mut">${mdwH(x.dt)}</td><td class="mut">—</td><td class="mut">—</td><td class="mut">—</td><td class="mut">—</td><td><span class="badge zero">データ待ち</span></td></tr>`;
       return;
     }
-    const badge=(x.cash===0&&x.dep===0)?'<span class="badge zero">—</span>':(x.diff<=0?'<span class="badge ok">完了</span>':'<span class="badge ng">未入金</span>');
-    h+=`<tr><td>${mdw(x.dt)}</td><td>${yen(x.cash)}</td><td>${yen(x.dep)}</td>
+    // 完了判定：入金予定の千円未満切捨て額（例 81,500→81,000）以上が入っていれば「完了」
+    const dayOk=x.dep>=Math.floor(x.cash/1000)*1000;
+    const badge=(x.cash===0&&x.dep===0)?'<span class="badge zero">—</span>':(dayOk?'<span class="badge ok">完了</span>':'<span class="badge ng">未入金</span>');
+    h+=`<tr><td>${mdwH(x.dt)}</td><td>${yen(x.cash)}</td><td>${yen(x.dep)}</td>
       <td class="${x.diff>0?'neg':x.diff<0?'pos':'mut'}">${yen(x.diff)}</td>
       <td class="${x.cum>0?'neg':'mut'}">${yen(x.cum)}</td><td>${badge}</td></tr>`;
     expD.push([(m+1)+'/'+x.d,Math.round(x.cash),Math.round(x.dep),Math.round(x.diff),Math.round(x.cum),(x.cash===0&&x.dep===0)?'':(x.diff<=0?'完了':'未入金')]);
@@ -1743,7 +1943,9 @@ function viewPL(){
     pS=dayMs(new Date(y,m-1,1)); pE=dayMs(new Date(y,m,0));
     yS=dayMs(new Date(y-1,m,1)); yE=dayMs(new Date(y-1,m+1,0));
     mLabel=y+'年 '+(m+1)+'月';
-    ctrlHtml=`<div class="mini-nav"><button onclick="App.plNav(-1)">‹</button><span class="lbl">${mLabel}</span><button onclick="App.plNav(1)">›</button><button onclick="App.plNav(0)" style="font-size:11px;color:#8c8375">今月</button></div>`;
+    ctrlHtml=`<div class="mini-nav"><button onclick="App.plNav(-1)">‹</button>
+      <input type="month" value="${y+'-'+String(m+1).padStart(2,'0')}" onchange="App.set('plMonth',this.value)" style="border:none;padding:2px 4px;font-weight:700">
+      <button onclick="App.plNav(1)">›</button><button onclick="App.plNav(0)" style="font-size:11px;color:#8c8375">今月</button></div>`;
   }
   const isAll=!selN&&sc.length===allStores().length;
   const scopeLabel=selN||(isAll?'全店合算':'担当店舗合算');
@@ -2025,7 +2227,7 @@ function viewReview(){
       h+=`<tr><td>${esc(nm)}${parentTag(nm)}</td><td>${endSnap.star.toFixed(2)}</td>
         <td class="${starDiff>0?'pos':starDiff<0?'neg':'mut'}">${starDiff==null?'—':(starDiff>=0?'+':'')+starDiff.toFixed(2)}</td>
         <td>${cnt(endSnap.count)}件</td><td class="${inc>0?'pos':'mut'}">${inc>0?'+'+inc:(inc===0?'—':inc)}</td>
-        <td class="mut">${dt.getFullYear()}/${dt.getMonth()+1}/${dt.getDate()}</td></tr>`;
+        <td class="mut">${dt.getFullYear()}/${mdwH(dt)}</td></tr>`;
       expR.push([nm,endSnap.star.toFixed(2),starDiff==null?'':starDiff.toFixed(2),endSnap.count,inc==null?'':inc,dt.getFullYear()+'/'+(dt.getMonth()+1)+'/'+dt.getDate()]);
     });
     h+=`</tbody></table></div></div>`;
@@ -2091,6 +2293,32 @@ function viewReview(){
       const dlegend=dseries.map(s2=>`<span><span class="sw" style="background:${s2.color}"></span>${esc(s2.name)}</span>`).join('');
       h+=`<div class="panel"><div class="panel-head"><div><h3>ダイニー「また来たい」推移（${esc(label)}）</h3><div class="sub">${P==='year'||span>45?'各月':'各日'}の回答平均</div></div><div class="legend">${dlegend}</div></div>
       ${lineChart(buckets.map(bk=>bk.label),dseries,'star',{zoom:true,axisFmt:(v)=>v.toFixed(2)})}</div>`;
+    }
+    // ダイニーアンケートのコメント一覧（期間内・新しい順）
+    const rc2={};
+    const cmts=D.dinii.filter(r2=>{
+      if(!r2.cm) return false;
+      if(r2.t>0&&(r2.t<a||r2.t>b)) return false;
+      const res=(r2.store in rc2)?rc2[r2.store]:(rc2[r2.store]=resolveStoreEx(r2.store));
+      const p2=res?res.parent:r2.store;
+      return baseTargets.includes(p2);
+    }).sort((x2,y2)=>y2.t-x2.t);
+    if(cmts.length){
+      const LIMIT=30;
+      h+=`<div class="panel"><div class="panel-head"><div><h3>ダイニーアンケート コメント（${esc(label)}）</h3>
+        <div class="sub">自由記述のあった回答 ${cnt(cmts.length)}件${cmts.length>LIMIT?'（新しい順に'+LIMIT+'件表示）':''}</div></div></div>
+      <div class="scroll-x"><table class="tbl"><thead><tr><th>来店日</th><th>店舗</th><th>点数</th><th>コメント</th></tr></thead><tbody>`;
+      const expCm=[];
+      cmts.slice(0,LIMIT).forEach(r2=>{
+        const dt2=r2.t>0?new Date(r2.t):null;
+        const scoreCls=r2.score>=80?'pos':r2.score<50?'neg':'';
+        h+=`<tr><td style="white-space:nowrap">${dt2?mdwH(dt2):'<span class="mut">—</span>'}</td><td style="white-space:nowrap">${esc(r2.store)}</td>
+          <td class="${scoreCls}" style="font-weight:700">${r2.score}</td>
+          <td style="max-width:480px;white-space:normal;line-height:1.6">${esc(r2.cm)}</td></tr>`;
+        expCm.push([dt2?mdw(dt2):'',r2.store,r2.score,r2.cm]);
+      });
+      h+=`</tbody></table></div></div>`;
+      EXPORT.push({ title:'ダイニーコメント（'+label+'）', headers:['来店日','店舗','点数','コメント'], rows:expCm });
     }
   }
   return h;
@@ -2516,6 +2744,18 @@ window.App = {
     if(d===0){ S.depMonth=''; render(); return; }
     const m0=depMonthDate(); const n=new Date(m0.getFullYear(),m0.getMonth()+d,1);
     S.depMonth=n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0'); render();
+  },
+  dowNav(d){
+    if(d===0){ S.aDowMonth=''; render(); return; }
+    const m0=anaDowMonth(); const n=new Date(m0.getFullYear(),m0.getMonth()+d,1);
+    S.aDowMonth=n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0'); render();
+  },
+  thisMonth(){  // ダッシュボードの期間を「今月（今週/今日）」に一発で戻す
+    const ref=D.refDate||new Date();
+    S.pMonth=ref.getFullYear()+'-'+String(ref.getMonth()+1).padStart(2,'0');
+    S.pDay=S.pMonth+'-'+String(ref.getDate()).padStart(2,'0');
+    S.pYear=String(ref.getFullYear());
+    S.pWeekIdx=null; render();
   },
   adNav(d){
     const ref=D.refDate||new Date();

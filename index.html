@@ -146,6 +146,23 @@ nav.tabs button:hover{color:var(--ink)}
 .modal input[type=text],.modal input[type=url]{width:100%;margin:6px 0 12px}
 .modal-btns{display:flex;gap:10px;justify-content:flex-end;margin-top:14px}
 
+/* ---------- 曜日（土日祝は赤） ---------- */
+.wd-hol{color:var(--red);font-weight:700}
+
+/* ---------- スマホ用 固定コンテキストバー（店舗・期間） ---------- */
+.ctx-bar{display:none}
+@media(max-width:900px){
+  .ctx-bar{display:flex;position:fixed;left:0;right:0;bottom:0;z-index:900;align-items:center;gap:8px;
+    background:rgba(42,36,32,.94);color:#f3ede1;font-size:12.5px;padding:10px 16px;
+    padding-bottom:calc(10px + env(safe-area-inset-bottom));backdrop-filter:blur(6px);cursor:pointer}
+  .ctx-bar .cb-store{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:46%}
+  .ctx-bar .cb-sep{color:#9a8f7c}
+  .ctx-bar .cb-period{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .ctx-bar .cb-up{margin-left:auto;font-size:10.5px;color:#c9a86a;white-space:nowrap}
+  .app{padding-bottom:96px}
+  .toast{bottom:64px}
+}
+
 /* ---------- mobile (スマホ) ---------- */
 @media(max-width:640px){
   .app{padding:0 12px 44px}
@@ -181,7 +198,7 @@ nav.tabs button:hover{color:var(--ink)}
 <body>
 <div id="root"></div>
 <div id="toast" class="toast"></div>
-<script src="sample-data.js?v=30"></script>
-<script src="app.js?v=30"></script>
+<script src="sample-data.js?v=31"></script>
+<script src="app.js?v=31"></script>
 </body>
 </html>
