@@ -193,6 +193,25 @@ function setupIfNeeded() {
     plSh.setFrozenRows(1);
     plSh.setColumnWidths(1, 6, 130);
   }
+
+  // 祝日シート（DB_祝日）。無ければ雛形を作成。
+  // ダッシュボードは2027年まで祝日を内蔵済み。2028年以降はこのシートに日付を足すだけで
+  // カレンダー表示（曜日の赤字・曜日別比較の「祝」分離）に反映される。
+  var holSh = ss.getSheetByName('DB_祝日');
+  if (!holSh) {
+    holSh = ss.insertSheet('DB_祝日');
+    holSh.getRange(1, 1, 1, 2).setValues([['日付', '名称（任意）']])
+      .setFontWeight('bold').setBackground('#efe9dd');
+    holSh.getRange('A1').setNote(
+      '土日以外の祝日をここに1行ずつ入力してください。\n' +
+      '・日付: 2028/1/1 の形式（2028-01-01 や 2028年1月1日 でも可）\n' +
+      '・名称: 任意（元日・成人の日 など。空欄でも動きます）\n' +
+      '※ダッシュボードは2027年まで内蔵済み。2028年以降の分をここに足せば自動で反映されます。\n' +
+      '※振替休日・国民の休日も1行として入れてください。'
+    );
+    holSh.setFrozenRows(1);
+    holSh.setColumnWidths(1, 2, 160);
+  }
 }
 
 // ================== 認証 ==================

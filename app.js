@@ -105,7 +105,7 @@ const S = {
   reportMode:null,   // {kind:'daily'|'weekly'|'monthly', date:'YYYY-MM-DD'} Lark日報用の1枚カード表示
   accounts:null, accErr:'', modal:null, loginErr:'',
 };
-const D = { daily:[], media:[], deposit:[], review:[], ad:[], adfx:[], tanka:{}, pl:[], dinii:[], extra:{}, storeAlias:{}, storeParent:{}, refDate:null, maxDate:null };
+const D = { daily:[], media:[], deposit:[], review:[], ad:[], adfx:[], tanka:{}, pl:[], dinii:[], extra:{}, storeAlias:{}, storeParent:{}, holidays:null, refDate:null, maxDate:null };
 let EXPORT = [];      // 現在タブのCSVエクスポート対象 [{title,headers,rows}]
 let pollTimer = null;
 
@@ -126,7 +126,8 @@ const JP_HOLIDAYS=new Set(('2024:1/1,1/8,2/11,2/12,2/23,3/20,4/29,5/3,5/4,5/5,5/
  '2026:1/1,1/12,2/11,2/23,3/20,4/29,5/3,5/4,5/5,5/6,7/20,8/11,9/21,9/22,9/23,10/12,11/3,11/23|'+
  '2027:1/1,1/11,2/11,2/23,3/21,3/22,4/29,5/3,5/4,5/5,7/19,8/11,9/20,9/23,10/11,11/3,11/23')
  .split('|').flatMap(y=>{ const[Y,ds]=y.split(':'); return ds.split(',').map(md=>Y+'-'+md); }));
-const isJpHoliday=(d)=>JP_HOLIDAYS.has(d.getFullYear()+'-'+(d.getMonth()+1)+'/'+d.getDate());
+// 祝日判定：内蔵テーブル（〜2027）＋ スプレッドシート「DB_祝日」で追加した分（D.holidays）
+const isJpHoliday=(d)=>{ const k=d.getFullYear()+'-'+(d.getMonth()+1)+'/'+d.getDate(); return JP_HOLIDAYS.has(k)||(D.holidays&&D.holidays.has(k)); };
 const isRedDay=(d)=>d.getDay()===0||d.getDay()===6||isJpHoliday(d);   // 土日祝
 // HTML用の日付表示：M/D(曜) — 土日祝は曜日を赤に。祝日は「祝」を付記
 const mdwH=(d)=>{ const wd=WD[d.getDay()]+(isJpHoliday(d)?'・祝':'');
@@ -441,6 +442,22 @@ function ingestStoreMap(rows){
   for(let i=0;i<rows.length;i++){ const r=rows[i]||[]; const f=String(r[0]||'').trim(), t=String(r[1]||'').trim(); if(f&&t) map[f]=t; }
   return map;
 }
+// 祝日シート（DB_祝日）：日付が入ったセルを拾って祝日集合に加える。2028年以降はここに足すだけで反映。
+const isHolidayKey=(k)=>/祝日|祝祭日|holiday/i.test(String(k));
+function ingestHoliday(rows){
+  const set=new Set(); let n=0;
+  if(Array.isArray(rows)){
+    for(let i=0;i<rows.length;i++){
+      const row=rows[i]; if(!Array.isArray(row)) continue;
+      for(const cell of row){
+        const t=parseDateStr(cell)||parseYm(cell);   // 「2028/1/1」「2028-01-01」「2028年1月1日」等
+        if(t){ const d=new Date(t); set.add(d.getFullYear()+'-'+(d.getMonth()+1)+'/'+d.getDate()); n++; break; } // 1行1日付（最初の日付列を採用）
+      }
+    }
+  }
+  D.holidays=set; D.diag['祝日']='OK '+n+'件';
+  return true;
+}
 // 店舗親子シート（左＝子店舗/サブブランド名 / 右＝親店舗＝売上側の店舗）を取り込む → { 子:親 }
 const isStoreParentKey=(k)=>/店舗親子|サブブランド|親子|店舗グループ|storeparent|storegroup/i.test(String(k));
 function ingestStoreParent(rows){
@@ -475,6 +492,7 @@ function ingestSheets(sheets, partial){
     else if(isRsvKey(key)) ingestRsv(rows);
     else if(isPLKey(key)) ingestPL(rows);
     else if(isDiniiKey(key)) ingestDinii(rows);
+    else if(isHolidayKey(key)) ingestHoliday(rows);
     else if(isStoreParentKey(key)){ D.storeParent=ingestStoreParent(rows); D.diag[key]='OK '+Object.keys(D.storeParent).length+'件の親子'; }
     else if(isStoreMapKey(key)){ D.storeAlias=ingestStoreMap(rows); D.diag[key]='OK '+Object.keys(D.storeAlias).length+'件の対応'; }
     else D.extra[key]=rows;
