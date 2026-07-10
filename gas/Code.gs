@@ -43,7 +43,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'rsv-v6', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'rsv-v7', time: new Date().toISOString() });
     setupIfNeeded();
     if (action === 'login')  return out(login(p));
     if (action === 'logout') return out(logout(p));
@@ -336,15 +336,29 @@ function mgmtEnsure(mss) {
     // ⚙単価設定タブが無ければ作成
     if (!mgmtFindTab(mss, /単価設定/)) {
       var tk = mss.insertSheet('⚙単価設定');
-      tk.getRange(1, 1, 1, 4).setValues([['店舗名', '媒体', '設定単価', 'メモ']])
+      tk.getRange(1, 1, 1, 6).setValues([['店舗名', '媒体', '設定単価', '平均1組人数', '電話CV', 'メモ']])
         .setFontWeight('bold').setBackground('#efe9dd');
       tk.getRange('A1').setNote(
         '店舗×媒体ごとの想定客単価（円）。入力するとダッシュボードに自動反映。\n' +
         '・店舗名を空欄＝全店共通、媒体を空欄＝その店舗の全媒体に適用\n' +
-        '・予想売上＝ネット予約人数×設定単価'
+        '・予想売上＝ネット予約人数×設定単価 ＋ 電話数×電話CV×平均1組人数×設定単価\n' +
+        '・電話CVは 30% でも 0.3 でもOK（例：電話100件×CV30%×平均5名×単価4,000円＝60万円）'
       );
       tk.setFrozenRows(1);
-      tk.setColumnWidths(1, 4, 130);
+      tk.setColumnWidths(1, 6, 130);
+    }
+    // 既存の⚙単価設定に「平均1組人数」「電話CV」列が無ければ末尾に追加
+    var tkEx = mgmtFindTab(mss, /単価設定/);
+    if (tkEx && tkEx.getLastColumn() >= 1) {
+      var th = tkEx.getRange(1, 1, 1, tkEx.getLastColumn()).getValues()[0];
+      var hasAvg = false, hasCv = false;
+      for (var k = 0; k < th.length; k++) {
+        var hv = String(th[k]);
+        if (hv.indexOf('組人数') >= 0) hasAvg = true;
+        if (hv.indexOf('電話CV') >= 0 || hv.indexOf('電話ＣＶ') >= 0) hasCv = true;
+      }
+      if (!hasAvg) tkEx.getRange(1, tkEx.getLastColumn() + 1).setValue('平均1組人数').setFontWeight('bold').setBackground('#efe9dd');
+      if (!hasCv) tkEx.getRange(1, tkEx.getLastColumn() + 1).setValue('電話CV').setFontWeight('bold').setBackground('#efe9dd');
     }
     // 💾予約DB タブ（予約一覧CSVの貼り付け先）が無ければ自動作成
     if (!mgmtFindTab(mss, /予約DB|予約明細|予約一覧/)) {
