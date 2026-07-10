@@ -271,9 +271,9 @@ function ingestAdFx(rows){
   const H=rows[hi].map(h=>String(h).trim());
   const iD=colAny(H,['年月','日付']), iS=colOf(H,'店舗'), iM=colOf(H,'媒体');
   const iA=colOf(H,'アクセス');
-  const iG=colAny(H,['ネット予約組数','予約組数','組数','ネット予約件数','予約件数']);
-  let iP=colAny(H,['ネット予約人数','予約人数']); if(iP<0){const x=colOf(H,'人数'); if(x>=0&&x!==iG)iP=x;}
-  const iT=colOf(H,'電話');
+  const iG=colAny(H,['ネット予約組数','予約組数','NET件数','NET組数','ネット予約件数','予約件数','組数']);
+  let iP=colAny(H,['ネット予約人数','予約人数','NET人数']); if(iP<0){const x=colOf(H,'人数'); if(x>=0&&x!==iG)iP=x;}
+  const iT=colAny(H,['電話数','電話']);
   if(iD<0||(iA<0&&iG<0)){ D.diag['広告効果']='列が見つかりません（必要: 年月・アクセス数または予約組数）／見出し行: '+H.filter(Boolean).join('|'); return false; }
   const recs=[];
   for(let i=hi+1;i<rows.length;i++){
