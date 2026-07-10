@@ -149,6 +149,11 @@ nav.tabs button:hover{color:var(--ink)}
 /* ---------- 曜日（土日祝は赤） ---------- */
 .wd-hol{color:var(--red);font-weight:700}
 
+/* ---------- ダイニー回答一覧（設問を横に展開） ---------- */
+.dinii-ans th{white-space:normal;min-width:150px;vertical-align:top;font-size:11px;line-height:1.4}
+.dinii-ans th:nth-child(-n+3){min-width:auto}
+.dinii-ans td.ans-cell{white-space:normal;min-width:150px;max-width:260px;line-height:1.55;font-size:12.5px;vertical-align:top}
+
 /* ---------- スマホ用 固定コンテキストバー（店舗・期間） ---------- */
 .ctx-bar{display:none}
 @media(max-width:900px){
@@ -198,7 +203,7 @@ nav.tabs button:hover{color:var(--ink)}
 <body>
 <div id="root"></div>
 <div id="toast" class="toast"></div>
-<script src="sample-data.js?v=33"></script>
-<script src="app.js?v=33"></script>
+<script src="sample-data.js?v=34"></script>
+<script src="app.js?v=34"></script>
 </body>
 </html>

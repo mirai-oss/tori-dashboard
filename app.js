@@ -105,7 +105,7 @@ const S = {
   reportMode:null,   // {kind:'daily'|'weekly'|'monthly', date:'YYYY-MM-DD'} Lark日報用の1枚カード表示
   accounts:null, accErr:'', modal:null, loginErr:'',
 };
-const D = { daily:[], media:[], deposit:[], review:[], ad:[], adfx:[], tanka:{}, pl:[], dinii:[], extra:{}, storeAlias:{}, storeParent:{}, holidays:null, refDate:null, maxDate:null };
+const D = { daily:[], media:[], deposit:[], review:[], ad:[], adfx:[], tanka:{}, pl:[], dinii:[], diniiCols:[], extra:{}, storeAlias:{}, storeParent:{}, holidays:null, refDate:null, maxDate:null };
 let EXPORT = [];      // 現在タブのCSVエクスポート対象 [{title,headers,rows}]
 let pollTimer = null;
 
@@ -350,34 +350,30 @@ function ingestDinii(rows){
   const iS=colAny(H,['店舗名','店舗']), iD=colAny(H,['来店日','来店','日付','営業日','タイムスタンプ','回答日']);  // 来店日時を最優先（回答日時より前）
   let iQ=H.findIndex(h=>/また来|またき/.test(h));
   if(iQ<0&&H.length>6) iQ=6;   // 見出しで見つからなければG列を採用
-  // コメント列（自由記述）：見出しで探す。見つからなければ全列から「文章らしい列」を推定
-  let iC=colAny(H,['コメント','ご意見','ご感想','感想','ご要望','要望','意見','改善','良かった','一言','ひとこと','お声','声','フリー','備考','内容','メッセージ','自由']);
-  if(iC<0){
-    // 店舗/日付/点数/来店回数などのメタ列は除外し、日本語の文章が最も多い列を採用
-    const metaRe=/店舗|来店回数|回数|回答日|来店日|営業日|日付|タイムスタンプ|点数|評価|スコア|score|メール|mail|電話|tel|名前|氏名|ID|番号|性別|年代|人数/i;
-    let best=-1,bestLen=0;
-    for(let col=0;col<H.length;col++){
-      if(col===iS||col===iD||col===iQ) continue;
-      if(metaRe.test(String(H[col]))) continue;
-      let len=0,n2=0;
-      for(let i=hi+1;i<Math.min(rows.length,hi+120);i++){ const v=String(rows[i]&&rows[i][col]!=null?rows[i][col]:'').trim();
-        if(v&&!/^[0-9.\/:\-\s年月日時分秒]+$/.test(v)){ len+=v.length; n2++; } }  // 数字・日付だけの列は除外
-      if(n2>=2&&len>bestLen){ bestLen=len; best=col; }
-    }
-    if(bestLen>=12) iC=best;   // 文章らしき列があった時だけ採用
-  }
   if(iS<0||iQ<0){ D.diag['dinii']='列が見つかりません（必要: 店舗名・また来たい点数）／見出し行: '+H.filter(Boolean).join('|'); return false; }
+  // アンケートの設問列（自由記述・カテゴリ）をすべて拾う。店舗/日時/来店回数/再来店点数などのメタ列だけ除外。
+  const metaRe=/^(店舗|来店回数|回数|回答日|来店日|来店日時|営業日|日付|タイムスタンプ|当店にまた来|また来|またき)/;
+  const qCols=[];
+  for(let c=0;c<H.length;c++){
+    if(c===iS||c===iD||c===iQ) continue;
+    const nm=String(H[c]||'').trim();
+    if(!nm||metaRe.test(nm)) continue;
+    qCols.push({ idx:c, name:nm });
+  }
+  D.diniiCols=qCols;
   const recs=[];
   for(let i=hi+1;i<rows.length;i++){
     const c=rows[i]; const st=String(c[iS]||'').trim(); if(!st)continue;
     // 0点も有効回答としてカウントする。除外するのは「空欄」と「数字を含まないテキスト（未回答等）」のみ
     const raw=String(c[iQ]==null?'':c[iQ]).trim().replace(/[０-９]/g,ch=>String.fromCharCode(ch.charCodeAt(0)-0xFEE0));  // 全角数字→半角
     if(raw===''||!/[0-9]/.test(raw)) continue;
-    const cm=iC>=0?String(c[iC]==null?'':c[iC]).trim():'';
-    recs.push({ store:st, t:iD>=0?(parseDateStr(c[iD])||0):0, score:num(raw), cm });
+    // 各設問の回答を保持（空欄はスキップ）
+    const ans={};
+    qCols.forEach(q=>{ const v=String(c[q.idx]==null?'':c[q.idx]).trim(); if(v) ans[q.name]=v; });
+    recs.push({ store:st, t:iD>=0?(parseDateStr(c[iD])||0):0, score:num(raw), ans });
   }
   if(!recs.length){ D.diag['dinii']='0件（また来たい点数の列に数値がありません）'; return false; }
-  D.dinii=recs; D.diag['dinii']='OK '+recs.length+'件'; return true;
+  D.dinii=recs; D.diag['dinii']='OK '+recs.length+'件 ／ 設問'+qCols.length+'列'; return true;
 }
 // 対象店舗×期間のダイニー平均（期間内に回答が無ければ累計も返す）
 function diniiStats(storeNames, a, b){
@@ -580,6 +576,16 @@ function prevRange(r){
   if(S.period==='day') return { s:addD(r.s,-364), e:addD(r.e,-364) };  // 昨年同曜日
   return { s:sub1y(r.s), e:sub1y(r.e) };
 }
+// 「直前の同種期間」= 前日／前週／前月／前年／前期間（前年ではなく“ひとつ前”）
+function prevPeriodRange(r){
+  const P=S.period;
+  if(P==='day') return { s:addD(r.s,-1), e:addD(r.s,-1) };
+  if(P==='month') return { s:new Date(r.s.getFullYear(),r.s.getMonth()-1,1), e:new Date(r.s.getFullYear(),r.s.getMonth(),0) };
+  if(P==='year') return { s:new Date(r.s.getFullYear()-1,0,1), e:new Date(r.e.getFullYear()-1,r.e.getMonth(),r.e.getDate()) };
+  const len=Math.round((dayMs(r.e)-dayMs(r.s))/86400000);   // 週・期間指定：直前の同じ長さ
+  const e=addD(r.s,-1); return { s:addD(e,-len), e };
+}
+const prevPeriodLabel=()=>({day:'前日',week:'前週',month:'前月',year:'前年',custom:'前期間'})[S.period]||'前期間';
 // 前年比の表示（accounting: ▲=マイナス）
 function yoyStr(cur,prev,suffix){
   if(!(prev>0)) return { t:'前年 —', cls:'mut' };
@@ -1033,9 +1039,14 @@ function viewDash(){
   // ダイニー来店アンケート「また来たいと思いますか？」の平均（接続時のみ表示）
   if(D.dinii.length){
     const ds=diniiStats(targetStores,a,b);
-    kpis.push({ lb:'ダイニー再来店意向',
-      vl: ds.avg!=null?ds.avg.toFixed(2):(ds.allAvg!=null?ds.allAvg.toFixed(2):'—'),
-      yy: ds.avg!=null?{t:'期間内 '+cnt(ds.count)+'件の平均',cls:'mut'}:(ds.allAvg!=null?{t:'累計 '+cnt(ds.allCount)+'件の平均',cls:'mut'}:{t:'回答なし',cls:'mut'}) });
+    const pp=prevPeriodRange(r); const dsPrev=diniiStats(targetStores,dayMs(pp.s),dayMs(pp.e));
+    const plb=prevPeriodLabel();
+    let dyy;
+    if(ds.avg==null) dyy={t:'この期間の回答なし',cls:'mut'};   // 累計にはフォールバックしない
+    else if(dsPrev.avg!=null){ const dd=ds.avg-dsPrev.avg;
+      dyy={ t:plb+' '+(dd>=0?'+':'▲')+Math.abs(dd).toFixed(2)+'点 ／ '+cnt(ds.count)+'件', cls:dd>0?'up':dd<0?'dn':'mut' }; }
+    else dyy={t:'期間内 '+cnt(ds.count)+'件の平均（'+plb+'は回答なし）',cls:'mut'};
+    kpis.push({ lb:'ダイニー再来店意向', vl: ds.avg!=null?ds.avg.toFixed(2):'—', yy:dyy });
   }
   let h=periodCtrlHtml()+storeSegHtml();
   h+=`<div class="kpi-grid">`+kpis.map(k=>`<div class="kpi"><div class="lb">${k.lb}</div><div class="vl">${k.vl}</div><div class="yy ${k.yy.cls}">${k.yy.t}</div></div>`).join('')+`</div>`;
@@ -2317,31 +2328,36 @@ function viewReview(){
       h+=`<div class="panel"><div class="panel-head"><div><h3>ダイニー「また来たい」推移（${esc(label)}）</h3><div class="sub">${P==='year'||span>45?'各月':'各日'}の回答平均</div></div><div class="legend">${dlegend}</div></div>
       ${lineChart(buckets.map(bk=>bk.label),dseries,'star',{zoom:true,axisFmt:(v)=>v.toFixed(2)})}</div>`;
     }
-    // ダイニーアンケートのコメント一覧（期間内・新しい順）
+    // ダイニーアンケートの回答一覧（期間内・新しい順）。設問（自由記述・カテゴリ）を横に全部展開。
     const rc2={};
     const cmts=D.dinii.filter(r2=>{
-      if(!r2.cm) return false;
+      if(!r2.ans||!Object.keys(r2.ans).length) return false;   // 何か回答のある行だけ
       if(r2.t>0&&(r2.t<a||r2.t>b)) return false;
       const res=(r2.store in rc2)?rc2[r2.store]:(rc2[r2.store]=resolveStoreEx(r2.store));
       const p2=res?res.parent:r2.store;
       return baseTargets.includes(p2);
     }).sort((x2,y2)=>y2.t-x2.t);
     if(cmts.length){
-      const LIMIT=30;
-      h+=`<div class="panel"><div class="panel-head"><div><h3>ダイニーアンケート コメント（${esc(label)}）</h3>
-        <div class="sub">自由記述のあった回答 ${cnt(cmts.length)}件${cmts.length>LIMIT?'（新しい順に'+LIMIT+'件表示）':''}</div></div></div>
-      <div class="scroll-x"><table class="tbl"><thead><tr><th>来店日</th><th>店舗</th><th>点数</th><th>コメント</th></tr></thead><tbody>`;
+      const LIMIT=80;
+      const shown=cmts.slice(0,LIMIT);
+      // 期間内で1件でも回答のある設問列だけを表示（空の設問列は出さない）
+      const cols=(D.diniiCols||[]).filter(q=>shown.some(r2=>r2.ans&&r2.ans[q.name]));
+      h+=`<div class="panel"><div class="panel-head"><div><h3>ダイニーアンケート 回答一覧（${esc(label)}）</h3>
+        <div class="sub">回答のあった ${cnt(cmts.length)}件${cmts.length>LIMIT?'（新しい順に'+LIMIT+'件表示）':''} ／ 設問${cols.length}項目を横に展開（右にスクロール）</div></div></div>
+      <div class="scroll-x"><table class="tbl dinii-ans"><thead><tr>
+        <th>来店日</th><th>店舗</th><th>再来店</th>${cols.map(q=>`<th>${esc(q.name)}</th>`).join('')}
+      </tr></thead><tbody>`;
       const expCm=[];
-      cmts.slice(0,LIMIT).forEach(r2=>{
+      shown.forEach(r2=>{
         const dt2=r2.t>0?new Date(r2.t):null;
         const scoreCls=r2.score>=80?'pos':r2.score<50?'neg':'';
         h+=`<tr><td style="white-space:nowrap">${dt2?mdwH(dt2):'<span class="mut">—</span>'}</td><td style="white-space:nowrap">${esc(r2.store)}</td>
           <td class="${scoreCls}" style="font-weight:700">${r2.score}</td>
-          <td style="max-width:480px;white-space:normal;line-height:1.6">${esc(r2.cm)}</td></tr>`;
-        expCm.push([dt2?mdw(dt2):'',r2.store,r2.score,r2.cm]);
+          ${cols.map(q=>{ const v=r2.ans[q.name]||''; return `<td class="ans-cell">${v?esc(v):'<span class="mut">—</span>'}</td>`; }).join('')}</tr>`;
+        expCm.push([dt2?mdw(dt2):'',r2.store,r2.score].concat(cols.map(q=>r2.ans[q.name]||'')));
       });
       h+=`</tbody></table></div></div>`;
-      EXPORT.push({ title:'ダイニーコメント（'+label+'）', headers:['来店日','店舗','点数','コメント'], rows:expCm });
+      EXPORT.push({ title:'ダイニー回答一覧（'+label+'）', headers:['来店日','店舗','再来店点数'].concat(cols.map(q=>q.name)), rows:expCm });
     }
   }
   return h;
