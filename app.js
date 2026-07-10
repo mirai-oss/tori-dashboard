@@ -955,6 +955,24 @@ function storeSegHtml(){
   sc.forEach((n)=>{ h+=`<button class="${S.store===n?'on':''}" onclick="App.store(this.dataset.n)" data-n="${esc(n)}">${esc(n)}</button>`; });
   return h+'</div>';
 }
+// 年/月プルダウン＋「今月」ボタン（各画面の月選択を統一）。key=状態キー(depMonth等)、y=年,m=月(0始まり)
+function ymSelect(key, y, m){
+  const ref=D.refDate||new Date();
+  const ys=[].concat(
+    D.daily.map(x=>new Date(x.t).getFullYear()),
+    (D.ad||[]).map(x=>new Date(x.t).getFullYear())
+  ).filter(v=>v>2000);
+  ys.push(ref.getFullYear(), y);
+  const minY=Math.min(...ys), maxY=Math.max(...ys);
+  const years=[]; for(let v=minY;v<=maxY;v++) years.push(v);   // 連続範囲で選びやすく
+  const yOpts=years.map(v=>`<option value="${v}" ${v===y?'selected':''}>${v}年</option>`).join('');
+  const mOpts=Array.from({length:12},(_,i)=>`<option value="${i+1}" ${i===m?'selected':''}>${i+1}月</option>`).join('');
+  return `<span class="ym-pick">
+    <select onchange="App.setYm('${key}','y',this.value)">${yOpts}</select>
+    <select onchange="App.setYm('${key}','m',this.value)">${mOpts}</select>
+    <button class="icon-btn" onclick="App.ymToday('${key}')">今月</button>
+  </span>`;
+}
 function periodCtrlHtml(){
   const r=periodRange();
   const P=S.period;
@@ -1372,9 +1390,7 @@ function viewDowCompare(){
   <div class="ctrl-bar no-print">
     <div class="seg">${[['trend','推移'],['dow','曜日別比較']].map(([k,l])=>`<button class="${(S.aView||'trend')===k?'on':''}" onclick="App.set('aView','${k}')">${l}</button>`).join('')}</div>
     <div class="seg">${[['sales','売上'],['guests','客数'],['spend','客単価']].map(([k,l])=>`<button class="${M===k?'on':''}" onclick="App.set('aMetric','${k}')">${l}</button>`).join('')}</div>
-    <div class="mini-nav"><button onclick="App.dowNav(-1)">‹</button>
-      <input type="month" value="${S.aDowMonth||defMonth}" onchange="App.set('aDowMonth',this.value)" style="border:none;padding:2px 4px;font-weight:700">
-      <button onclick="App.dowNav(1)">›</button><button onclick="App.dowNav(0)" style="font-size:11px;color:#8c8375">今月</button></div>
+    ${ymSelect('aDowMonth', y, m)}
     <span class="period-label">${mLabel} vs 前年同月（${y-1}年${m+1}月）</span>
   </div>`+storeSegHtml();
 
@@ -1473,12 +1489,7 @@ function viewDeposit(){
 
   let h=`
   <div class="ctrl-bar no-print">
-    <div class="mini-nav">
-      <button onclick="App.depNav(-1)">‹</button>
-      <input type="month" value="${y+'-'+String(m+1).padStart(2,'0')}" onchange="App.set('depMonth',this.value)" style="border:none;padding:2px 4px;font-weight:700">
-      <button onclick="App.depNav(1)">›</button>
-      <button onclick="App.depNav(0)" style="font-size:11px;color:#8c8375">今月</button>
-    </div>
+    ${ymSelect('depMonth', y, m)}
     <span class="period-label">現金売上（入金予定）と ATM入金の照合 ／ ${esc(scopeLabel)}</span>
   </div>`+storeSegHtml();
 
@@ -1679,8 +1690,7 @@ function viewAd(){
   const profit=cur.medNet-cur.ad;
   const mom=(c,p,invert)=>{ if(!(p>0)) return {t:'前月 —',cls:'mut'}; const d=(c-p)/p*100; const up=d>=0; return { t:'前月比 '+(up?'+':'▲')+Math.abs(d).toFixed(1)+'%', cls:(invert?!up:up)?'up':'dn' }; };
   let h=storeSegHtml();
-  h+=`<div class="ctrl-bar no-print"><div class="mini-nav">
-    <button onclick="App.adNav(-1)">‹</button><span class="lbl">${mLabel}</span><button onclick="App.adNav(1)">›</button></div>
+  h+=`<div class="ctrl-bar no-print">${ymSelect('adMonth', y, m)}
     <span class="period-label">広告費用対効果（${mLabel}${selN?' ／ '+esc(selN):''}）</span></div>`;
   // データの出どころを見える化：この画面の数字がどこから来ているかを表示
   let a0=0,a1=0; for(const r of D.ad){ if(!a0||r.t<a0)a0=r.t; if(r.t>a1)a1=r.t; }
@@ -1977,9 +1987,7 @@ function viewPL(){
     pS=dayMs(new Date(y,m-1,1)); pE=dayMs(new Date(y,m,0));
     yS=dayMs(new Date(y-1,m,1)); yE=dayMs(new Date(y-1,m+1,0));
     mLabel=y+'年 '+(m+1)+'月';
-    ctrlHtml=`<div class="mini-nav"><button onclick="App.plNav(-1)">‹</button>
-      <input type="month" value="${y+'-'+String(m+1).padStart(2,'0')}" onchange="App.set('plMonth',this.value)" style="border:none;padding:2px 4px;font-weight:700">
-      <button onclick="App.plNav(1)">›</button><button onclick="App.plNav(0)" style="font-size:11px;color:#8c8375">今月</button></div>`;
+    ctrlHtml=ymSelect('plMonth', y, m);
   }
   const isAll=!selN&&sc.length===allStores().length;
   const scopeLabel=selN||(isAll?'全店合算':'担当店舗合算');
@@ -2211,7 +2219,7 @@ function viewReview(){
     const isCur=(py===ref.getFullYear()&&pmn-1===ref.getMonth());
     e=isCur?new Date(ref.getFullYear(),ref.getMonth(),ref.getDate()):new Date(py,pmn,0);
     label=py+'年 '+pmn+'月';
-    ctrlHtml=`<div class="mini-nav"><button onclick="App.revNav(-1)">‹</button><span class="lbl">${label}</span><button onclick="App.revNav(1)">›</button><button onclick="App.revNav(0)" style="font-size:11px;color:#8c8375">今月</button></div>`;
+    ctrlHtml=ymSelect('revMonth', py, pmn-1);
   }
   const a=dayMs(s), b=dayMs(e);
 
@@ -2789,6 +2797,16 @@ window.App = {
     const m0=anaDowMonth(); const n=new Date(m0.getFullYear(),m0.getMonth()+d,1);
     S.aDowMonth=n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0'); render();
   },
+  setYm(key,which,val){  // 年/月プルダウンの変更を状態キーに反映
+    const ref=D.refDate||new Date();
+    const cur=S[key]?String(S[key]).split('-'):null;
+    let y=cur?+cur[0]:ref.getFullYear(), m=cur?+cur[1]:ref.getMonth()+1;
+    if(which==='y') y=+val; else m=+val;
+    S[key]=y+'-'+String(m).padStart(2,'0');
+    if(key==='revMonth') S.revWeekIdx=null;
+    render();
+  },
+  ymToday(key){ S[key]=''; if(key==='revMonth') S.revWeekIdx=null; render(); },
   thisMonth(){  // ダッシュボードの期間を「今月（今週/今日）」に一発で戻す
     const ref=D.refDate||new Date();
     S.pMonth=ref.getFullYear()+'-'+String(ref.getMonth()+1).padStart(2,'0');
