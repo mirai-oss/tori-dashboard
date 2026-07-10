@@ -318,22 +318,31 @@ function ingestTanka(rows){
   if(!rows||!rows.length) return false;
   const H=rows[0].map(h=>String(h).trim());
   let iS=colOf(H,'店舗'), iM=colOf(H,'媒体'), iV=colAny(H,['設定単価','客単価','単価']);
+  let iAvg=colAny(H,['平均1組人数','平均１組人数','1組人数','１組人数','組人数']), iCv=colAny(H,['電話CV','電話ＣＶ','電話成約']);
   let start=1;
-  if(iV<0){ iS=0;iM=1;iV=2;start=0; }   // 見出しなし＝A:店舗 B:媒体 C:単価とみなす
-  const map={}; let n=0;
+  if(iV<0){ iS=0;iM=1;iV=2;start=0; iAvg=-1;iCv=-1; }   // 見出しなし＝A:店舗 B:媒体 C:単価とみなす
+  const map={}, avg={}, cv={}; let n=0;
   for(let i=start;i<rows.length;i++){
-    const c=rows[i]; const v=num(c[iV]); if(!(v>0))continue;
+    const c=rows[i]; const v=num(c[iV]);
     const st=String(iS>=0?c[iS]||'':'').trim(), md=canonMedia(String(iM>=0?c[iM]||'':'').trim());
-    map[st+'|'+md]=v; n++;
+    const key=st+'|'+md;
+    if(iAvg>=0){ const a=num(c[iAvg]); if(a>0) avg[key]=a; }
+    if(iCv>=0){ let z=num(c[iCv]); if(z>0){ if(z>=1)z=z/100; cv[key]=z; } }  // 30% でも 0.3 でもOK（1以上＝%表記とみなす）
+    if(!(v>0))continue;
+    map[key]=v; n++;
   }
   if(!n){ D.diag['単価設定']='0件'; return false; }
-  D.tanka=map; D.diag['単価設定']='OK '+n+'件'; return true;
+  D.tanka=map; D.tankaAvg=avg; D.tankaCv=cv; D.diag['単価設定']='OK '+n+'件'; return true;
 }
 // 設定単価を引く：店舗×媒体 → 店舗のみ → 全店×媒体 → 全店共通 の順
 function tankaOf(store,cm){
   const t=D.tanka||{};
   return t[store+'|'+cm]||t[store+'|']||t['|'+cm]||t['|']||0;
 }
+// 平均1組人数・電話CV も同じ優先順位で引く
+function tkOf(m,store,cm){ m=m||{}; return m[store+'|'+cm]||m[store+'|']||m['|'+cm]||m['|']||0; }
+function tankaAvgOf(store,cm){ return tkOf(D.tankaAvg,store,cm); }
+function tankaCvOf(store,cm){ return tkOf(D.tankaCv,store,cm); }
 // PL経費シート（DB_PL: 年月×店舗×費目×金額の縦持ち）を取り込む
 const isPLKey=(k)=>/^pl$|^ＰＬ$|損益|pl経費|経費db/i.test(String(k).trim());
 // ダイニー来店アンケート（また来たいと思いますか？の点数）を取り込む
@@ -1624,7 +1633,7 @@ function roasBadge(cost, net){
 }
 // 広告効果（アクセス・ネット予約）を店舗解決つきで集計。単価設定から予想売上も算出
 function adFxAgg(scopeSet,a,b){
-  const mk=()=>({access:0,grp:0,ppl:0,tel:0,exp:0});
+  const mk=()=>({access:0,grp:0,ppl:0,tel:0,exp:0,telGrp:0,telPpl:0});
   const byMedia={}, byStore={}, rc={}, tot=mk(), noTanka=new Set(); let rows=0;
   for(const r of D.adfx){
     if(r.t<a||r.t>b) continue;
@@ -1636,10 +1645,12 @@ function adFxAgg(scopeSet,a,b){
       own=res.own;
     }
     const tk=tankaOf(own,r.media?cm:'');
-    const exp=r.ppl*tk;
-    if(r.ppl>0&&!(tk>0)) noTanka.add((own||'全店')+'×'+cm);
+    const cv2=tankaCvOf(own,r.media?cm:''), avg2=tankaAvgOf(own,r.media?cm:'');
+    const telGrp=r.tel*cv2, telPpl=telGrp*avg2;             // 電話数×電話CV＝組数、×平均1組人数＝人数
+    const exp=(r.ppl+telPpl)*tk;                            // 予想売上＝(ネット予約人数＋電話由来人数)×設定単価
+    if((r.ppl>0||telPpl>0)&&!(tk>0)) noTanka.add((own||'全店')+'×'+cm);
     rows++;
-    const add=(o)=>{ o.access+=r.access;o.grp+=r.grp;o.ppl+=r.ppl;o.tel+=r.tel;o.exp+=exp; };
+    const add=(o)=>{ o.access+=r.access;o.grp+=r.grp;o.ppl+=r.ppl;o.tel+=r.tel;o.exp+=exp;o.telGrp+=telGrp;o.telPpl+=telPpl; };
     add(tot);
     add(byMedia[cm]=byMedia[cm]||mk());
     if(own) add(byStore[own]=byStore[own]||mk());
@@ -1780,7 +1791,7 @@ function viewAd(){
     const mset=new Set(Object.keys(fx.byMedia)); Object.keys(cur.byMedia).forEach(k=>mset.add(k));
     const mks=Array.from(mset).sort((x2,z2)=>((fx.byMedia[z2]||{}).exp||0)-((fx.byMedia[x2]||{}).exp||0)||(((cur.byMedia[z2]||{}).cost||0)-((cur.byMedia[x2]||{}).cost||0)));
     h+=`<div class="panel"><div class="panel-head"><div><h3>ネット予約ベースの費用対効果（${mLabel}${selN?' ／ '+esc(selN):''}）</h3>
-      <div class="sub">成果＝その月の広告へのネット予約。CVR＝予約組数÷アクセス ／ CPA＝広告費÷予約 ／ 予想売上＝予約人数×設定単価（DB_単価設定）／ レジ実績は参考値</div></div></div>
+      <div class="sub">成果＝その月の広告へのネット予約。CVR＝予約組数÷アクセス ／ CPA＝広告費÷予約 ／ 予想売上＝ネット予約人数×設定単価 ＋ 電話数×電話CV×平均1組人数×設定単価（⚙単価設定）／ レジ実績は参考値</div></div></div>
     <div class="scroll-x"><table class="tbl"><thead><tr><th>媒体</th><th>広告費</th><th>アクセス</th><th>予約組数</th><th>予約人数</th><th>電話</th><th>CVR</th><th>CPA(組)</th><th>CPA(人)</th><th>予想売上</th><th>想定ROAS</th><th>参考:レジ実績</th></tr></thead><tbody>`;
     const expF=[];
     mks.forEach(k=>{
@@ -1793,7 +1804,7 @@ function viewAd(){
     h+=`<tr class="total"><td>合計</td><td>${yen(cur.ad)}</td><td>${fmt0(T.access)}</td><td>${fmt0(T.grp)}</td><td>${fmt0(T.ppl)}</td><td>${fmt0(T.tel)}</td><td>${pct(T.grp,T.access)}</td><td>${cpa(cur.ad,T.grp)}</td><td>${cpa(cur.ad,T.ppl)}</td><td>${T.exp>0?yen(T.exp):'—'}</td><td>${roasBadge(cur.ad,T.exp)}</td><td class="mut">${cur.medNet>0?yen(cur.medNet):'—'}</td></tr></tbody></table></div>`;
     if(fx.noTanka.size){
       h+=`<div class="note-box" style="margin-top:12px"><b style="color:#b5502f">⚠ 設定単価が未登録のため予想売上に入っていない組合せ：</b>${Array.from(fx.noTanka).slice(0,8).map(esc).join('、')}${fx.noTanka.size>8?' ほか':''}<br>
-      <code>DB_単価設定</code> シート（店舗名／媒体／設定単価）に行を追加してください（店舗名空欄＝全店共通）。</div>`;
+      <code>⚙単価設定</code> タブ（店舗名／媒体／設定単価／平均1組人数／電話CV）に行を追加してください（店舗名空欄＝全店共通）。</div>`;
     }
     h+=`</div>`;
     EXPORT.push({ title:'ネット予約ベース費用対効果（'+mLabel+'）', headers:['媒体','広告費','アクセス','予約組数','予約人数','電話','CVR','CPA組','CPA人','予想売上','想定ROAS','参考レジ実績'], rows:expF });
@@ -1802,7 +1813,7 @@ function viewAd(){
       <div class="sub">アクセス数・ネット予約を入れると CVR／CPA（一人当たり獲得費用）／予想売上／想定ROAS を自動計算します</div></div></div>
     <div class="note-box">広告費用対効果_管理シートに入力すると、この場所に自動表示されます（転記・IMPORTRANGE不要）：<br>
       ① <code>💾売上DB</code> ＝ 年月／店舗／媒体／アクセス数／予約件数／来店人数／電話数<br>
-      ② <code>⚙単価設定</code> ＝ 店舗名／媒体／設定単価（予想売上＝ネット予約人数×設定単価。タブはGAS更新で自動作成）<br>
+      ② <code>⚙単価設定</code> ＝ 店舗名／媒体／設定単価／平均1組人数／電話CV（予想売上＝ネット予約人数×設定単価 ＋ 電話数×電話CV×平均1組人数×設定単価。タブはGAS更新で自動作成）<br>
       ※GAS（Code.gs）を最新版に更新してください。ダッシュボード側の <code>DB_広告効果</code>／<code>DB_単価設定</code> は予備の入力先として残ります。</div></div>`;
   }
   // 予約分析（曜日別×当日予約の申込時刻）— 管理シート「💾予約DB」（予約一覧CSV貼り付け）
