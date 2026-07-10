@@ -117,7 +117,20 @@ nav.tabs button:hover{color:var(--ink)}
 .tbl tr.click:hover td{background:#faf7f0}
 .tbl .pos{color:#4c7d5c}.tbl .neg{color:var(--red)}.tbl .mut{color:var(--mut2)}
 .tbl .warn{color:var(--red);font-weight:700}
-.scroll-x{overflow-x:auto;max-width:100%;-webkit-overflow-scrolling:touch}
+.scroll-x{overflow:auto;max-width:100%;max-height:72vh;-webkit-overflow-scrolling:touch}
+
+/* ---------- テーブルのヘッダー行・先頭列を固定（縦横スクロール時） ---------- */
+.tbl thead th{position:sticky;top:0;z-index:2;background:#fff}
+.tbl thead tr.total th{background:#f5f1e8}
+.tbl td:first-child,.tbl th:first-child{position:sticky;left:0;z-index:1;background:#fff;box-shadow:1px 0 0 var(--line2)}
+.tbl thead th:first-child{z-index:3}
+.tbl tr.total td:first-child{background:#f5f1e8}
+.tbl tr.sel td:first-child{background:#faf5ee}
+/* 日付＋店舗の2列を固定（ダイニー回答一覧など） */
+.tbl.freeze2 td:first-child,.tbl.freeze2 th:first-child{min-width:70px;max-width:70px;box-shadow:none}
+.tbl.freeze2 td:nth-child(2),.tbl.freeze2 th:nth-child(2){position:sticky;left:70px;z-index:1;background:#fff;box-shadow:1px 0 0 var(--line2)}
+.tbl.freeze2 thead th:nth-child(2){z-index:3}
+.tbl.freeze2 tr.total td:nth-child(2){background:#f5f1e8}
 .badge{display:inline-block;font-size:10.5px;padding:2px 9px;border-radius:999px;font-weight:700}
 .badge.ok{background:#eaf2ec;color:#4c7d5c}
 .badge.ng{background:#faf0ec;color:var(--red)}
@@ -207,7 +220,7 @@ nav.tabs button:hover{color:var(--ink)}
 <body>
 <div id="root"></div>
 <div id="toast" class="toast"></div>
-<script src="sample-data.js?v=35"></script>
-<script src="app.js?v=35"></script>
+<script src="sample-data.js?v=36"></script>
+<script src="app.js?v=36"></script>
 </body>
 </html>

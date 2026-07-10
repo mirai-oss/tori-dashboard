@@ -360,8 +360,8 @@ function ingestDinii(rows){
   let iQ=H.findIndex(h=>/また来|またき/.test(h));
   if(iQ<0&&H.length>6) iQ=6;   // 見出しで見つからなければG列を採用
   if(iS<0||iQ<0){ D.diag['dinii']='列が見つかりません（必要: 店舗名・また来たい点数）／見出し行: '+H.filter(Boolean).join('|'); return false; }
-  // アンケートの設問列（自由記述・カテゴリ）をすべて拾う。店舗/日時/来店回数/再来店点数などのメタ列だけ除外。
-  const metaRe=/^(店舗|来店回数|回数|回答日|来店日|来店日時|営業日|日付|タイムスタンプ|当店にまた来|また来|またき)/;
+  // アンケートの設問列（自由記述・カテゴリ）をすべて拾う。店舗/日時/来店回数/再来店点数/LINE IDなどのメタ列は除外。
+  const metaRe=/^(店舗|来店回数|回数|回答日|来店日|来店日時|営業日|日付|タイムスタンプ|当店にまた来|また来|またき)|LINE\s?ID|LINEID|ラインID/i;
   const qCols=[];
   for(let c=0;c<H.length;c++){
     if(c===iS||c===iD||c===iQ) continue;
@@ -965,7 +965,8 @@ function storeSegHtml(){
   return h+'</div>';
 }
 // 年/月プルダウン＋「今月」ボタン（各画面の月選択を統一）。key=状態キー(depMonth等)、y=年,m=月(0始まり)
-function ymSelect(key, y, m){
+// todayCall: 今月ボタンのonclick（省略時は App.ymToday(key)）。todayLabel: ボタン表記
+function ymSelect(key, y, m, todayCall, todayLabel){
   const ref=D.refDate||new Date();
   const ys=[].concat(
     D.daily.map(x=>new Date(x.t).getFullYear()),
@@ -979,7 +980,7 @@ function ymSelect(key, y, m){
   return `<span class="ym-pick">
     <select onchange="App.setYm('${key}','y',this.value)">${yOpts}</select>
     <select onchange="App.setYm('${key}','m',this.value)">${mOpts}</select>
-    <button class="icon-btn" onclick="App.ymToday('${key}')">今月</button>
+    <button class="icon-btn" onclick="${todayCall||("App.ymToday('"+key+"')")}">${todayLabel||'今月'}</button>
   </span>`;
 }
 function periodCtrlHtml(){
@@ -988,18 +989,20 @@ function periodCtrlHtml(){
   const ref=D.refDate||new Date();
   const defMonth=ref.getFullYear()+'-'+String(ref.getMonth()+1).padStart(2,'0');
   const defDay=defMonth+'-'+String(ref.getDate()).padStart(2,'0');
+  const pm=(S.pMonth||defMonth).split('-'); const py=+pm[0], pmo=+pm[1]-1;
   let picker='';
   if(P==='day') picker=`<input type="date" value="${S.pDay||defDay}" onchange="App.set('pDay',this.value)"><button class="icon-btn" onclick="App.thisMonth()">今日</button>`;
   else if(P==='week'){
     const wk=r.weekIdx;
-    picker=`<input type="month" value="${S.pMonth||defMonth}" onchange="App.set('pMonth',this.value)"><button class="icon-btn" onclick="App.thisMonth()">今月</button>
+    picker=`${ymSelect('pMonth', py, pmo, 'App.thisMonth()')}
       <span class="seg">${[0,1,2,3,4].map(i=>`<button class="${wk===i?'on':''}" onclick="App.setWeek(${i})">第${i+1}週</button>`).join('')}</span>`;
   }
-  else if(P==='month') picker=`<input type="month" value="${S.pMonth||defMonth}" onchange="App.set('pMonth',this.value)"><button class="icon-btn" onclick="App.thisMonth()">今月</button>`;
+  else if(P==='month') picker=ymSelect('pMonth', py, pmo, 'App.thisMonth()');
   else if(P==='year'){
-    const years=[...new Set(D.daily.map(x=>new Date(x.t).getFullYear()))].sort();
-    if(!years.length)years.push(ref.getFullYear());
-    picker=`<select onchange="App.set('pYear',this.value)">${years.map(y=>`<option ${String(S.pYear||ref.getFullYear())===String(y)?'selected':''}>${y}</option>`).join('')}</select>`;
+    const ys=D.daily.map(x=>new Date(x.t).getFullYear()).filter(v=>v>2000); ys.push(ref.getFullYear());
+    const minY=Math.min(...ys), maxY=Math.max(...ys); const years=[]; for(let v=minY;v<=maxY;v++) years.push(v);
+    picker=`<select class="ym-pick" onchange="App.set('pYear',this.value)">${years.map(y=>`<option value="${y}" ${String(S.pYear||ref.getFullYear())===String(y)?'selected':''}>${y}年</option>`).join('')}</select>
+      <button class="icon-btn" onclick="App.thisMonth()">今年</button>`;
   }
   else picker=`<input type="date" value="${S.cStart}" onchange="App.set('cStart',this.value)"> 〜 <input type="date" value="${S.cEnd}" onchange="App.set('cEnd',this.value)">`;
   return `
@@ -2363,7 +2366,7 @@ function viewReview(){
       const cols=(D.diniiCols||[]).filter(q=>shown.some(r2=>r2.ans&&r2.ans[q.name]));
       h+=`<div class="panel"><div class="panel-head"><div><h3>ダイニーアンケート 回答一覧（${esc(label)}）</h3>
         <div class="sub">回答のあった ${cnt(cmts.length)}件${cmts.length>LIMIT?'（新しい順に'+LIMIT+'件表示）':''} ／ 設問${cols.length}項目を横に展開（右にスクロール）</div></div></div>
-      <div class="scroll-x"><table class="tbl dinii-ans"><thead><tr>
+      <div class="scroll-x"><table class="tbl dinii-ans freeze2"><thead><tr>
         <th>来店日</th><th>店舗</th><th>再来店</th>${cols.map(q=>`<th>${esc(q.name)}</th>`).join('')}
       </tr></thead><tbody>`;
       const expCm=[];
