@@ -43,7 +43,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'rsv-v7', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'rsv-v8', time: new Date().toISOString() });
     setupIfNeeded();
     if (action === 'login')  return out(login(p));
     if (action === 'logout') return out(logout(p));
@@ -368,13 +368,29 @@ function mgmtEnsure(mss) {
       tr.setFrozenRows(1);
       tr.setColumnWidths(1, 9, 110);
     }
-    // 💾売上DB に「電話数」列が無ければ末尾に追加
+    // 💾売上DB のヘッダー行（「アクセス」を含む行）に「電話数」列が無ければ末尾に追加
     var up = mgmtFindTab(mss, /売上DB/);
     if (up && up.getLastRow() >= 1 && up.getLastColumn() >= 1) {
-      var hdr = up.getRange(1, 1, 1, up.getLastColumn()).getValues()[0];
-      var has = false;
-      for (var i = 0; i < hdr.length; i++) if (String(hdr[i]).indexOf('電話') >= 0) { has = true; break; }
-      if (!has) up.getRange(1, up.getLastColumn() + 1).setValue('電話数').setFontWeight('bold').setBackground('#efe9dd');
+      var scanR = Math.min(up.getLastRow(), 12), scanC = up.getLastColumn();
+      var grid = up.getRange(1, 1, scanR, scanC).getValues();
+      var hr = -1;
+      for (var r = 0; r < grid.length; r++) {
+        if (grid[r].join(',').indexOf('アクセス') >= 0) { hr = r; break; }
+      }
+      if (hr >= 0) {
+        var has = false, lastFilled = 0;
+        for (var i = 0; i < grid[hr].length; i++) {
+          if (String(grid[hr][i]).indexOf('電話') >= 0) has = true;
+          if (String(grid[hr][i]) !== '') lastFilled = i + 1;
+        }
+        if (!has) up.getRange(hr + 1, lastFilled + 1).setValue('電話数').setFontWeight('bold').setBackground('#efe9dd');
+        // 旧仕様で1行目に付いた迷子の「電話数」を掃除
+        if (hr !== 0) {
+          for (var j = 0; j < grid[0].length; j++) {
+            if (String(grid[0][j]).replace(/\s/g, '') === '電話数') up.getRange(1, j + 1).clearContent().setBackground(null);
+          }
+        }
+      }
     }
   } catch (e) {}
 }
