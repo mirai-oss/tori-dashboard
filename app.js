@@ -350,16 +350,21 @@ function ingestDinii(rows){
   const iS=colAny(H,['店舗名','店舗']), iD=colAny(H,['来店日','来店','日付','営業日','タイムスタンプ','回答日']);  // 来店日時を最優先（回答日時より前）
   let iQ=H.findIndex(h=>/また来|またき/.test(h));
   if(iQ<0&&H.length>6) iQ=6;   // 見出しで見つからなければG列を採用
-  // コメント列（自由記述）：見出しで探す。見つからなければ「点数列より後ろで一番文章が長い列」を推定
-  let iC=colAny(H,['コメント','ご意見','ご感想','感想','自由記述','自由回答','メッセージ','その他']);
+  // コメント列（自由記述）：見出しで探す。見つからなければ全列から「文章らしい列」を推定
+  let iC=colAny(H,['コメント','ご意見','ご感想','感想','ご要望','要望','意見','改善','良かった','一言','ひとこと','お声','声','フリー','備考','内容','メッセージ','自由']);
   if(iC<0){
+    // 店舗/日付/点数/来店回数などのメタ列は除外し、日本語の文章が最も多い列を採用
+    const metaRe=/店舗|来店回数|回数|回答日|来店日|営業日|日付|タイムスタンプ|点数|評価|スコア|score|メール|mail|電話|tel|名前|氏名|ID|番号|性別|年代|人数/i;
     let best=-1,bestLen=0;
-    for(let col=iQ+1;col<H.length;col++){
+    for(let col=0;col<H.length;col++){
+      if(col===iS||col===iD||col===iQ) continue;
+      if(metaRe.test(String(H[col]))) continue;
       let len=0,n2=0;
-      for(let i=hi+1;i<Math.min(rows.length,hi+80);i++){ const v=String(rows[i]&&rows[i][col]!=null?rows[i][col]:'').trim(); if(v&&!/^[0-9.]+$/.test(v)){ len+=v.length; n2++; } }
-      if(n2>0&&len>bestLen){ bestLen=len; best=col; }
+      for(let i=hi+1;i<Math.min(rows.length,hi+120);i++){ const v=String(rows[i]&&rows[i][col]!=null?rows[i][col]:'').trim();
+        if(v&&!/^[0-9.\/:\-\s年月日時分秒]+$/.test(v)){ len+=v.length; n2++; } }  // 数字・日付だけの列は除外
+      if(n2>=2&&len>bestLen){ bestLen=len; best=col; }
     }
-    if(bestLen>=20) iC=best;   // 文章らしき列があった時だけ採用
+    if(bestLen>=12) iC=best;   // 文章らしき列があった時だけ採用
   }
   if(iS<0||iQ<0){ D.diag['dinii']='列が見つかりません（必要: 店舗名・また来たい点数）／見出し行: '+H.filter(Boolean).join('|'); return false; }
   const recs=[];
