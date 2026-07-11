@@ -1156,48 +1156,50 @@ function viewDash(){
   return h;
 }
 
-// 月末着地見込み：その月の実績(MTD)＋残り日を「同曜日の平均ペース」で積み上げて着地を予測
+// 月末着地見込み：残りは「前年同月の実績(週ごとの形)」に「今年の勢い(前年同期比)」を掛けて予測。
+// これにより、今年の第1週が良かった/悪かったを平坦に引き延ばさず、前年の週別の起伏を反映できる。
 function monthLanding(scopeSet, selName, y, m){
   const ld=new Date(y,m+1,0).getDate();
-  // 経過の境界は「実際にデータのある最終日(refDate=昨日)」。日別シートに未来日の空行があっても
-  // それを実績扱いしない（maxDateは最終“行”の日付で、未来の空行を拾ってしまうため使わない）。
+  // 経過の境界は「実際にデータのある最終日(refDate=昨日)」。未来日の空行は実績扱いしない。
   const maxT=D.refDate?dayMs(D.refDate):dayMs(new Date());
   const setArg=selName?null:scopeSet;
-  const wdSum=[0,0,0,0,0,0,0], wdCnt=[0,0,0,0,0,0,0], wdSumG=[0,0,0,0,0,0,0];
-  let weSum=0,weCnt=0;                              // 週末＋祝日の平均プール（残りの祝日用）
-  let mtdSales=0,mtdGuests=0,mtdCost=0,mtdLabor=0, lastDay=0;
-  for(let d=1; d<=ld; d++){
-    const dt=new Date(y,m,d), t=dayMs(dt);
-    if(t>maxT) break;                              // 未確定日は打ち切り
-    lastDay=d;
-    const c=stat(setArg,t,t,selName);
-    const wd=dt.getDay();
+  // 指定年の m月 d日（前年の月末が短い場合は末日にクランプ）の1日分
+  const dv=(yr,d)=>{ const lm=new Date(yr,m+1,0).getDate(), dd=Math.min(d,lm); return stat(setArg,dayMs(new Date(yr,m,dd)),dayMs(new Date(yr,m,dd)),selName); };
+  // 経過日数（この月で実データのある最終日）
+  let cutoffDay=0; for(let d=1; d<=ld; d++){ if(dayMs(new Date(y,m,d))>maxT) break; cutoffDay=d; }
+  // 今年 MTD（＋フォールバック用の同曜日集計）
+  let mtdSales=0,mtdGuests=0,mtdCost=0,mtdLabor=0;
+  const wdSum=[0,0,0,0,0,0,0],wdCnt=[0,0,0,0,0,0,0],wdSumG=[0,0,0,0,0,0,0]; let weSum=0,weCnt=0;
+  for(let d=1; d<=cutoffDay; d++){
+    const dt=new Date(y,m,d), c=dv(y,d), wd=dt.getDay();
+    mtdSales+=c.sales; mtdGuests+=c.guests; mtdCost+=c.cost; mtdLabor+=c.labor;
     wdSum[wd]+=c.sales; wdCnt[wd]++; wdSumG[wd]+=c.guests;
     if(wd===0||wd===6||isJpHoliday(dt)){ weSum+=c.sales; weCnt++; }
-    mtdSales+=c.sales; mtdGuests+=c.guests; mtdCost+=c.cost; mtdLabor+=c.labor;
   }
-  const overallAvg=lastDay>0?mtdSales/lastDay:0, overallAvgG=lastDay>0?mtdGuests/lastDay:0;
-  // 前年同月の同曜日平均（今月にまだ出ていない曜日のフォールバック）
-  const lyWd=[0,0,0,0,0,0,0], lyCnt=[0,0,0,0,0,0,0];
-  for(let d=1; d<=ld; d++){
-    const dt=new Date(y-1,m,d); const c=stat(setArg,dayMs(dt),dayMs(dt),selName);
-    const wd=dt.getDay(); lyWd[wd]+=c.sales; lyCnt[wd]++;
-  }
-  const wdAvg=(wd)=> wdCnt[wd]>0?wdSum[wd]/wdCnt[wd] : (lyCnt[wd]>0?lyWd[wd]/lyCnt[wd] : overallAvg);
-  const wdAvgG=(wd)=> wdCnt[wd]>0?wdSumG[wd]/wdCnt[wd] : overallAvgG;
-  const weAvg=weCnt>0?weSum/weCnt:overallAvg;
-  let remSales=0,remGuests=0,remDays=0;
-  for(let d=lastDay+1; d<=ld; d++){
-    const dt=new Date(y,m,d), wd=dt.getDay();
-    const est=(isJpHoliday(dt)&&wd>=1&&wd<=5)?weAvg:wdAvg(wd);   // 平日にかかる祝日は週末平均で
-    remSales+=est; remGuests+=wdAvgG(wd); remDays++;
+  // 前年 同月：経過分(1..cutoff)と残り分(cutoff+1..末)を、同じ日付範囲で集計
+  let lyMtd=0,lyMtdG=0,lyRem=0,lyRemG=0;
+  for(let d=1; d<=ld; d++){ const c=dv(y-1,d); if(d<=cutoffDay){ lyMtd+=c.sales; lyMtdG+=c.guests; } else { lyRem+=c.sales; lyRemG+=c.guests; } }
+  const remDays=ld-cutoffDay;
+  let remSales=0, remGuests=0, method='done';
+  if(remDays>0){
+    if(lyMtd>0 && lyRem>0){
+      // ★前年実績ベース × 今年の勢い（前年同期比）。残りは前年の週別の形を今年の水準に補正して予測。
+      const R=mtdSales/lyMtd, Rg=lyMtdG>0?mtdGuests/lyMtdG:R;
+      remSales=lyRem*R; remGuests=lyRemG*Rg; method='yoy';
+    } else {
+      // フォールバック：前年データが不足 → 同曜日平均で積み上げ
+      const overall=cutoffDay>0?mtdSales/cutoffDay:0, overallG=cutoffDay>0?mtdGuests/cutoffDay:0;
+      const wdAvg=(wd)=>wdCnt[wd]>0?wdSum[wd]/wdCnt[wd]:overall, wdAvgG=(wd)=>wdCnt[wd]>0?wdSumG[wd]/wdCnt[wd]:overallG;
+      const weAvg=weCnt>0?weSum/weCnt:overall;
+      for(let d=cutoffDay+1; d<=ld; d++){ const dt=new Date(y,m,d), wd=dt.getDay(); remSales+=(isJpHoliday(dt)&&wd>=1&&wd<=5)?weAvg:wdAvg(wd); remGuests+=wdAvgG(wd); }
+      method='wd';
+    }
   }
   const fSales=mtdSales+remSales, fGuests=mtdGuests+remGuests;
   const flRate=mtdSales>0?(mtdCost+mtdLabor)/mtdSales:0;
-  // 比較用の満月実績
-  const lyFull=stat(setArg,dayMs(new Date(y-1,m,1)),dayMs(new Date(y-1,m+1,0)),selName).sales;
+  const lyFull=lyMtd+lyRem;                       // 前年満月
   const pmFull=stat(setArg,dayMs(new Date(y,m-1,1)),dayMs(new Date(y,m,0)),selName).sales;
-  return { ld,lastDay,remDays, mtdSales,mtdGuests, remSales, fSales,fGuests, flRate, lyFull,pmFull };
+  return { ld,lastDay:cutoffDay,remDays, mtdSales,mtdGuests, remSales, fSales,fGuests, flRate, lyFull,pmFull, method, yoyR: lyMtd>0?mtdSales/lyMtd:null };
 }
 function landingPanel(r,scopeSet,selName,sc){
   const y=r.s.getFullYear(), m=r.s.getMonth();
@@ -1208,15 +1210,21 @@ function landingPanel(r,scopeSet,selName,sc){
   const fy=yoyF(L.fSales,L.lyFull), fp=yoyF(L.fSales,L.pmFull);
   const fSpend=L.fGuests>0?L.fSales/L.fGuests:0;
   const prog=L.fSales>0?(L.mtdSales/L.fSales*100):0;
+  const remNote = done ? '確定（月末まで実績）'
+    : (L.method==='yoy' ? '残'+L.remDays+'日を前年実績×今年の勢いで予測'
+                        : '残'+L.remDays+'日を同曜日平均で予測（前年データ不足）');
+  const methodLine = done ? '月末まで実績'
+    : (L.method==='yoy' ? `残りは前年同月の実績（週別の形）に今年の勢い（前年同期比 ${(L.yoyR*100).toFixed(0)}%）を掛けて予測`
+                        : '前年データが不足のため同曜日平均で予測');
   const cards=[
-    ['着地見込み 売上', yen(L.fSales), (done?'確定（月末まで実績）':'残'+L.remDays+'日を同曜日平均で予測'), ''],
+    ['着地見込み 売上', yen(L.fSales), remNote, ''],
     ['現在（実績）', yen(L.mtdSales), '経過 '+L.lastDay+'/'+L.ld+'日 ・ 進捗 '+prog.toFixed(0)+'%', ''],
     ['前年満月比（見込み）', fy.t, '前年 '+yen(L.lyFull), fy.cls],
     ['前月比（見込み）', fp.t, '前月 '+yen(L.pmFull), fp.cls],
   ];
   let h=`<div class="panel" style="border-color:#d8cdb5;background:linear-gradient(180deg,#fffdf8,#fff)">
     <div class="panel-head"><div><h3>📈 月末着地見込み（${y}年${m+1}月${done?'・確定':''}）</h3>
-    <div class="sub">実績(MTD)＋残り日を「同曜日の平均ペース」で積み上げ。祝日は週末平均で計算 ／ 見込み客単価 ${yen(fSpend)} ・ 見込みFL率 ${(L.flRate*100).toFixed(1)}%（MTD実績で横置き）</div></div></div>
+    <div class="sub">${methodLine} ／ 見込み客単価 ${yen(fSpend)} ・ 見込みFL率 ${(L.flRate*100).toFixed(1)}%（MTD実績で横置き）</div></div></div>
   <div class="kpi-grid" style="margin:2px 0 0">`+cards.map(k=>`<div class="kpi"><div class="lb">${esc(k[0])}</div><div class="vl">${k[1]}</div><div class="yy ${k[3]}" style="${k[3]?'':'color:#8c8375'}">${esc(k[2])}</div></div>`).join('')+`</div>`;
   // 店舗別の着地見込み（全店/合算時）
   if(!selName && sc.length>1){
