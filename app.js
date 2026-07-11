@@ -473,19 +473,21 @@ function ingestMediaClass(rows){
   return n>0;
 }
 // 媒体名から 入店用途／営業区分 を判定：DB_媒体分類が最優先、無ければ名前のキーワードで自動判定
+// 入店用途: 外販(Live GATE/Peevo/Ring-style/いちご屋…) / リピーター(リピーター/鍋倉/キュア鍋) / 他店パス(本店パス) / フリー / それ以外は予約
+// 営業区分: 媒体名に「ランチ」→ランチ、それ以外はすべてディナー
 function mediaClassOf(media){
   const s=String(media==null?'':media).trim();
   const hit=D.mediaClass[s];
   const out={ use:hit&&hit.use?hit.use:'', seg:hit&&hit.seg?hit.seg:'' };
   if(!out.use){
-    if(/フリー|ウォークイン|walk/i.test(s)) out.use='フリー';
-    else if(/外販|テイクアウト|デリバリ|出前|催事|EC/i.test(s)) out.use='外販';
-    else out.use='予約';   // 媒体別日次は基本予約チャネルのため既定は「予約」
+    if(/Live\s?GATE|Peevo|Ring-?style|いちご屋|外販|テイクアウト|デリバリ|出前|催事|EC/i.test(s)) out.use='外販';
+    else if(/リピーター|鍋倉|キュア鍋/i.test(s)) out.use='リピーター';
+    else if(/本店パス|他店パス/i.test(s)) out.use='他店パス';
+    else if(/フリー|ウォークイン|walk/i.test(s)) out.use='フリー';
+    else out.use='予約';   // その他はすべて予約
   }
   if(!out.seg){
-    if(/ランチ|昼/i.test(s)) out.seg='ランチ';
-    else if(/ディナー|夜|夕/i.test(s)) out.seg='ディナー';
-    else out.seg='未分類';  // DB_媒体分類で指定すればここに入らない
+    out.seg=/ランチ|昼/i.test(s)?'ランチ':'ディナー';   // ランチ以外はすべてディナー
   }
   return out;
 }
