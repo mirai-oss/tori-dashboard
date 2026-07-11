@@ -1159,7 +1159,9 @@ function viewDash(){
 // 月末着地見込み：その月の実績(MTD)＋残り日を「同曜日の平均ペース」で積み上げて着地を予測
 function monthLanding(scopeSet, selName, y, m){
   const ld=new Date(y,m+1,0).getDate();
-  const maxT=D.maxDate?dayMs(D.maxDate):dayMs(new Date());
+  // 経過の境界は「実際にデータのある最終日(refDate=昨日)」。日別シートに未来日の空行があっても
+  // それを実績扱いしない（maxDateは最終“行”の日付で、未来の空行を拾ってしまうため使わない）。
+  const maxT=D.refDate?dayMs(D.refDate):dayMs(new Date());
   const setArg=selName?null:scopeSet;
   const wdSum=[0,0,0,0,0,0,0], wdCnt=[0,0,0,0,0,0,0], wdSumG=[0,0,0,0,0,0,0];
   let weSum=0,weCnt=0;                              // 週末＋祝日の平均プール（残りの祝日用）
