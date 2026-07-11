@@ -1148,10 +1148,92 @@ function viewDash(){
   EXPORT.push({ title:'KPI（'+r.label+(selName?'・'+selName:'・'+(sc.length===allStores().length?'全店':'担当店舗'))+'）',
     headers:['指標','値','前年比較'], rows:kpis.map(k=>[k.lb,k.vl+(k.sub?'（'+k.sub+'）':''),k.yy.t]) });
 
+  if(S.period==='month') h+=landingPanel(r,scopeSet,selName,sc);
   h+=dashChartPanel(r,scopeSet,selName);
   h+=`<div class="grid2">${flPanel(cur,prev)}${mediaPanel(a,b,pa2,pb2,scopeSet,selName)}</div>`;
   // 店舗を選んでいるときは「日別明細」、全店/合算のときは「店舗比較」
   h+= selName ? dailyStorePanel(r,selName) : comparePanel(r,p,sc,selName);
+  return h;
+}
+
+// 月末着地見込み：その月の実績(MTD)＋残り日を「同曜日の平均ペース」で積み上げて着地を予測
+function monthLanding(scopeSet, selName, y, m){
+  const ld=new Date(y,m+1,0).getDate();
+  const maxT=D.maxDate?dayMs(D.maxDate):dayMs(new Date());
+  const setArg=selName?null:scopeSet;
+  const wdSum=[0,0,0,0,0,0,0], wdCnt=[0,0,0,0,0,0,0], wdSumG=[0,0,0,0,0,0,0];
+  let weSum=0,weCnt=0;                              // 週末＋祝日の平均プール（残りの祝日用）
+  let mtdSales=0,mtdGuests=0,mtdCost=0,mtdLabor=0, lastDay=0;
+  for(let d=1; d<=ld; d++){
+    const dt=new Date(y,m,d), t=dayMs(dt);
+    if(t>maxT) break;                              // 未確定日は打ち切り
+    lastDay=d;
+    const c=stat(setArg,t,t,selName);
+    const wd=dt.getDay();
+    wdSum[wd]+=c.sales; wdCnt[wd]++; wdSumG[wd]+=c.guests;
+    if(wd===0||wd===6||isJpHoliday(dt)){ weSum+=c.sales; weCnt++; }
+    mtdSales+=c.sales; mtdGuests+=c.guests; mtdCost+=c.cost; mtdLabor+=c.labor;
+  }
+  const overallAvg=lastDay>0?mtdSales/lastDay:0, overallAvgG=lastDay>0?mtdGuests/lastDay:0;
+  // 前年同月の同曜日平均（今月にまだ出ていない曜日のフォールバック）
+  const lyWd=[0,0,0,0,0,0,0], lyCnt=[0,0,0,0,0,0,0];
+  for(let d=1; d<=ld; d++){
+    const dt=new Date(y-1,m,d); const c=stat(setArg,dayMs(dt),dayMs(dt),selName);
+    const wd=dt.getDay(); lyWd[wd]+=c.sales; lyCnt[wd]++;
+  }
+  const wdAvg=(wd)=> wdCnt[wd]>0?wdSum[wd]/wdCnt[wd] : (lyCnt[wd]>0?lyWd[wd]/lyCnt[wd] : overallAvg);
+  const wdAvgG=(wd)=> wdCnt[wd]>0?wdSumG[wd]/wdCnt[wd] : overallAvgG;
+  const weAvg=weCnt>0?weSum/weCnt:overallAvg;
+  let remSales=0,remGuests=0,remDays=0;
+  for(let d=lastDay+1; d<=ld; d++){
+    const dt=new Date(y,m,d), wd=dt.getDay();
+    const est=(isJpHoliday(dt)&&wd>=1&&wd<=5)?weAvg:wdAvg(wd);   // 平日にかかる祝日は週末平均で
+    remSales+=est; remGuests+=wdAvgG(wd); remDays++;
+  }
+  const fSales=mtdSales+remSales, fGuests=mtdGuests+remGuests;
+  const flRate=mtdSales>0?(mtdCost+mtdLabor)/mtdSales:0;
+  // 比較用の満月実績
+  const lyFull=stat(setArg,dayMs(new Date(y-1,m,1)),dayMs(new Date(y-1,m+1,0)),selName).sales;
+  const pmFull=stat(setArg,dayMs(new Date(y,m-1,1)),dayMs(new Date(y,m,0)),selName).sales;
+  return { ld,lastDay,remDays, mtdSales,mtdGuests, remSales, fSales,fGuests, flRate, lyFull,pmFull };
+}
+function landingPanel(r,scopeSet,selName,sc){
+  const y=r.s.getFullYear(), m=r.s.getMonth();
+  const L=monthLanding(scopeSet,selName,y,m);
+  if(L.mtdSales<=0) return '';                     // 今月まだデータ無し
+  const done=L.remDays<=0;
+  const yoyF=(c,p)=>{ if(!(p>0)) return {t:'—',cls:'mut'}; const v=(c-p)/p*100; return {t:(v>=0?'+':'▲')+Math.abs(v).toFixed(1)+'%',cls:v>=0?'up':'dn'}; };
+  const fy=yoyF(L.fSales,L.lyFull), fp=yoyF(L.fSales,L.pmFull);
+  const fSpend=L.fGuests>0?L.fSales/L.fGuests:0;
+  const prog=L.fSales>0?(L.mtdSales/L.fSales*100):0;
+  const cards=[
+    ['着地見込み 売上', yen(L.fSales), (done?'確定（月末まで実績）':'残'+L.remDays+'日を同曜日平均で予測'), ''],
+    ['現在（実績）', yen(L.mtdSales), '経過 '+L.lastDay+'/'+L.ld+'日 ・ 進捗 '+prog.toFixed(0)+'%', ''],
+    ['前年満月比（見込み）', fy.t, '前年 '+yen(L.lyFull), fy.cls],
+    ['前月比（見込み）', fp.t, '前月 '+yen(L.pmFull), fp.cls],
+  ];
+  let h=`<div class="panel" style="border-color:#d8cdb5;background:linear-gradient(180deg,#fffdf8,#fff)">
+    <div class="panel-head"><div><h3>📈 月末着地見込み（${y}年${m+1}月${done?'・確定':''}）</h3>
+    <div class="sub">実績(MTD)＋残り日を「同曜日の平均ペース」で積み上げ。祝日は週末平均で計算 ／ 見込み客単価 ${yen(fSpend)} ・ 見込みFL率 ${(L.flRate*100).toFixed(1)}%（MTD実績で横置き）</div></div></div>
+  <div class="kpi-grid" style="margin:2px 0 0">`+cards.map(k=>`<div class="kpi"><div class="lb">${esc(k[0])}</div><div class="vl">${k[1]}</div><div class="yy ${k[3]}" style="${k[3]?'':'color:#8c8375'}">${esc(k[2])}</div></div>`).join('')+`</div>`;
+  // 店舗別の着地見込み（全店/合算時）
+  if(!selName && sc.length>1){
+    h+=`<div class="scroll-x" style="margin-top:14px"><table class="tbl"><thead><tr><th>店舗</th><th>現在(MTD)</th><th>残り見込み</th><th>着地見込み</th><th>前年満月</th><th>前年比</th></tr></thead><tbody>`;
+    const exp=[]; let tM=0,tR=0,tF=0,tLy=0;
+    sc.forEach(nm=>{
+      const s2=monthLanding(null,nm,y,m);
+      const yy=yoyF(s2.fSales,s2.lyFull);
+      tM+=s2.mtdSales; tR+=s2.remSales; tF+=s2.fSales; tLy+=s2.lyFull;
+      h+=`<tr class="click" onclick="App.store(this.dataset.n)" data-n="${esc(nm)}"><td>${esc(nm)}</td><td>${yen(s2.mtdSales)}</td><td>${yen(s2.remSales)}</td><td style="font-weight:700">${yen(s2.fSales)}</td><td class="mut">${yen(s2.lyFull)}</td><td class="${yy.cls==='up'?'pos':yy.cls==='dn'?'neg':'mut'}">${yy.t}</td></tr>`;
+      exp.push([nm,Math.round(s2.mtdSales),Math.round(s2.remSales),Math.round(s2.fSales),Math.round(s2.lyFull),yy.t]);
+    });
+    const tyy=yoyF(tF,tLy);
+    h+=`<tr class="total"><td>合計</td><td>${yen(tM)}</td><td>${yen(tR)}</td><td>${yen(tF)}</td><td>${yen(tLy)}</td><td class="${tyy.cls==='up'?'pos':'neg'}">${tyy.t}</td></tr>`;
+    h+=`</tbody></table></div>`;
+    exp.push(['合計',Math.round(tM),Math.round(tR),Math.round(tF),Math.round(tLy),tyy.t]);
+    EXPORT.push({ title:'月末着地見込み（'+y+'年'+(m+1)+'月）', headers:['店舗','現在(MTD)','残り見込み','着地見込み','前年満月','前年比'], rows:exp });
+  }
+  h+=`</div>`;
   return h;
 }
 
