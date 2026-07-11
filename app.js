@@ -999,10 +999,13 @@ function viewLogin(){
 function storeSegHtml(){
   const sc=scopeStores();
   if(sc.length<=1) return '';
-  let h='<div class="store-tabs no-print">';
-  h+=`<button class="${S.store==='all'?'on':''}" onclick="App.store('all')">${sc.length===allStores().length?'全店':'担当店舗 合算'}</button>`;
-  sc.forEach((n)=>{ h+=`<button class="${S.store===n?'on':''}" onclick="App.store(this.dataset.n)" data-n="${esc(n)}">${esc(n)}</button>`; });
-  return h+'</div>';
+  const allLabel=sc.length===allStores().length?'全店':'担当店舗 合算';
+  const opts=[`<option value="all" ${S.store==='all'?'selected':''}>${esc(allLabel)}</option>`]
+    .concat(sc.map(n=>`<option value="${esc(n)}" ${S.store===n?'selected':''}>${esc(n)}</option>`)).join('');
+  return `<div class="store-pick no-print">
+    <span class="sp-lb">🏪 店舗</span>
+    <select onchange="App.store(this.value)">${opts}</select>
+  </div>`;
 }
 // 年/月プルダウン＋「今月」ボタン（各画面の月選択を統一）。key=状態キー(depMonth等)、y=年,m=月(0始まり)
 // todayCall: 今月ボタンのonclick（省略時は App.ymToday(key)）。todayLabel: ボタン表記
