@@ -100,12 +100,12 @@ const S = {
   pDay:'', pMonth:'', pYear:'', pWeekIdx:null, cStart:'', cEnd:'',
   depMonth:'', adMonth:'', plMonth:'', plPeriod:'month', plYear:'', plStart:'', plEnd:'',
   revPeriod:'month', revMonth:'', revWeekIdx:null, revYear:'', revStart:'', revEnd:'',
-  aMetric:'sales', aGran:'day', aBreak:'total', aRange:'30', aYoY:true,
+  aMetric:'sales', aGran:'day', aBreak:'total', aRange:'30', aYoY:true, mediaMode:'media',
   aiQ:'', aiResult:null, dataVersion:'',
   reportMode:null,   // {kind:'daily'|'weekly'|'monthly', date:'YYYY-MM-DD'} Lark日報用の1枚カード表示
   accounts:null, accErr:'', modal:null, loginErr:'',
 };
-const D = { daily:[], media:[], deposit:[], review:[], ad:[], adfx:[], tanka:{}, pl:[], dinii:[], diniiCols:[], extra:{}, storeAlias:{}, storeParent:{}, holidays:null, refDate:null, maxDate:null };
+const D = { daily:[], media:[], deposit:[], review:[], ad:[], adfx:[], tanka:{}, pl:[], dinii:[], diniiCols:[], extra:{}, storeAlias:{}, storeParent:{}, mediaClass:{}, holidays:null, refDate:null, maxDate:null };
 let EXPORT = [];      // 現在タブのCSVエクスポート対象 [{title,headers,rows}]
 let pollTimer = null;
 
@@ -452,6 +452,43 @@ function ingestStoreMap(rows){
   for(let i=0;i<rows.length;i++){ const r=rows[i]||[]; const f=String(r[0]||'').trim(), t=String(r[1]||'').trim(); if(f&&t) map[f]=t; }
   return map;
 }
+// 媒体分類シート（DB_媒体分類）: 媒体名 → 入店用途（予約/フリー/外販…）・営業区分（ランチ/ディナー…）の対応表
+const isMediaClassKey=(k)=>/媒体分類|入店用途|営業区分|mediaclass/i.test(String(k));
+function ingestMediaClass(rows){
+  const map={};
+  if(!Array.isArray(rows)||rows.length<1) return false;
+  const H=(rows[0]||[]).map(x=>String(x==null?'':x).trim());
+  let iM=colAny(H,['媒体']), iU=colAny(H,['入店用途','用途']), iG=colAny(H,['営業区分','区分']);
+  let start=1;
+  if(iM<0){ iM=0;iU=1;iG=2;start=0; }   // 見出し無し＝A:媒体 B:入店用途 C:営業区分
+  let n=0;
+  for(let i=start;i<rows.length;i++){
+    const c=rows[i]; const md=String(c&&c[iM]!=null?c[iM]:'').trim(); if(!md)continue;
+    const use=iU>=0?String(c[iU]==null?'':c[iU]).trim():'';
+    const seg=iG>=0?String(c[iG]==null?'':c[iG]).trim():'';
+    if(!use&&!seg)continue;
+    map[md]={use,seg}; n++;
+  }
+  D.mediaClass=map; D.diag['媒体分類']='OK '+n+'件';
+  return n>0;
+}
+// 媒体名から 入店用途／営業区分 を判定：DB_媒体分類が最優先、無ければ名前のキーワードで自動判定
+function mediaClassOf(media){
+  const s=String(media==null?'':media).trim();
+  const hit=D.mediaClass[s];
+  const out={ use:hit&&hit.use?hit.use:'', seg:hit&&hit.seg?hit.seg:'' };
+  if(!out.use){
+    if(/フリー|ウォークイン|walk/i.test(s)) out.use='フリー';
+    else if(/外販|テイクアウト|デリバリ|出前|催事|EC/i.test(s)) out.use='外販';
+    else out.use='予約';   // 媒体別日次は基本予約チャネルのため既定は「予約」
+  }
+  if(!out.seg){
+    if(/ランチ|昼/i.test(s)) out.seg='ランチ';
+    else if(/ディナー|夜|夕/i.test(s)) out.seg='ディナー';
+    else out.seg='未分類';  // DB_媒体分類で指定すればここに入らない
+  }
+  return out;
+}
 // 祝日シート（DB_祝日）：日付が入ったセルを拾って祝日集合に加える。2028年以降はここに足すだけで反映。
 const isHolidayKey=(k)=>/祝日|祝祭日|holiday/i.test(String(k));
 function ingestHoliday(rows){
@@ -502,6 +539,7 @@ function ingestSheets(sheets, partial){
     else if(isRsvKey(key)) ingestRsv(rows);
     else if(isPLKey(key)) ingestPL(rows);
     else if(isDiniiKey(key)) ingestDinii(rows);
+    else if(isMediaClassKey(key)) ingestMediaClass(rows);
     else if(isHolidayKey(key)) ingestHoliday(rows);
     else if(isStoreParentKey(key)){ D.storeParent=ingestStoreParent(rows); D.diag[key]='OK '+Object.keys(D.storeParent).length+'件の親子'; }
     else if(isStoreMapKey(key)){ D.storeAlias=ingestStoreMap(rows); D.diag[key]='OK '+Object.keys(D.storeAlias).length+'件の対応'; }
@@ -1015,13 +1053,17 @@ function periodCtrlHtml(){
   </div>`;
 }
 
-function mediaTableRows(a,b,pa,pb,scopeSet,selName){
+function mediaTableRows(a,b,pa,pb,scopeSet,selName,mode){
+  // mode: 'media'=媒体名そのまま ／ 'use'=入店用途（予約/フリー/外販…）／ 'seg'=営業区分（ランチ/ディナー…）
+  const keyOf=(r)=>mode==='use'?mediaClassOf(r.media).use:(mode==='seg'?mediaClassOf(r.media).seg:r.media);
   const agg={},prevAgg={};
   for(const r of D.media){
     const inScope=selName?(r.store===selName):scopeSet.has(r.store);
     if(!inScope) continue;
-    if(r.t>=a&&r.t<=b){ const o=agg[r.media]||(agg[r.media]={net:0,g:0}); o.net+=r.net; o.g+=r.guests; }
-    if(r.t>=pa&&r.t<=pb){ prevAgg[r.media]=(prevAgg[r.media]||0)+r.net; }
+    if(r.t<a&&r.t<pa) continue;
+    const k=keyOf(r);
+    if(r.t>=a&&r.t<=b){ const o=agg[k]||(agg[k]={net:0,g:0}); o.net+=r.net; o.g+=r.guests; }
+    if(r.t>=pa&&r.t<=pb){ prevAgg[k]=(prevAgg[k]||0)+r.net; }
   }
   const total=Object.values(agg).reduce((s,o)=>s+o.net,0);
   return { total, rows:Object.keys(agg).map(m=>({media:m,...agg[m],prev:prevAgg[m]||0})).sort((x,y)=>y.net-x.net) };
@@ -1058,8 +1100,8 @@ function viewDash(){
   const yF=ptStr(foodR,pFood,true), yL=ptStr(laborR,pLabor,true), yFL=ptStr(flR,pFood+pLabor,true);
   const kpis=[
     { lb:(S.period==='day'?'日次':S.period==='week'?'週次':S.period==='month'?'月次':S.period==='year'?'累計':'期間')+'売上', vl:yen(Ssl), yy:y1 },
-    { lb:'原価率 (F)', vl:Ssl>0?(foodR*100).toFixed(1)+'%':'—', yy:yF },
-    { lb:'人件費率 (L)', vl:Ssl>0?(laborR*100).toFixed(1)+'%':'—', yy:yL },
+    { lb:'原価率 (F)', vl:Ssl>0?(foodR*100).toFixed(1)+'%':'—', sub:Ssl>0?yen(cur.cost):'', yy:yF },
+    { lb:'人件費率 (L)', vl:Ssl>0?(laborR*100).toFixed(1)+'%':'—', sub:Ssl>0?yen(cur.labor):'', yy:yL },
     { lb:'FL合計', vl:Ssl>0?(flR*100).toFixed(1)+'%':'—', yy:yFL },
     { lb:'客数', vl:cnt(cur.guests)+'人', yy:yG },
     { lb:'客単価', vl:yen(spend), yy:ySp },
@@ -1079,9 +1121,9 @@ function viewDash(){
     kpis.push({ lb:'ダイニー再来店意向', vl: ds.avg!=null?ds.avg.toFixed(2):'—', yy:dyy });
   }
   let h=periodCtrlHtml()+storeSegHtml();
-  h+=`<div class="kpi-grid">`+kpis.map(k=>`<div class="kpi"><div class="lb">${k.lb}</div><div class="vl">${k.vl}</div><div class="yy ${k.yy.cls}">${k.yy.t}</div></div>`).join('')+`</div>`;
+  h+=`<div class="kpi-grid">`+kpis.map(k=>`<div class="kpi"><div class="lb">${k.lb}</div><div class="vl">${k.vl}</div>${k.sub?`<div class="yy" style="color:#5c5348;font-weight:600;margin-bottom:2px">${k.sub}</div>`:''}<div class="yy ${k.yy.cls}">${k.yy.t}</div></div>`).join('')+`</div>`;
   EXPORT.push({ title:'KPI（'+r.label+(selName?'・'+selName:'・'+(sc.length===allStores().length?'全店':'担当店舗'))+'）',
-    headers:['指標','値','前年比較'], rows:kpis.map(k=>[k.lb,k.vl,k.yy.t]) });
+    headers:['指標','値','前年比較'], rows:kpis.map(k=>[k.lb,k.vl+(k.sub?'（'+k.sub+'）':''),k.yy.t]) });
 
   h+=dashChartPanel(r,scopeSet,selName);
   h+=`<div class="grid2">${flPanel(cur,prev)}${mediaPanel(a,b,pa2,pb2,scopeSet,selName)}</div>`;
@@ -1212,16 +1254,32 @@ function flPanel(cur,prev){
 }
 
 function mediaPanel(a,b,pa2,pb2,scopeSet,selName){
-  const { total, rows }=mediaTableRows(a,b,pa2,pb2,scopeSet,selName);
-  if(!rows.length && D.mediaPending) return `<div class="panel"><div class="panel-head"><div><h3>媒体別 売上</h3><div class="sub">読み込み中…</div></div></div><div class="empty">媒体別データを読み込んでいます…</div></div>`;
-  if(!rows.length) return `<div class="panel"><h3>媒体別 売上</h3><div class="empty">媒体別データがありません</div></div>`;
-  let h=`<div class="panel"><div class="panel-head"><div><h3>媒体別 売上</h3><div class="sub">予約媒体・チャネル別の実績</div></div></div><div class="scroll-x"><table class="tbl"><thead><tr><th>媒体</th><th>売上</th><th>構成比</th><th>客数</th><th>客単価</th><th>前年比</th></tr></thead><tbody>`;
-  rows.slice(0,12).forEach(x=>{
+  const mode=S.mediaMode||'media';
+  const MODES={ media:{t:'媒体別 売上',col:'媒体',sub:'予約媒体・チャネル別の実績'},
+                use:{t:'入店用途別 売上',col:'入店用途',sub:'予約／フリー／外販など（DB_媒体分類で設定・未設定は自動判定）'},
+                seg:{t:'営業区分別 売上',col:'営業区分',sub:'ランチ／ディナーなど（DB_媒体分類で設定・未設定は自動判定）'} };
+  const M=MODES[mode]||MODES.media;
+  const picker=`<select onchange="App.set('mediaMode',this.value)" style="font-weight:700">
+    <option value="media" ${mode==='media'?'selected':''}>媒体別</option>
+    <option value="use" ${mode==='use'?'selected':''}>入店用途</option>
+    <option value="seg" ${mode==='seg'?'selected':''}>営業区分別</option>
+  </select>`;
+  const { total, rows }=mediaTableRows(a,b,pa2,pb2,scopeSet,selName,mode);
+  if(!rows.length && D.mediaPending) return `<div class="panel"><div class="panel-head"><div><h3>${M.t}</h3><div class="sub">読み込み中…</div></div>${picker}</div><div class="empty">媒体別データを読み込んでいます…</div></div>`;
+  if(!rows.length) return `<div class="panel"><div class="panel-head"><div><h3>${M.t}</h3></div>${picker}</div><div class="empty">媒体別データがありません</div></div>`;
+  let h=`<div class="panel"><div class="panel-head"><div><h3>${M.t}</h3><div class="sub">${M.sub}</div></div>${picker}</div>
+  <div class="scroll-x"><table class="tbl"><thead><tr><th>${M.col}</th><th>売上</th><th>構成比</th><th>客数</th><th>客単価</th><th>前年比</th></tr></thead><tbody>`;
+  const shown=mode==='media'?rows.slice(0,12):rows;   // 用途・区分はグループ数が少ないので全件
+  let tG=0,tPrev=0;
+  shown.forEach(x=>{
     const yy=yoyStr(x.net,x.prev,'');
     h+=`<tr><td>${esc(x.media)}</td><td>${yen(x.net)}</td><td>${total>0?(x.net/total*100).toFixed(1):'—'}%</td><td>${cnt(x.g)}人</td><td>${yen(x.g>0?x.net/x.g:0)}</td><td class="${yy.cls==='up'?'pos':yy.cls==='dn'?'neg':'mut'}">${yy.t.replace('前年比 ','')}</td></tr>`;
   });
+  rows.forEach(x=>{ tG+=x.g; tPrev+=x.prev; });
+  const tyy=yoyStr(total,tPrev,'');
+  h+=`<tr class="total"><td>合計</td><td>${yen(total)}</td><td>100%</td><td>${cnt(tG)}人</td><td>${yen(tG>0?total/tG:0)}</td><td class="${tyy.cls==='up'?'pos':tyy.cls==='dn'?'neg':'mut'}">${tyy.t.replace('前年比 ','')}</td></tr>`;
   h+=`</tbody></table></div></div>`;
-  EXPORT.push({ title:'媒体別売上', headers:['媒体','売上','構成比','客数','客単価','前年比'],
+  EXPORT.push({ title:M.t, headers:[M.col,'売上','構成比','客数','客単価','前年比'],
     rows:rows.map(x=>[x.media,Math.round(x.net),total>0?(x.net/total*100).toFixed(1)+'%':'',Math.round(x.g),Math.round(x.g>0?x.net/x.g:0),yoyStr(x.net,x.prev,'').t]) });
   return h;
 }
