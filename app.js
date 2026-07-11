@@ -173,17 +173,20 @@ function ingestDaily(rows){
   const iD=colAny(H,['日付','営業日','勤務日','年月日']), iS=colAny(H,['店舗名','店舗']),
         iSl=colAny(H,['純売上','総売上','売上']), iG=colAny(H,['総客数','客数','店内客数','人数']),
         iPA=colAny(H,['アルバイト人件費','PA人件費','ＰＡ人件費']), iEmp=colAny(H,['社員人件費']),
-        iL=colAny(H,['人件費合計','人件費']), iC=colAny(H,['仕入金額','仕入','原価']), iCash=colAny(H,['現金']);
+        iL=colAny(H,['人件費合計','人件費']), iC=colAny(H,['仕入金額','仕入','原価']), iCash=colAny(H,['現金']),
+        iEmpBase=colAny(H,['社員給与賞与']), iWelf=colAny(H,['法定福利費']), iComm=colAny(H,['通勤手当']);
   if(iD<0||iS<0||iSl<0){ D.diag.daily='列が見つかりません（必要: 店舗名・日付/営業日・純売上）'; return false; }
   const recs=[]; let max=0;
   for(let i=hi+1;i<rows.length;i++){
     const c=rows[i]; const st=String(c[iS]||'').trim(); const t=parseDateStr(c[iD]);
     if(!st||!t) continue;
-    recs.push({ store:st, t, sales:num(c[iSl]), guests:num(c[iG]), pa:num(c[iPA]), emp:num(c[iEmp]), labor:num(c[iL]), cost:num(c[iC]), cash:num(c[iCash]) });
+    recs.push({ store:st, t, sales:num(c[iSl]), guests:num(c[iG]), pa:num(c[iPA]), emp:num(c[iEmp]), labor:num(c[iL]), cost:num(c[iC]), cash:num(c[iCash]),
+      empBase:iEmpBase>=0?num(c[iEmpBase]):0, welfare:iWelf>=0?num(c[iWelf]):0, commute:iComm>=0?num(c[iComm]):0 });
     if(t>max)max=t;
   }
   if(!recs.length){ D.diag.daily='0件（ヘッダーは一致したがデータ行なし）'; return false; }
   D.daily=recs; D.maxDate=new Date(max); D.diag.daily='OK '+recs.length+'件';
+  D.hasLaborSplit=(iEmpBase>=0&&iWelf>=0&&iComm>=0);
   const jstYest=(()=>{ const n=new Date(Date.now()+9*3600000); return new Date(n.getUTCFullYear(),n.getUTCMonth(),n.getUTCDate()-1).getTime(); })();
   D.refDate=new Date(Math.min(max,jstYest));
   return true;
@@ -582,12 +585,13 @@ function selStoreName(){ return S.store==='all'?null:S.store; }
 
 /* ---------------- 集計 ---------------- */
 function stat(setNames, a, b, selName){
-  const o={sales:0,guests:0,cost:0,pa:0,emp:0,labor:0,cash:0};
+  const o={sales:0,guests:0,cost:0,pa:0,emp:0,labor:0,cash:0,empBase:0,welfare:0,commute:0};
   for(const r of D.daily){
     if(r.t<a||r.t>b) continue;
     if(selName){ if(r.store!==selName) continue; }
     else if(setNames && !setNames.has(r.store)) continue;
     o.sales+=r.sales; o.guests+=r.guests; o.cost+=r.cost; o.pa+=r.pa; o.emp+=r.emp; o.labor+=r.labor; o.cash+=r.cash;
+    o.empBase+=r.empBase||0; o.welfare+=r.welfare||0; o.commute+=r.commute||0;
   }
   return o;
 }
@@ -2286,7 +2290,13 @@ function viewPL(){
   const nF=pushCatItems('F');
   rows.push({name:'売上原価計（F）', c:-costT, p:-costP, l:-costL, bold:nF>0, line:false});
   rows.push({name:'売上総利益（粗利）', c:gross, p:prv.sales-costP, l:lyr.sales-costL, bold:true, line:true});
-  rows.push({name:'人件費（社員・自動連携）', c:-cur.emp, p:-prv.emp, l:-lyr.emp, indent:true});
+  if(D.hasLaborSplit){
+    rows.push({name:'人件費（社員給与・賞与）', c:-cur.empBase, p:-prv.empBase, l:-lyr.empBase, indent:true});
+    rows.push({name:'法定福利費（自動連携）', c:-cur.welfare, p:-prv.welfare, l:-lyr.welfare, indent:true});
+    rows.push({name:'通勤手当（自動連携）', c:-cur.commute, p:-prv.commute, l:-lyr.commute, indent:true});
+  } else {
+    rows.push({name:'人件費（社員・自動連携）', c:-cur.emp, p:-prv.emp, l:-lyr.emp, indent:true});
+  }
   rows.push({name:'人件費（アルバイト・自動連携）', c:-cur.pa, p:-prv.pa, l:-lyr.pa, indent:true});
   pushCatItems('L');
   rows.push({name:'人件費計（L）', c:-laborT, p:-laborP, l:-laborL, bold:true});
