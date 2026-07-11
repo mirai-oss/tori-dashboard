@@ -1026,6 +1026,24 @@ function ymSelect(key, y, m, todayCall, todayLabel){
     <button class="icon-btn" onclick="${todayCall||("App.ymToday('"+key+"')")}">${todayLabel||'今月'}</button>
   </span>`;
 }
+// 年/月/日プルダウン（期間指定用）。key=状態キー(cStart等・値は'YYYY-MM-DD')、fallback=未設定時の既定日
+function ymdSelect(key, val, fallback){
+  const ref=D.refDate||new Date();
+  const base=(val||fallback||'').split('-');
+  const y=+base[0]||ref.getFullYear(), m=+base[1]||(ref.getMonth()+1), d=+base[2]||ref.getDate();
+  const iso=y+'-'+String(m).padStart(2,'0')+'-'+String(d).padStart(2,'0');
+  const ys=D.daily.map(x=>new Date(x.t).getFullYear()).filter(v=>v>2000); ys.push(ref.getFullYear(), y);
+  const minY=Math.min(...ys), maxY=Math.max(...ys); const years=[]; for(let v=minY;v<=maxY;v++) years.push(v);
+  const dim=new Date(y,m,0).getDate();
+  const yO=years.map(v=>`<option value="${v}" ${v===y?'selected':''}>${v}年</option>`).join('');
+  const mO=Array.from({length:12},(_,i)=>`<option value="${i+1}" ${i+1===m?'selected':''}>${i+1}月</option>`).join('');
+  const dO=Array.from({length:dim},(_,i)=>`<option value="${i+1}" ${i+1===d?'selected':''}>${i+1}日</option>`).join('');
+  return `<span class="ymd-pick">
+    <select onchange="App.setYmd('${key}','y',this.value,'${iso}')">${yO}</select>
+    <select onchange="App.setYmd('${key}','m',this.value,'${iso}')">${mO}</select>
+    <select onchange="App.setYmd('${key}','d',this.value,'${iso}')">${dO}</select>
+  </span>`;
+}
 function periodCtrlHtml(){
   const r=periodRange();
   const P=S.period;
@@ -1047,7 +1065,7 @@ function periodCtrlHtml(){
     picker=`<select class="ym-pick" onchange="App.set('pYear',this.value)">${years.map(y=>`<option value="${y}" ${String(S.pYear||ref.getFullYear())===String(y)?'selected':''}>${y}年</option>`).join('')}</select>
       <button class="icon-btn" onclick="App.thisMonth()">今年</button>`;
   }
-  else picker=`<input type="date" value="${S.cStart}" onchange="App.set('cStart',this.value)"> 〜 <input type="date" value="${S.cEnd}" onchange="App.set('cEnd',this.value)">`;
+  else picker=`${ymdSelect('cStart',S.cStart,defDay)} 〜 ${ymdSelect('cEnd',S.cEnd,defDay)}`;
   return `
   <div class="ctrl-bar no-print">
     <div class="seg">
@@ -1137,14 +1155,16 @@ function viewDash(){
   return h;
 }
 
-// 店舗選択時：期間内の1日ごとの売上・客数・単価・前年比・累計差異・FL
+// 店舗選択時：1日ごとの売上・客数・客単価・PA(比率)・社員(比率)・原価(比率)・前年比・累計差異
 function dailyStorePanel(r,selName){
   const days=[]; for(let d=new Date(r.s); dayMs(d)<=dayMs(r.e); d=addD(d,1)) days.push(new Date(d));
   const maxT=D.maxDate?dayMs(D.maxDate):Infinity;
-  let cumCur=0, cumPrev=0, tS=0,tG=0,tCost=0,tLabor=0;
+  let cumCur=0, cumPrev=0, tS=0,tG=0,tCost=0,tPa=0,tEmp=0;
+  // 金額＋比率（比率は売上に対する％）を1セルで表示
+  const ap=(amt,sales)=>sales>0?`${yen(amt)} <span class="mut" style="font-size:11px">(${(amt/sales*100).toFixed(1)}%)</span>`:'<span class="mut">—</span>';
   let h=`<div class="panel"><div class="panel-head"><div><h3>日別 明細（${esc(selName)} ／ ${esc(r.label)}）</h3>
-    <div class="sub">1日ごとの売上・客数・客単価・前年比・累計差異・FL（${(r.s.getMonth()+1)}/${r.s.getDate()}〜${(r.e.getMonth()+1)}/${r.e.getDate()}）</div></div></div>
-  <div class="scroll-x"><table class="tbl"><thead><tr><th>日付</th><th>売上</th><th>客数</th><th>客単価</th><th>前年比</th><th>累計差異(対前年)</th><th>FL</th></tr></thead><tbody>`;
+    <div class="sub">1日ごとの売上・客数・客単価・PA/社員/原価（金額と比率）・前年比・累計差異（${(r.s.getMonth()+1)}/${r.s.getDate()}〜${(r.e.getMonth()+1)}/${r.e.getDate()}）</div></div></div>
+  <div class="scroll-x"><table class="tbl"><thead><tr><th>日付</th><th>売上</th><th>客数</th><th>客単価</th><th>PA（比率）</th><th>社員（比率）</th><th>原価（比率）</th><th>前年比</th><th>累計差異(対前年)</th></tr></thead><tbody>`;
   const exp=[];
   days.forEach(d=>{
     const t=dayMs(d);
@@ -1152,27 +1172,28 @@ function dailyStorePanel(r,selName){
     const pv=stat(null,dayMs(addD(d,-364)),dayMs(addD(d,-364)),selName);
     const future=t>maxT;
     if(future){
-      h+=`<tr><td class="mut">${mdwH(d)}</td><td class="mut">—</td><td class="mut">—</td><td class="mut">—</td><td class="mut">—</td><td class="mut">—</td><td class="mut">—</td></tr>`;
+      h+=`<tr><td class="mut">${mdwH(d)}</td>${'<td class="mut">—</td>'.repeat(8)}</tr>`;
       return;
     }
-    cumCur+=c.sales; cumPrev+=pv.sales; tS+=c.sales; tG+=c.guests; tCost+=c.cost; tLabor+=c.labor;
+    cumCur+=c.sales; cumPrev+=pv.sales; tS+=c.sales; tG+=c.guests; tCost+=c.cost; tPa+=c.pa; tEmp+=c.emp;
     const sp=c.guests>0?c.sales/c.guests:0;
     const yy=yoyStr(c.sales,pv.sales,'');
     const cumDiff=cumCur-cumPrev;
-    const fl=c.sales>0?(c.cost+c.labor)/c.sales:0;
     h+=`<tr><td>${mdwH(d)}</td><td>${yen(c.sales)}</td><td>${cnt(c.guests)}人</td><td>${yen(sp)}</td>
+      <td>${ap(c.pa,c.sales)}</td><td>${ap(c.emp,c.sales)}</td><td>${ap(c.cost,c.sales)}</td>
       <td class="${yy.cls==='up'?'pos':yy.cls==='dn'?'neg':'mut'}">${yy.t||'—'}</td>
-      <td class="${cumDiff>=0?'pos':'neg'}">${(cumDiff>=0?'+':'▲')+yen(Math.abs(cumDiff)).slice(1)}</td>
-      <td class="${fl>0.6?'warn':''}">${c.sales>0?(fl*100).toFixed(1)+'%':'—'}</td></tr>`;
-    exp.push([mdw(d),Math.round(c.sales),Math.round(c.guests),Math.round(sp),yy.t||'',Math.round(cumDiff),c.sales>0?(fl*100).toFixed(1)+'%':'']);
+      <td class="${cumDiff>=0?'pos':'neg'}">${(cumDiff>=0?'+':'▲')+yen(Math.abs(cumDiff)).slice(1)}</td></tr>`;
+    const pct=(a2)=>c.sales>0?(a2/c.sales*100).toFixed(1)+'%':'';
+    exp.push([mdw(d),Math.round(c.sales),Math.round(c.guests),Math.round(sp),Math.round(c.pa),pct(c.pa),Math.round(c.emp),pct(c.emp),Math.round(c.cost),pct(c.cost),yy.t||'',Math.round(cumDiff)]);
   });
-  const tSp=tG>0?tS/tG:0, tFl=tS>0?(tCost+tLabor)/tS:0, tDiff=cumCur-cumPrev;
-  h+=`<tr class="total"><td>合計</td><td>${yen(tS)}</td><td>${cnt(tG)}人</td><td>${yen(tSp)}</td><td></td>
-    <td class="${tDiff>=0?'pos':'neg'}">${(tDiff>=0?'+':'▲')+yen(Math.abs(tDiff)).slice(1)}</td>
-    <td class="${tFl>0.6?'warn':''}">${tS>0?(tFl*100).toFixed(1)+'%':'—'}</td></tr>`;
+  const tSp=tG>0?tS/tG:0, tDiff=cumCur-cumPrev;
+  h+=`<tr class="total"><td>合計</td><td>${yen(tS)}</td><td>${cnt(tG)}人</td><td>${yen(tSp)}</td>
+    <td>${ap(tPa,tS)}</td><td>${ap(tEmp,tS)}</td><td>${ap(tCost,tS)}</td><td></td>
+    <td class="${tDiff>=0?'pos':'neg'}">${(tDiff>=0?'+':'▲')+yen(Math.abs(tDiff)).slice(1)}</td></tr>`;
   h+=`</tbody></table></div></div>`;
-  exp.push(['合計',Math.round(tS),Math.round(tG),Math.round(tSp),'',Math.round(tDiff),tS>0?(tFl*100).toFixed(1)+'%':'']);
-  EXPORT.push({ title:'日別明細（'+selName+'／'+r.label+'）', headers:['日付','売上','客数','客単価','前年比','累計差異(対前年)','FL'], rows:exp });
+  const tp=(a2)=>tS>0?(a2/tS*100).toFixed(1)+'%':'';
+  exp.push(['合計',Math.round(tS),Math.round(tG),Math.round(tSp),Math.round(tPa),tp(tPa),Math.round(tEmp),tp(tEmp),Math.round(tCost),tp(tCost),'',Math.round(tDiff)]);
+  EXPORT.push({ title:'日別明細（'+selName+'／'+r.label+'）', headers:['日付','売上','客数','客単価','PA額','PA率','社員額','社員率','原価額','原価率','前年比','累計差異(対前年)'], rows:exp });
   return h;
 }
 
@@ -1387,7 +1408,7 @@ function viewAnalysis(){
     <div class="seg">${[['day','日別'],['week','週別'],['month','月別']].map(([k,l])=>`<button class="${G===k?'on':''}" onclick="App.set('aGran','${k}')">${l}</button>`).join('')}</div>
     <div class="seg">${[['total','合計'],['store','店舗別'],['media','媒体別']].map(([k,l])=>`<button class="${B===k?'on':''}" onclick="App.set('aBreak','${k}')">${l}</button>`).join('')}</div>
     <div class="seg">${[['30','直近30日'],['90','直近90日'],['year','年初来'],['custom','期間指定']].map(([k,l])=>`<button class="${RG===k?'on':''}" onclick="App.set('aRange','${k}')">${l}</button>`).join('')}</div>
-    ${RG==='custom'?`<input type="date" value="${S.cStart}" onchange="App.set('cStart',this.value)"> 〜 <input type="date" value="${S.cEnd}" onchange="App.set('cEnd',this.value)">`:''}
+    ${RG==='custom'?`${ymdSelect('cStart',S.cStart,(D.refDate||new Date()).getFullYear()+'-'+String((D.refDate||new Date()).getMonth()+1).padStart(2,'0')+'-'+String((D.refDate||new Date()).getDate()).padStart(2,'0'))} 〜 ${ymdSelect('cEnd',S.cEnd,'')}`:''}
     ${B==='total'?`<button class="icon-btn" onclick="App.set('aYoY',${S.aYoY?'false':'true'})">${S.aYoY?'☑':'☐'} 前年重ね</button>`:''}
   </div>`+storeSegHtml();
   h+=`<div class="panel"><div class="panel-head"><div><h3>${ml} の推移（${G==='day'?'日別':G==='week'?'週別':'月別'}・${B==='total'?'合計':B==='store'?'店舗別':'媒体別'}）</h3>
@@ -2057,7 +2078,7 @@ function viewPL(){
     yS=dayMs(sub1y(s0)); yE=dayMs(sub1y(e0));
     prevName='前期間';
     mLabel=(s0.getMonth()+1)+'/'+s0.getDate()+'〜'+(e0.getMonth()+1)+'/'+e0.getDate();
-    ctrlHtml=`<input type="date" value="${S.plStart}" onchange="App.set('plStart',this.value)"> 〜 <input type="date" value="${S.plEnd}" onchange="App.set('plEnd',this.value)">`;
+    ctrlHtml=`${ymdSelect('plStart',S.plStart,'')} 〜 ${ymdSelect('plEnd',S.plEnd,'')}`;
   } else {
     const m0=plMonthDate(); const y=m0.getFullYear(), m=m0.getMonth();
     mS=dayMs(new Date(y,m,1)); mE=dayMs(new Date(y,m+1,0));
@@ -2288,7 +2309,7 @@ function viewReview(){
     if(dayMs(s0)>dayMs(e0)){ const t=s0;s0=e0;e0=t; }
     s=s0; e=e0;
     label=(s.getMonth()+1)+'/'+s.getDate()+'〜'+(e.getMonth()+1)+'/'+e.getDate();
-    ctrlHtml=`<input type="date" value="${S.revStart}" onchange="App.set('revStart',this.value)"> 〜 <input type="date" value="${S.revEnd}" onchange="App.set('revEnd',this.value)">`;
+    ctrlHtml=`${ymdSelect('revStart',S.revStart,'')} 〜 ${ymdSelect('revEnd',S.revEnd,'')}`;
   } else {
     const pm=S.revMonth||defMonth;
     const py=+pm.split('-')[0], pmn=+pm.split('-')[1];
@@ -2884,6 +2905,14 @@ window.App = {
     render();
   },
   ymToday(key){ S[key]=''; if(key==='revMonth') S.revWeekIdx=null; render(); },
+  setYmd(key,which,val,baseISO){  // 年/月/日プルダウン（期間指定）の変更を反映
+    const b=String(S[key]||baseISO||'').split('-');
+    const ref=D.refDate||new Date();
+    let y=+b[0]||ref.getFullYear(), m=+b[1]||(ref.getMonth()+1), d=+b[2]||ref.getDate();
+    if(which==='y')y=+val; else if(which==='m')m=+val; else d=+val;
+    const dim=new Date(y,m,0).getDate(); if(d>dim)d=dim;   // 月末を超える日はクランプ
+    S[key]=y+'-'+String(m).padStart(2,'0')+'-'+String(d).padStart(2,'0'); render();
+  },
   thisMonth(){  // ダッシュボードの期間を「今月（今週/今日）」に一発で戻す
     const ref=D.refDate||new Date();
     S.pMonth=ref.getFullYear()+'-'+String(ref.getMonth()+1).padStart(2,'0');
