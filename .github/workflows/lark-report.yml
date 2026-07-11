@@ -1,11 +1,6 @@
 name: Lark自動レポート（日報・週報・月報）
 
 on:
-  schedule:
-    # UTC指定（JST = UTC+9）
-    - cron: '0 3 * * *'            # 日報   毎日 12:00 JST（前日分）
-    - cron: '10 3 1,8,15,22,29 * *' # 週報   1,8,15,22,29日 12:10 JST（直前の週分）
-    - cron: '20 3 1 * *'           # 月報   毎月1日 12:20 JST（前月分）
   workflow_dispatch:
     inputs:
       kind:
