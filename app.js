@@ -1653,9 +1653,9 @@ function parseGrid(rows){
   return { header:looksHeader?first:[], data:looksHeader?rows.slice(1):rows };
 }
 function viewDetail(){
-  const hourRaw=extraSheet('明細時間帯','時間帯','hour'), itemRaw=extraSheet('明細商品','商品別','menu');
+  const hourRaw=extraSheet('明細時間帯'), itemRaw=extraSheet('明細商品');
   let h='';
-  if(!hourRaw && !itemRaw && !extraSheet('明細店舗','店舗ID','store_id')){
+  if(!hourRaw && !itemRaw && !extraSheet('明細店舗')){
     return `<div class="panel"><div class="panel-head"><div><h3>明細分析（BigQuery連携）</h3>
       <div class="sub">Diniiの明細をBigQueryで集計して、時間帯別・商品別を表示します</div></div></div>
       <div class="note-box" style="line-height:1.9">
@@ -1667,7 +1667,7 @@ function viewDetail(){
       </div></div>`;
   }
   // 店舗別（全店を入れると複数行に。1店舗のうちは1行）
-  const storeRaw=extraSheet('明細店舗','店舗ID','store_id');
+  const storeRaw=extraSheet('明細店舗');
   if(storeRaw){
     const g=parseGrid(storeRaw);
     const recs=g.data.map(r=>({ store:String(r[0]||'').trim(), sales:num(r[1]), checks:num(r[2]) })).filter(r=>r.store).sort((a,b)=>b.sales-a.sales);
