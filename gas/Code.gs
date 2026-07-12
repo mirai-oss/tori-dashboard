@@ -43,7 +43,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v14', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v15', time: new Date().toISOString() });
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     setupIfNeeded();
     if (action === 'login')  return out(login(p));
@@ -671,12 +671,23 @@ function bqDetail(p, session) {
     hourCol = (basis === 'order') ? 'order_at' : 'checkout_at';
     hourFrom = T + " " + where;
   }
+  // 時間帯×商品の出数（0円商品も含む）。出数上位40商品に絞って、時間帯ごとの出数・売上を返す。
+  var topMenuSql = "SELECT menu FROM " + T + " " + where + " GROUP BY menu ORDER BY SUM(qty) DESC LIMIT 40";
+  var hiFrom, hiWhere;
+  if (basis === 'arrival') {
+    hiFrom = hourFrom; // arr入りサブクエリ（where適用済み）
+    hiWhere = "WHERE menu IN (" + topMenuSql + ")";
+  } else {
+    hiFrom = T;
+    hiWhere = where + " AND menu IN (" + topMenuSql + ")";
+  }
   try {
-    var hour = bqRows_("SELECT EXTRACT(HOUR FROM " + hourCol + ") AS hour, SUM(sales_incl) AS sales, SUM(price_excl*qty) AS sales_excl, COUNT(DISTINCT check_id) AS checks, " + G + " FROM " + hourFrom + " GROUP BY hour ORDER BY hour");
+    var hour = bqRows_("SELECT EXTRACT(HOUR FROM " + hourCol + ") AS hour, SUM(sales_incl) AS sales, SUM(price_excl*qty) AS sales_excl, COUNT(DISTINCT check_id) AS checks, " + G + ", SUM(qty) AS qty FROM " + hourFrom + " GROUP BY hour ORDER BY hour");
     var item = bqRows_("SELECT menu, SUM(sales_incl) AS sales, SUM(price_excl*qty) AS sales_excl, SUM(qty) AS qty FROM " + T + " " + where + " GROUP BY menu ORDER BY sales DESC LIMIT 500");
     var st = bqRows_("SELECT store_id, SUM(sales_incl) AS sales, SUM(price_excl*qty) AS sales_excl, COUNT(DISTINCT check_id) AS checks, " + G + ", " + DRINK + ", " + KARA + ", " + FOOD + " FROM " + T + " " + where + " GROUP BY store_id ORDER BY sales DESC");
     if (st) { var m = bqStoreMap_(); for (var r = 1; r < st.length; r++) st[r][0] = m[st[r][0]] || st[r][0]; if (st[0]) st[0][0] = '店舗'; }
-    var res = { ok: true, hour: hour || [], item: item || [], store: st || [], basis: basis };
+    var hourItem = bqRows_("SELECT EXTRACT(HOUR FROM " + hourCol + ") AS hour, menu, SUM(qty) AS qty, SUM(sales_incl) AS sales FROM " + hiFrom + " " + hiWhere + " GROUP BY hour, menu");
+    var res = { ok: true, hour: hour || [], item: item || [], store: st || [], hourItem: hourItem || [], basis: basis };
     try { cache.put(ck, JSON.stringify(res), 900); } catch (e3) { /* 100KB超はキャッシュしない */ }
     return res;
   } catch (e) { return { ok: false, error: String(e && e.message || e) }; }
