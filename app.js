@@ -101,11 +101,12 @@ const S = {
   depMonth:'', adMonth:'', plMonth:'', plPeriod:'month', plYear:'', plStart:'', plEnd:'',
   revPeriod:'month', revMonth:'', revWeekIdx:null, revYear:'', revStart:'', revEnd:'',
   aMetric:'sales', aGran:'day', aBreak:'total', aRange:'30', aYoY:true, mediaMode:'media', detailTax:'excl',
+  dPeriod:'month', dStore:'all', dRankMode:'sales', dDay:'', dMonth:'', dYear:'', dWeekIdx:null, dStart:'', dEnd:'',
   aiQ:'', aiResult:null, dataVersion:'',
   reportMode:null,   // {kind:'daily'|'weekly'|'monthly', date:'YYYY-MM-DD'} Lark日報用の1枚カード表示
   accounts:null, accErr:'', modal:null, loginErr:'',
 };
-const D = { daily:[], media:[], deposit:[], review:[], ad:[], adfx:[], tanka:{}, pl:[], dinii:[], diniiCols:[], extra:{}, storeAlias:{}, storeParent:{}, mediaClass:{}, holidays:null, refDate:null, maxDate:null };
+const D = { daily:[], media:[], deposit:[], review:[], ad:[], adfx:[], tanka:{}, pl:[], dinii:[], diniiCols:[], extra:{}, storeAlias:{}, storeParent:{}, mediaClass:{}, holidays:null, detailData:null, detailKey:'', detailLoading:'', refDate:null, maxDate:null };
 let EXPORT = [];      // 現在タブのCSVエクスポート対象 [{title,headers,rows}]
 let pollTimer = null;
 
@@ -1654,105 +1655,138 @@ function parseGrid(rows){
 }
 // 見出し配列から候補名の列インデックスを返す（見つからなければ-1）
 function hcol(header, ...names){ if(!header)return -1; for(const nm of names){ const i=header.findIndex(x=>String(x).trim().toLowerCase()===String(nm).toLowerCase()); if(i>=0)return i; } return -1; }
+// 明細分析の対象期間（S.dPeriod等）→ {from,to,label}
+function detailRange(){
+  const ref=D.refDate||new Date();
+  const pI=(s)=>{const p=String(s).split('-');return new Date(+p[0],+p[1]-1,(p[2]?+p[2]:1));};
+  const fmt=(d)=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+  const P=S.dPeriod||'month';
+  let s,e,label;
+  if(P==='day'){ const d=S.dDay?pI(S.dDay):new Date(ref.getFullYear(),ref.getMonth(),ref.getDate()); s=d;e=d; label=mdw(d); }
+  else if(P==='week'){
+    const m0=S.dMonth?pI(S.dMonth+'-01'):new Date(ref.getFullYear(),ref.getMonth(),1);
+    const y=m0.getFullYear(),m=m0.getMonth(),ld=new Date(y,m+1,0).getDate();
+    const idx=(S.dWeekIdx!=null)?S.dWeekIdx:0; const sd=idx*7+1, ed=idx<4?Math.min(sd+6,ld):ld;
+    s=new Date(y,m,sd); e=new Date(y,m,ed); label=y+'年'+(m+1)+'月 第'+(idx+1)+'週';
+  }
+  else if(P==='month'){ const m0=S.dMonth?pI(S.dMonth+'-01'):new Date(ref.getFullYear(),ref.getMonth(),1);
+    s=new Date(m0.getFullYear(),m0.getMonth(),1); e=new Date(m0.getFullYear(),m0.getMonth()+1,0); label=m0.getFullYear()+'年'+(m0.getMonth()+1)+'月'; }
+  else if(P==='year'){ const y=+(S.dYear||ref.getFullYear()); s=new Date(y,0,1); e=(y===ref.getFullYear())?new Date(ref.getFullYear(),ref.getMonth(),ref.getDate()):new Date(y,11,31); label=y+'年'; }
+  else { s=S.dStart?pI(S.dStart):addD(ref,-29); e=S.dEnd?pI(S.dEnd):new Date(ref.getFullYear(),ref.getMonth(),ref.getDate()); if(dayMs(s)>dayMs(e)){const t=s;s=e;e=t;} label=(s.getMonth()+1)+'/'+s.getDate()+'〜'+(e.getMonth()+1)+'/'+e.getDate(); }
+  return { from:fmt(s), to:fmt(e), label };
+}
+// BQに明細（期間・店舗絞り）を問い合わせ。キーで重複取得を防ぎ、取得後にrender。
+async function fetchDetail(){
+  if(!S.auth||!S.auth.token) return;
+  const r=detailRange(); const key=[r.from,r.to,S.dStore].join('|');
+  if(D.detailKey===key && D.detailData) return;
+  if(D.detailLoading===key) return;
+  D.detailLoading=key;
+  try{
+    const d=await api({ action:'bqDetail', token:S.auth.token, from:r.from, to:r.to, store:S.dStore });
+    if(d&&d.ok){ D.detailData={ hour:d.hour||[], item:d.item||[], store:d.store||[] }; D.detailKey=key; }
+    else { D.detailData={ hour:[], item:[], store:[], err:(d&&d.error)||'取得失敗' }; D.detailKey=key; }
+  }catch(e){ D.detailData={ hour:[], item:[], store:[], err:String(e.message||e) }; D.detailKey=key; }
+  D.detailLoading=''; render();
+}
 function viewDetail(){
-  const hourRaw=extraSheet('明細時間帯'), itemRaw=extraSheet('明細商品'), storeRaw=extraSheet('明細店舗');
-  let h='';
-  if(!hourRaw && !itemRaw && !storeRaw){
-    return `<div class="panel"><div class="panel-head"><div><h3>明細分析（BigQuery連携）</h3>
-      <div class="sub">Diniiの明細をBigQueryで集計して、時間帯別・商品別を表示します</div></div></div>
-      <div class="note-box" style="line-height:1.9">
-        BigQueryに明細を投入し、GASを直結すると、ここに<b>店舗別・時間帯別・商品別</b>が表示されます。
-        （設定手順書: BigQuery_GAS直結_設定手順.md）
-      </div></div>`;
-  }
-  // 税込/税別トグル（既定=税別。飲食の売上管理は税別が基本）
-  const taxExcl=(S.detailTax||'excl')==='excl';
-  const taxLb=taxExcl?'税別':'税込';
-  // 売上列の取り出し：税別ならsales_excl、無ければsalesにフォールバック
-  const salesAt=(header,r)=>{ const ie=hcol(header,'sales_excl'), is=hcol(header,'sales'); const i=taxExcl?(ie>=0?ie:is):(is>=0?is:ie); return num(r[i]); };
-  h+=`<div class="ctrl-bar no-print">
+  const stores=allStores();
+  const taxExcl=(S.detailTax||'excl')==='excl'; const taxLb=taxExcl?'税別':'税込';
+  const r=detailRange(); const key=[r.from,r.to,S.dStore].join('|');
+  fetchDetail(); // 必要なら取得（キー一致なら何もしない）
+  const ref=D.refDate||new Date();
+  const defMonth=ref.getFullYear()+'-'+String(ref.getMonth()+1).padStart(2,'0');
+  const P=S.dPeriod||'month';
+  const pm=(S.dMonth||defMonth).split('-'); const py=+pm[0], pmo=+pm[1]-1;
+  let picker='';
+  if(P==='day') picker=`<input type="date" value="${S.dDay||defMonth+'-'+String(ref.getDate()).padStart(2,'0')}" onchange="App.set('dDay',this.value)">`;
+  else if(P==='week') picker=`${ymSelect('dMonth',py,pmo)}<span class="seg">${[0,1,2,3,4].map(i=>`<button class="${(S.dWeekIdx||0)===i?'on':''}" onclick="App.set('dWeekIdx',${i})">第${i+1}週</button>`).join('')}</span>`;
+  else if(P==='month') picker=ymSelect('dMonth',py,pmo);
+  else if(P==='year'){ const ys=D.daily.map(x=>new Date(x.t).getFullYear()).filter(v=>v>2000); ys.push(ref.getFullYear()); const mn=Math.min(...ys),mx=Math.max(...ys); const yy=[]; for(let v=mn;v<=mx;v++)yy.push(v); picker=`<select class="ym-pick" onchange="App.set('dYear',this.value)">${yy.map(v=>`<option value="${v}" ${String(S.dYear||ref.getFullYear())===String(v)?'selected':''}>${v}年</option>`).join('')}</select>`; }
+  else picker=`<input type="date" value="${S.dStart}" onchange="App.set('dStart',this.value)"> 〜 <input type="date" value="${S.dEnd}" onchange="App.set('dEnd',this.value)">`;
+  const storeOpts=`<option value="all" ${S.dStore==='all'?'selected':''}>全店</option>`+stores.map(s=>`<option ${S.dStore===s?'selected':''}>${esc(s)}</option>`).join('');
+  let h=`<div class="ctrl-bar no-print">
+    <select onchange="App.set('dStore',this.value)" style="font-weight:700">${storeOpts}</select>
+    <div class="seg">${[['day','日'],['week','週'],['month','月'],['year','年'],['custom','期間指定']].map(([k,l])=>`<button class="${P===k?'on':''}" onclick="App.set('dPeriod','${k}')">${l}</button>`).join('')}</div>
+    ${picker}
     <div class="seg">${[['excl','税別'],['incl','税込']].map(([k,l])=>`<button class="${(S.detailTax||'excl')===k?'on':''}" onclick="App.set('detailTax','${k}')">${l}</button>`).join('')}</div>
-    <span class="period-label">明細分析（${taxLb}表記 ／ BigQuery明細）</span>
+    <span class="period-label">${esc(r.label)} ／ ${S.dStore==='all'?'全店':esc(S.dStore)}（${taxLb}）</span>
   </div>
-  <div class="note-box no-print" style="margin:4px 0 2px;padding:10px 14px;font-size:11.5px">
-    ℹ️ ここはPOS明細の積み上げ（値引き前グロス）で、<b>時間帯・商品・店舗の傾向を見る用</b>です。オフィシャルな売上金額はダッシュボード／PLの日別売上（値引き後ネット）が正となり、数%の差が出ます。
-  </div>
-`;
+  <div class="note-box no-print" style="margin:4px 0 2px;padding:9px 13px;font-size:11.5px">ℹ️ POS明細の積み上げ（傾向・構成比を見る用／金額の正は日別売上）。客数はお通し数ベースの推定です。</div>`;
+  if(!S.auth){ return h+`<div class="panel"><div class="empty">ログイン後、BigQueryの明細が表示されます</div></div>`; }
+  if(D.detailKey!==key || !D.detailData){ return h+`<div class="panel"><div class="empty">読み込み中…（BigQuery集計）</div></div>`; }
+  const dd=D.detailData;
+  if(dd.err){ return h+`<div class="panel"><div class="empty">取得エラー: ${esc(dd.err)}</div></div>`; }
+  const salesAt=(H,row)=>{ const ie=hcol(H,'sales_excl'),is=hcol(H,'sales'); return num(row[taxExcl?(ie>=0?ie:is):(is>=0?is:ie)]); };
 
-  // 取込カバレッジ（月×店舗数×行数）— 薄い月を見つけて後から再取得依頼できる
-  const covRaw=extraSheet('明細カバレッジ');
-  if(covRaw){
-    const g=parseGrid(covRaw); const H=g.header;
-    const iMo=hcol(H,'month'), iSt=hcol(H,'stores'), iDy=hcol(H,'days'), iRw=hcol(H,'rows');
-    const recs=g.data.map(r=>({ month:String(r[iMo>=0?iMo:0]||'').trim(), stores:num(r[iSt>=0?iSt:1]), days:num(r[iDy>=0?iDy:2]), rows:num(r[iRw>=0?iRw:3]) })).filter(r=>r.month);
-    if(recs.length){
-      const maxSt=Math.max(...recs.map(r=>r.stores));
-      h+=`<div class="panel"><div class="panel-head"><div><h3>取込カバレッジ（月別）</h3>
-        <div class="sub">店舗数が少ない月は「取りこぼし or 導入前」。気になる月は再取得を依頼できます（最大 ${maxSt}店）</div></div></div>
-      <div class="scroll-x"><table class="tbl"><thead><tr><th>月</th><th>店舗数</th><th>日数</th><th>明細行数</th><th>状態</th></tr></thead><tbody>`;
-      recs.forEach(r=>{
-        const full=r.stores>=maxSt;
-        const badge=full?'<span class="badge ok">充足</span>':`<span class="badge ng">${maxSt-r.stores}店 不足?</span>`;
-        h+=`<tr><td>${esc(r.month)}</td><td class="${full?'':'neg'}">${r.stores}店</td><td>${r.days}日</td><td>${cnt(r.rows)}</td><td>${badge}</td></tr>`;
-      });
-      h+=`</tbody></table></div></div>`;
-      EXPORT.push({ title:'取込カバレッジ', headers:['月','店舗数','日数','明細行数'], rows:recs.map(r=>[r.month,r.stores,r.days,Math.round(r.rows)]) });
+  // 店舗別（全店選択時）
+  if(dd.store&&dd.store.length>1){ const H=dd.store[0]; const iChk=hcol(H,'checks'),iG=hcol(H,'guests');
+    const recs=dd.store.slice(1).map(row=>({store:String(row[0]||'').trim(),sales:salesAt(H,row),checks:num(row[iChk]),guests:num(row[iG])})).filter(x=>x.store).sort((a,b)=>b.sales-a.sales);
+    if(recs.length){ const tot=recs.reduce((s,x)=>s+x.sales,0);
+      h+=`<div class="panel"><div class="panel-head"><div><h3>店舗別 売上（${taxLb}）</h3></div></div><div class="scroll-x"><table class="tbl"><thead><tr><th>店舗</th><th>売上</th><th>会計数</th><th>客数</th><th>客単価</th><th>構成比</th></tr></thead><tbody>`;
+      recs.forEach(x=>{ h+=`<tr><td>${esc(x.store)}</td><td>${yen(x.sales)}</td><td>${cnt(x.checks)}組</td><td>${cnt(x.guests)}人</td><td>${yen(x.guests>0?x.sales/x.guests:0)}</td><td>${tot>0?(x.sales/tot*100).toFixed(1):'—'}%</td></tr>`; });
+      h+=`<tr class="total"><td>全店合計</td><td>${yen(tot)}</td><td>${cnt(recs.reduce((s,x)=>s+x.checks,0))}組</td><td>${cnt(recs.reduce((s,x)=>s+x.guests,0))}人</td><td></td><td>100%</td></tr></tbody></table></div></div>`;
+      EXPORT.push({ title:'店舗別('+taxLb+')', headers:['店舗','売上','会計数','客数','客単価','構成比'], rows:recs.map(x=>[x.store,Math.round(x.sales),Math.round(x.checks),Math.round(x.guests),Math.round(x.guests>0?x.sales/x.guests:0),tot>0?(x.sales/tot*100).toFixed(1)+'%':'']) });
     }
   }
-  // 店舗別
-  if(storeRaw){
-    const g=parseGrid(storeRaw); const H=g.header;
-    const iSt=hcol(H,'店舗','store','store_id'), iChk=hcol(H,'checks');
-    const recs=g.data.map(r=>({ store:String(r[iSt>=0?iSt:0]||'').trim(), sales:salesAt(H,r), checks:num(r[iChk>=0?iChk:2]) })).filter(r=>r.store).sort((a,b)=>b.sales-a.sales);
-    if(recs.length){
-      const tot=recs.reduce((s,r)=>s+r.sales,0);
-      h+=`<div class="panel"><div class="panel-head"><div><h3>店舗別 売上（${taxLb}）</h3><div class="sub">BigQueryの明細を店舗名で集計（DB_店舗ID対応で変換）</div></div></div>
-      <div class="scroll-x"><table class="tbl"><thead><tr><th>店舗</th><th>売上</th><th>会計数</th><th>会計単価</th><th>構成比</th></tr></thead><tbody>`;
-      recs.forEach(r=>{ h+=`<tr><td>${esc(r.store)}</td><td>${yen(r.sales)}</td><td>${cnt(r.checks)}組</td><td>${yen(r.checks>0?r.sales/r.checks:0)}</td><td>${tot>0?(r.sales/tot*100).toFixed(1):'—'}%</td></tr>`; });
-      if(recs.length>1) h+=`<tr class="total"><td>全店合計</td><td>${yen(tot)}</td><td>${cnt(recs.reduce((s,r)=>s+r.checks,0))}組</td><td></td><td>100%</td></tr>`;
-      h+=`</tbody></table></div></div>`;
-      EXPORT.push({ title:'店舗別売上('+taxLb+')', headers:['店舗','売上','会計数','会計単価','構成比'], rows:recs.map(r=>[r.store,Math.round(r.sales),Math.round(r.checks),Math.round(r.checks>0?r.sales/r.checks:0),tot>0?(r.sales/tot*100).toFixed(1)+'%':'']) });
-    }
-  }
-  // 時間帯別
-  if(hourRaw){
-    const g=parseGrid(hourRaw); const H=g.header;
-    const iH=hcol(H,'hour'), iChk=hcol(H,'checks');
-    const recs=g.data.map(r=>({ hour:parseInt(String(r[iH>=0?iH:0]).replace(/[^0-9]/g,''),10), sales:salesAt(H,r), checks:num(r[iChk>=0?iChk:2]) })).filter(r=>!isNaN(r.hour));
-    const ord=(x)=>(x.hour+18)%24;   // 6時始まりの営業日順
-    recs.sort((a,b)=>ord(a)-ord(b));
-    const cat=recs.map(r=>r.hour+'時');
-    const totalSales=recs.reduce((s,r)=>s+r.sales,0), totalChk=recs.reduce((s,r)=>s+r.checks,0);
-    const peak=recs.reduce((m,r)=>r.sales>m.sales?r:m,{sales:-1});
+  // 時間帯別（客数入り）
+  if(dd.hour&&dd.hour.length>1){ const H=dd.hour[0]; const iH=hcol(H,'hour'),iChk=hcol(H,'checks'),iG=hcol(H,'guests');
+    const recs=dd.hour.slice(1).map(row=>({hour:parseInt(String(row[iH]).replace(/[^0-9]/g,''),10),sales:salesAt(H,row),checks:num(row[iChk]),guests:num(row[iG])})).filter(x=>!isNaN(x.hour));
+    const ord=(x)=>(x.hour+18)%24; recs.sort((a,b)=>ord(a)-ord(b));
+    const cat=recs.map(x=>x.hour+'時');
+    const tS=recs.reduce((s,x)=>s+x.sales,0),tC=recs.reduce((s,x)=>s+x.checks,0),tG=recs.reduce((s,x)=>s+x.guests,0);
+    const peak=recs.reduce((m,x)=>x.sales>m.sales?x:m,{sales:-1});
     h+=`<div class="kpi-grid">
-      <div class="kpi"><div class="lb">合計売上（${taxLb}）</div><div class="vl">${yen(totalSales)}</div><div class="yy">明細集計</div></div>
-      <div class="kpi"><div class="lb">会計数</div><div class="vl">${cnt(totalChk)}組</div><div class="yy">延べ</div></div>
-      <div class="kpi"><div class="lb">会計単価</div><div class="vl">${yen(totalChk>0?totalSales/totalChk:0)}</div><div class="yy">${taxLb}・売上÷会計数</div></div>
+      <div class="kpi"><div class="lb">売上（${taxLb}）</div><div class="vl">${yen(tS)}</div><div class="yy">${esc(r.label)}</div></div>
+      <div class="kpi"><div class="lb">会計数 / 客数</div><div class="vl" style="font-size:19px">${cnt(tC)}組 / ${cnt(tG)}人</div><div class="yy">客数=お通し推定</div></div>
+      <div class="kpi"><div class="lb">客単価</div><div class="vl">${yen(tG>0?tS/tG:0)}</div><div class="yy">${taxLb}・売上÷客数</div></div>
       <div class="kpi"><div class="lb">ピーク時間帯</div><div class="vl">${peak.sales>=0?peak.hour+'時台':'—'}</div><div class="yy">${peak.sales>=0?yen(peak.sales):''}</div></div>
     </div>`;
-    const series=[{name:'売上',color:C_NOW,data:recs.map(r=>r.sales)}];
-    h+=`<div class="panel"><div class="panel-head"><div><h3>時間帯別 売上（会計日時ベース・${taxLb}）</h3><div class="sub">営業日順（夕方→深夜）／ 棒＝売上</div></div></div>
-      ${barChart(cat,series,{})}
-      <div class="scroll-x"><table class="tbl"><thead><tr><th>時間帯</th><th>売上</th><th>会計数</th><th>会計単価</th><th>構成比</th></tr></thead><tbody>`;
-    recs.forEach(r=>{ h+=`<tr><td>${r.hour}時台</td><td>${yen(r.sales)}</td><td>${cnt(r.checks)}組</td><td>${yen(r.checks>0?r.sales/r.checks:0)}</td><td>${totalSales>0?(r.sales/totalSales*100).toFixed(1):'—'}%</td></tr>`; });
-    h+=`<tr class="total"><td>合計</td><td>${yen(totalSales)}</td><td>${cnt(totalChk)}組</td><td>${yen(totalChk>0?totalSales/totalChk:0)}</td><td>100%</td></tr></tbody></table></div></div>`;
-    EXPORT.push({ title:'時間帯別売上('+taxLb+')', headers:['時間帯','売上','会計数','会計単価','構成比'], rows:recs.map(r=>[r.hour+'時台',Math.round(r.sales),Math.round(r.checks),Math.round(r.checks>0?r.sales/r.checks:0),totalSales>0?(r.sales/totalSales*100).toFixed(1)+'%':'']) });
+    const series=[{name:'売上',color:C_NOW,data:recs.map(x=>x.sales)}];
+    h+=`<div class="panel"><div class="panel-head"><div><h3>時間帯別 売上（${taxLb}）</h3><div class="sub">営業日順（夕方→深夜）／ 棒＝売上</div></div></div>${barChart(cat,series,{})}
+      <div class="scroll-x"><table class="tbl"><thead><tr><th>時間帯</th><th>売上</th><th>会計数</th><th>客数</th><th>客単価</th><th>構成比</th></tr></thead><tbody>`;
+    recs.forEach(x=>{ h+=`<tr><td>${x.hour}時台</td><td>${yen(x.sales)}</td><td>${cnt(x.checks)}組</td><td>${cnt(x.guests)}人</td><td>${yen(x.guests>0?x.sales/x.guests:0)}</td><td>${tS>0?(x.sales/tS*100).toFixed(1):'—'}%</td></tr>`; });
+    h+=`<tr class="total"><td>合計</td><td>${yen(tS)}</td><td>${cnt(tC)}組</td><td>${cnt(tG)}人</td><td>${yen(tG>0?tS/tG:0)}</td><td>100%</td></tr></tbody></table></div></div>`;
+    EXPORT.push({ title:'時間帯別('+taxLb+')', headers:['時間帯','売上','会計数','客数','客単価','構成比'], rows:recs.map(x=>[x.hour+'時台',Math.round(x.sales),Math.round(x.checks),Math.round(x.guests),Math.round(x.guests>0?x.sales/x.guests:0),tS>0?(x.sales/tS*100).toFixed(1)+'%':'']) });
   }
-  // 商品別ランキング
-  if(itemRaw){
-    const g=parseGrid(itemRaw); const H=g.header;
-    const iM=hcol(H,'menu','商品'), iQ=hcol(H,'qty');
-    const recs=g.data.map(r=>({ menu:String(r[iM>=0?iM:0]||'').trim(), sales:salesAt(H,r), qty:num(r[iQ>=0?iQ:2]) })).filter(r=>r.menu).sort((a,b)=>b.sales-a.sales);
-    const maxS=recs.length?recs[0].sales:1;
-    h+=`<div class="panel"><div class="panel-head"><div><h3>商品別 売上ランキング（${taxLb}）</h3><div class="sub">明細（メニュー）別の売上・出数</div></div></div>
-      <div class="scroll-x"><table class="tbl"><thead><tr><th>順位</th><th>商品</th><th>売上</th><th>出数</th><th></th></tr></thead><tbody>`;
-    recs.slice(0,40).forEach((r,i)=>{
-      const pct=Math.round((r.sales/(maxS||1))*100);
-      h+=`<tr><td>${i+1}</td><td>${esc(r.menu)}</td><td>${yen(r.sales)}</td><td>${cnt(r.qty)}点</td>
-        <td style="min-width:120px"><div style="height:7px;background:#efe9dd;border-radius:4px;overflow:hidden"><div style="height:100%;width:${pct}%;background:#5f7052"></div></div></td></tr>`;
-    });
-    h+=`</tbody></table></div></div>`;
-    EXPORT.push({ title:'商品別ランキング('+taxLb+')', headers:['順位','商品','売上','出数'], rows:recs.map((r,i)=>[i+1,r.menu,Math.round(r.sales),Math.round(r.qty)]) });
+  // 商品別（3モード：売上/出数/ABC）
+  if(dd.item&&dd.item.length>1){ const H=dd.item[0]; const iQ=hcol(H,'qty');
+    let recs=dd.item.slice(1).map(row=>({menu:String(row[0]||'').trim(),sales:salesAt(H,row),qty:num(row[iQ])})).filter(x=>x.menu);
+    const mode=S.dRankMode||'sales';
+    const modeSel=`<select onchange="App.set('dRankMode',this.value)" style="font-weight:700">
+      <option value="sales" ${mode==='sales'?'selected':''}>売上ランキング</option>
+      <option value="qty" ${mode==='qty'?'selected':''}>出数ランキング</option>
+      <option value="abc" ${mode==='abc'?'selected':''}>ABC分析</option></select>`;
+    if(mode==='qty') recs.sort((a,b)=>b.qty-a.qty); else recs.sort((a,b)=>b.sales-a.sales);
+    if(mode==='abc'){
+      const totS=recs.reduce((s,x)=>s+x.sales,0); let cum=0;
+      recs=recs.map(x=>{ cum+=x.sales; const cp=totS>0?cum/totS*100:0; return {...x,cumPct:cp,cls:cp<=70?'A':cp<=90?'B':'C'}; });
+      const cnts={A:0,B:0,C:0}; recs.forEach(x=>cnts[x.cls]++);
+      h+=`<div class="panel"><div class="panel-head"><div><h3>商品別 ABC分析（${taxLb}）</h3><div class="sub">売上構成比の累計で A(〜70%)/B(〜90%)/C(残り)。A=${cnts.A}品 B=${cnts.B}品 C=${cnts.C}品</div></div>${modeSel}</div>
+        <div class="scroll-x"><table class="tbl"><thead><tr><th>順位</th><th>商品</th><th>売上</th><th>出数</th><th>累計構成比</th><th>区分</th></tr></thead><tbody>`;
+      recs.slice(0,200).forEach((x,i)=>{ const bc=x.cls==='A'?'ok':x.cls==='B'?'mid':'zero'; h+=`<tr><td>${i+1}</td><td>${esc(x.menu)}</td><td>${yen(x.sales)}</td><td>${cnt(x.qty)}点</td><td>${x.cumPct.toFixed(1)}%</td><td><span class="badge ${bc}">${x.cls}</span></td></tr>`; });
+      h+=`</tbody></table></div></div>`;
+      EXPORT.push({ title:'商品ABC('+taxLb+')', headers:['順位','商品','売上','出数','累計構成比','区分'], rows:recs.map((x,i)=>[i+1,x.menu,Math.round(x.sales),Math.round(x.qty),x.cumPct.toFixed(1)+'%',x.cls]) });
+    } else {
+      const val=(x)=>mode==='qty'?x.qty:x.sales; const maxV=recs.length?val(recs[0]):1;
+      h+=`<div class="panel"><div class="panel-head"><div><h3>商品別 ${mode==='qty'?'出数':'売上'}ランキング（${taxLb}）</h3></div>${modeSel}</div>
+        <div class="scroll-x"><table class="tbl"><thead><tr><th>順位</th><th>商品</th><th>売上</th><th>出数</th><th></th></tr></thead><tbody>`;
+      recs.slice(0,50).forEach((x,i)=>{ const pct=Math.round(val(x)/(maxV||1)*100); h+=`<tr><td>${i+1}</td><td>${esc(x.menu)}</td><td>${yen(x.sales)}</td><td>${cnt(x.qty)}点</td><td style="min-width:120px"><div style="height:7px;background:#efe9dd;border-radius:4px;overflow:hidden"><div style="height:100%;width:${pct}%;background:${mode==='qty'?'#3d5163':'#5f7052'}"></div></div></td></tr>`; });
+      h+=`</tbody></table></div></div>`;
+      EXPORT.push({ title:'商品'+(mode==='qty'?'出数':'売上')+'('+taxLb+')', headers:['順位','商品','売上','出数'], rows:recs.map((x,i)=>[i+1,x.menu,Math.round(x.sales),Math.round(x.qty)]) });
+    }
+  }
+  // 取込カバレッジ（全期間・参考）
+  const covRaw=extraSheet('明細カバレッジ');
+  if(covRaw){ const g=parseGrid(covRaw); const H=g.header;
+    const iMo=hcol(H,'month'),iSt=hcol(H,'stores'),iDy=hcol(H,'days'),iRw=hcol(H,'rows');
+    const recs=g.data.map(row=>({month:String(row[iMo>=0?iMo:0]||'').trim(),stores:num(row[iSt>=0?iSt:1]),days:num(row[iDy>=0?iDy:2]),rows:num(row[iRw>=0?iRw:3])})).filter(x=>x.month);
+    if(recs.length){ const maxSt=Math.max(...recs.map(x=>x.stores));
+      h+=`<div class="panel"><div class="panel-head"><div><h3>取込カバレッジ（月別・参考）</h3><div class="sub">店舗数が少ない月は取りこぼし/導入前。気になる月は再取得を依頼できます（最大${maxSt}店）</div></div></div>
+      <div class="scroll-x"><table class="tbl"><thead><tr><th>月</th><th>店舗数</th><th>日数</th><th>明細行数</th><th>状態</th></tr></thead><tbody>`;
+      recs.forEach(x=>{ const full=x.stores>=maxSt; h+=`<tr><td>${esc(x.month)}</td><td class="${full?'':'neg'}">${x.stores}店</td><td>${x.days}日</td><td>${cnt(x.rows)}</td><td>${full?'<span class="badge ok">充足</span>':'<span class="badge ng">'+(maxSt-x.stores)+'店 不足?</span>'}</td></tr>`; });
+      h+=`</tbody></table></div></div>`;
+    }
   }
   return h;
 }

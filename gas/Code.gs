@@ -53,6 +53,7 @@ function handle(p) {
     var session = requireSession(p);
     if (action === 'version')  return out({ ok: true, version: dataVersion() }); // 軽量：変更検知用の署名だけ返す
     if (action === 'data')     return out(getData(p, session));
+    if (action === 'bqDetail') return out(bqDetail(p, session)); // 明細分析：期間・店舗で絞ってBQ集計
     if (action === 'accounts') return out(listAccounts(session));
     if (action === 'saveAccount')   return out(saveAccount(p, session));
     if (action === 'deleteAccount') return out(deleteAccount(p, session));
@@ -628,6 +629,29 @@ function bqDetailSheets_(only, except) {
 }
 // 手動テスト用：エディタから実行して結果をログ確認
 function testBQ() { Logger.log(JSON.stringify(bqRows_(bqSqls_()['明細時間帯']))); }
+
+// 店舗名→店舗ID（DB_店舗ID対応の逆引き）
+function reverseStoreId_(name) { var m = bqStoreMap_(); for (var id in m) { if (m[id] === name) return id; } return null; }
+// 明細分析（対話的）：期間 from〜to・店舗で絞り、時間帯別/商品別/店舗別を集計して返す。
+// guests=客数はお通し数ベースの推定（お通し=1人1品の慣習）。checks=会計数(組)。
+function bqDetail(p, session) {
+  var from = String(p.from || '').slice(0, 10), to = String(p.to || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) return { ok: false, error: 'bad date range' };
+  var where = "WHERE business_date BETWEEN DATE('" + from + "') AND DATE('" + to + "')";
+  if (p.store && p.store !== 'all') {
+    var id = reverseStoreId_(p.store);
+    if (id) where += " AND store_id = '" + String(id).replace(/'/g, '') + "'";
+    else return { ok: true, hour: [], item: [], store: [], note: 'store_id未対応' };
+  }
+  var T = BQ_TABLE, G = "SUM(IF(menu LIKE '%お通し%', qty, 0)) AS guests";
+  try {
+    var hour = bqRows_("SELECT EXTRACT(HOUR FROM checkout_at) AS hour, SUM(sales_incl) AS sales, SUM(price_excl*qty) AS sales_excl, COUNT(DISTINCT check_id) AS checks, " + G + " FROM " + T + " " + where + " GROUP BY hour ORDER BY hour");
+    var item = bqRows_("SELECT menu, SUM(sales_incl) AS sales, SUM(price_excl*qty) AS sales_excl, SUM(qty) AS qty FROM " + T + " " + where + " GROUP BY menu ORDER BY sales DESC LIMIT 500");
+    var st = bqRows_("SELECT store_id, SUM(sales_incl) AS sales, SUM(price_excl*qty) AS sales_excl, COUNT(DISTINCT check_id) AS checks, " + G + " FROM " + T + " " + where + " GROUP BY store_id ORDER BY sales DESC");
+    if (st) { var m = bqStoreMap_(); for (var r = 1; r < st.length; r++) st[r][0] = m[st[r][0]] || st[r][0]; if (st[0]) st[0][0] = '店舗'; }
+    return { ok: true, hour: hour || [], item: item || [], store: st || [] };
+  } catch (e) { return { ok: false, error: String(e && e.message || e) }; }
+}
 
 // ===== 明細(Dinii注文)のBigQuery投入 =====
 // dinii.orders の列定義（整形済みCSVと一致）
