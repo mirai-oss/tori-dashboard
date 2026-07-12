@@ -43,7 +43,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v11', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v12', time: new Date().toISOString() });
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     setupIfNeeded();
     if (action === 'login')  return out(login(p));
@@ -643,14 +643,26 @@ function bqDetail(p, session) {
     if (id) where += " AND store_id = '" + String(id).replace(/'/g, '') + "'";
     else return { ok: true, hour: [], item: [], store: [], note: 'store_id未対応' };
   }
+  // キャッシュ（同じ条件は再クエリしない・15分）。同条件の再表示は即返る。
+  var cache = CacheService.getScriptCache();
+  var ck = 'det_' + from + '_' + to + '_' + (p.store || 'all');
+  var hit = cache.get(ck);
+  if (hit) { try { var o = JSON.parse(hit); o.cached = true; return o; } catch (e2) {} }
   var T = BQ_TABLE, G = "SUM(IF(menu LIKE '%お通し%', qty, 0)) AS guests";
   try {
     var hour = bqRows_("SELECT EXTRACT(HOUR FROM checkout_at) AS hour, SUM(sales_incl) AS sales, SUM(price_excl*qty) AS sales_excl, COUNT(DISTINCT check_id) AS checks, " + G + " FROM " + T + " " + where + " GROUP BY hour ORDER BY hour");
     var item = bqRows_("SELECT menu, SUM(sales_incl) AS sales, SUM(price_excl*qty) AS sales_excl, SUM(qty) AS qty FROM " + T + " " + where + " GROUP BY menu ORDER BY sales DESC LIMIT 500");
     var st = bqRows_("SELECT store_id, SUM(sales_incl) AS sales, SUM(price_excl*qty) AS sales_excl, COUNT(DISTINCT check_id) AS checks, " + G + " FROM " + T + " " + where + " GROUP BY store_id ORDER BY sales DESC");
     if (st) { var m = bqStoreMap_(); for (var r = 1; r < st.length; r++) st[r][0] = m[st[r][0]] || st[r][0]; if (st[0]) st[0][0] = '店舗'; }
-    return { ok: true, hour: hour || [], item: item || [], store: st || [] };
+    var res = { ok: true, hour: hour || [], item: item || [], store: st || [] };
+    try { cache.put(ck, JSON.stringify(res), 900); } catch (e3) { /* 100KB超はキャッシュしない */ }
+    return res;
   } catch (e) { return { ok: false, error: String(e && e.message || e) }; }
+}
+// 明細テーブルを日付パーティション＋店舗クラスタで作り直す（初回1回・スキャン量を激減させる）。
+// ※BigQueryコンソールで下記SQLを1回実行するのと同じ。GASのタイムアウトを避けるなら手動SQL推奨。
+function bqPartitionOrders() {
+  return bqRows_("CREATE OR REPLACE TABLE `" + BQ_PROJECT + ".dinii.orders` PARTITION BY business_date CLUSTER BY store_id AS SELECT * FROM `" + BQ_PROJECT + ".dinii.orders`");
 }
 
 // ===== 明細(Dinii注文)のBigQuery投入 =====
