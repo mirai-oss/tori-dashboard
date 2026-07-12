@@ -1747,9 +1747,10 @@ function viewDetail(){
       <div class="kpi"><div class="lb">ピーク時間帯</div><div class="vl">${peak.sales>=0?peak.hour+'時台':'—'}</div><div class="yy">${peak.sales>=0?yen(peak.sales):''}</div></div>
     </div>`;
     const series=[{name:'売上',color:C_NOW,data:recs.map(x=>x.sales)}];
-    const basisNow=(S.dBasis==='order')?'order':'checkout';
-    const basisSeg=`<div class="seg no-print">${[['checkout','会計時'],['order','来店時']].map(([k,l])=>`<button class="${basisNow===k?'on':''}" onclick="App.set('dBasis','${k}')">${l}</button>`).join('')}</div>`;
-    h+=`<div class="panel"><div class="panel-head"><div><h3>時間帯別 売上（${taxLb}）</h3><div class="sub">営業日順（夕方→深夜）／ 棒＝売上／ 集計基準＝${basisNow==='order'?'来店時（オーダー日時）':'会計時（会計日時）'}</div></div>${basisSeg}</div>${barChart(cat,series,{})}
+    const basisNow=(S.dBasis==='order'||S.dBasis==='arrival')?S.dBasis:'checkout';
+    const basisSeg=`<div class="seg no-print">${[['checkout','会計時'],['arrival','来店時'],['order','オーダー時']].map(([k,l])=>`<button class="${basisNow===k?'on':''}" onclick="App.set('dBasis','${k}')">${l}</button>`).join('')}</div>`;
+    const basisLb={checkout:'会計時（会計日時）',arrival:'来店時（伝票の最初のオーダー）',order:'オーダー時（各明細のオーダー日時）'}[basisNow];
+    h+=`<div class="panel"><div class="panel-head"><div><h3>時間帯別 売上（${taxLb}）</h3><div class="sub">営業日順（夕方→深夜）／ 棒＝売上／ 集計基準＝${basisLb}</div></div>${basisSeg}</div>${barChart(cat,series,{})}
       <div class="scroll-x"><table class="tbl"><thead><tr><th>時間帯</th><th>売上</th><th>会計数</th><th>客数</th><th>客単価</th><th>構成比</th></tr></thead><tbody>`;
     recs.forEach(x=>{ h+=`<tr><td>${x.hour}時台</td><td>${yen(x.sales)}</td><td>${cnt(x.checks)}組</td><td>${cnt(x.guests)}人</td><td>${yen(x.guests>0?x.sales/x.guests:0)}</td><td>${tS>0?(x.sales/tS*100).toFixed(1):'—'}%</td></tr>`; });
     h+=`<tr class="total"><td>合計</td><td>${yen(tS)}</td><td>${cnt(tC)}組</td><td>${cnt(tG)}人</td><td>${yen(tG>0?tS/tG:0)}</td><td>100%</td></tr></tbody></table></div></div>`;
