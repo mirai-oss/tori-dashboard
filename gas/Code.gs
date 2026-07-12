@@ -660,8 +660,10 @@ function bqLoadOrders(p) {
     }}};
     var blob = Utilities.newBlob(csv, 'application/octet-stream', 'orders.csv');
     var ins = BigQuery.Jobs.insert(job, BQ_PROJECT, blob);
-    var jobId = ins.jobReference.jobId, st = null;
-    for (var i = 0; i < 90; i++) { st = BigQuery.Jobs.get(BQ_PROJECT, jobId); if (st.status && st.status.state === 'DONE') break; Utilities.sleep(2000); }
+    var jobId = ins.jobReference.jobId;
+    var loc = (ins.jobReference && ins.jobReference.location) || 'asia-northeast1'; // 東京リージョンのジョブは要location
+    var st = null;
+    for (var i = 0; i < 90; i++) { st = BigQuery.Jobs.get(BQ_PROJECT, jobId, { location: loc }); if (st.status && st.status.state === 'DONE') break; Utilities.sleep(2000); }
     if (st && st.status && st.status.errorResult) return { ok: false, error: st.status.errorResult.message };
     var loaded = (st && st.statistics && st.statistics.load) ? st.statistics.load.outputRows : null;
     try { CacheService.getScriptCache().removeAll(['bq_明細時間帯', 'bq_明細商品', 'bq_明細店舗']); } catch (e) {}
