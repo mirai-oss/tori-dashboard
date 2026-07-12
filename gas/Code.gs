@@ -242,6 +242,25 @@ function setupIfNeeded() {
     mcSh.setFrozenRows(1);
     mcSh.setColumnWidths(1, 4, 150);
   }
+
+  // 店舗ID対応シート（DB_店舗ID対応）。無ければ雛形を作成。
+  // BigQueryの明細（Dinii）は店舗が「店舗ID(長い文字列)」で入っているため、店舗名に変換する対応表。
+  var sidSh = ss.getSheetByName('DB_店舗ID対応');
+  if (!sidSh) {
+    sidSh = ss.insertSheet('DB_店舗ID対応');
+    sidSh.getRange(1, 1, 1, 2).setValues([['店舗ID', '店舗名']])
+      .setFontWeight('bold').setBackground('#efe9dd');
+    // いま入っている1店舗ぶんのIDを先頭に入れておく（店舗名は入力してください）
+    sidSh.getRange(2, 1, 1, 2).setValues([['f50fda5d-ac82-4ae4-ac35-fbb67fd7ca43', '']]);
+    sidSh.getRange('A1').setNote(
+      'BigQueryの明細（Dinii出数）の店舗IDと、表示用の店舗名の対応表です。\n' +
+      '・店舗ID: Diniiの生データに入っている長い文字列（例 f50fda5d-...）\n' +
+      '・店舗名: 分析_日別店舗と同じ表記（例 芝の鳥一代）\n' +
+      '※店舗を追加するたびに1行足せば、明細分析タブに店舗名で表示されます。'
+    );
+    sidSh.setFrozenRows(1);
+    sidSh.setColumnWidths(1, 1, 320); sidSh.setColumnWidths(2, 1, 160);
+  }
 }
 
 // ================== 認証 ==================
@@ -559,8 +578,19 @@ var BQ_TABLE   = '`tori-analytics.dinii.orders`';     // 明細テーブル
 function bqSqls_() {
   return {
     '明細時間帯': 'SELECT EXTRACT(HOUR FROM checkout_at) AS hour, SUM(sales_incl) AS sales, COUNT(DISTINCT check_id) AS checks FROM ' + BQ_TABLE + ' GROUP BY hour ORDER BY hour',
-    '明細商品':   'SELECT menu, SUM(sales_incl) AS sales, SUM(qty) AS qty FROM ' + BQ_TABLE + ' GROUP BY menu ORDER BY sales DESC LIMIT 100'
+    '明細商品':   'SELECT menu, SUM(sales_incl) AS sales, SUM(qty) AS qty FROM ' + BQ_TABLE + ' GROUP BY menu ORDER BY sales DESC LIMIT 100',
+    '明細店舗':   'SELECT store_id, SUM(sales_incl) AS sales, COUNT(DISTINCT check_id) AS checks FROM ' + BQ_TABLE + ' GROUP BY store_id ORDER BY sales DESC'
   };
+}
+// 店舗ID→店舗名の対応（DB_店舗ID対応シート）。無ければ空。
+function bqStoreMap_() {
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_店舗ID対応');
+  var map = {};
+  if (sh && sh.getLastRow() > 1) {
+    var v = sh.getRange(2, 1, sh.getLastRow() - 1, 2).getValues();
+    for (var i = 0; i < v.length; i++) { var id = String(v[i][0]).trim(), nm = String(v[i][1]).trim(); if (id && nm) map[id] = nm; }
+  }
+  return map;
 }
 // BQクエリを実行して [[見出し...],[行...]] を返す。失敗時は null。
 function bqRows_(sql) {
@@ -582,6 +612,11 @@ function bqDetailSheets_(only, except) {
       var ck = 'bq_' + key, cached = cache.get(ck);
       if (cached) { out[key] = JSON.parse(cached); continue; }
       var rows = bqRows_(sqls[key]);
+      if (rows && key === '明細店舗') {   // 店舗IDを店舗名に置換
+        var m = bqStoreMap_();
+        for (var r = 1; r < rows.length; r++) rows[r][0] = m[rows[r][0]] || rows[r][0];
+        if (rows[0]) rows[0][0] = '店舗';
+      }
       if (rows) { out[key] = rows; cache.put(ck, JSON.stringify(rows), 600); }
     } catch (e) { /* BQ未有効・権限エラー等でもダッシュボードは動かす */ }
   }

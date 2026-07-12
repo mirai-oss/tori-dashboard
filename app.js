@@ -1655,7 +1655,7 @@ function parseGrid(rows){
 function viewDetail(){
   const hourRaw=extraSheet('明細時間帯','時間帯','hour'), itemRaw=extraSheet('明細商品','商品別','menu');
   let h='';
-  if(!hourRaw && !itemRaw){
+  if(!hourRaw && !itemRaw && !extraSheet('明細店舗','店舗ID','store_id')){
     return `<div class="panel"><div class="panel-head"><div><h3>明細分析（BigQuery連携）</h3>
       <div class="sub">Diniiの明細をBigQueryで集計して、時間帯別・商品別を表示します</div></div></div>
       <div class="note-box" style="line-height:1.9">
@@ -1665,6 +1665,20 @@ function viewDetail(){
         ③ ダッシュボードを再読み込み → ここに時間帯別グラフと商品ランキングが表示されます<br>
         <span class="mut">※「DB_」で始まるタブは自動で取り込まれます（GAS再デプロイ不要）。将来はこの貼り付けを自動更新に置き換えます。</span>
       </div></div>`;
+  }
+  // 店舗別（全店を入れると複数行に。1店舗のうちは1行）
+  const storeRaw=extraSheet('明細店舗','店舗ID','store_id');
+  if(storeRaw){
+    const g=parseGrid(storeRaw);
+    const recs=g.data.map(r=>({ store:String(r[0]||'').trim(), sales:num(r[1]), checks:num(r[2]) })).filter(r=>r.store).sort((a,b)=>b.sales-a.sales);
+    if(recs.length){
+      const tot=recs.reduce((s,r)=>s+r.sales,0);
+      h+=`<div class="panel"><div class="panel-head"><div><h3>店舗別 売上（明細）</h3><div class="sub">BigQueryの明細を店舗名で集計（DB_店舗ID対応で変換）</div></div></div>
+      <div class="scroll-x"><table class="tbl"><thead><tr><th>店舗</th><th>売上</th><th>会計数</th><th>会計単価</th><th>構成比</th></tr></thead><tbody>`;
+      recs.forEach(r=>{ h+=`<tr><td>${esc(r.store)}</td><td>${yen(r.sales)}</td><td>${cnt(r.checks)}組</td><td>${yen(r.checks>0?r.sales/r.checks:0)}</td><td>${tot>0?(r.sales/tot*100).toFixed(1):'—'}%</td></tr>`; });
+      if(recs.length>1) h+=`<tr class="total"><td>全店合計</td><td>${yen(tot)}</td><td>${cnt(recs.reduce((s,r)=>s+r.checks,0))}組</td><td></td><td>100%</td></tr>`;
+      h+=`</tbody></table></div></div>`;
+    }
   }
   // 時間帯別
   if(hourRaw){
