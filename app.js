@@ -1679,6 +1679,26 @@ function viewDetail(){
   </div>
 `;
 
+  // 取込カバレッジ（月×店舗数×行数）— 薄い月を見つけて後から再取得依頼できる
+  const covRaw=extraSheet('明細カバレッジ');
+  if(covRaw){
+    const g=parseGrid(covRaw); const H=g.header;
+    const iMo=hcol(H,'month'), iSt=hcol(H,'stores'), iDy=hcol(H,'days'), iRw=hcol(H,'rows');
+    const recs=g.data.map(r=>({ month:String(r[iMo>=0?iMo:0]||'').trim(), stores:num(r[iSt>=0?iSt:1]), days:num(r[iDy>=0?iDy:2]), rows:num(r[iRw>=0?iRw:3]) })).filter(r=>r.month);
+    if(recs.length){
+      const maxSt=Math.max(...recs.map(r=>r.stores));
+      h+=`<div class="panel"><div class="panel-head"><div><h3>取込カバレッジ（月別）</h3>
+        <div class="sub">店舗数が少ない月は「取りこぼし or 導入前」。気になる月は再取得を依頼できます（最大 ${maxSt}店）</div></div></div>
+      <div class="scroll-x"><table class="tbl"><thead><tr><th>月</th><th>店舗数</th><th>日数</th><th>明細行数</th><th>状態</th></tr></thead><tbody>`;
+      recs.forEach(r=>{
+        const full=r.stores>=maxSt;
+        const badge=full?'<span class="badge ok">充足</span>':`<span class="badge ng">${maxSt-r.stores}店 不足?</span>`;
+        h+=`<tr><td>${esc(r.month)}</td><td class="${full?'':'neg'}">${r.stores}店</td><td>${r.days}日</td><td>${cnt(r.rows)}</td><td>${badge}</td></tr>`;
+      });
+      h+=`</tbody></table></div></div>`;
+      EXPORT.push({ title:'取込カバレッジ', headers:['月','店舗数','日数','明細行数'], rows:recs.map(r=>[r.month,r.stores,r.days,Math.round(r.rows)]) });
+    }
+  }
   // 店舗別
   if(storeRaw){
     const g=parseGrid(storeRaw); const H=g.header;

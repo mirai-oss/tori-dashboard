@@ -43,7 +43,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v10', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v11', time: new Date().toISOString() });
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     setupIfNeeded();
     if (action === 'login')  return out(login(p));
@@ -581,7 +581,9 @@ function bqSqls_() {
   return {
     '明細時間帯': 'SELECT EXTRACT(HOUR FROM checkout_at) AS hour, SUM(sales_incl) AS sales, SUM(price_excl*qty) AS sales_excl, COUNT(DISTINCT check_id) AS checks FROM ' + BQ_TABLE + ' GROUP BY hour ORDER BY hour',
     '明細商品':   'SELECT menu, SUM(sales_incl) AS sales, SUM(price_excl*qty) AS sales_excl, SUM(qty) AS qty FROM ' + BQ_TABLE + ' GROUP BY menu ORDER BY sales DESC LIMIT 100',
-    '明細店舗':   'SELECT store_id, SUM(sales_incl) AS sales, SUM(price_excl*qty) AS sales_excl, COUNT(DISTINCT check_id) AS checks FROM ' + BQ_TABLE + ' GROUP BY store_id ORDER BY sales DESC'
+    '明細店舗':   'SELECT store_id, SUM(sales_incl) AS sales, SUM(price_excl*qty) AS sales_excl, COUNT(DISTINCT check_id) AS checks FROM ' + BQ_TABLE + ' GROUP BY store_id ORDER BY sales DESC',
+    // 取込カバレッジ（月ごとの店舗数・日数・行数）。薄い月＝取りこぼし/導入前を発見して再取得依頼に使う。
+    '明細カバレッジ': "SELECT FORMAT_DATE('%Y-%m', business_date) AS month, COUNT(DISTINCT store_id) AS stores, COUNT(DISTINCT business_date) AS days, COUNT(*) AS rows FROM " + BQ_TABLE + ' GROUP BY month ORDER BY month'
   };
 }
 // 店舗ID→店舗名の対応（DB_店舗ID対応シート）。無ければ空。
