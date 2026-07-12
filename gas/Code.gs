@@ -43,7 +43,8 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v9', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v10', time: new Date().toISOString() });
+    if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     setupIfNeeded();
     if (action === 'login')  return out(login(p));
     if (action === 'logout') return out(logout(p));
@@ -625,6 +626,50 @@ function bqDetailSheets_(only, except) {
 }
 // 手動テスト用：エディタから実行して結果をログ確認
 function testBQ() { Logger.log(JSON.stringify(bqRows_(bqSqls_()['明細時間帯']))); }
+
+// ===== 明細(Dinii注文)のBigQuery投入 =====
+// dinii.orders の列定義（整形済みCSVと一致）
+var BQ_ORDERS_SCHEMA = [
+  { name: 'store_id', type: 'STRING' }, { name: 'business_date', type: 'DATE' },
+  { name: 'checkout_at', type: 'DATETIME' }, { name: 'order_at', type: 'DATETIME' },
+  { name: 'check_id', type: 'STRING' }, { name: 'category_id', type: 'STRING' },
+  { name: 'category', type: 'STRING' }, { name: 'menu_id', type: 'STRING' },
+  { name: 'menu', type: 'STRING' }, { name: 'main_sub', type: 'STRING' },
+  { name: 'price_incl', type: 'NUMERIC' }, { name: 'price_excl', type: 'NUMERIC' },
+  { name: 'cost_incl', type: 'NUMERIC' }, { name: 'cost_excl', type: 'NUMERIC' },
+  { name: 'qty', type: 'NUMERIC' }, { name: 'sales_incl', type: 'NUMERIC' },
+  { name: 'discount', type: 'NUMERIC' }, { name: 'parent_menu_id', type: 'STRING' },
+  { name: 'parent_menu', type: 'STRING' }, { name: 'tax_rate', type: 'STRING' }
+];
+// 明細CSVをBQに投入。p.date（YYYY-MM-DD）を渡すと「その日を削除→追加」で冪等。
+// p.truncate=true なら全テーブル置換（初回バックフィルの1回目用）。
+function bqLoadOrders(p) {
+  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+  if (!tk || String(p.token) !== tk) return { ok: false, error: 'unauthorized' };
+  var csv = p.csv || ''; if (!csv) return { ok: false, error: 'csv empty' };
+  try {
+    // 冪等化：同じ営業日の既存行を削除してから追加（再実行しても重複しない）
+    if (p.date && !p.truncate) {
+      bqRows_("DELETE FROM `" + BQ_PROJECT + ".dinii.orders` WHERE business_date = DATE('" + String(p.date).slice(0, 10) + "')");
+    }
+    var job = { configuration: { load: {
+      destinationTable: { projectId: BQ_PROJECT, datasetId: 'dinii', tableId: 'orders' },
+      sourceFormat: 'CSV', skipLeadingRows: 1, allowQuotedNewlines: true,
+      writeDisposition: p.truncate ? 'WRITE_TRUNCATE' : 'WRITE_APPEND',
+      maxBadRecords: 200, schema: { fields: BQ_ORDERS_SCHEMA }
+    }}};
+    var blob = Utilities.newBlob(csv, 'application/octet-stream', 'orders.csv');
+    var ins = BigQuery.Jobs.insert(job, BQ_PROJECT, blob);
+    var jobId = ins.jobReference.jobId, st = null;
+    for (var i = 0; i < 90; i++) { st = BigQuery.Jobs.get(BQ_PROJECT, jobId); if (st.status && st.status.state === 'DONE') break; Utilities.sleep(2000); }
+    if (st && st.status && st.status.errorResult) return { ok: false, error: st.status.errorResult.message };
+    var loaded = (st && st.statistics && st.statistics.load) ? st.statistics.load.outputRows : null;
+    try { CacheService.getScriptCache().removeAll(['bq_明細時間帯', 'bq_明細商品', 'bq_明細店舗']); } catch (e) {}
+    return { ok: true, rows: Number(loaded || 0), date: p.date || null };
+  } catch (e) {
+    return { ok: false, error: String(e && e.message || e) };
+  }
+}
 
 // 変更検知用の軽量な署名（全データを読まずに作る）
 function dataVersion() {
