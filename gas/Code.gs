@@ -43,7 +43,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v12', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v13', time: new Date().toISOString() });
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     setupIfNeeded();
     if (action === 'login')  return out(login(p));
@@ -643,18 +643,30 @@ function bqDetail(p, session) {
     if (id) where += " AND store_id = '" + String(id).replace(/'/g, '') + "'";
     else return { ok: true, hour: [], item: [], store: [], note: 'store_id未対応' };
   }
-  // キャッシュ（同じ条件は再クエリしない・15分）。同条件の再表示は即返る。
+  var basis = (p.basis === 'order') ? 'order_at' : 'checkout_at'; // 来店時=オーダー / 会計時(既定)
+  // キャッシュ（同じ条件は再クエリしない・15分）。
   var cache = CacheService.getScriptCache();
-  var ck = 'det_' + from + '_' + to + '_' + (p.store || 'all');
+  var ck = 'det_' + from + '_' + to + '_' + (p.store || 'all') + '_' + basis;
   var hit = cache.get(ck);
   if (hit) { try { var o = JSON.parse(hit); o.cached = true; return o; } catch (e2) {} }
   var T = BQ_TABLE, G = "SUM(IF(menu LIKE '%お通し%', qty, 0)) AS guests";
+  // 売上区分（税別）: コース=1800/人をドリンク・残りフード / サービス料=50%ずつ / カラオケ=全額 / 単品はキーワードでドリンク・他フード
+  var L = 'price_excl*qty';
+  var CAT = "CONCAT(IFNULL(category,''),'|',IFNULL(menu,''))";
+  var IS_KARA = "menu LIKE '%カラオケ%'";
+  var IS_SVC = "menu LIKE '%サービス料%'";
+  var IS_COURSE = "(category LIKE '%コース%' OR category LIKE '%プラン%' OR menu LIKE '%コース%')";
+  var DRINK_RE = "r'ビール|サワー|ハイボール|酎ハイ|チューハイ|ソフトドリンク|ドリンク|ワイン|日本酒|焼酎|カクテル|ウイスキー|ウィスキー|梅酒|レモン|ホッピー|果実酒|スパークリング|シャンパン|ノンアル|茶割|ハイ|飲み放題|飲放|生ビール|瓶ビール|グラス|ボトル|日本酒|酒'";
+  var IS_DRINK = "REGEXP_CONTAINS(" + CAT + ", " + DRINK_RE + ")";
+  var KARA = "SUM(CASE WHEN " + IS_KARA + " THEN " + L + " ELSE 0 END) AS karaoke";
+  var DRINK = "SUM(CASE WHEN " + IS_KARA + " THEN 0 WHEN " + IS_SVC + " THEN (" + L + ")*0.5 WHEN " + IS_COURSE + " THEN LEAST(1800,price_excl)*qty WHEN " + IS_DRINK + " THEN " + L + " ELSE 0 END) AS drink";
+  var FOOD = "SUM(CASE WHEN " + IS_KARA + " THEN 0 WHEN " + IS_SVC + " THEN (" + L + ")*0.5 WHEN " + IS_COURSE + " THEN GREATEST(price_excl-1800,0)*qty WHEN " + IS_DRINK + " THEN 0 ELSE " + L + " END) AS food";
   try {
-    var hour = bqRows_("SELECT EXTRACT(HOUR FROM checkout_at) AS hour, SUM(sales_incl) AS sales, SUM(price_excl*qty) AS sales_excl, COUNT(DISTINCT check_id) AS checks, " + G + " FROM " + T + " " + where + " GROUP BY hour ORDER BY hour");
+    var hour = bqRows_("SELECT EXTRACT(HOUR FROM " + basis + ") AS hour, SUM(sales_incl) AS sales, SUM(price_excl*qty) AS sales_excl, COUNT(DISTINCT check_id) AS checks, " + G + " FROM " + T + " " + where + " GROUP BY hour ORDER BY hour");
     var item = bqRows_("SELECT menu, SUM(sales_incl) AS sales, SUM(price_excl*qty) AS sales_excl, SUM(qty) AS qty FROM " + T + " " + where + " GROUP BY menu ORDER BY sales DESC LIMIT 500");
-    var st = bqRows_("SELECT store_id, SUM(sales_incl) AS sales, SUM(price_excl*qty) AS sales_excl, COUNT(DISTINCT check_id) AS checks, " + G + " FROM " + T + " " + where + " GROUP BY store_id ORDER BY sales DESC");
+    var st = bqRows_("SELECT store_id, SUM(sales_incl) AS sales, SUM(price_excl*qty) AS sales_excl, COUNT(DISTINCT check_id) AS checks, " + G + ", " + DRINK + ", " + KARA + ", " + FOOD + " FROM " + T + " " + where + " GROUP BY store_id ORDER BY sales DESC");
     if (st) { var m = bqStoreMap_(); for (var r = 1; r < st.length; r++) st[r][0] = m[st[r][0]] || st[r][0]; if (st[0]) st[0][0] = '店舗'; }
-    var res = { ok: true, hour: hour || [], item: item || [], store: st || [] };
+    var res = { ok: true, hour: hour || [], item: item || [], store: st || [], basis: basis };
     try { cache.put(ck, JSON.stringify(res), 900); } catch (e3) { /* 100KB超はキャッシュしない */ }
     return res;
   } catch (e) { return { ok: false, error: String(e && e.message || e) }; }

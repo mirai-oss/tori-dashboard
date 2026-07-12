@@ -101,7 +101,7 @@ const S = {
   depMonth:'', adMonth:'', plMonth:'', plPeriod:'month', plYear:'', plStart:'', plEnd:'',
   revPeriod:'month', revMonth:'', revWeekIdx:null, revYear:'', revStart:'', revEnd:'',
   aMetric:'sales', aGran:'day', aBreak:'total', aRange:'30', aYoY:true, mediaMode:'media', detailTax:'excl',
-  dPeriod:'month', dStore:'all', dRankMode:'sales', dDay:'', dMonth:'', dYear:'', dWeekIdx:null, dStart:'', dEnd:'',
+  dPeriod:'month', dStore:'all', dRankMode:'sales', dBasis:'checkout', dDay:'', dMonth:'', dYear:'', dWeekIdx:null, dStart:'', dEnd:'',
   aiQ:'', aiResult:null, dataVersion:'',
   reportMode:null,   // {kind:'daily'|'weekly'|'monthly', date:'YYYY-MM-DD'} Lark日報用の1枚カード表示
   accounts:null, accErr:'', modal:null, loginErr:'',
@@ -1678,12 +1678,12 @@ function detailRange(){
 // BQに明細（期間・店舗絞り）を問い合わせ。キーで重複取得を防ぎ、取得後にrender。
 async function fetchDetail(){
   if(!S.auth||!S.auth.token) return;
-  const r=detailRange(); const key=[r.from,r.to,S.dStore].join('|');
+  const r=detailRange(); const key=[r.from,r.to,S.dStore,S.dBasis||'checkout'].join('|');
   if(D.detailKey===key && D.detailData) return;
   if(D.detailLoading===key) return;
   D.detailLoading=key;
   try{
-    const d=await api({ action:'bqDetail', token:S.auth.token, from:r.from, to:r.to, store:S.dStore });
+    const d=await api({ action:'bqDetail', token:S.auth.token, from:r.from, to:r.to, store:S.dStore, basis:S.dBasis||'checkout' });
     if(d&&d.ok){ D.detailData={ hour:d.hour||[], item:d.item||[], store:d.store||[] }; D.detailKey=key; }
     else { D.detailData={ hour:[], item:[], store:[], err:(d&&d.error)||'取得失敗' }; D.detailKey=key; }
   }catch(e){ D.detailData={ hour:[], item:[], store:[], err:String(e.message||e) }; D.detailKey=key; }
@@ -1692,7 +1692,7 @@ async function fetchDetail(){
 function viewDetail(){
   const stores=allStores();
   const taxExcl=(S.detailTax||'excl')==='excl'; const taxLb=taxExcl?'税別':'税込';
-  const r=detailRange(); const key=[r.from,r.to,S.dStore].join('|');
+  const r=detailRange(); const key=[r.from,r.to,S.dStore,S.dBasis||'checkout'].join('|');
   fetchDetail(); // 必要なら取得（キー一致なら何もしない）
   const ref=D.refDate||new Date();
   const defMonth=ref.getFullYear()+'-'+String(ref.getMonth()+1).padStart(2,'0');
@@ -1720,13 +1720,17 @@ function viewDetail(){
   const salesAt=(H,row)=>{ const ie=hcol(H,'sales_excl'),is=hcol(H,'sales'); return num(row[taxExcl?(ie>=0?ie:is):(is>=0?is:ie)]); };
 
   // 店舗別（全店選択時）
-  if(dd.store&&dd.store.length>1){ const H=dd.store[0]; const iChk=hcol(H,'checks'),iG=hcol(H,'guests');
-    const recs=dd.store.slice(1).map(row=>({store:String(row[0]||'').trim(),sales:salesAt(H,row),checks:num(row[iChk]),guests:num(row[iG])})).filter(x=>x.store).sort((a,b)=>b.sales-a.sales);
+  if(dd.store&&dd.store.length>1){ const H=dd.store[0]; const iChk=hcol(H,'checks'),iG=hcol(H,'guests'),iDr=hcol(H,'drink'),iKa=hcol(H,'karaoke'),iFo=hcol(H,'food');
+    const hasBk=(iDr>=0&&iFo>=0);
+    const recs=dd.store.slice(1).map(row=>({store:String(row[0]||'').trim(),sales:salesAt(H,row),checks:num(row[iChk]),guests:num(row[iG]),drink:num(row[iDr]),karaoke:num(row[iKa]),food:num(row[iFo])})).filter(x=>x.store).sort((a,b)=>b.sales-a.sales);
     if(recs.length){ const tot=recs.reduce((s,x)=>s+x.sales,0);
-      h+=`<div class="panel"><div class="panel-head"><div><h3>店舗別 売上（${taxLb}）</h3></div></div><div class="scroll-x"><table class="tbl"><thead><tr><th>店舗</th><th>売上</th><th>会計数</th><th>客数</th><th>客単価</th><th>構成比</th></tr></thead><tbody>`;
-      recs.forEach(x=>{ h+=`<tr><td>${esc(x.store)}</td><td>${yen(x.sales)}</td><td>${cnt(x.checks)}組</td><td>${cnt(x.guests)}人</td><td>${yen(x.guests>0?x.sales/x.guests:0)}</td><td>${tot>0?(x.sales/tot*100).toFixed(1):'—'}%</td></tr>`; });
-      h+=`<tr class="total"><td>全店合計</td><td>${yen(tot)}</td><td>${cnt(recs.reduce((s,x)=>s+x.checks,0))}組</td><td>${cnt(recs.reduce((s,x)=>s+x.guests,0))}人</td><td></td><td>100%</td></tr></tbody></table></div></div>`;
-      EXPORT.push({ title:'店舗別('+taxLb+')', headers:['店舗','売上','会計数','客数','客単価','構成比'], rows:recs.map(x=>[x.store,Math.round(x.sales),Math.round(x.checks),Math.round(x.guests),Math.round(x.guests>0?x.sales/x.guests:0),tot>0?(x.sales/tot*100).toFixed(1)+'%':'']) });
+      const bkHead=hasBk?`<th>ドリンク</th><th>カラオケ</th><th>フード</th>`:'';
+      h+=`<div class="panel"><div class="panel-head"><div><h3>店舗別 売上（${taxLb}）</h3>${hasBk?`<div class="sub">ドリンク/カラオケ/フードは明細から推定（税別・コース1800円=ドリンク／サービス料50%案分）</div>`:''}</div></div><div class="scroll-x"><table class="tbl"><thead><tr><th>店舗</th><th>売上</th>${bkHead}<th>会計数</th><th>客数</th><th>客単価</th><th>構成比</th></tr></thead><tbody>`;
+      recs.forEach(x=>{ const bk=hasBk?`<td>${yen(x.drink)}</td><td>${yen(x.karaoke)}</td><td>${yen(x.food)}</td>`:''; h+=`<tr><td>${esc(x.store)}</td><td>${yen(x.sales)}</td>${bk}<td>${cnt(x.checks)}組</td><td>${cnt(x.guests)}人</td><td>${yen(x.guests>0?x.sales/x.guests:0)}</td><td>${tot>0?(x.sales/tot*100).toFixed(1):'—'}%</td></tr>`; });
+      const bkTot=hasBk?`<td>${yen(recs.reduce((s,x)=>s+x.drink,0))}</td><td>${yen(recs.reduce((s,x)=>s+x.karaoke,0))}</td><td>${yen(recs.reduce((s,x)=>s+x.food,0))}</td>`:'';
+      h+=`<tr class="total"><td>全店合計</td><td>${yen(tot)}</td>${bkTot}<td>${cnt(recs.reduce((s,x)=>s+x.checks,0))}組</td><td>${cnt(recs.reduce((s,x)=>s+x.guests,0))}人</td><td></td><td>100%</td></tr></tbody></table></div></div>`;
+      const bkH=hasBk?['ドリンク','カラオケ','フード']:[];
+      EXPORT.push({ title:'店舗別('+taxLb+')', headers:['店舗','売上',...bkH,'会計数','客数','客単価','構成比'], rows:recs.map(x=>[x.store,Math.round(x.sales),...(hasBk?[Math.round(x.drink),Math.round(x.karaoke),Math.round(x.food)]:[]),Math.round(x.checks),Math.round(x.guests),Math.round(x.guests>0?x.sales/x.guests:0),tot>0?(x.sales/tot*100).toFixed(1)+'%':'']) });
     }
   }
   // 時間帯別（客数入り）
@@ -1743,7 +1747,9 @@ function viewDetail(){
       <div class="kpi"><div class="lb">ピーク時間帯</div><div class="vl">${peak.sales>=0?peak.hour+'時台':'—'}</div><div class="yy">${peak.sales>=0?yen(peak.sales):''}</div></div>
     </div>`;
     const series=[{name:'売上',color:C_NOW,data:recs.map(x=>x.sales)}];
-    h+=`<div class="panel"><div class="panel-head"><div><h3>時間帯別 売上（${taxLb}）</h3><div class="sub">営業日順（夕方→深夜）／ 棒＝売上</div></div></div>${barChart(cat,series,{})}
+    const basisNow=(S.dBasis==='order')?'order':'checkout';
+    const basisSeg=`<div class="seg no-print">${[['checkout','会計時'],['order','来店時']].map(([k,l])=>`<button class="${basisNow===k?'on':''}" onclick="App.set('dBasis','${k}')">${l}</button>`).join('')}</div>`;
+    h+=`<div class="panel"><div class="panel-head"><div><h3>時間帯別 売上（${taxLb}）</h3><div class="sub">営業日順（夕方→深夜）／ 棒＝売上／ 集計基準＝${basisNow==='order'?'来店時（オーダー日時）':'会計時（会計日時）'}</div></div>${basisSeg}</div>${barChart(cat,series,{})}
       <div class="scroll-x"><table class="tbl"><thead><tr><th>時間帯</th><th>売上</th><th>会計数</th><th>客数</th><th>客単価</th><th>構成比</th></tr></thead><tbody>`;
     recs.forEach(x=>{ h+=`<tr><td>${x.hour}時台</td><td>${yen(x.sales)}</td><td>${cnt(x.checks)}組</td><td>${cnt(x.guests)}人</td><td>${yen(x.guests>0?x.sales/x.guests:0)}</td><td>${tS>0?(x.sales/tS*100).toFixed(1):'—'}%</td></tr>`; });
     h+=`<tr class="total"><td>合計</td><td>${yen(tS)}</td><td>${cnt(tC)}組</td><td>${cnt(tG)}人</td><td>${yen(tG>0?tS/tG:0)}</td><td>100%</td></tr></tbody></table></div></div>`;
