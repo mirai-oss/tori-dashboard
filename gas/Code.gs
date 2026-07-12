@@ -43,7 +43,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'rsv-v8', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v9', time: new Date().toISOString() });
     setupIfNeeded();
     if (action === 'login')  return out(login(p));
     if (action === 'logout') return out(logout(p));
@@ -538,6 +538,11 @@ function getData(p, session) {
     var sh = ss.getSheetByName(list[i].name);
     if (sh) sheets[key] = readSheet(sh, months, key);
   }
+  // ③ BigQuery（明細分析：時間帯別・商品別）。スプレッドシートを経由せず、集計済みの小さい結果だけ受け取る。
+  //    BQ未設定・権限エラーでもダッシュボードは通常どおり動く（try/catch内）。
+  var bq = bqDetailSheets_(only, except);
+  for (var bk in bq) sheets[bk] = bq[bk];
+
   // version は重い Drive 呼び出しを含むので data では返さない（クライアントは version アクションで別途取得）
   return {
     ok: true,
@@ -546,6 +551,44 @@ function getData(p, session) {
     sheets: sheets
   };
 }
+
+// ================== BigQuery（明細分析：Dinii出数） ==================
+var BQ_PROJECT = 'tori-analytics';                    // 課金・実行に使うプロジェクトID
+var BQ_TABLE   = '`tori-analytics.dinii.orders`';     // 明細テーブル
+// ダッシュボードに返す集計SQL（小さい結果＝スキャン最小・無料枠内）
+function bqSqls_() {
+  return {
+    '明細時間帯': 'SELECT EXTRACT(HOUR FROM checkout_at) AS hour, SUM(sales_incl) AS sales, COUNT(DISTINCT check_id) AS checks FROM ' + BQ_TABLE + ' GROUP BY hour ORDER BY hour',
+    '明細商品':   'SELECT menu, SUM(sales_incl) AS sales, SUM(qty) AS qty FROM ' + BQ_TABLE + ' GROUP BY menu ORDER BY sales DESC LIMIT 100'
+  };
+}
+// BQクエリを実行して [[見出し...],[行...]] を返す。失敗時は null。
+function bqRows_(sql) {
+  var res = BigQuery.Jobs.query({ query: sql, useLegacySql: false, timeoutMs: 30000 }, BQ_PROJECT);
+  if (!res || !res.jobComplete) return null;
+  var fields = (res.schema && res.schema.fields) || [];
+  var out = [fields.map(function (f) { return f.name; })];
+  var rows = res.rows || [];
+  for (var i = 0; i < rows.length; i++) out.push(rows[i].f.map(function (c) { return c.v; }));
+  return out;
+}
+// キャッシュ付きでBQ明細集計を取得（10分キャッシュ＝再表示で再クエリしない）
+function bqDetailSheets_(only, except) {
+  var sqls = bqSqls_(), cache = CacheService.getScriptCache(), out = {};
+  for (var key in sqls) {
+    if (only && only.indexOf(key) < 0) continue;
+    if (except && except.indexOf(key) >= 0) continue;
+    try {
+      var ck = 'bq_' + key, cached = cache.get(ck);
+      if (cached) { out[key] = JSON.parse(cached); continue; }
+      var rows = bqRows_(sqls[key]);
+      if (rows) { out[key] = rows; cache.put(ck, JSON.stringify(rows), 600); }
+    } catch (e) { /* BQ未有効・権限エラー等でもダッシュボードは動かす */ }
+  }
+  return out;
+}
+// 手動テスト用：エディタから実行して結果をログ確認
+function testBQ() { Logger.log(JSON.stringify(bqRows_(bqSqls_()['明細時間帯']))); }
 
 // 変更検知用の軽量な署名（全データを読まずに作る）
 function dataVersion() {
