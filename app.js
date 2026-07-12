@@ -1673,7 +1673,11 @@ function viewDetail(){
   h+=`<div class="ctrl-bar no-print">
     <div class="seg">${[['excl','税別'],['incl','税込']].map(([k,l])=>`<button class="${(S.detailTax||'excl')===k?'on':''}" onclick="App.set('detailTax','${k}')">${l}</button>`).join('')}</div>
     <span class="period-label">明細分析（${taxLb}表記 ／ BigQuery明細）</span>
-  </div>`;
+  </div>
+  <div class="note-box no-print" style="margin:4px 0 2px;padding:10px 14px;font-size:11.5px">
+    ℹ️ ここはPOS明細の積み上げ（値引き前グロス）で、<b>時間帯・商品・店舗の傾向を見る用</b>です。オフィシャルな売上金額はダッシュボード／PLの日別売上（値引き後ネット）が正となり、数%の差が出ます。
+  </div>
+`;
 
   // 店舗別
   if(storeRaw){
