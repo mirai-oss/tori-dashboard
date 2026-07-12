@@ -23,12 +23,12 @@ const PALETTE = ['#3d5163','#b5502f','#5f7052','#c9a86a','#7d8b6f','#2a6f8f','#9
 const C_NOW='#3d5163', C_PREV='#c9b7a0', C_MID='#7d8b6f';
 const LS = { api:'toriApiUrl', sess:'toriSession', acc:'toriDemoAccounts', poll:'toriPollSec', months:'toriMonths' };
 const ROLE_TABS = {
-  '社長':       ['dash','analysis','pl','deposit','ad','review','ai','accounts'],
-  '本部':       ['dash','analysis','pl','deposit','ad','review','ai','accounts'],
-  'マネージャー':['dash','analysis','pl','deposit','ad','review','ai'],
-  '店舗':       ['dash','analysis','pl','deposit','review','ai'],
+  '社長':       ['dash','analysis','detail','pl','deposit','ad','review','ai','accounts'],
+  '本部':       ['dash','analysis','detail','pl','deposit','ad','review','ai','accounts'],
+  'マネージャー':['dash','analysis','detail','pl','deposit','ad','review','ai'],
+  '店舗':       ['dash','analysis','detail','pl','deposit','review','ai'],
 };
-const TAB_LABELS = { dash:'ダッシュボード', analysis:'推移分析', pl:'PL（損益）', deposit:'入金管理', ad:'広告管理', review:'口コミ', ai:'AI検索', accounts:'アカウント管理' };
+const TAB_LABELS = { dash:'ダッシュボード', analysis:'推移分析', detail:'明細分析', pl:'PL（損益）', deposit:'入金管理', ad:'広告管理', review:'口コミ', ai:'AI検索', accounts:'アカウント管理' };
 // 口コミ集約：同じ実店舗にぶら下がる別名店舗（Googleマイビジネスが分かれているケース）
 // 親店舗（=分析_日別店舗の店舗名）に、口コミ上の子店舗名をぶら下げる
 const REVIEW_CHILDREN = {
@@ -873,6 +873,7 @@ function render(){
   if(!tabs.includes(S.tab)) S.tab=tabs[0];
   let body='';
   if(S.tab==='dash') body=viewDash();
+  else if(S.tab==='detail') body=viewDetail();
   else if(S.tab==='analysis') body=viewAnalysis();
   else if(S.tab==='deposit') body=viewDeposit();
   else if(S.tab==='pl') body=viewPL();
@@ -1633,6 +1634,78 @@ function viewDowCompare(){
   }
   h+=`</tbody></table></div></div>`;
   EXPORT.push({ title:'週×曜日'+ml+'マトリクス（'+mLabel+'）', headers:['週'].concat(ORDER.map(k=>DOW_LB[k])), rows:expMx });
+  return h;
+}
+
+/* ---------------- 明細分析（BigQuery連携：時間帯別・商品別） ---------------- */
+// D.extra の中から、キー名に候補語を含むシート（生の2次元配列）を取り出す
+function extraSheet(...cands){
+  for(const key in (D.extra||{})){
+    if(cands.some(c=>String(key).indexOf(c)>=0)) return D.extra[key];
+  }
+  return null;
+}
+// 見出し行があれば飛ばして {header, rows} を返す（col1が数値なら見出し無しとみなす）
+function parseGrid(rows){
+  if(!Array.isArray(rows)||!rows.length) return {header:[], data:[]};
+  const first=rows[0].map(x=>String(x==null?'':x).trim());
+  const looksHeader = first.length>1 && isNaN(Number(String(first[1]).replace(/[,¥]/g,'')));
+  return { header:looksHeader?first:[], data:looksHeader?rows.slice(1):rows };
+}
+function viewDetail(){
+  const hourRaw=extraSheet('明細時間帯','時間帯','hour'), itemRaw=extraSheet('明細商品','商品別','menu');
+  let h='';
+  if(!hourRaw && !itemRaw){
+    return `<div class="panel"><div class="panel-head"><div><h3>明細分析（BigQuery連携）</h3>
+      <div class="sub">Diniiの明細をBigQueryで集計して、時間帯別・商品別を表示します</div></div></div>
+      <div class="note-box" style="line-height:1.9">
+        <b>この画面にデータを出すには</b>（スプレッドシートに2枚のタブを作って貼るだけ）:<br>
+        ① BigQueryで <code>時間帯別</code> クエリを実行 → 結果をコピー → スプレッドシートに新しいタブ <b>DB_明細時間帯</b> を作り、1行目に <code>hour,sales,checks</code>、その下に貼り付け<br>
+        ② 同様に <code>商品別</code> クエリ → タブ <b>DB_明細商品</b>（見出し <code>menu,sales,qty</code>）に貼り付け<br>
+        ③ ダッシュボードを再読み込み → ここに時間帯別グラフと商品ランキングが表示されます<br>
+        <span class="mut">※「DB_」で始まるタブは自動で取り込まれます（GAS再デプロイ不要）。将来はこの貼り付けを自動更新に置き換えます。</span>
+      </div></div>`;
+  }
+  // 時間帯別
+  if(hourRaw){
+    const g=parseGrid(hourRaw);
+    const recs=g.data.map(r=>({ hour:parseInt(String(r[0]).replace(/[^0-9]/g,''),10), sales:num(r[1]), checks:num(r[2]) }))
+      .filter(r=>!isNaN(r.hour));
+    // 営業日順（6時始まり）に並べ替え
+    const ord=(x)=>(x.hour+18)%24;   // 6→0, 5→23
+    recs.sort((a,b)=>ord(a)-ord(b));
+    const cat=recs.map(r=>r.hour+'時');
+    const totalSales=recs.reduce((s,r)=>s+r.sales,0), totalChk=recs.reduce((s,r)=>s+r.checks,0);
+    const peak=recs.reduce((m,r)=>r.sales>m.sales?r:m,{sales:-1});
+    h+=`<div class="kpi-grid">
+      <div class="kpi"><div class="lb">合計売上（税込）</div><div class="vl">${yen(totalSales)}</div><div class="yy">明細集計</div></div>
+      <div class="kpi"><div class="lb">会計数</div><div class="vl">${cnt(totalChk)}組</div><div class="yy">延べ</div></div>
+      <div class="kpi"><div class="lb">会計単価</div><div class="vl">${yen(totalChk>0?totalSales/totalChk:0)}</div><div class="yy">売上÷会計数</div></div>
+      <div class="kpi"><div class="lb">ピーク時間帯</div><div class="vl">${peak.sales>=0?peak.hour+'時台':'—'}</div><div class="yy">${peak.sales>=0?yen(peak.sales):''}</div></div>
+    </div>`;
+    const series=[{name:'売上',color:C_NOW,data:recs.map(r=>r.sales)}];
+    h+=`<div class="panel"><div class="panel-head"><div><h3>時間帯別 売上（会計日時ベース）</h3><div class="sub">営業日順（夕方→深夜）／ 棒＝売上</div></div></div>
+      ${barChart(cat,series,{})}
+      <div class="scroll-x"><table class="tbl"><thead><tr><th>時間帯</th><th>売上</th><th>会計数</th><th>会計単価</th><th>構成比</th></tr></thead><tbody>`;
+    recs.forEach(r=>{ h+=`<tr><td>${r.hour}時台</td><td>${yen(r.sales)}</td><td>${cnt(r.checks)}組</td><td>${yen(r.checks>0?r.sales/r.checks:0)}</td><td>${totalSales>0?(r.sales/totalSales*100).toFixed(1):'—'}%</td></tr>`; });
+    h+=`<tr class="total"><td>合計</td><td>${yen(totalSales)}</td><td>${cnt(totalChk)}組</td><td>${yen(totalChk>0?totalSales/totalChk:0)}</td><td>100%</td></tr></tbody></table></div></div>`;
+    EXPORT.push({ title:'時間帯別売上', headers:['時間帯','売上','会計数','会計単価','構成比'], rows:recs.map(r=>[r.hour+'時台',Math.round(r.sales),Math.round(r.checks),Math.round(r.checks>0?r.sales/r.checks:0),totalSales>0?(r.sales/totalSales*100).toFixed(1)+'%':'']) });
+  }
+  // 商品別ランキング
+  if(itemRaw){
+    const g=parseGrid(itemRaw);
+    const recs=g.data.map(r=>({ menu:String(r[0]||'').trim(), sales:num(r[1]), qty:num(r[2]) })).filter(r=>r.menu).sort((a,b)=>b.sales-a.sales);
+    const maxS=recs.length?recs[0].sales:1;
+    h+=`<div class="panel"><div class="panel-head"><div><h3>商品別 売上ランキング</h3><div class="sub">明細（メニュー）別の売上・出数</div></div></div>
+      <div class="scroll-x"><table class="tbl"><thead><tr><th>順位</th><th>商品</th><th>売上</th><th>出数</th><th></th></tr></thead><tbody>`;
+    recs.slice(0,40).forEach((r,i)=>{
+      const pct=Math.round(r.sales/maxS*100);
+      h+=`<tr><td>${i+1}</td><td>${esc(r.menu)}</td><td>${yen(r.sales)}</td><td>${cnt(r.qty)}点</td>
+        <td style="min-width:120px"><div style="height:7px;background:#efe9dd;border-radius:4px;overflow:hidden"><div style="height:100%;width:${pct}%;background:#5f7052"></div></div></td></tr>`;
+    });
+    h+=`</tbody></table></div></div>`;
+    EXPORT.push({ title:'商品別ランキング', headers:['順位','商品','売上','出数'], rows:recs.map((r,i)=>[i+1,r.menu,Math.round(r.sales),Math.round(r.qty)]) });
+  }
   return h;
 }
 
