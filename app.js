@@ -2054,20 +2054,50 @@ function viewAd(){
     </div>`}</div>`+extraSheetsHtml();
   }
   const ref=D.refDate||new Date();
-  const m0=S.adMonth?new Date(+S.adMonth.split('-')[0],+S.adMonth.split('-')[1]-1,1):new Date(ref.getFullYear(),ref.getMonth(),1);
-  const y=m0.getFullYear(),m=m0.getMonth();
-  const mS=dayMs(new Date(y,m,1)), mE=dayMs(new Date(y,m+1,0));
-  const pS=dayMs(new Date(y,m-1,1)), pE=dayMs(new Date(y,m,0));
-  const mLabel=y+'年 '+(m+1)+'月';
+  const P=S.adPeriod||'month';
+  // 期間：月次（前月比較）／年間（前年比較）／期間指定（前期間比較）。mS〜mE=対象、pS〜pE=比較用。
+  let mS,mE,pS,pE,mLabel,prevName='前月',ctrlHtml='';
+  let y,m,yy,cS,cE;   // y/m=月次用、yy=年間用、cS/cE=期間指定の開始・終了日
+  if(P==='year'){
+    yy=+(S.adYear||ref.getFullYear());
+    const endD=(yy===ref.getFullYear())?new Date(ref.getFullYear(),ref.getMonth()+1,0):new Date(yy,11,31);
+    mS=dayMs(new Date(yy,0,1)); mE=dayMs(endD);
+    pS=dayMs(new Date(yy-1,0,1)); pE=dayMs(sub1y(endD));
+    prevName='前年';
+    mLabel=yy+'年';
+    const years=[...new Set(D.ad.map(r=>new Date(r.t).getFullYear()).concat(D.daily.map(x=>new Date(x.t).getFullYear())))].filter(v=>v>2000).sort();
+    if(!years.length) years.push(ref.getFullYear());
+    ctrlHtml=`<select onchange="App.set('adYear',this.value)">${years.map(v=>`<option ${String(yy)===String(v)?'selected':''}>${v}</option>`).join('')}</select>`;
+  } else if(P==='custom'){
+    const pI=(s2)=>{const p2=String(s2).split('-');return new Date(+p2[0],+p2[1]-1,+p2[2]);};
+    cS=S.adStart?pI(S.adStart):new Date(ref.getFullYear(),ref.getMonth()-2,1);
+    cE=S.adEnd?pI(S.adEnd):new Date(ref.getFullYear(),ref.getMonth()+1,0);
+    if(dayMs(cS)>dayMs(cE)){ const t=cS;cS=cE;cE=t; }
+    mS=dayMs(cS); mE=dayMs(cE);
+    const span=Math.round((mE-mS)/86400000)+1;
+    pS=dayMs(addD(cS,-span)); pE=dayMs(addD(cS,-1));
+    prevName='前期間';
+    mLabel=(cS.getFullYear())+'/'+(cS.getMonth()+1)+'/'+cS.getDate()+'〜'+(cE.getMonth()+1)+'/'+cE.getDate();
+    ctrlHtml=`${ymdSelect('adStart',S.adStart,'')} 〜 ${ymdSelect('adEnd',S.adEnd,'')}`;
+  } else {
+    const m0=S.adMonth?new Date(+S.adMonth.split('-')[0],+S.adMonth.split('-')[1]-1,1):new Date(ref.getFullYear(),ref.getMonth(),1);
+    y=m0.getFullYear(); m=m0.getMonth();
+    mS=dayMs(new Date(y,m,1)); mE=dayMs(new Date(y,m+1,0));
+    pS=dayMs(new Date(y,m-1,1)); pE=dayMs(new Date(y,m,0));
+    mLabel=y+'年 '+(m+1)+'月';
+    ctrlHtml=ymSelect('adMonth', y, m);
+  }
   const cur=adAgg(scopeSet,mS,mE), prv=adAgg(scopeSet,pS,pE);
   const totalSales=stat(scopeSet,mS,mE,null).sales;
   const roas=cur.ad>0?cur.medNet/cur.ad:0;
   const pRoas=prv.ad>0?prv.medNet/prv.ad:0;
   const adRate=totalSales>0?cur.ad/totalSales*100:0;
   const profit=cur.medNet-cur.ad;
-  const mom=(c,p,invert)=>{ if(!(p>0)) return {t:'前月 —',cls:'mut'}; const d=(c-p)/p*100; const up=d>=0; return { t:'前月比 '+(up?'+':'▲')+Math.abs(d).toFixed(1)+'%', cls:(invert?!up:up)?'up':'dn' }; };
+  const mom=(c,p,invert)=>{ if(!(p>0)) return {t:prevName+' —',cls:'mut'}; const d=(c-p)/p*100; const up=d>=0; return { t:prevName+'比 '+(up?'+':'▲')+Math.abs(d).toFixed(1)+'%', cls:(invert?!up:up)?'up':'dn' }; };
   let h=storeSegHtml();
-  h+=`<div class="ctrl-bar no-print">${ymSelect('adMonth', y, m)}
+  h+=`<div class="ctrl-bar no-print">
+    <div class="seg">${[['month','月'],['year','年'],['custom','期間指定']].map(([k,l])=>`<button class="${P===k?'on':''}" onclick="App.set('adPeriod','${k}')">${l}</button>`).join('')}</div>
+    ${ctrlHtml}
     <span class="period-label">広告費用対効果（${mLabel}${selN?' ／ '+esc(selN):''}）</span></div>`;
   // データの出どころを見える化：この画面の数字がどこから来ているかを表示
   let a0=0,a1=0; for(const r of D.ad){ if(!a0||r.t<a0)a0=r.t; if(r.t>a1)a1=r.t; }
@@ -2089,7 +2119,7 @@ function viewAd(){
   const kR=pRoas>0?{t:'前月 '+pRoas.toFixed(1)+'倍',cls:roas>=pRoas?'up':'dn'}:{t:'前月 —',cls:'mut'};
   const kP={t:'差引利益 '+(profit>=0?'':'▲')+yen(Math.abs(profit)).slice(1)+'円',cls:profit>=0?'up':'dn'};
   h+=`<div class="kpi-grid">
-    <div class="kpi"><div class="lb">広告費（${m+1}月）</div><div class="vl">${yen(cur.ad)}</div><div class="yy ${kA.cls}">${kA.t}</div></div>
+    <div class="kpi"><div class="lb">広告費（${esc(mLabel)}）</div><div class="vl">${yen(cur.ad)}</div><div class="yy ${kA.cls}">${kA.t}</div></div>
     <div class="kpi"><div class="lb">媒体経由売上</div><div class="vl">${yen(cur.medNet)}</div><div class="yy ${kN.cls}">${kN.t}</div></div>
     <div class="kpi"><div class="lb">ROAS（売上÷広告費）</div><div class="vl">${cur.ad>0?roas.toFixed(1)+'倍':'—'}</div><div class="yy ${kR.cls}">${kR.t}</div></div>
     <div class="kpi"><div class="lb">広告費率（対総売上）</div><div class="vl">${totalSales>0?adRate.toFixed(1)+'%':'—'}</div><div class="yy ${kP.cls}">${kP.t}</div></div>
@@ -2247,19 +2277,24 @@ function viewAd(){
       使う列：<code>来店日</code>／<code>来店時間</code>／<code>人数</code>／<code>ステータス</code>／<code>受付窓口</code>／<code>作成日</code>／<code>作成時間</code>（複数店舗ぶんを貼る場合は<code>店舗名</code>列を追加）<br>
       ※GAS（Code.gs）を最新版に更新してください。</div></div>`;
   }
-  // 12ヶ月推移
+  // 広告費・媒体経由売上の月次推移。期間に合わせて対象月を決める：
+  //  月＝直近12ヶ月／年＝その年の1〜12月／期間指定＝開始月〜終了月
+  const chartMonths=[];
+  if(P==='year'){ for(let mm=0;mm<12;mm++) chartMonths.push(new Date(yy,mm,1)); }
+  else if(P==='custom'){ let d=new Date(cS.getFullYear(),cS.getMonth(),1); const end=new Date(cE.getFullYear(),cE.getMonth(),1); while(dayMs(d)<=dayMs(end)){ chartMonths.push(new Date(d)); d=new Date(d.getFullYear(),d.getMonth()+1,1); } }
+  else { for(let i=11;i>=0;i--) chartMonths.push(new Date(y,m-i,1)); }
+  const chartTitle=P==='year'?('（'+yy+'年'+(selN?'・'+esc(selN):'')+'）'):P==='custom'?('（'+esc(mLabel)+(selN?'・'+esc(selN):'')+'）'):('（直近12ヶ月'+(selN?'・'+esc(selN):'')+'）');
   const cat=[],adArr=[],netArr=[],roasArr=[];
-  for(let i=11;i>=0;i--){
-    const d=new Date(y,m-i,1);
+  chartMonths.forEach(d=>{
     const a2=dayMs(d), b2=dayMs(new Date(d.getFullYear(),d.getMonth()+1,0));
     const g=adAgg(scopeSet,a2,b2);
     cat.push(String(d.getFullYear()).slice(2)+'/'+(d.getMonth()+1));
     adArr.push(g.ad||null); netArr.push(g.medNet||null); roasArr.push(g.ad>0?g.medNet/g.ad:null);
-  }
+  });
   const series=[{name:'媒体経由売上',color:'#4c7d5c',data:netArr},{name:'広告費',color:'#b23b2e',data:adArr}];
   const legend=series.map(s=>`<span><span class="sw" style="background:${s.color}"></span>${esc(s.name)}</span>`).join('');
-  h+=`<div class="panel"><div class="panel-head"><div><h3>広告費と媒体経由売上の推移（直近12ヶ月${selN?'・'+esc(selN):''}）</h3>
-    <div class="sub">〜${mLabel}</div></div><div class="legend">${legend}</div></div>
+  h+=`<div class="panel"><div class="panel-head"><div><h3>広告費と媒体経由売上の推移${chartTitle}</h3>
+    <div class="sub">月次推移${P==='month'?'／〜'+mLabel:''}</div></div><div class="legend">${legend}</div></div>
     ${lineChart(cat,series,'sales')}
   <div class="scroll-x"><table class="tbl"><thead><tr><th>月</th><th>広告費</th><th>媒体経由売上</th><th>ROAS</th></tr></thead><tbody>`;
   const expT=[];
@@ -2288,7 +2323,9 @@ function viewAd(){
   return h;
 }
 function extraSheetsHtml(){
-  const keys=Object.keys(D.extra);
+  // 内部処理用シートは表示しない（BQ明細＝明細分析タブ専用、店舗ID対応＝BQ店舗名変換用の裏方）
+  const hide=(k)=>/^明細/.test(String(k))||/店舗ID対応|店舗名対応|店舗マッピング|店舗対応|storemap|storealias/i.test(String(k));
+  const keys=Object.keys(D.extra).filter(k=>!hide(k));
   if(!keys.length) return '';
   let h='';
   keys.forEach(k=>{
