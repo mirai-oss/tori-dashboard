@@ -116,6 +116,33 @@ const esc = (s)=>String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'
 const yen = (n)=>'¥'+Math.round(n||0).toLocaleString('ja-JP');
 const num = (v)=>parseFloat(String(v==null?'':v).replace(/[^0-9.\-]/g,''))||0;
 const cnt = (n)=>Math.round(n||0).toLocaleString('ja-JP');
+// 長い店舗名を短縮表示（会社名・建物名トークンを落とし、末尾「店」を除く。本店/支店は残す）
+// 例: 横濱ホルモン会館 エース 本厚木店 → エース本厚木 ／ 鶏武者 川崎店 → 鶏武者川崎 ／ 鳥一代 本店 → 鳥一代本店
+function shortStore(nm){
+  let s=String(nm==null?'':nm).trim(); if(!s) return '';
+  const parts=s.split(/[\s　]+/).filter(Boolean);
+  const drop=/ホルモン会館|会館|株式会社|有限会社|合同会社|^ビル$|グループ$/;
+  let toks=parts.filter(t=>!drop.test(t)); if(!toks.length) toks=parts.slice();
+  const last=toks[toks.length-1];
+  if(last && /店$/.test(last) && !/^(本店|支店)$/.test(last) && last.length>2) toks[toks.length-1]=last.replace(/店$/,'');
+  return toks.join('')||s;
+}
+// 長い商品名を短縮。コース系は「金額＋種別」に圧縮、一般商品は括弧補足を落として詰める（元名はtitle=で保持）
+function shortMenu(nm){
+  let s=String(nm==null?'':nm).trim(); if(!s) return '';
+  if([...s].length<=16) return s;
+  const price=(s.match(/([0-9][0-9,]{2,})\s*円/)||[])[1];
+  if(/コース|プラン|飲み放題|食べ放題|飲放|食放/.test(s)){
+    // コース／プランが主役（「飲み放題付コース」等）。単品の放題系はそのまま放題表記に。
+    const kind=/コース/.test(s)?'コース':/プラン/.test(s)?'プラン':/食べ放題|食放/.test(s)?'食べ放題':'飲み放題';
+    return (price?price+'円':'')+kind;
+  }
+  const base=s.replace(/[【（(\[〔].*?[】）)\]〕]/g,'').replace(/[\s　]+/g,'').trim();
+  return ([...base].slice(0,16).join(''))||([...s].slice(0,16).join(''));
+}
+// 短縮名をhover(title)で元名を見られる<span>にする（テーブルセル用）
+const shortStoreTd=(nm)=>`<span title="${esc(nm)}">${esc(shortStore(nm))}</span>`;
+const shortMenuTd=(nm)=>`<span title="${esc(nm)}">${esc(shortMenu(nm))}</span>`;
 const dayMs = (d)=>new Date(d.getFullYear(),d.getMonth(),d.getDate()).getTime();
 const addD = (d,n)=>new Date(d.getFullYear(),d.getMonth(),d.getDate()+n);
 const sub1y = (d)=>new Date(d.getFullYear()-1,d.getMonth(),d.getDate());
@@ -1127,12 +1154,25 @@ function viewDash(){
 
   const y1=yoyStr(Ssl,pS), yG=yoyStr(cur.guests,prev.guests,'前年 '), ySp=yoyStr(spend,pSpend,'前年 ');
   const yF=ptStr(foodR,pFood,true), yL=ptStr(laborR,pLabor,true), yFL=ptStr(flR,pFood+pLabor,true);
+  // 組数（会計組数）＝POS明細(BQ)から期間・スコープで集計。客数(お通し推定)と同じ明細が源。
+  const ymdS=(d)=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+  let checksKpi=null;
+  if(S.auth&&S.auth.token){
+    const cf=ymdS(r.s), ct=ymdS(r.e); fetchDashChecks(cf,ct);
+    const ready=D.dashChecksKey===(cf+'|'+ct)&&Array.isArray(D.dashChecks);
+    let checks=null;
+    if(ready){ const st=D.dashChecks, map={}; if(st.length){ for(let i=1;i<st.length;i++) map[String(st[i][0]).trim()]=num(st[i][1]); }
+      const targets=selName?[selName]:sc; checks=0; targets.forEach(nm=>{ checks+=(map[nm]||0); }); }
+    const perGrp=(checks&&checks>0)?Ssl/checks:0;
+    checksKpi={ lb:'組数', vl: ready?(cnt(checks)+'組'):'集計中…', yy: (ready&&checks>0)?{t:'1組平均 '+yen(perGrp),cls:'mut'}:{t:'POS明細より',cls:'mut'} };
+  }
   const kpis=[
     { lb:(S.period==='day'?'日次':S.period==='week'?'週次':S.period==='month'?'月次':S.period==='year'?'累計':'期間')+'売上', vl:yen(Ssl), yy:y1 },
     { lb:'原価率 (F)', vl:Ssl>0?(foodR*100).toFixed(1)+'%':'—', sub:Ssl>0?yen(cur.cost):'', yy:yF },
     { lb:'人件費率 (L)', vl:Ssl>0?(laborR*100).toFixed(1)+'%':'—', sub:Ssl>0?('PA '+yen(cur.pa)+' ／ 社員 '+yen(cur.emp)):'', yy:yL },
     { lb:'FL合計', vl:Ssl>0?(flR*100).toFixed(1)+'%':'—', yy:yFL },
     { lb:'客数', vl:cnt(cur.guests)+'人', yy:yG },
+    ...(checksKpi?[checksKpi]:[]),
     { lb:'客単価', vl:yen(spend), yy:ySp },
     { lb:'口コミ点数', vl:revScore, yy:revScoreYY },
     { lb:'口コミ件数', vl:revCount, yy:revCountYY },
@@ -1240,7 +1280,7 @@ function landingPanel(r,scopeSet,selName,sc){
       const s2=monthLanding(null,nm,y,m);
       const yy=yoyF(s2.fSales,s2.lyFull);
       tM+=s2.mtdSales; tR+=s2.remSales; tF+=s2.fSales; tLy+=s2.lyFull;
-      h+=`<tr class="click" onclick="App.store(this.dataset.n)" data-n="${esc(nm)}"><td>${esc(nm)}</td><td>${yen(s2.mtdSales)}</td><td>${yen(s2.remSales)}</td><td style="font-weight:700">${yen(s2.fSales)}</td><td class="mut">${yen(s2.lyFull)}</td><td class="${yy.cls==='up'?'pos':yy.cls==='dn'?'neg':'mut'}">${yy.t}</td></tr>`;
+      h+=`<tr class="click" onclick="App.store(this.dataset.n)" data-n="${esc(nm)}"><td>${shortStoreTd(nm)}</td><td>${yen(s2.mtdSales)}</td><td>${yen(s2.remSales)}</td><td style="font-weight:700">${yen(s2.fSales)}</td><td class="mut">${yen(s2.lyFull)}</td><td class="${yy.cls==='up'?'pos':yy.cls==='dn'?'neg':'mut'}">${yy.t}</td></tr>`;
       exp.push([nm,Math.round(s2.mtdSales),Math.round(s2.remSales),Math.round(s2.fSales),Math.round(s2.lyFull),yy.t]);
     });
     const tyy=yoyF(tF,tLy);
@@ -1433,7 +1473,7 @@ function comparePanel(r,p,sc,selName){
     agg.sales+=c.sales;agg.cost+=c.cost;agg.labor+=c.labor;agg.guests+=c.guests;agg.psales+=pv.sales;
     if(rv&&rv.count>0){tws+=rv.star*rv.count;tcs+=rv.count;}
     h+=`<tr class="click ${selName===nm?'sel':''}" onclick="App.store(this.dataset.n)" data-n="${esc(nm)}">
-      <td>${esc(nm)}</td><td>${yen(c.sales)}</td>
+      <td>${shortStoreTd(nm)}</td><td>${yen(c.sales)}</td>
       <td class="${yy.cls==='up'?'pos':yy.cls==='dn'?'neg':'mut'}">${yy.t}</td>
       <td>${c.sales>0?(fr*100).toFixed(1)+'%':'—'}</td><td>${c.sales>0?(lr*100).toFixed(1)+'%':'—'}</td>
       <td class="${fl>0.6?'warn':''}">${c.sales>0?(fl*100).toFixed(1)+'%':'—'}</td>
@@ -1684,10 +1724,25 @@ async function fetchDetail(){
   D.detailLoading=key;
   try{
     const d=await api({ action:'bqDetail', token:S.auth.token, from:r.from, to:r.to, store:S.dStore, basis:S.dBasis||'checkout' });
-    if(d&&d.ok){ D.detailData={ hour:d.hour||[], item:d.item||[], store:d.store||[] }; D.detailKey=key; }
-    else { D.detailData={ hour:[], item:[], store:[], err:(d&&d.error)||'取得失敗' }; D.detailKey=key; }
-  }catch(e){ D.detailData={ hour:[], item:[], store:[], err:String(e.message||e) }; D.detailKey=key; }
+    if(d&&d.ok){ D.detailData={ hour:d.hour||[], item:d.item||[], store:d.store||[], hourItem:d.hourItem||[] }; D.detailKey=key; }
+    else { D.detailData={ hour:[], item:[], store:[], hourItem:[], err:(d&&d.error)||'取得失敗' }; D.detailKey=key; }
+  }catch(e){ D.detailData={ hour:[], item:[], store:[], hourItem:[], err:String(e.message||e) }; D.detailKey=key; }
   D.detailLoading=''; render();
+}
+// ダッシュボードの「組数」：POS明細(BQ)から期間・店舗別の会計組数を取得（客数と同じ明細が源）
+async function fetchDashChecks(from,to){
+  if(!S.auth||!S.auth.token) return;
+  const key=from+'|'+to;
+  if(D.dashChecksKey===key && D.dashChecks) return;
+  if(D.dashChecksLoading===key) return;
+  D.dashChecksLoading=key;
+  try{
+    const d=await api({ action:'bqChecks', token:S.auth.token, from, to });
+    if(d&&d.ok){ D.dashChecks=d.store||[]; D.dashChecksErr=''; }
+    else { D.dashChecks=[]; D.dashChecksErr=(d&&d.error)||'取得失敗'; }
+    D.dashChecksKey=key;
+  }catch(e){ D.dashChecks=[]; D.dashChecksErr=String(e.message||e); D.dashChecksKey=key; }
+  D.dashChecksLoading=''; render();
 }
 function viewDetail(){
   const stores=allStores();
@@ -1727,7 +1782,7 @@ function viewDetail(){
       const shr=(v,b)=>b>0?`<span style="color:#8c8375;font-size:10px">(${(v/b*100).toFixed(0)}%)</span>`:'';   // その店の売上に対する構成比
       const bkHead=hasBk?`<th>ドリンク</th><th>フード</th><th>カラオケ</th>`:'';
       h+=`<div class="panel"><div class="panel-head"><div><h3>店舗別 売上（${taxLb}）</h3>${hasBk?`<div class="sub">ドリンク/フード/カラオケは明細から推定（税別・コース1800円=ドリンク／サービス料50%案分）。( )内は各店売上に対する比率</div>`:''}</div></div><div class="scroll-x"><table class="tbl"><thead><tr><th>店舗</th><th>売上</th>${bkHead}<th>会計数</th><th>客数</th><th>客単価</th><th>構成比</th></tr></thead><tbody>`;
-      recs.forEach(x=>{ const bk=hasBk?`<td>${yen(x.drink)} ${shr(x.drink,x.sales)}</td><td>${yen(x.food)} ${shr(x.food,x.sales)}</td><td>${yen(x.karaoke)} ${shr(x.karaoke,x.sales)}</td>`:''; h+=`<tr><td>${esc(x.store)}</td><td>${yen(x.sales)}</td>${bk}<td>${cnt(x.checks)}組</td><td>${cnt(x.guests)}人</td><td>${yen(x.guests>0?x.sales/x.guests:0)}</td><td>${tot>0?(x.sales/tot*100).toFixed(1):'—'}%</td></tr>`; });
+      recs.forEach(x=>{ const bk=hasBk?`<td>${yen(x.drink)} ${shr(x.drink,x.sales)}</td><td>${yen(x.food)} ${shr(x.food,x.sales)}</td><td>${yen(x.karaoke)} ${shr(x.karaoke,x.sales)}</td>`:''; h+=`<tr><td>${shortStoreTd(x.store)}</td><td>${yen(x.sales)}</td>${bk}<td>${cnt(x.checks)}組</td><td>${cnt(x.guests)}人</td><td>${yen(x.guests>0?x.sales/x.guests:0)}</td><td>${tot>0?(x.sales/tot*100).toFixed(1):'—'}%</td></tr>`; });
       const sumD=recs.reduce((s,x)=>s+x.drink,0),sumF=recs.reduce((s,x)=>s+x.food,0),sumK=recs.reduce((s,x)=>s+x.karaoke,0);
       const bkTot=hasBk?`<td>${yen(sumD)} ${shr(sumD,tot)}</td><td>${yen(sumF)} ${shr(sumF,tot)}</td><td>${yen(sumK)} ${shr(sumK,tot)}</td>`:'';
       h+=`<tr class="total"><td>全店合計</td><td>${yen(tot)}</td>${bkTot}<td>${cnt(recs.reduce((s,x)=>s+x.checks,0))}組</td><td>${cnt(recs.reduce((s,x)=>s+x.guests,0))}人</td><td></td><td>100%</td></tr></tbody></table></div></div>`;
@@ -1772,7 +1827,7 @@ function viewDetail(){
       const cellBg=(v)=>v>0?`background:rgba(76,125,92,${(0.10+0.55*v/mx).toFixed(2)})`:'';
       h+=`<div class="panel"><div class="panel-head"><div><h3>時間帯×商品 出数</h3><div class="sub">何時にどの商品が何点出たか（0円商品も含む・出数上位40商品／濃いほど多い）</div></div></div>
         <div class="scroll-x"><table class="tbl"><thead><tr><th class="stick-l">商品</th>${hours.map(hh=>`<th>${hh}時</th>`).join('')}<th>合計</th></tr></thead><tbody>`;
-      menus.forEach(m=>{ const row=byMenu[m]; h+=`<tr><td class="stick-l">${esc(m)}</td>${hours.map(hh=>{ const v=row.h[hh]||0; return `<td style="text-align:center;${cellBg(v)}">${v>0?cnt(v):''}</td>`; }).join('')}<td style="text-align:right;font-weight:700">${cnt(row.tot)}</td></tr>`; });
+      menus.forEach(m=>{ const row=byMenu[m]; h+=`<tr><td class="stick-l">${shortMenuTd(m)}</td>${hours.map(hh=>{ const v=row.h[hh]||0; return `<td style="text-align:center;${cellBg(v)}">${v>0?cnt(v):''}</td>`; }).join('')}<td style="text-align:right;font-weight:700">${cnt(row.tot)}</td></tr>`; });
       h+=`<tr class="total"><td class="stick-l">合計</td>${hours.map(hh=>`<td style="text-align:center">${cnt(colTot[hh])}</td>`).join('')}<td style="text-align:right">${cnt(grand)}</td></tr></tbody></table></div></div>`;
       EXPORT.push({ title:'時間帯×商品出数', headers:['商品',...hours.map(hh=>hh+'時'),'合計'], rows:menus.map(m=>[m,...hours.map(hh=>byMenu[m].h[hh]||0),byMenu[m].tot]) });
     }
@@ -1792,14 +1847,14 @@ function viewDetail(){
       const cnts={A:0,B:0,C:0}; recs.forEach(x=>cnts[x.cls]++);
       h+=`<div class="panel"><div class="panel-head"><div><h3>商品別 ABC分析（${taxLb}）</h3><div class="sub">売上構成比の累計で A(〜70%)/B(〜90%)/C(残り)。A=${cnts.A}品 B=${cnts.B}品 C=${cnts.C}品</div></div>${modeSel}</div>
         <div class="scroll-x"><table class="tbl"><thead><tr><th>順位</th><th>商品</th><th>売上</th><th>出数</th><th>累計構成比</th><th>区分</th></tr></thead><tbody>`;
-      recs.slice(0,200).forEach((x,i)=>{ const bc=x.cls==='A'?'ok':x.cls==='B'?'mid':'zero'; h+=`<tr><td>${i+1}</td><td>${esc(x.menu)}</td><td>${yen(x.sales)}</td><td>${cnt(x.qty)}点</td><td>${x.cumPct.toFixed(1)}%</td><td><span class="badge ${bc}">${x.cls}</span></td></tr>`; });
+      recs.slice(0,200).forEach((x,i)=>{ const bc=x.cls==='A'?'ok':x.cls==='B'?'mid':'zero'; h+=`<tr><td>${i+1}</td><td>${shortMenuTd(x.menu)}</td><td>${yen(x.sales)}</td><td>${cnt(x.qty)}点</td><td>${x.cumPct.toFixed(1)}%</td><td><span class="badge ${bc}">${x.cls}</span></td></tr>`; });
       h+=`</tbody></table></div></div>`;
       EXPORT.push({ title:'商品ABC('+taxLb+')', headers:['順位','商品','売上','出数','累計構成比','区分'], rows:recs.map((x,i)=>[i+1,x.menu,Math.round(x.sales),Math.round(x.qty),x.cumPct.toFixed(1)+'%',x.cls]) });
     } else {
       const val=(x)=>mode==='qty'?x.qty:x.sales; const maxV=recs.length?val(recs[0]):1;
       h+=`<div class="panel"><div class="panel-head"><div><h3>商品別 ${mode==='qty'?'出数':'売上'}ランキング（${taxLb}）</h3></div>${modeSel}</div>
         <div class="scroll-x"><table class="tbl"><thead><tr><th>順位</th><th>商品</th><th>売上</th><th>出数</th><th></th></tr></thead><tbody>`;
-      recs.slice(0,50).forEach((x,i)=>{ const pct=Math.round(val(x)/(maxV||1)*100); h+=`<tr><td>${i+1}</td><td>${esc(x.menu)}</td><td>${yen(x.sales)}</td><td>${cnt(x.qty)}点</td><td style="min-width:120px"><div style="height:7px;background:#efe9dd;border-radius:4px;overflow:hidden"><div style="height:100%;width:${pct}%;background:${mode==='qty'?'#3d5163':'#5f7052'}"></div></div></td></tr>`; });
+      recs.slice(0,50).forEach((x,i)=>{ const pct=Math.round(val(x)/(maxV||1)*100); h+=`<tr><td>${i+1}</td><td>${shortMenuTd(x.menu)}</td><td>${yen(x.sales)}</td><td>${cnt(x.qty)}点</td><td style="min-width:120px"><div style="height:7px;background:#efe9dd;border-radius:4px;overflow:hidden"><div style="height:100%;width:${pct}%;background:${mode==='qty'?'#3d5163':'#5f7052'}"></div></div></td></tr>`; });
       h+=`</tbody></table></div></div>`;
       EXPORT.push({ title:'商品'+(mode==='qty'?'出数':'売上')+'('+taxLb+')', headers:['順位','商品','売上','出数'], rows:recs.map((x,i)=>[i+1,x.menu,Math.round(x.sales),Math.round(x.qty)]) });
     }
@@ -1900,7 +1955,7 @@ function viewDeposit(){
       const cFloor=Object.values(cashByDay).reduce((s2,v)=>s2+Math.floor(v/1000)*1000,0);
       const okDone=dp>=cFloor;
       const badge=okDone?(c>0||dp>0?'<span class="badge ok">完了</span>':'<span class="badge zero">—</span>'):'<span class="badge ng">未入金あり</span>';
-      h+=`<tr class="click" onclick="App.store(this.dataset.n)" data-n="${esc(nm)}"><td>${esc(nm)}</td><td>${yen(c)}</td><td>${yen(dp)}</td>
+      h+=`<tr class="click" onclick="App.store(this.dataset.n)" data-n="${esc(nm)}"><td>${shortStoreTd(nm)}</td><td>${yen(c)}</td><td>${yen(dp)}</td>
         <td class="${u>0?'neg':u<0?'pos':'mut'}">${yen(u)}</td><td class="${cu>0?'neg':'mut'}">${yen(cu)}</td><td>${badge}</td></tr>`;
       expS.push([nm,Math.round(c),Math.round(dp),Math.round(u),Math.round(cu),okDone?'完了':'未入金あり']);
     });
@@ -2144,7 +2199,7 @@ function viewAd(){
     const sl=stat(null,mS,mE,nm).sales;
     const rate=sl>0?o.cost/sl*100:0;
     const tag=isChild(nm)?` <span class="mut" style="font-size:11px">（${esc(parentOf(nm))}）</span>`:'';
-    h+=`<tr><td style="${isChild(nm)?'padding-left:22px':''}">${esc(nm)}${tag}</td><td>${yen(o.cost)}</td><td>${yen(o.net)}</td><td>${roasBadge(o.cost,o.net)}</td><td>${sl>0?yen(sl):'—'}</td><td class="${rate>10?'warn':''}">${sl>0?rate.toFixed(1)+'%':'—'}</td></tr>`;
+    h+=`<tr><td style="${isChild(nm)?'padding-left:22px':''}">${shortStoreTd(nm)}${tag}</td><td>${yen(o.cost)}</td><td>${yen(o.net)}</td><td>${roasBadge(o.cost,o.net)}</td><td>${sl>0?yen(sl):'—'}</td><td class="${rate>10?'warn':''}">${sl>0?rate.toFixed(1)+'%':'—'}</td></tr>`;
     expA.push([nm+(isChild(nm)?'（'+parentOf(nm)+'）':''),Math.round(o.cost),Math.round(o.net),o.cost>0&&o.net>0?(o.net/o.cost).toFixed(2):'',Math.round(sl),sl>0?rate.toFixed(1)+'%':'']);
   });
   h+=`<tr class="total"><td>合計</td><td>${yen(cur.ad)}</td><td>${yen(cur.medNet)}</td><td>${roasBadge(cur.ad,cur.medNet)}</td><td>${yen(totalSales)}</td><td>${totalSales>0?adRate.toFixed(1)+'%':'—'}</td></tr></tbody></table></div></div>`;
@@ -2568,7 +2623,7 @@ function viewPL(){
       const o1=g1-l1-a1-e1;
       tS+=c1.sales;tG+=g1;tL+=l1;tA+=a1;tE+=e1;tO+=o1;
       const orate=c1.sales>0?(o1/c1.sales*100).toFixed(1)+'%':'—';
-      h+=`<tr class="click" onclick="App.store(this.dataset.n)" data-n="${esc(nm)}"><td>${esc(nm)}</td><td>${yen(c1.sales)}</td><td>${yen(g1)}</td><td>${yen(l1)}</td><td>${yen(a1)}</td><td>${yen(e1)}</td>
+      h+=`<tr class="click" onclick="App.store(this.dataset.n)" data-n="${esc(nm)}"><td>${shortStoreTd(nm)}</td><td>${yen(c1.sales)}</td><td>${yen(g1)}</td><td>${yen(l1)}</td><td>${yen(a1)}</td><td>${yen(e1)}</td>
         <td class="${o1>=0?'pos':'neg'}" style="font-weight:700">${o1<0?'▲'+yen(-o1).slice(1):yen(o1)}</td><td class="${o1>=0?'pos':'neg'}">${orate}</td></tr>`;
       expC.push([nm,Math.round(c1.sales),Math.round(g1),Math.round(l1),Math.round(a1),Math.round(e1),Math.round(o1),orate]);
     });

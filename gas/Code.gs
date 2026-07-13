@@ -43,7 +43,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v15', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v16', time: new Date().toISOString() });
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     setupIfNeeded();
     if (action === 'login')  return out(login(p));
@@ -54,6 +54,7 @@ function handle(p) {
     if (action === 'version')  return out({ ok: true, version: dataVersion() }); // 軽量：変更検知用の署名だけ返す
     if (action === 'data')     return out(getData(p, session));
     if (action === 'bqDetail') return out(bqDetail(p, session)); // 明細分析：期間・店舗で絞ってBQ集計
+    if (action === 'bqChecks') return out(bqChecks(p, session)); // ダッシュボード：期間の会計組数（店舗別）
     if (action === 'accounts') return out(listAccounts(session));
     if (action === 'saveAccount')   return out(saveAccount(p, session));
     if (action === 'deleteAccount') return out(deleteAccount(p, session));
@@ -689,6 +690,24 @@ function bqDetail(p, session) {
     var hourItem = bqRows_("SELECT EXTRACT(HOUR FROM " + hourCol + ") AS hour, menu, SUM(qty) AS qty, SUM(sales_incl) AS sales FROM " + hiFrom + " " + hiWhere + " GROUP BY hour, menu");
     var res = { ok: true, hour: hour || [], item: item || [], store: st || [], hourItem: hourItem || [], basis: basis };
     try { cache.put(ck, JSON.stringify(res), 900); } catch (e3) { /* 100KB超はキャッシュしない */ }
+    return res;
+  } catch (e) { return { ok: false, error: String(e && e.message || e) }; }
+}
+// ダッシュボードの「組数」：期間の会計組数を店舗別に集計（COUNT DISTINCT check_id）。
+// 小さい結果（店舗数ぶんのみ）＋15分キャッシュ。フロント側でスコープの店舗を合算する。
+function bqChecks(p, session) {
+  var from = String(p.from || '').slice(0, 10), to = String(p.to || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) return { ok: false, error: 'bad date range' };
+  var cache = CacheService.getScriptCache();
+  var ck = 'chk_' + from + '_' + to;
+  var hit = cache.get(ck);
+  if (hit) { try { var o = JSON.parse(hit); o.cached = true; return o; } catch (e2) {} }
+  try {
+    var st = bqRows_("SELECT store_id, COUNT(DISTINCT check_id) AS checks FROM " + BQ_TABLE +
+      " WHERE business_date BETWEEN DATE('" + from + "') AND DATE('" + to + "') GROUP BY store_id");
+    if (st) { var m = bqStoreMap_(); for (var r = 1; r < st.length; r++) st[r][0] = m[st[r][0]] || st[r][0]; if (st[0]) st[0][0] = '店舗'; }
+    var res = { ok: true, store: st || [] };
+    try { cache.put(ck, JSON.stringify(res), 900); } catch (e3) {}
     return res;
   } catch (e) { return { ok: false, error: String(e && e.message || e) }; }
 }
