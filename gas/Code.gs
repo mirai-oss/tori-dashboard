@@ -43,7 +43,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v16', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v17', time: new Date().toISOString() });
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     setupIfNeeded();
     if (action === 'login')  return out(login(p));
@@ -663,14 +663,18 @@ function bqDetail(p, session) {
   var KARA = "SUM(CASE WHEN " + IS_KARA + " THEN " + L + " ELSE 0 END) AS karaoke";
   var DRINK = "SUM(CASE WHEN " + IS_KARA + " THEN 0 WHEN " + IS_SVC + " THEN (" + L + ")*0.5 WHEN " + IS_COURSE + " THEN LEAST(1800,price_excl)*qty WHEN " + IS_DRINK + " THEN " + L + " ELSE 0 END) AS drink";
   var FOOD = "SUM(CASE WHEN " + IS_KARA + " THEN 0 WHEN " + IS_SVC + " THEN (" + L + ")*0.5 WHEN " + IS_COURSE + " THEN GREATEST(price_excl-1800,0)*qty WHEN " + IS_DRINK + " THEN 0 ELSE " + L + " END) AS food";
+  // 会計数はキャンセル（正味売上0の伝票）を除外して数える。伝票ごとの税込売上を窓関数で持たせ、>0のものだけ数える。
+  var CV = "SUM(sales_incl) OVER (PARTITION BY store_id, business_date, check_id) AS _cv";
+  var VCHK = "COUNT(DISTINCT IF(_cv > 0, check_id, NULL)) AS checks"; // 有効会計数（キャンセル除く）
+  var stFrom = "(SELECT *, " + CV + " FROM " + T + " " + where + ")"; // 店舗別の集計元（_cv付き）
   // 時間帯の集計元: 会計時=checkout_at / オーダー時=order_at / 来店時=伝票ごとのMIN(order_at)
   var hourFrom, hourCol;
   if (basis === 'arrival') {
     hourCol = 'arr';
-    hourFrom = "(SELECT *, MIN(order_at) OVER (PARTITION BY store_id, business_date, check_id) AS arr FROM " + T + " " + where + ")";
+    hourFrom = "(SELECT *, " + CV + ", MIN(order_at) OVER (PARTITION BY store_id, business_date, check_id) AS arr FROM " + T + " " + where + ")";
   } else {
     hourCol = (basis === 'order') ? 'order_at' : 'checkout_at';
-    hourFrom = T + " " + where;
+    hourFrom = stFrom;
   }
   // 時間帯×商品の出数（0円商品も含む）。出数上位40商品に絞って、時間帯ごとの出数・売上を返す。
   var topMenuSql = "SELECT menu FROM " + T + " " + where + " GROUP BY menu ORDER BY SUM(qty) DESC LIMIT 40";
@@ -683,9 +687,9 @@ function bqDetail(p, session) {
     hiWhere = where + " AND menu IN (" + topMenuSql + ")";
   }
   try {
-    var hour = bqRows_("SELECT EXTRACT(HOUR FROM " + hourCol + ") AS hour, SUM(sales_incl) AS sales, SUM(price_excl*qty) AS sales_excl, COUNT(DISTINCT check_id) AS checks, " + G + ", SUM(qty) AS qty FROM " + hourFrom + " GROUP BY hour ORDER BY hour");
+    var hour = bqRows_("SELECT EXTRACT(HOUR FROM " + hourCol + ") AS hour, SUM(sales_incl) AS sales, SUM(price_excl*qty) AS sales_excl, " + VCHK + ", " + G + ", SUM(qty) AS qty FROM " + hourFrom + " GROUP BY hour ORDER BY hour");
     var item = bqRows_("SELECT menu, SUM(sales_incl) AS sales, SUM(price_excl*qty) AS sales_excl, SUM(qty) AS qty FROM " + T + " " + where + " GROUP BY menu ORDER BY sales DESC LIMIT 500");
-    var st = bqRows_("SELECT store_id, SUM(sales_incl) AS sales, SUM(price_excl*qty) AS sales_excl, COUNT(DISTINCT check_id) AS checks, " + G + ", " + DRINK + ", " + KARA + ", " + FOOD + " FROM " + T + " " + where + " GROUP BY store_id ORDER BY sales DESC");
+    var st = bqRows_("SELECT store_id, SUM(sales_incl) AS sales, SUM(price_excl*qty) AS sales_excl, " + VCHK + ", " + G + ", " + DRINK + ", " + KARA + ", " + FOOD + " FROM " + stFrom + " GROUP BY store_id ORDER BY sales DESC");
     if (st) { var m = bqStoreMap_(); for (var r = 1; r < st.length; r++) st[r][0] = m[st[r][0]] || st[r][0]; if (st[0]) st[0][0] = '店舗'; }
     var hourItem = bqRows_("SELECT EXTRACT(HOUR FROM " + hourCol + ") AS hour, menu, SUM(qty) AS qty, SUM(sales_incl) AS sales FROM " + hiFrom + " " + hiWhere + " GROUP BY hour, menu");
     var res = { ok: true, hour: hour || [], item: item || [], store: st || [], hourItem: hourItem || [], basis: basis };
@@ -703,8 +707,13 @@ function bqChecks(p, session) {
   var hit = cache.get(ck);
   if (hit) { try { var o = JSON.parse(hit); o.cached = true; return o; } catch (e2) {} }
   try {
-    var st = bqRows_("SELECT store_id, COUNT(DISTINCT check_id) AS checks FROM " + BQ_TABLE +
-      " WHERE business_date BETWEEN DATE('" + from + "') AND DATE('" + to + "') GROUP BY store_id");
+    // 伝票ごとに税込売上を合計し、正味売上>0 の伝票だけを数える（キャンセル＝売上が打ち消されて実質0 を除外）
+    var st = bqRows_(
+      "SELECT store_id, COUNT(*) AS checks FROM (" +
+        "SELECT store_id, check_id FROM " + BQ_TABLE +
+        " WHERE business_date BETWEEN DATE('" + from + "') AND DATE('" + to + "')" +
+        " GROUP BY store_id, check_id HAVING SUM(sales_incl) > 0" +
+      ") GROUP BY store_id");
     if (st) { var m = bqStoreMap_(); for (var r = 1; r < st.length; r++) st[r][0] = m[st[r][0]] || st[r][0]; if (st[0]) st[0][0] = '店舗'; }
     var res = { ok: true, store: st || [] };
     try { cache.put(ck, JSON.stringify(res), 900); } catch (e3) {}
