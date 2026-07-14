@@ -43,7 +43,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v18', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v19', time: new Date().toISOString() });
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     setupIfNeeded();
     if (action === 'login')  return out(login(p));
@@ -685,7 +685,7 @@ function bqDetail(p, session) {
   }
   try {
     var hour = bqRows_("SELECT EXTRACT(HOUR FROM " + hourCol + ") AS hour, SUM(sales_incl) AS sales, SUM(price_excl*qty) AS sales_excl, " + VCHK + ", " + G + ", SUM(qty) AS qty FROM " + hourFrom + " GROUP BY hour ORDER BY hour");
-    var item = bqRows_("SELECT menu, SUM(sales_incl) AS sales, SUM(price_excl*qty) AS sales_excl, SUM(qty) AS qty FROM " + T + " " + where + " GROUP BY menu ORDER BY sales DESC LIMIT 500");
+    var item = bqRows_("SELECT menu, SUM(sales_incl) AS sales, SUM(price_excl*qty) AS sales_excl, SUM(qty) AS qty FROM " + T + " " + where + " GROUP BY menu ORDER BY sales DESC LIMIT 2000"); // 500だと全店・月間で商品数が超過し0円商品などが丸ごと欠落する
     var st = bqRows_("SELECT store_id, SUM(sales_incl) AS sales, SUM(price_excl*qty) AS sales_excl, " + VCHK + ", " + G + ", " + DRINK + ", " + KARA + ", " + FOOD + " FROM " + T + " " + where + " GROUP BY store_id ORDER BY sales DESC");
     if (st) { var m = bqStoreMap_(); for (var r = 1; r < st.length; r++) st[r][0] = m[st[r][0]] || st[r][0]; if (st[0]) st[0][0] = '店舗'; }
     var hourItem = bqRows_("SELECT EXTRACT(HOUR FROM " + hourCol + ") AS hour, menu, SUM(qty) AS qty, SUM(sales_incl) AS sales FROM " + hiFrom + " " + hiWhere + " GROUP BY hour, menu");
@@ -729,7 +729,7 @@ function bqLoadOrders(p) {
       destinationTable: { projectId: BQ_PROJECT, datasetId: 'dinii', tableId: 'orders' },
       sourceFormat: 'CSV', skipLeadingRows: 1, allowQuotedNewlines: true,
       writeDisposition: p.truncate ? 'WRITE_TRUNCATE' : 'WRITE_APPEND',
-      maxBadRecords: 200, schema: { fields: BQ_ORDERS_SCHEMA }
+      maxBadRecords: 0, schema: { fields: BQ_ORDERS_SCHEMA } // 0=不正行があれば失敗させる（黙って捨てると出数が欠落する。数値は取込側で正規化済み）
     }}};
     var blob = Utilities.newBlob(csv, 'application/octet-stream', 'orders.csv');
     var ins = BigQuery.Jobs.insert(job, BQ_PROJECT, blob);
