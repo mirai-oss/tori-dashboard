@@ -202,13 +202,15 @@ function ingestDaily(rows){
         iSl=colAny(H,['純売上','総売上','売上']), iG=colAny(H,['総客数','客数','店内客数','人数']),
         iPA=colAny(H,['アルバイト人件費','PA人件費','ＰＡ人件費']), iEmp=colAny(H,['社員人件費']),
         iL=colAny(H,['人件費合計','人件費']), iC=colAny(H,['仕入金額','仕入','原価']), iCash=colAny(H,['現金']),
-        iEmpBase=colAny(H,['社員給与賞与']), iWelf=colAny(H,['法定福利費']), iComm=colAny(H,['通勤手当']);
+        iEmpBase=colAny(H,['社員給与賞与']), iWelf=colAny(H,['法定福利費']), iComm=colAny(H,['通勤手当']),
+        iGrp=colAny(H,['組数','客組数','会計組数','会計数']);
   if(iD<0||iS<0||iSl<0){ D.diag.daily='列が見つかりません（必要: 店舗名・日付/営業日・純売上）'; return false; }
   const recs=[]; let max=0;
   for(let i=hi+1;i<rows.length;i++){
     const c=rows[i]; const st=String(c[iS]||'').trim(); const t=parseDateStr(c[iD]);
     if(!st||!t) continue;
     recs.push({ store:st, t, sales:num(c[iSl]), guests:num(c[iG]), pa:num(c[iPA]), emp:num(c[iEmp]), labor:num(c[iL]), cost:num(c[iC]), cash:num(c[iCash]),
+      groups:(iGrp>=0&&String(c[iGrp]).trim()!=='')?num(c[iGrp]):null,
       empBase:iEmpBase>=0?num(c[iEmpBase]):0, welfare:iWelf>=0?num(c[iWelf]):0, commute:iComm>=0?num(c[iComm]):0 });
     if(t>max)max=t;
   }
@@ -613,13 +615,14 @@ function selStoreName(){ return S.store==='all'?null:S.store; }
 
 /* ---------------- 集計 ---------------- */
 function stat(setNames, a, b, selName){
-  const o={sales:0,guests:0,cost:0,pa:0,emp:0,labor:0,cash:0,empBase:0,welfare:0,commute:0};
+  const o={sales:0,guests:0,groups:0,hasGroups:false,cost:0,pa:0,emp:0,labor:0,cash:0,empBase:0,welfare:0,commute:0};
   for(const r of D.daily){
     if(r.t<a||r.t>b) continue;
     if(selName){ if(r.store!==selName) continue; }
     else if(setNames && !setNames.has(r.store)) continue;
     o.sales+=r.sales; o.guests+=r.guests; o.cost+=r.cost; o.pa+=r.pa; o.emp+=r.emp; o.labor+=r.labor; o.cash+=r.cash;
     o.empBase+=r.empBase||0; o.welfare+=r.welfare||0; o.commute+=r.commute||0;
+    if(r.groups!=null){ o.groups+=r.groups; o.hasGroups=true; }
   }
   return o;
 }
@@ -1154,17 +1157,12 @@ function viewDash(){
 
   const y1=yoyStr(Ssl,pS), yG=yoyStr(cur.guests,prev.guests,'前年 '), ySp=yoyStr(spend,pSpend,'前年 ');
   const yF=ptStr(foodR,pFood,true), yL=ptStr(laborR,pLabor,true), yFL=ptStr(flR,pFood+pLabor,true);
-  // 組数（会計組数）＝POS明細(BQ)から期間・スコープで集計。客数(お通し推定)と同じ明細が源。
-  const ymdS=(d)=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+  // 組数（会計組数）＝日別売上シート「分析_日別店舗」の組数列（レジ準拠・キャンセル除外済み）。
   let checksKpi=null;
-  if(S.auth&&S.auth.token){
-    const cf=ymdS(r.s), ct=ymdS(r.e); fetchDashChecks(cf,ct);
-    const ready=D.dashChecksKey===(cf+'|'+ct)&&Array.isArray(D.dashChecks);
-    let checks=null;
-    if(ready){ const st=D.dashChecks, map={}; if(st.length){ for(let i=1;i<st.length;i++) map[String(st[i][0]).trim()]=num(st[i][1]); }
-      const targets=selName?[selName]:sc; checks=0; targets.forEach(nm=>{ checks+=(map[nm]||0); }); }
-    const perGrp=(checks&&checks>0)?Ssl/checks:0;
-    checksKpi={ lb:'組数', vl: ready?(cnt(checks)+'組'):'集計中…', yy: (ready&&checks>0)?{t:'1組平均 '+yen(perGrp),cls:'mut'}:{t:'POS明細より',cls:'mut'} };
+  if(cur.hasGroups){
+    const perGrp=(cur.groups>0)?Ssl/cur.groups:0;
+    const grpYY=yoyStr(cur.groups,prev.groups,'前年 ');
+    checksKpi={ lb:'組数', vl: cnt(cur.groups)+'組', yy: (cur.groups>0)?{t:'1組平均 '+yen(perGrp)+(prev.hasGroups?' ／ '+grpYY.t:''),cls:prev.hasGroups?grpYY.cls:'mut'}:{t:'日別売上シートより',cls:'mut'} };
   }
   const kpis=[
     { lb:(S.period==='day'?'日次':S.period==='week'?'週次':S.period==='month'?'月次':S.period==='year'?'累計':'期間')+'売上', vl:yen(Ssl), yy:y1 },
@@ -1728,21 +1726,6 @@ async function fetchDetail(){
     else { D.detailData={ hour:[], item:[], store:[], hourItem:[], err:(d&&d.error)||'取得失敗' }; D.detailKey=key; }
   }catch(e){ D.detailData={ hour:[], item:[], store:[], hourItem:[], err:String(e.message||e) }; D.detailKey=key; }
   D.detailLoading=''; render();
-}
-// ダッシュボードの「組数」：POS明細(BQ)から期間・店舗別の会計組数を取得（客数と同じ明細が源）
-async function fetchDashChecks(from,to){
-  if(!S.auth||!S.auth.token) return;
-  const key=from+'|'+to;
-  if(D.dashChecksKey===key && D.dashChecks) return;
-  if(D.dashChecksLoading===key) return;
-  D.dashChecksLoading=key;
-  try{
-    const d=await api({ action:'bqChecks', token:S.auth.token, from, to });
-    if(d&&d.ok){ D.dashChecks=d.store||[]; D.dashChecksErr=''; }
-    else { D.dashChecks=[]; D.dashChecksErr=(d&&d.error)||'取得失敗'; }
-    D.dashChecksKey=key;
-  }catch(e){ D.dashChecks=[]; D.dashChecksErr=String(e.message||e); D.dashChecksKey=key; }
-  D.dashChecksLoading=''; render();
 }
 function viewDetail(){
   const stores=allStores();
