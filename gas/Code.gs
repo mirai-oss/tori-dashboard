@@ -43,7 +43,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v19', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v20', time: new Date().toISOString() });
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     setupIfNeeded();
     if (action === 'login')  return out(login(p));
@@ -77,8 +77,8 @@ function setupIfNeeded() {
   var acc = ss.getSheetByName('アカウント');
   if (!acc) {
     acc = ss.insertSheet('アカウント');
-    acc.getRange(1, 1, 1, 7).setValues([[
-      'ログインID', 'パスワード', '表示名', '権限', '担当店舗', '有効', 'メモ'
+    acc.getRange(1, 1, 1, 8).setValues([[
+      'ログインID', 'パスワード', '表示名', '権限', '担当店舗', '有効', 'メモ', '表示タブ'
     ]]).setFontWeight('bold').setBackground('#efe9dd');
     acc.getRange(2, 1, 4, 7).setValues([
       ['shacho',  'tori2026',  '社長',            '社長',       '全店', 'TRUE', '全店舗・全機能・アカウント発行'],
@@ -86,7 +86,11 @@ function setupIfNeeded() {
       ['yokohama','toriarea',  '横浜エリアMG',     'マネージャー', '鶏武者 新横浜, 鶏武者 川崎店, 黒霧屋 新横浜', 'TRUE', '担当店舗のみ・店舗間比較あり'],
       ['shiba',   'torishiba', '芝の鳥一代',       '店舗',       '芝の鳥一代', 'TRUE', '自店のみ']
     ]);
-    acc.setColumnWidths(1, 7, 150);
+    acc.setColumnWidths(1, 8, 150);
+  } else if (String(acc.getRange(1, 8).getValue()) === '') {
+    // 既存シートに「表示タブ」列が無ければ見出しを追加（アカウント管理画面から編集できる）
+    acc.getRange(1, 8).setValue('表示タブ').setFontWeight('bold').setBackground('#efe9dd');
+    acc.getRange(1, 8).setNote('空欄＝権限の既定（店舗はPL・広告管理が非表示）。\n表示したいタブだけをカンマ区切りで指定（例: ダッシュボード,推移分析,口コミ）。\n通常はダッシュボードの「アカウント管理」画面のチェックボックスから設定してください。');
   }
 
   // 接続設定シート（既定は実シート名に合わせてある）
@@ -270,7 +274,7 @@ function setupIfNeeded() {
 function accountRows() {
   var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('アカウント');
   if (!sh || sh.getLastRow() < 2) return [];
-  var vals = sh.getRange(2, 1, sh.getLastRow() - 1, 7).getValues();
+  var vals = sh.getRange(2, 1, sh.getLastRow() - 1, 8).getValues();
   var rows = [];
   for (var i = 0; i < vals.length; i++) {
     var v = vals[i];
@@ -283,7 +287,8 @@ function accountRows() {
       role: String(v[3]).trim(),
       stores: String(v[4]).trim(),
       active: String(v[5]).toUpperCase() !== 'FALSE' && String(v[5]) !== '無効' && String(v[5]) !== '0',
-      memo: String(v[6] || '')
+      memo: String(v[6] || ''),
+      tabs: String(v[7] || '').trim()   // 表示タブ（空欄＝権限の既定）
     });
   }
   return rows;
@@ -334,7 +339,7 @@ function login(p) {
       if (!a.active) return { ok: false, error: 'このアカウントは無効化されています' };
       sessionCleanup();
       var token = Utilities.getUuid();
-      var sess = { id: a.id, name: a.name, role: a.role, stores: a.stores };
+      var sess = { id: a.id, name: a.name, role: a.role, stores: a.stores, tabs: a.tabs };
       sessionPut(token, sess);
       cache.remove(failKey);
       return { ok: true, token: token, account: sess };
@@ -765,7 +770,7 @@ function dataVersion() {
 function listAccounts(session) {
   if (!isAdmin(session)) return { ok: false, error: 'アカウント管理の権限がありません' };
   var rows = accountRows().map(function (a) {
-    return { id: a.id, name: a.name, role: a.role, stores: a.stores, active: a.active, memo: a.memo, hasPw: a.pw !== '' };
+    return { id: a.id, name: a.name, role: a.role, stores: a.stores, active: a.active, memo: a.memo, tabs: a.tabs, hasPw: a.pw !== '' };
   });
   return { ok: true, accounts: rows };
 }
@@ -789,12 +794,13 @@ function saveAccount(p, session) {
     role,
     String(p.stores || (target ? target.stores : '全店')),
     (String(p.active || 'TRUE').toUpperCase() === 'FALSE') ? 'FALSE' : 'TRUE',
-    String(p.memo || (target ? target.memo : ''))
+    String(p.memo || (target ? target.memo : '')),
+    String(p.tabs != null ? p.tabs : (target ? target.tabs : ''))   // 表示タブ（空欄＝権限の既定）
   ];
   if (!values[1]) return { ok: false, error: '新規アカウントにはパスワードが必要です' };
 
-  if (target) sh.getRange(target.row, 1, 1, 7).setValues([values]);
-  else sh.getRange(sh.getLastRow() + 1, 1, 1, 7).setValues([values]);
+  if (target) sh.getRange(target.row, 1, 1, 8).setValues([values]);
+  else sh.getRange(sh.getLastRow() + 1, 1, 1, 8).setValues([values]);
   return { ok: true };
 }
 

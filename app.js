@@ -26,7 +26,7 @@ const ROLE_TABS = {
   '社長':       ['dash','analysis','detail','pl','deposit','ad','review','ai','accounts'],
   '本部':       ['dash','analysis','detail','pl','deposit','ad','review','ai','accounts'],
   'マネージャー':['dash','analysis','detail','pl','deposit','ad','review','ai'],
-  '店舗':       ['dash','analysis','detail','pl','deposit','review','ai'],
+  '店舗':       ['dash','analysis','detail','deposit','review','ai'],   // PL・広告管理は既定で非表示（アカウントごとの「表示タブ」で変更可）
 };
 const TAB_LABELS = { dash:'ダッシュボード', analysis:'推移分析', detail:'明細分析', pl:'PL（損益）', deposit:'入金管理', ad:'広告管理', review:'口コミ', ai:'AI検索', accounts:'アカウント管理' };
 // 口コミ集約：同じ実店舗にぶら下がる別名店舗（Googleマイビジネスが分かれているケース）
@@ -606,9 +606,26 @@ function scopeStores(){
   const inScope=all.filter(n=>names.includes(n));
   return inScope.length?inScope:names;
 }
+// アカウントの「表示タブ」指定をパース。'dash,pl' でも 'ダッシュボード、PL' でもOK。空・不正はnull（＝権限の既定を使う）
+function parseTabsSpec(s){
+  s=String(s==null?'':s).trim(); if(!s) return null;
+  const keys=Object.keys(TAB_LABELS); const out=[];
+  s.split(/[,、\/\s]+/).forEach(t=>{
+    t=t.trim(); if(!t) return;
+    const k=keys.includes(t)?t:keys.find(k2=>TAB_LABELS[k2]===t||TAB_LABELS[k2].indexOf(t)===0);
+    if(k&&!out.includes(k)) out.push(k);
+  });
+  return out.length?out:null;
+}
 function myTabs(){
   const acc=S.auth&&S.auth.account;
-  return ROLE_TABS[acc&&acc.role]||ROLE_TABS['店舗'];
+  const base=ROLE_TABS[acc&&acc.role]||ROLE_TABS['店舗'];
+  const ov=parseTabsSpec(acc&&acc.tabs);
+  if(!ov) return base;
+  const admin=acc&&(acc.role==='社長'||acc.role==='本部');
+  // 個別指定があればそれを表示（順序は正規順）。アカウント管理は社長・本部のみ常に表示
+  const tabs=Object.keys(TAB_LABELS).filter(k=>k==='accounts'?admin:ov.includes(k));
+  return tabs.length?tabs:base;
 }
 function isAdminRole(){ const a=S.auth&&S.auth.account; return a&&(a.role==='社長'||a.role==='本部'); }
 function selStoreName(){ return S.store==='all'?null:S.store; }
@@ -849,7 +866,7 @@ async function doLogin(){
   const acc=demoAccounts().find(a=>a.id===id&&a.pw===pw);
   if(!acc){ S.loginErr='IDまたはパスワードが違います'; render(); return; }
   if(acc.active===false){ S.loginErr='このアカウントは無効化されています'; render(); return; }
-  S.auth={ token:null, account:{ id:acc.id, name:acc.name, role:acc.role, stores:acc.stores } };
+  S.auth={ token:null, account:{ id:acc.id, name:acc.name, role:acc.role, stores:acc.stores, tabs:acc.tabs||'' } };
   try{ localStorage.setItem(LS.sess, JSON.stringify(S.auth)); }catch(e){}
   afterLogin();
   render();
@@ -3137,10 +3154,12 @@ function viewAccounts(){
   </div>`;
   if(S.accErr) h+=`<div class="login-err" style="margin:10px 0">${esc(S.accErr)}</div>`;
   h+=`<div class="panel"><div class="panel-head"><div><h3>発行済みアカウント</h3><div class="sub">権限: 社長・本部＝全店＋アカウント管理 ／ マネージャー＝担当店舗 ／ 店舗＝自店のみ</div></div></div>
-  <div class="scroll-x"><table class="tbl"><thead><tr><th>ログインID</th><th>表示名</th><th>権限</th><th>担当店舗</th><th>状態</th><th>メモ</th><th></th></tr></thead><tbody>`;
+  <div class="scroll-x"><table class="tbl"><thead><tr><th>ログインID</th><th>表示名</th><th>権限</th><th>担当店舗</th><th>表示タブ</th><th>状態</th><th>メモ</th><th></th></tr></thead><tbody>`;
   list.forEach(a=>{
+    const ovTabs=parseTabsSpec(a.tabs);
     h+=`<tr><td>${esc(a.id)}</td><td style="text-align:right">${esc(a.name)}</td><td>${esc(a.role)}</td>
     <td style="max-width:280px;white-space:normal">${esc(a.stores)}</td>
+    <td style="max-width:220px;white-space:normal;font-size:11px">${ovTabs?esc(ovTabs.map(k=>TAB_LABELS[k]).join('・')):'<span class="mut">既定</span>'}</td>
     <td>${a.active!==false?'<span class="badge ok">有効</span>':'<span class="badge ng">無効</span>'}</td>
     <td class="mut" style="white-space:normal">${esc(a.memo||'')}</td>
     <td><button class="icon-btn" onclick="App.editAccount(this.dataset.i)" data-i="${esc(a.id)}">編集</button></td></tr>`;
@@ -3191,9 +3210,11 @@ function connectModal(){
 }
 function accountModal(){
   const m=S.modal;
-  const a=m.data||{ id:'', name:'', role:'店舗', stores:'', active:true, memo:'' };
+  const a=m.data||{ id:'', name:'', role:'店舗', stores:'', active:true, memo:'', tabs:'' };
   const isNew=!m.id;
   const all=allStores();
+  const tabKeys=Object.keys(TAB_LABELS).filter(k=>k!=='accounts');
+  const curTabs=(parseTabsSpec(a.tabs)||ROLE_TABS[a.role]||ROLE_TABS['店舗']).filter(k=>k!=='accounts');
   const selected=String(a.stores||'')==='全店'?all.slice():String(a.stores||'').split(/[,、]/).map(s=>s.trim()).filter(Boolean);
   const isZen=String(a.stores||'')==='全店';
   return `<div class="modal-bg" onclick="if(event.target===this)App.closeModal()"><div class="modal">
@@ -3213,6 +3234,10 @@ function accountModal(){
       <label class="${isZen?'on':''}"><input type="checkbox" ${isZen?'checked':''} value="全店" onchange="App.toggleZen(this)">全店</label>
       ${all.map(n=>`<label class="${!isZen&&selected.includes(n)?'on':''}"><input type="checkbox" ${!isZen&&selected.includes(n)?'checked':''} value="${esc(n)}" onchange="this.parentElement.classList.toggle('on',this.checked)">${esc(n)}</label>`).join('')}
     </div>
+    <label style="font-size:11px;color:#8c8375;display:block;margin-top:14px">表示するタブ（チェックした項目だけメニューに表示。権限を変えると既定に戻ります／アカウント管理は社長・本部のみ自動表示）</label>
+    <div class="chk-stores" id="ac-tabs">
+      ${tabKeys.map(k=>`<label class="${curTabs.includes(k)?'on':''}"><input type="checkbox" ${curTabs.includes(k)?'checked':''} value="${k}" onchange="this.parentElement.classList.toggle('on',this.checked)">${esc(TAB_LABELS[k])}</label>`).join('')}
+    </div>
     <div class="form-grid" style="margin-top:14px">
       <div><label>状態</label><select id="ac-active"><option value="TRUE" ${a.active!==false?'selected':''}>有効</option><option value="FALSE" ${a.active===false?'selected':''}>無効</option></select></div>
       <div><label>メモ</label><input type="text" id="ac-memo" value="${esc(a.memo||'')}"></div>
@@ -3229,8 +3254,8 @@ function roleHintText(r){
   return {
     '社長':'全店舗の全データ・全機能＋アカウント発行が可能です。',
     '本部':'全店舗の全データ・全機能＋アカウント発行が可能です。',
-    'マネージャー':'担当店舗のみ閲覧できます。担当店舗間の比較・広告管理あり。',
-    '店舗':'自店のみ閲覧できます。他店比較・広告管理・アカウント管理は非表示。',
+    'マネージャー':'担当店舗のみ閲覧できます。PL・広告管理あり（担当店舗間の比較つき）。',
+    '店舗':'自店のみ閲覧できます。PL・広告管理・他店比較・アカウント管理は既定で非表示（下の「表示するタブ」で変更できます）。',
   }[r]||'';
 }
 
@@ -3312,7 +3337,10 @@ window.App = {
   pdf: downloadPdf,
   openConnect(){ if(S.auth && S.auth.account.role!=='社長'){ toast('接続設定は社長のみ変更できます'); return; } S.modal='connect'; render(); },
   closeModal(){ S.modal=null; render(); },
-  roleHint(r){ const el=$('ac-role-hint'); if(el)el.textContent=roleHintText(r); },
+  roleHint(r){ const el=$('ac-role-hint'); if(el)el.textContent=roleHintText(r);
+    const box=$('ac-tabs');   // 権限を変えたらタブ選択をその権限の既定に戻す（そこから個別調整できる）
+    if(box){ const def=(ROLE_TABS[r]||ROLE_TABS['店舗']).filter(k=>k!=='accounts');
+      box.querySelectorAll('input').forEach(i=>{ i.checked=def.includes(i.value); i.parentElement.classList.toggle('on',i.checked); }); } },
   toggleZen(cb){
     const box=$('ac-stores');
     box.querySelectorAll('input').forEach(i=>{ if(i.value!=='全店'){ i.checked=false; i.parentElement.classList.remove('on'); i.disabled=cb.checked; } });
@@ -3373,13 +3401,18 @@ window.App = {
       if(checked.includes('全店')) stores='全店';
       else stores=checked.join(', ');
     }
+    // 表示タブ：権限の既定と同じなら空（＝既定に追従）、変えていればカンマ区切りで保存
+    const tabsChecked=[...$('ac-tabs').querySelectorAll('input:checked')].map(i=>i.value);
+    const defTabs=(ROLE_TABS[role]||ROLE_TABS['店舗']).filter(k=>k!=='accounts');
+    const tabs=(tabsChecked.length===defTabs.length&&tabsChecked.every(k=>defTabs.includes(k)))?'':tabsChecked.join(',');
     if(!id){ msg.textContent='ログインIDを入力してください'; return; }
     if(!stores){ msg.textContent='担当店舗を1つ以上選択してください'; return; }
+    if(!tabsChecked.length){ msg.textContent='表示するタブを1つ以上選択してください'; return; }
     const live=!!(S.auth&&S.auth.token);
     if(live){
       msg.style.color='#8c8375'; msg.textContent='保存中…';
       try{
-        const d=await api({ action:'saveAccount', token:S.auth.token, accountId:id, pw, name, role, stores, active, memo });
+        const d=await api({ action:'saveAccount', token:S.auth.token, accountId:id, pw, name, role, stores, active, memo, tabs });
         if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'保存に失敗しました'; return; }
         S.accounts=null; S.modal=null; toast('アカウントを保存しました'); render();
       }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
@@ -3390,8 +3423,8 @@ window.App = {
     const ex=list.find(a=>a.id===id);
     if(isNew&&ex){ msg.textContent='このIDは既に存在します'; return; }
     if(isNew&&!pw){ msg.textContent='新規アカウントにはパスワードが必要です'; return; }
-    if(ex){ ex.name=name; if(pw)ex.pw=pw; ex.role=role; ex.stores=stores; ex.active=active!=='FALSE'; ex.memo=memo; }
-    else list.push({ id, pw, name, role, stores, active:active!=='FALSE', memo });
+    if(ex){ ex.name=name; if(pw)ex.pw=pw; ex.role=role; ex.stores=stores; ex.active=active!=='FALSE'; ex.memo=memo; ex.tabs=tabs; }
+    else list.push({ id, pw, name, role, stores, active:active!=='FALSE', memo, tabs });
     saveDemoAccounts(list);
     S.modal=null; toast('アカウントを保存しました（デモ：このブラウザのみ）'); render();
   },
