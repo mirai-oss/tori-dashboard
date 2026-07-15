@@ -801,15 +801,28 @@ async function fetchData(silent, opts){
     if(!opts.partial){ S.connState='error'; if(!silent) toast('データ取得エラー: '+e.message); render(); }
   }
 }
-// 初回・更新時：まず軽い必須データ(daily/入金/口コミ)を出し、重い媒体別は後から読み込む
+// 初回・更新で重い/タブ専用のデータ（媒体別・入金・口コミ明細・広告・予約）。
+// フェーズ1では読まず、表示後に裏で優先順に先読みする。
+const HEAVY_KEYS=['media','deposit','dinii','広告','広告効果','単価設定','予約'];
+let prefetchRun=0;
+// 初回・更新時：まずダッシュボードに必要な軽いデータだけ出し、重い/他タブ用は裏で先読み
 async function fetchDataFast(){
-  D.mediaPending=true; D.media=[];                // サンプル媒体データを一旦クリア
-  await fetchData(true, { exclude:['media'] });   // 必須のみ → すぐ表示
-  await fetchData(true, { only:['media'], partial:true }); // 媒体別を裏で追加
-  D.mediaPending=false;
+  D.mediaPending=true; D.media=[];                       // サンプル媒体データを一旦クリア
+  await fetchData(true, { exclude:HEAVY_KEYS });         // 軽い必須のみ → すぐ表示
   render();
-  // data は version を返さないので、初回に一度だけ署名を取得しておく（次の自動更新のムダ取得を防ぐ）
+  // data は version を返さないので、初回に署名を取得（次の自動更新のムダ取得を防ぐ）
   fetchVersion().then(v=>{ if(v!==null) S.dataVersion=v; });
+  // フェーズ2：裏で先読み。優先順＝ダッシュボード関連(口コミ明細・媒体別)→他タブ(入金・広告・予約)
+  const myRun=++prefetchRun;
+  (async()=>{
+    const groups=[['dinii','media'], ['deposit','広告','広告効果','単価設定','予約']];
+    for(const g of groups){
+      if(myRun!==prefetchRun) return;                    // 新しい読込が始まったら中断（多重先読み防止）
+      try{ await fetchData(true, { only:g, partial:true }); }catch(e){}
+      if(g.indexOf('media')>=0){ D.mediaPending=false; render(); }
+    }
+    D.mediaPending=false; render();
+  })();
 }
 // 軽量版：まず署名(version)だけ取り、変化があるときだけフル取得
 async function fetchVersion(){
@@ -822,7 +835,7 @@ async function syncIfChanged(){
   const v=await fetchVersion();
   // 確実に「変化なし」と分かった時だけ重い読込をスキップ。versionが取れない古いGASでは従来通りフル取得。
   if(v!==null && v!=='' && S.dataVersion && v===S.dataVersion){ touchSyncBadge(); return; }
-  await fetchData(true);
+  await fetchDataFast();   // 変化があったら段階読み込みで再取得（軽いものを先に反映）
 }
 function startPolling(){
   stopPolling();
@@ -3336,7 +3349,7 @@ window.App = {
     S.reportMode={kind:kind||'daily',date:date||'',stores:list,group:group||''}; render();
   },
   reportExit(){ S.reportMode=null; render(); },
-  refresh(){ if(S.auth&&S.auth.token) fetchData(); else { loadSampleData(); render(); toast('サンプルデータを再読込しました（API未接続）'); } },
+  refresh(){ if(S.auth&&S.auth.token){ fetchDataFast(); toast('最新データを取得中…'); } else { loadSampleData(); render(); toast('サンプルデータを再読込しました（API未接続）'); } },
   csv: downloadCsv,
   pdf: downloadPdf,
   openConnect(){ if(S.auth && S.auth.account.role!=='社長'){ toast('接続設定は社長のみ変更できます'); return; } S.modal='connect'; render(); },

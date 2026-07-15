@@ -43,7 +43,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v22', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v23', time: new Date().toISOString() });
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     if (action === 'perf') return out(perfDiag(p)); // パフォーマンス計測（専用トークン認証・ログイン不要・数字は返さず時間だけ）
     setupIfNeeded();
@@ -501,11 +501,16 @@ function keepColumnIdx(header, key) {
 
 // 【高速版】1回の読み込みで「必要列だけ・期間内だけ・日付を文字列化」までまとめて行う。
 // 以前は sheetValues→filterRecent→pruneColumns と全データを3回なめていたのを1回に集約。
+// セル値→日付のミリ秒（日付でなければNaN）。全体で同じ判定を使う。
+function cellDateMs_(dv) {
+  if (dv instanceof Date) return new Date(dv.getFullYear(), dv.getMonth(), dv.getDate()).getTime();
+  var m = String(dv).match(/(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/); // "2026/07/01 12:34"形式も対応
+  return m ? new Date(+m[1], +m[2] - 1, +m[3]).getTime() : NaN;
+}
 function readSheet(sh, months, key) {
   var lr = sh.getLastRow(), lc = sh.getLastColumn();
   if (lr < 1 || lc < 1) return [];
-  var vals = sh.getRange(1, 1, lr, lc).getValues();
-  var header = vals[0];
+  var header = sh.getRange(1, 1, 1, lc).getValues()[0]; // 見出しだけ先に読む
   var keepIdx = keepColumnIdx(header, key);
   // 日付列（絞り込み用）
   var di = -1, dkeys = ['日付', '営業日', '取得日', '勤務日', '入金日', '年月日', '来店日', 'タイムスタンプ'];
@@ -515,16 +520,34 @@ function readSheet(sh, months, key) {
   var ct = null;
   if (months && months > 0 && di >= 0) { var co = new Date(); co.setMonth(co.getMonth() - months); ct = co.getTime(); }
   var tz = Session.getScriptTimeZone() || 'Asia/Tokyo';
+
+  // 【高速化】期間指定があり行数が多いときは、日付列だけ先に読んで「期間内で最も上の行」を特定し、
+  // その行以降だけを本読みする。日付列を全走査して最小の該当行を取るので、並び順に依存せず取りこぼさない。
+  var startRow = 2; // データ開始行（1-indexed）
+  if (ct !== null && lr > 2000) {
+    var dcol = sh.getRange(2, di + 1, lr - 1, 1).getValues();
+    var minIn = -1;
+    for (var i = 0; i < dcol.length; i++) {
+      var t0 = cellDateMs_(dcol[i][0]);
+      // 期間内の行、または日付が読めない行（旧ロジックは残す）を「含める最初の行」とする。取りこぼし防止。
+      if (isNaN(t0) || t0 >= ct) { minIn = i; break; }
+    }
+    if (minIn < 0) {                                            // 期間内データが無い＝ヘッダーのみ返す
+      var only0 = []; for (var m1 = 0; m1 < keepIdx.length; m1++) only0.push(header[keepIdx[m1]]);
+      return [only0];
+    }
+    startRow = 2 + minIn;
+  }
+
+  var rowCount = lr - startRow + 1;
+  var vals = rowCount > 0 ? sh.getRange(startRow, 1, rowCount, lc).getValues() : [];
   var out = [];
-  // ヘッダー行
   var hrow = []; for (var m0 = 0; m0 < keepIdx.length; m0++) hrow.push(header[keepIdx[m0]]);
   out.push(hrow);
-  for (var r = 1; r < vals.length; r++) {
+  for (var r = 0; r < vals.length; r++) {
     var row = vals[r];
-    if (ct !== null) {                    // 期間外は捨てる
-      var dv = row[di], t;
-      if (dv instanceof Date) t = new Date(dv.getFullYear(), dv.getMonth(), dv.getDate()).getTime();
-      else { var mm2 = String(dv).match(/(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/); t = mm2 ? new Date(+mm2[1], +mm2[2] - 1, +mm2[3]).getTime() : NaN; }  // "2026/07/01 12:34"形式も対応
+    if (ct !== null) {                    // 期間外は捨てる（範囲外の行が紛れていても確実に除外）
+      var t = cellDateMs_(row[di]);
       if (!isNaN(t) && t < ct) continue;
     }
     var o = [];
