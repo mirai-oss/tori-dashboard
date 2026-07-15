@@ -43,7 +43,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v21', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v22', time: new Date().toISOString() });
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     if (action === 'perf') return out(perfDiag(p)); // パフォーマンス計測（専用トークン認証・ログイン不要・数字は返さず時間だけ）
     setupIfNeeded();
@@ -644,16 +644,32 @@ function bqDetail(p, session) {
   var from = String(p.from || '').slice(0, 10), to = String(p.to || '').slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) return { ok: false, error: 'bad date range' };
   var where = "WHERE business_date BETWEEN DATE('" + from + "') AND DATE('" + to + "')";
-  if (p.store && p.store !== 'all') {
+  // 権限：全店でないアカウント（店舗・担当店舗のみ）は、必ず担当店舗に限定する（明細の全店閲覧を防ぐ）
+  var sessStores = String(session && session.stores || '').trim();
+  var restricted = sessStores && sessStores !== '全店';
+  var scopeKey = 'all';
+  if (restricted) {
+    var allowNames = sessStores.split(/[,、]/).map(function (s) { return s.trim(); }).filter(Boolean);
+    var mm = bqStoreMap_(), allowIds = [];
+    for (var idk in mm) if (allowNames.indexOf(mm[idk]) >= 0) allowIds.push(idk);
+    if (!allowIds.length) return { ok: true, hour: [], item: [], store: [], hourItem: [], note: '権限内の店舗なし' };
+    scopeKey = allowIds.slice().sort().join('.');
+    if (p.store && p.store !== 'all' && allowNames.indexOf(p.store) >= 0) {
+      var one = reverseStoreId_(p.store);
+      where += " AND store_id = '" + String(one).replace(/'/g, '') + "'";
+    } else {
+      where += " AND store_id IN ('" + allowIds.join("','") + "')"; // 担当店舗すべて（全店要求は拒否してここに落とす）
+    }
+  } else if (p.store && p.store !== 'all') {
     var id = reverseStoreId_(p.store);
     if (id) where += " AND store_id = '" + String(id).replace(/'/g, '') + "'";
     else return { ok: true, hour: [], item: [], store: [], note: 'store_id未対応' };
   }
   // 集計基準: checkout=会計時(既定) / order=オーダー時(各明細) / arrival=来店時(伝票の最初のオーダー)
   var basis = (p.basis === 'order' || p.basis === 'arrival') ? p.basis : 'checkout';
-  // キャッシュ（同じ条件は再クエリしない・15分）。
+  // キャッシュ（同じ条件は再クエリしない・15分）。scopeKeyを含め、権限の違うユーザー間でキャッシュが混ざらないようにする。
   var cache = CacheService.getScriptCache();
-  var ck = 'det_' + from + '_' + to + '_' + (p.store || 'all') + '_' + basis;
+  var ck = 'det_' + from + '_' + to + '_' + (p.store || 'all') + '_' + basis + '_' + scopeKey;
   var hit = cache.get(ck);
   if (hit) { try { var o = JSON.parse(hit); o.cached = true; return o; } catch (e2) {} }
   var T = BQ_TABLE, G = "SUM(IF(menu LIKE '%お通し%', qty, 0)) AS guests";

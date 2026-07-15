@@ -1745,7 +1745,11 @@ async function fetchDetail(){
   D.detailLoading=''; render();
 }
 function viewDetail(){
-  const stores=allStores();
+  // 権限：全店アクセスでないアカウント（店舗・担当店舗のみ）は自分の店舗に限定する
+  const allowed=scopeStores();
+  const fullAccess=allowed.length>=allStores().length;
+  if(!fullAccess && (S.dStore==='all' || !allowed.includes(S.dStore))) S.dStore=allowed[0]||'all';
+  const stores=fullAccess?allStores():allowed;
   const taxExcl=(S.detailTax||'excl')==='excl'; const taxLb=taxExcl?'税別':'税込';
   const r=detailRange(); const key=[r.from,r.to,S.dStore,S.dBasis||'checkout'].join('|');
   fetchDetail(); // 必要なら取得（キー一致なら何もしない）
@@ -1759,7 +1763,7 @@ function viewDetail(){
   else if(P==='month') picker=ymSelect('dMonth',py,pmo);
   else if(P==='year'){ const ys=D.daily.map(x=>new Date(x.t).getFullYear()).filter(v=>v>2000); ys.push(ref.getFullYear()); const mn=Math.min(...ys),mx=Math.max(...ys); const yy=[]; for(let v=mn;v<=mx;v++)yy.push(v); picker=`<select class="ym-pick" onchange="App.set('dYear',this.value)">${yy.map(v=>`<option value="${v}" ${String(S.dYear||ref.getFullYear())===String(v)?'selected':''}>${v}年</option>`).join('')}</select>`; }
   else picker=`<input type="date" value="${S.dStart}" onchange="App.set('dStart',this.value)"> 〜 <input type="date" value="${S.dEnd}" onchange="App.set('dEnd',this.value)">`;
-  const storeOpts=`<option value="all" ${S.dStore==='all'?'selected':''}>全店</option>`+stores.map(s=>`<option ${S.dStore===s?'selected':''}>${esc(s)}</option>`).join('');
+  const storeOpts=(fullAccess?`<option value="all" ${S.dStore==='all'?'selected':''}>全店</option>`:'')+stores.map(s=>`<option ${S.dStore===s?'selected':''}>${esc(s)}</option>`).join('');
   let h=`<div class="ctrl-bar no-print">
     <select onchange="App.set('dStore',this.value)" style="font-weight:700">${storeOpts}</select>
     <div class="seg">${[['day','日'],['week','週'],['month','月'],['year','年'],['custom','期間指定']].map(([k,l])=>`<button class="${P===k?'on':''}" onclick="App.set('dPeriod','${k}')">${l}</button>`).join('')}</div>
