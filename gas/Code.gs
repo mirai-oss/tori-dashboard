@@ -43,8 +43,9 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v20', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v21', time: new Date().toISOString() });
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
+    if (action === 'perf') return out(perfDiag(p)); // パフォーマンス計測（専用トークン認証・ログイン不要・数字は返さず時間だけ）
     setupIfNeeded();
     if (action === 'login')  return out(login(p));
     if (action === 'logout') return out(logout(p));
@@ -749,6 +750,48 @@ function bqLoadOrders(p) {
   } catch (e) {
     return { ok: false, error: String(e && e.message || e) };
   }
+}
+
+// パフォーマンス計測：getData と同じ処理を段階ごとに時間計測して返す（データ本体は返さない）。
+// 認証はBQ投入と同じ専用トークン。ログイン不要なので外部からも計測できる。
+function perfDiag(p) {
+  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+  if (!tk || String(p.token) !== tk) return { ok: false, error: 'unauthorized' };
+  var months = Number(p.months) || 13;
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var now = function () { return new Date().getTime(); };
+  var T = { months: months }, t0 = now();
+  // 1) 初期セットアップ（毎回handleで走る。存在チェックの束）
+  var s = now(); setupIfNeeded(); T.setupIfNeeded = now() - s;
+  // 2) 配信対象シートの解決
+  s = now(); var list = configuredSheets(ss); T.configuredSheets = now() - s;
+  // 3) ローカル各シートの読み込み（キーごとの内訳＋行数）
+  var perSheet = {}; s = now();
+  for (var i = 0; i < list.length; i++) {
+    var s2 = now(); var sh = ss.getSheetByName(list[i].name);
+    var rows = sh ? sh.getLastRow() : 0;
+    if (sh) readSheet(sh, months, list[i].key);
+    perSheet[list[i].key] = { ms: now() - s2, rows: rows };
+  }
+  T.localSheetsTotal = now() - s; T.perSheet = perSheet;
+  // 4) 管理シート（別スプレッド24を openById で開く＋整備）
+  s = now(); var mss = mgmtOpen(); T.mgmtOpen = now() - s;
+  s = now(); if (mss) { try { mgmtEnsure(mss); } catch (e) {} } T.mgmtEnsure = now() - s;
+  // 5) 管理シートの各タブ読み込み
+  var perMgmt = {}; s = now();
+  if (mss) for (var t = 0; t < MGMT_TABS.length; t++) {
+    var s3 = now(); var msh = mgmtFindTab(mss, MGMT_TABS[t].re);
+    var mr = (msh && msh.getLastRow() > 1) ? msh.getLastRow() : 0;
+    if (mr) readSheet(msh, months, MGMT_TABS[t].key);
+    perMgmt[MGMT_TABS[t].key] = { ms: now() - s3, rows: mr };
+  }
+  T.mgmtSheetsTotal = now() - s; T.perMgmt = perMgmt;
+  // 6) BigQuery明細集計（キャッシュ有効。cache=falseで毎回実行）
+  s = now(); bqDetailSheets_(null, null); T.bqDetailSheets = now() - s;
+  // 7) dataVersion（Drive API 2回＝更新検知。version アクションで別途毎回呼ばれる）
+  s = now(); dataVersion(); T.dataVersion = now() - s;
+  T.grandTotal = now() - t0;
+  return { ok: true, timing_ms: T, note: 'setupIfNeeded+configuredSheets+localSheets+mgmt+bq がdataアクション相当。dataVersionはversionアクションで毎回別途。' };
 }
 
 // 変更検知用の軽量な署名（全データを読まずに作る）
