@@ -2586,7 +2586,9 @@ function viewTarget(){
       const actualPct=salesAct>0?it.actAmt/salesAct*100:null;
       goalTxt=hasGoal?(it.goalPct.toFixed(1)+'%'+(goalM>0?' <span class="mut" style="font-size:10px">('+yen(goalM*it.goalPct/100)+')</span>':'')):'—';
       actTxt=actualPct!=null?(actualPct.toFixed(1)+'% <span class="mut" style="font-size:10px">('+yen(it.actAmt)+')</span>'):'—';
-      r2=(hasGoal&&actualPct!=null)?actualPct/it.goalPct*100:null; ok=r2==null?null:(it.invert?r2<=100:r2>=100);
+      // 費用系（invert）は「低いほど良い」ので 達成率＝目標÷実績×100（100%以上で達成）。売上系は実績÷目標。
+      r2=(hasGoal&&actualPct!=null)?(it.invert?(actualPct>0?it.goalPct/actualPct*100:null):actualPct/it.goalPct*100):null;
+      ok=r2==null?null:r2>=100;
       expI.push([it.lb, hasGoal?it.goalPct+'%':'', actualPct!=null?actualPct.toFixed(1)+'%':'', pctTxt(r2)]);
     } else {
       const hasGoal=it.goal!=null&&it.goal>0;
@@ -2596,7 +2598,7 @@ function viewTarget(){
       expI.push([it.lb, hasGoal?String(it.fmt(it.goal)).replace(/[¥,]/g,''):'', it.act!=null?String(it.fmt(it.act)).replace(/[¥,]/g,''):'', pctTxt(r2)]);
     }
     h+=`<tr><td>${esc(it.lb)}</td><td>${goalTxt}</td><td>${actTxt}</td>
-      <td class="${ok==null?'mut':ok?'pos':'neg'}">${pctTxt(r2)}</td><td style="min-width:130px">${bar(r2,it.invert)}</td></tr>`;
+      <td class="${ok==null?'mut':ok?'pos':'neg'}">${pctTxt(r2)}</td><td style="min-width:130px">${bar(r2)}</td></tr>`;
   });
   h+=`</tbody></table></div></div>`;
   EXPORT.push({ title:'目標項目別予実（'+mLabel+'）', headers:['項目','目標','実績','達成率'], rows:expI });
@@ -3447,17 +3449,24 @@ function targetModal(){
   const stSet=new Set([st]);
   const goals={}; for(const r of D.targets){ if(r.store!==st) continue; const d2=new Date(r.t); if(d2.getFullYear()===y&&d2.getMonth()===mo-1) goals[d2.getDate()]=r.goal; }
   const tmEx=D.targetsM.find(r=>{ const d2=new Date(r.t); return r.store===st&&d2.getFullYear()===y&&d2.getMonth()===mo-1; })||{};
-  let grid='';
+  let grid='', initTotal=0, lyTotal=0;
   for(let d2=1;d2<=lastDay;d2++){
     const dt=new Date(y,mo-1,d2); const t=dayMs(dt);
     const ly=dailySalesOf(stSet,t-LY_MS);
+    if(goals[d2]!=null&&goals[d2]>0) initTotal+=Math.round(goals[d2]);
+    if(ly>0) lyTotal+=ly;
     grid+=`<tr${isHolidayOrSunday(dt)?' style="background:#fbf6f3"':''}><td style="white-space:nowrap">${mdw(dt)}</td>
       <td class="mut" style="white-space:nowrap">${ly>0?yen(ly):'—'}</td>
-      <td><input type="number" id="tg-d-${d2}" data-ly="${ly}" value="${goals[d2]!=null&&goals[d2]>0?Math.round(goals[d2]):''}" placeholder="${ly>0?Math.round(ly):''}" style="width:110px;text-align:right;padding:5px 8px"></td></tr>`;
+      <td><input type="number" id="tg-d-${d2}" data-ly="${ly}" oninput="App.tgtRecalc()" value="${goals[d2]!=null&&goals[d2]>0?Math.round(goals[d2]):''}" placeholder="${ly>0?Math.round(ly):''}" style="width:110px;text-align:right;padding:5px 8px"></td></tr>`;
   }
   return `<div class="modal-bg" onclick="if(event.target===this)App.closeModal()"><div class="modal" style="max-width:560px">
     <h3>目標入力（${y}年${mo}月）</h3>
     <div class="sub">「昨年同週同曜日」＝364日前（52週前の同じ曜日）の売上実績。空欄の日は目標なし扱いです。</div>
+    <div style="margin-top:10px;padding:10px 14px;background:#f3f5f0;border:1px solid #d7ddcf;border-radius:10px;display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:6px">
+      <span style="font-size:12.5px;color:#5c5348;font-weight:700">月間売上目標 合計</span>
+      <span><b id="tg-total" data-ly="${lyTotal}" style="font-size:19px;color:#3d5163">${yen(initTotal)}</b>
+        <span class="mut" style="font-size:11px" id="tg-total-cmp">${lyTotal>0?'／ 昨年同曜日合計 '+yen(lyTotal)+'（'+(initTotal>0?(initTotal/lyTotal*100).toFixed(0)+'%）':'—）'):''}</span></span>
+    </div>
     <div class="form-grid" style="margin-top:10px">
       <div><label>店舗</label><select id="tg-store" onchange="App.tgtSwitch()">${stores.map(s=>`<option ${st===s?'selected':''}>${esc(s)}</option>`).join('')}</select></div>
       <div><label>対象月</label><input type="month" id="tg-month" value="${m.month}" onchange="App.tgtSwitch()"></div>
@@ -3676,8 +3685,12 @@ window.App = {
   },
   tgtSwitch(){ const st=$('tg-store')?$('tg-store').value:''; const mo=$('tg-month')?$('tg-month').value:''; S.modal={type:'target', store:st, month:mo||S.modal.month}; render(); },
   tgtFill(){ const pct=Number($('tg-pct')&&$('tg-pct').value)||100;
-    document.querySelectorAll('[id^="tg-d-"]').forEach(i=>{ const ly=Number(i.dataset.ly)||0; if(ly>0) i.value=Math.round(ly*pct/100/1000)*1000; }); },
-  tgtClear(){ document.querySelectorAll('[id^="tg-d-"]').forEach(i=>{ i.value=''; }); },
+    document.querySelectorAll('[id^="tg-d-"]').forEach(i=>{ const ly=Number(i.dataset.ly)||0; if(ly>0) i.value=Math.round(ly*pct/100/1000)*1000; }); this.tgtRecalc(); },
+  tgtClear(){ document.querySelectorAll('[id^="tg-d-"]').forEach(i=>{ i.value=''; }); this.tgtRecalc(); },
+  tgtRecalc(){ let t=0; document.querySelectorAll('[id^="tg-d-"]').forEach(i=>{ const v=Number(String(i.value).trim()); if(v>0) t+=v; });
+    const el=$('tg-total'); if(!el) return; el.textContent=yen(t);
+    const ly=Number(el.dataset.ly)||0, cmp=$('tg-total-cmp');
+    if(cmp) cmp.textContent=ly>0?('／ 昨年同曜日合計 '+yen(ly)+'（'+(t>0?(t/ly*100).toFixed(0)+'%）':'—）')):''; },
   async saveTargetInput(){
     const msg=$('tg-msg');
     if(!S.auth||!S.auth.token){ msg.textContent='スプレッドシート接続時のみ保存できます（デモモードでは保存不可）'; return; }
