@@ -3582,6 +3582,7 @@ function depParseCsv(text){
   const iA=H.findIndex(h2=>/入金|預入/.test(h2)&&!/出金|引出/.test(h2));
   const iDesc=colAny(H,['摘要','取引内容','内容','明細','備考']);
   const iTime=H.findIndex(h2=>/時刻|時間/.test(h2));
+  const iBal=colAny(H,['残高']);   // 取引後残高。同日同額の入金でも行を一意に区別できる強力な手がかり
   if(iD<0||iA<0) return { error:'必要な列が見つかりません（日付列と入金列）。見出し: '+H.join(' / ') };
   const out=[];
   for(let i=hi+1;i<rows.length;i++){
@@ -3594,7 +3595,8 @@ function depParseCsv(text){
     const desc=iDesc>=0?String(c[iDesc]||'').trim():'';
     let tm=iTime>=0?String(c[iTime]||'').trim():'';
     if(!tm){ const mt=rawD.match(/(\d{1,2}:\d{2}(?::\d{2})?)/); if(mt) tm=mt[1]; }  // 日時列に時刻が含まれる形式
-    out.push({ t, amt, desc, tm });
+    const bal=(iBal>=0&&String(c[iBal]||'').trim()!=='')?num(c[iBal]):null;
+    out.push({ t, amt, desc, tm, bal });
   }
   if(!out.length) return { error:'入金行（入金額>0）が見つかりませんでした' };
   out.sort((a,b)=>a.t-b.t);
@@ -3850,12 +3852,14 @@ window.App = {
     if(!DEP_IMPORT.rows.length){ box.innerHTML='<div class="empty" style="padding:14px;font-size:12.5px">CSVファイルを選択してください</div>'; if(runBtn)runBtn.disabled=true; return; }
     if(!rows.length){ box.innerHTML='<div class="empty" style="padding:14px;font-size:12.5px">ATM入金の行がありません（チェックを外すと全入金行が対象になります）</div>'; if(runBtn)runBtn.disabled=true; return; }
     const total=rows.reduce((s,r)=>s+r.amt,0);
+    const hasBal=rows.some(r=>r.bal!=null);
     let h2=`<div style="font-size:12.5px;font-weight:700;color:#3d5163;margin-bottom:4px">取込対象 ${rows.length}件 ／ 合計 ${yen(total)} <span class="mut" style="font-weight:400">（${esc(DEP_IMPORT.file)}）</span></div>
       <div class="scroll-x" style="max-height:220px;overflow-y:auto;border:1px solid var(--line2);border-radius:8px">
-      <table class="tbl"><thead><tr><th>日付</th><th>入金額</th><th>摘要</th><th>時刻</th></tr></thead><tbody>`;
+      <table class="tbl"><thead><tr><th>日付</th><th>入金額</th><th>摘要</th><th>時刻</th>${hasBal?'<th>残高</th>':''}</tr></thead><tbody>`;
     rows.slice(0,300).forEach(r=>{ const dt=new Date(r.t);
-      h2+=`<tr><td style="white-space:nowrap">${dt.getFullYear()}/${dt.getMonth()+1}/${dt.getDate()}</td><td style="text-align:right">${yen(r.amt)}</td><td style="font-size:11px">${esc(r.desc)}</td><td class="mut" style="font-size:11px">${esc(r.tm)}</td></tr>`; });
+      h2+=`<tr><td style="white-space:nowrap">${dt.getFullYear()}/${dt.getMonth()+1}/${dt.getDate()}</td><td style="text-align:right">${yen(r.amt)}</td><td style="font-size:11px">${esc(r.desc)}</td><td class="mut" style="font-size:11px">${esc(r.tm)}</td>${hasBal?`<td class="mut" style="text-align:right;font-size:11px">${r.bal!=null?yen(r.bal):'—'}</td>`:''}</tr>`; });
     h2+=`</tbody></table></div>`;
+    if(hasBal) h2+=`<div class="mut" style="font-size:11px;margin-top:3px">※CSVの残高列を取込済み。重複判定の精度が上がります（同日同額の入金も区別できます）</div>`;
     if(rows.length>300) h2+=`<div class="mut" style="font-size:11px;margin-top:3px">※プレビューは300件まで表示（取込は全${rows.length}件）</div>`;
     box.innerHTML=h2; if(runBtn)runBtn.disabled=false;
   },
@@ -3869,7 +3873,7 @@ window.App = {
     const rows=DEP_IMPORT.rows.filter(r=>!atmOnly||isAtm(r.desc));
     if(!rows.length){ msg.textContent='取込対象の行がありません'; return; }
     const payload=rows.map(r=>{ const dt=new Date(r.t);
-      return [dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0'), r.amt, r.desc, r.tm]; });
+      return [dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0'), r.amt, r.desc, r.tm, r.bal]; });
     const runBtn=$('dp-run'); if(runBtn)runBtn.disabled=true;
     msg.style.color='#8c8375'; msg.textContent='取込中…（'+rows.length+'件）';
     try{

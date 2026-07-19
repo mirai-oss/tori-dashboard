@@ -43,7 +43,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v33', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v34', time: new Date().toISOString() });
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     if (action === 'perf') return out(perfDiag(p)); // パフォーマンス計測（専用トークン認証・ログイン不要・数字は返さず時間だけ）
     setupIfNeeded();
@@ -1066,9 +1066,10 @@ function depositHeaderRow_(sh) {
   for (var r = 0; r < scan; r++) { if (String(v[r][0]).trim() === '店舗') return r + 1; }
   return -1;
 }
-// 入金管理タブの「口座CSVを取込」から呼ばれる。rows=[[YYYY-MM-DD, 入金額, 摘要, 時刻],...]
+// 入金管理タブの「口座CSVを取込」から呼ばれる。rows=[[YYYY-MM-DD, 入金額, 摘要, 時刻, 残高|null],...]
 // 選択店舗に紐付けて、売上DBの入金DB と このスプレッドシートの入金DB の両方に追記する。
-// 既存行（店舗+日付+金額+時刻が一致）はスキップするので、同じCSVを2回取り込んでも重複しない。
+// 重複判定: CSVに残高列があれば「店舗+日付+金額+残高」（同日同額の入金でも取引後残高はほぼ一意）、
+// 無ければ「店舗+日付+金額+時刻」で判定。既存の手動貼り付け行（残高なし）とも安全に共存する。
 function importDeposits(p, session) {
   var store = String(p.store || '').trim();
   if (!store) return { ok: false, error: '店舗が未指定です' };
@@ -1099,18 +1100,26 @@ function importDeposits(p, session) {
     return String(v || '').trim();
   }
   function aKey(v) { return String(Number(String(v).replace(/[,¥\s]/g, '')) || 0); }
+  // 残高列（列7）。無ければnull扱い（既存データに列7自体が無くても getValues は空文字を返すので安全）
+  function bKey(v) { var s = String(v == null ? '' : v).replace(/[,¥\s]/g, ''); return s === '' ? null : String(Number(s) || 0); }
   var added = 0, dup = 0, detail = {};
   targets.forEach(function (t, ti) {
     var sh = t.sh;
     var head = depositHeaderRow_(sh);
     if (head < 0) { detail[t.label] = 'ヘッダー行なし'; return; }
+    // 残高列の見出しが無ければ追加（既存6列構成には触れない・列7だけ追記）
+    if (String(sh.getRange(head, 7).getValue()).trim() === '') {
+      sh.getRange(head, 7).setValue('残高').setFontWeight('bold').setBackground('#efe9dd');
+    }
     var last = sh.getLastRow();
     var exist = {};
     if (last > head) {
-      var v = sh.getRange(head + 1, 1, last - head, 5).getValues();
+      var v = sh.getRange(head + 1, 1, last - head, 7).getValues();
       for (var i = 0; i < v.length; i++) {
         if (String(v[i][0]).trim() === '') continue;
-        exist[String(v[i][0]).trim() + '|' + dKey(v[i][1]) + '|' + aKey(v[i][2]) + '|' + tKey(v[i][4])] = 1;
+        var store_ = String(v[i][0]).trim(), d_ = dKey(v[i][1]), a_ = aKey(v[i][2]), b_ = bKey(v[i][6]);
+        var k = b_ != null ? (store_ + '|' + d_ + '|' + a_ + '|b' + b_) : (store_ + '|' + d_ + '|' + a_ + '|' + tKey(v[i][4]));
+        exist[k] = 1;
       }
     }
     var out = [], skipped = 0;
@@ -1118,17 +1127,20 @@ function importDeposits(p, session) {
       var m = String(a[0]).match(/^(\d{4})-(\d{2})-(\d{2})$/); if (!m) return;
       var amt = Number(a[1]) || 0; if (!(amt > 0)) return;
       var desc = String(a[2] || '').slice(0, 100), tm = String(a[3] || '').trim();
-      var key = store + '|' + (+m[1]) + '/' + (+m[2]) + '/' + (+m[3]) + '|' + amt + '|' + tm;
+      var bal = (a[4] === null || a[4] === undefined || a[4] === '') ? null : Number(a[4]);
+      var dKeyNow = (+m[1]) + '/' + (+m[2]) + '/' + (+m[3]);
+      var key = bal != null ? (store + '|' + dKeyNow + '|' + amt + '|b' + bal) : (store + '|' + dKeyNow + '|' + amt + '|' + tm);
       if (exist[key]) { skipped++; return; }
       exist[key] = 1;
-      out.push([store, new Date(+m[1], +m[2] - 1, +m[3]), amt, desc, tm, now]);
+      out.push([store, new Date(+m[1], +m[2] - 1, +m[3]), amt, desc, tm, now, bal == null ? '' : bal]);
     });
     if (out.length) {
       var r0 = sh.getLastRow() + 1;
-      sh.getRange(r0, 1, out.length, 6).setValues(out);
+      sh.getRange(r0, 1, out.length, 7).setValues(out);
       sh.getRange(r0, 2, out.length, 1).setNumberFormat('yyyy/m/d');
       sh.getRange(r0, 3, out.length, 1).setNumberFormat('#,##0');
       sh.getRange(r0, 6, out.length, 1).setNumberFormat('yyyy/m/d h:mm');
+      sh.getRange(r0, 7, out.length, 1).setNumberFormat('#,##0');
     }
     detail[t.label] = out.length + '件追加' + (skipped ? '（重複' + skipped + '件スキップ）' : '');
     if (ti === 0) { added = out.length; dup = skipped; }
