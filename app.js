@@ -107,7 +107,7 @@ const S = {
   reportMode:null,   // {kind:'daily'|'weekly'|'monthly', date:'YYYY-MM-DD'} Lark日報用の1枚カード表示
   accounts:null, accErr:'', modal:null, loginErr:'',
 };
-const D = { daily:[], media:[], deposit:[], review:[], ad:[], adfx:[], tanka:{}, pl:[], dinii:[], diniiCols:[], targets:[], targetsM:[], events:[], extra:{}, storeAlias:{}, storeParent:{}, mediaClass:{}, holidays:null, detailData:null, detailKey:'', detailLoading:'', dashSeg:null, dashSegKey:'', dashSegLoading:'', refDate:null, maxDate:null };
+const D = { daily:[], media:[], deposit:[], review:[], ad:[], adfx:[], tanka:{}, pl:[], dinii:[], diniiCols:[], targets:[], targetsM:[], events:[], extra:{}, storeAlias:{}, storeParent:{}, mediaClass:{}, holidays:null, detailData:null, detailKey:'', detailLoading:'', refDate:null, maxDate:null };
 let EXPORT = [];      // 現在タブのCSVエクスポート対象 [{title,headers,rows}]
 let pollTimer = null;
 
@@ -577,6 +577,13 @@ function eventsFor(t, storeNames){
 function eventLineText(evs){
   return evs.map(e=>(e.venue?e.venue+'：':'')+e.name).join('／');
 }
+// 媒体別売上(分析_媒体別日次)を営業区分（ランチ/ディナー）で集計。営業区分別売上パネルと同じロジック。
+function segSplit(scopeSet, a, b, selName){
+  let ln=0,dn=0,lg=0,dg=0;
+  for(const r of D.media){ const inScope=selName?(r.store===selName):scopeSet.has(r.store); if(!inScope)continue; if(r.t<a||r.t>b)continue;
+    if(mediaClassOf(r.media).seg==='ランチ'){ ln+=r.net; lg+=r.guests; } else { dn+=r.net; dg+=r.guests; } }
+  return { ln, dn, lg, dg, hasNet:(ln+dn)>0, hasG:(lg+dg)>0 };
+}
 const isHolidayKey=(k)=>/祝日|祝祭日|holiday/i.test(String(k));
 function ingestHoliday(rows){
   const set=new Set(); let n=0;
@@ -880,20 +887,6 @@ async function fetchDataFast(){
     }
     D.mediaPending=false; render();
   })();
-}
-// ダッシュボードのランチ/ディナー内訳：BQ明細から来店時刻ベースで店舗別に取得（客数=お通しではなく会計数で按分）
-async function fetchDashSeg(from,to){
-  if(!S.auth||!S.auth.token) return;
-  const key=from+'|'+to;
-  if(D.dashSegKey===key && D.dashSeg) return;
-  if(D.dashSegLoading===key) return;
-  D.dashSegLoading=key;
-  try{
-    const d=await api({ action:'bqSeg', token:S.auth.token, from, to });
-    D.dashSeg=(d&&d.ok)?(d.store||[]):[];
-    D.dashSegKey=key;
-  }catch(e){ D.dashSeg=[]; D.dashSegKey=key; }
-  D.dashSegLoading=''; render();
 }
 // 軽量版：まず署名(version)だけ取り、変化があるときだけフル取得
 async function fetchVersion(){
@@ -1259,41 +1252,29 @@ function viewDash(){
 
   const y1=yoyStr(Ssl,pS), yG=yoyStr(cur.guests,prev.guests,'前年 '), ySp=yoyStr(spend,pSpend,'前年 ');
   const yF=ptStr(foodR,pFood,true), yL=ptStr(laborR,pLabor,true), yFL=ptStr(flR,pFood+pLabor,true);
-  // 営業区分（ランチ/ディナー）の内訳。BQ明細の来店時刻で判定（媒体名では正しく分けられないため）。
-  // 売上は売上比、客数・組数は会計数比で按分。店舗別内訳は出さない＝全体のみ。
-  const ymdD=(d)=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
-  let rN=null, rG=null;  // rN=ランチ売上比 / rG=ランチ会計数比（客数・組数に使う）
-  if(S.auth&&S.auth.token){
-    const sf=ymdD(r.s), st2=ymdD(r.e); fetchDashSeg(sf,st2);
-    if(D.dashSegKey===(sf+'|'+st2) && Array.isArray(D.dashSeg) && D.dashSeg.length>1){
-      const H=D.dashSeg[0]; const iLS=hcol(H,'l_sales'),iDS=hcol(H,'d_sales'),iLC=hcol(H,'l_checks'),iDC=hcol(H,'d_checks');
-      const targets=selName?[selName]:sc; const tset=new Set(targets);
-      let ls=0,ds=0,lc=0,dc=0;
-      for(let i=1;i<D.dashSeg.length;i++){ const row=D.dashSeg[i]; if(!tset.has(String(row[0]).trim())) continue;
-        ls+=num(row[iLS]); ds+=num(row[iDS]); lc+=num(row[iLC]); dc+=num(row[iDC]); }
-      if(ls+ds>0) rN=ls/(ls+ds);
-      if(lc+dc>0) rG=lc/(lc+dc);
-    }
-  }
-  const segY=(t,r)=> r==null?'':('🌤ランチ '+yen(t*r)+' ／ 🌙ディナー '+yen(t*(1-r)));
-  const segC=(t,r,u)=> r==null?'':('🌤ランチ '+cnt(t*r)+u+' ／ 🌙ディナー '+cnt(t*(1-r))+u);
-  const segSpend=()=>{ if(rN==null||rG==null||!(cur.guests>0)) return ''; const lg=cur.guests*rG,dg=cur.guests*(1-rG),ls=Ssl*rN,ds=Ssl*(1-rN);
-    return '🌤ランチ '+yen(lg>0?ls/lg:0)+' ／ 🌙ディナー '+yen(dg>0?ds/dg:0); };
+  // 営業区分（ランチ/ディナー）の内訳。営業区分別売上パネルと同じ＝媒体別売上の営業区分でそのまま集計
+  // （按分しない）。店舗別内訳は出さない＝全体のみ。組数は媒体に無いので客数比で按分。
+  const seg=segSplit(scopeSet,a,b,selName);
+  const grpR=seg.hasG?seg.lg/(seg.lg+seg.dg):null;
+  const segSales=seg.hasNet?('🌤ランチ '+yen(seg.ln)+' ／ 🌙ディナー '+yen(seg.dn)):'';
+  const segGuests=seg.hasG?('🌤ランチ '+cnt(seg.lg)+'人 ／ 🌙ディナー '+cnt(seg.dg)+'人'):'';
+  const segSpend=seg.hasG?('🌤ランチ '+yen(seg.lg>0?seg.ln/seg.lg:0)+' ／ 🌙ディナー '+yen(seg.dg>0?seg.dn/seg.dg:0)):'';
+  const segGroups=(gr)=> grpR==null?'':('🌤ランチ '+cnt(gr*grpR)+'組 ／ 🌙ディナー '+cnt(gr*(1-grpR))+'組');
   // 組数（会計組数）＝日別売上シート「分析_日別店舗」の組数列（レジ準拠・キャンセル除外済み）。
   let checksKpi=null;
   if(cur.hasGroups){
     const perGrp=(cur.groups>0)?Ssl/cur.groups:0;
     const grpYY=yoyStr(cur.groups,prev.groups,'前年 ');
-    checksKpi={ lb:'組数', vl: cnt(cur.groups)+'組', segsub:segC(cur.groups,rG,'組'), yy: (cur.groups>0)?{t:'1組平均 '+yen(perGrp)+(prev.hasGroups?' ／ '+grpYY.t:''),cls:prev.hasGroups?grpYY.cls:'mut'}:{t:'日別売上シートより',cls:'mut'} };
+    checksKpi={ lb:'組数', vl: cnt(cur.groups)+'組', segsub:segGroups(cur.groups), yy: (cur.groups>0)?{t:'1組平均 '+yen(perGrp)+(prev.hasGroups?' ／ '+grpYY.t:''),cls:prev.hasGroups?grpYY.cls:'mut'}:{t:'日別売上シートより',cls:'mut'} };
   }
   const kpis=[
-    { lb:(S.period==='day'?'日次':S.period==='week'?'週次':S.period==='month'?'月次':S.period==='year'?'累計':'期間')+'売上', vl:yen(Ssl), segsub:segY(Ssl,rN), yy:y1 },
+    { lb:(S.period==='day'?'日次':S.period==='week'?'週次':S.period==='month'?'月次':S.period==='year'?'累計':'期間')+'売上', vl:yen(Ssl), segsub:segSales, yy:y1 },
     { lb:'原価率 (F)', vl:Ssl>0?(foodR*100).toFixed(1)+'%':'—', sub:Ssl>0?yen(cur.cost):'', yy:yF },
     { lb:'人件費率 (L)', vl:Ssl>0?(laborR*100).toFixed(1)+'%':'—', sub:Ssl>0?('PA '+yen(cur.pa)+' ／ 社員 '+yen(cur.emp)):'', yy:yL },
     { lb:'FL合計', vl:Ssl>0?(flR*100).toFixed(1)+'%':'—', yy:yFL },
-    { lb:'客数', vl:cnt(cur.guests)+'人', segsub:segC(cur.guests,rG,'人'), yy:yG },
+    { lb:'客数', vl:cnt(cur.guests)+'人', segsub:segGuests, yy:yG },
     ...(checksKpi?[checksKpi]:[]),
-    { lb:'客単価', vl:yen(spend), segsub:segSpend(), yy:ySp },
+    { lb:'客単価', vl:yen(spend), segsub:segSpend, yy:ySp },
     { lb:'口コミ点数', vl:revScore, yy:revScoreYY },
     { lb:'口コミ件数', vl:revCount, yy:revCountYY },
   ];

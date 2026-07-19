@@ -43,7 +43,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v30', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v31', time: new Date().toISOString() });
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     if (action === 'perf') return out(perfDiag(p)); // パフォーマンス計測（専用トークン認証・ログイン不要・数字は返さず時間だけ）
     setupIfNeeded();
@@ -61,7 +61,6 @@ function handle(p) {
     if (action === 'version')  return out({ ok: true, version: dataVersion() }); // 軽量：変更検知用の署名だけ返す
     if (action === 'data')     return out(getData(p, session));
     if (action === 'bqDetail') return out(bqDetail(p, session)); // 明細分析：期間・店舗で絞ってBQ集計
-    if (action === 'bqSeg')    return out(bqSeg(p, session));    // ダッシュボード：ランチ/ディナー内訳（来店時刻ベース）
     if (action === 'accounts') return out(listAccounts(session));
     if (action === 'saveAccount')   return out(saveAccount(p, session));
     if (action === 'deleteAccount') return out(deleteAccount(p, session));
@@ -779,33 +778,6 @@ function bqDetail(p, session) {
     var hourItem = bqRows_("SELECT EXTRACT(HOUR FROM " + hourCol + ") AS hour, menu, SUM(qty) AS qty, SUM(sales_incl) AS sales FROM " + hiFrom + " " + hiWhere + " GROUP BY hour, menu");
     var res = { ok: true, hour: hour || [], item: item || [], store: st || [], hourItem: hourItem || [], basis: basis };
     try { cache.put(ck, JSON.stringify(res), 900); } catch (e3) { /* 100KB超はキャッシュしない */ }
-    return res;
-  } catch (e) { return { ok: false, error: String(e && e.message || e) }; }
-}
-// ダッシュボードのランチ/ディナー内訳。来店時刻（伝票の最初のオーダー時刻）で判定する。
-// LUNCH_END時より前に来店＝ランチ／それ以降＝ディナー。店舗別に 売上・会計数 を返し、
-// フロント側でスコープ合算・比率算出して、レジ準拠の売上/客数/組数に按分表示する。
-function bqSeg(p, session) {
-  var from = String(p.from || '').slice(0, 10), to = String(p.to || '').slice(0, 10);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) return { ok: false, error: 'bad date range' };
-  var LUNCH_END = 15; // 15時までの来店をランチとみなす
-  var cache = CacheService.getScriptCache();
-  var ck = 'seg_' + from + '_' + to + '_' + LUNCH_END;
-  var hit = cache.get(ck);
-  if (hit) { try { var o = JSON.parse(hit); o.cached = true; return o; } catch (e2) {} }
-  try {
-    // 伝票ごとの来店時刻(最初のオーダー)の「時」を付けてから、ランチ/ディナーに振り分けて集計
-    var src = "(SELECT *, EXTRACT(HOUR FROM MIN(order_at) OVER (PARTITION BY store_id, business_date, check_id)) AS _h FROM " + BQ_TABLE +
-      " WHERE business_date BETWEEN DATE('" + from + "') AND DATE('" + to + "'))";
-    var isL = "_h < " + LUNCH_END;
-    var st = bqRows_(
-      "SELECT store_id, " +
-      "SUM(IF(" + isL + ", sales_incl, 0)) AS l_sales, SUM(IF(" + isL + ", 0, sales_incl)) AS d_sales, " +
-      "COUNT(DISTINCT IF(" + isL + ", check_id, NULL)) AS l_checks, COUNT(DISTINCT IF(NOT(" + isL + "), check_id, NULL)) AS d_checks " +
-      "FROM " + src + " GROUP BY store_id");
-    if (st) { var m = bqStoreMap_(); for (var r = 1; r < st.length; r++) st[r][0] = m[st[r][0]] || st[r][0]; if (st[0]) st[0][0] = '店舗'; }
-    var res = { ok: true, store: st || [] };
-    try { cache.put(ck, JSON.stringify(res), 900); } catch (e3) {}
     return res;
   } catch (e) { return { ok: false, error: String(e && e.message || e) }; }
 }
