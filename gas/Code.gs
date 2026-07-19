@@ -43,12 +43,13 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v26', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v27', time: new Date().toISOString() });
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     if (action === 'perf') return out(perfDiag(p)); // パフォーマンス計測（専用トークン認証・ログイン不要・数字は返さず時間だけ）
     setupIfNeeded();
     if (action === 'login')  return out(login(p));
     if (action === 'logout') return out(logout(p));
+    if (action === 'saveArenaEvents') return out(saveArenaEvents(p)); // イベント自動取得（専用トークン認証・ログイン不要）
 
     // ここから先はログイン必須
     var session = requireSession(p);
@@ -297,6 +298,16 @@ function setupIfNeeded() {
       .setFontWeight('bold').setBackground('#efe9dd');
     evSh.getRange('A1').setNote('横浜アリーナ・日産スタジアム等のイベント情報。対象店舗（カンマ区切り）に入っている店舗のダッシュボード・目標管理にだけ表示されます（空欄＝全店向け）。通常はダッシュボードの「目標管理」タブ→「＋イベント追加」から入力してください。');
     evSh.setFrozenRows(1); evSh.setColumnWidths(1, 6, 130); evSh.setColumnWidths(5, 1, 260);
+  }
+  // 会場→対象店舗の対応表（DB_会場店舗）。自動取得したイベント（横浜アリーナ等）の対象店舗をここから自動付与。
+  // 店舗が増えたら、その会場の行の「対象店舗」にカンマ区切りで店舗名を足すだけ（翌朝の自動取得で全イベントに反映）。
+  var vsSh = ss.getSheetByName('DB_会場店舗');
+  if (!vsSh) {
+    vsSh = ss.insertSheet('DB_会場店舗');
+    vsSh.getRange(1, 1, 1, 2).setValues([['会場', '対象店舗']]).setFontWeight('bold').setBackground('#efe9dd');
+    vsSh.getRange(2, 1, 1, 2).setValues([['横浜アリーナ', '黒霧屋 新横浜, 鶏武者 新横浜, じんべえ 新横浜店']]);
+    vsSh.getRange('A1').setNote('自動取得イベント（横浜アリーナ等）の「対象店舗」をこの表から自動で埋めます。\n・会場: 取得元の会場名（例 横浜アリーナ）\n・対象店舗: その会場の近くで影響を受ける店舗名をカンマ区切り（分析_日別店舗と同じ表記）\n※店舗が増えたら、この行に店舗名を足すだけで翌朝の自動取得から全イベントに反映されます。');
+    vsSh.setFrozenRows(1); vsSh.setColumnWidths(1, 1, 140); vsSh.setColumnWidths(2, 1, 340);
   }
 }
 
@@ -994,4 +1005,53 @@ function deleteEvent(p, session) {
     for (var i = 0; i < vals.length; i++) if (String(vals[i][0]).trim() === id) { sh.deleteRow(i + 2); return { ok: true }; }
   }
   return { ok: false, error: '該当イベントが見つかりません' };
+}
+
+// ================== イベント自動取得（横浜アリーナ等） ==================
+// 会場名→対象店舗（DB_会場店舗）を引く。無ければ空文字（＝全店向け扱い）。
+function venueStores_(ss, venue) {
+  var sh = ss.getSheetByName('DB_会場店舗');
+  if (!sh || sh.getLastRow() < 2) return '';
+  var v = sh.getRange(2, 1, sh.getLastRow() - 1, 2).getValues();
+  for (var i = 0; i < v.length; i++) {
+    if (String(v[i][0]).trim() === String(venue).trim()) return String(v[i][1] || '').trim();
+  }
+  return '';
+}
+// ns-daily-import の arena-events タスクから呼ばれる。会場・取得月・イベント配列を受け取り、
+// DB_会場店舗で対象店舗を自動付与して DB_イベント を差し替える（自動行=ya_接頭辞。手動行は保持）。
+function saveArenaEvents(p) {
+  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+  if (!tk || String(p.token) !== tk) return { ok: false, error: 'unauthorized' };
+  setupIfNeeded(); // DB_イベント / DB_会場店舗 の存在を保証
+  var venue = String(p.venue || '').trim() || '横浜アリーナ';
+  var months, events;
+  try { months = JSON.parse(p.months || '[]'); events = JSON.parse(p.events || '[]'); }
+  catch (e) { return { ok: false, error: 'bad json' }; }
+  var monthSet = {}; months.forEach(function (m) { monthSet[m] = 1; });
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var stores = venueStores_(ss, venue);
+  var PFX = 'ya_';
+  // 新イベント行（IDは日付+名前ハッシュで安定＝毎回同じ→冪等）
+  var newIds = {}, rows = events.map(function (e) {
+    var dt = String(e.date).split('-');
+    var id = PFX + dt.join('') + '_' + md5Hex_(String(e.name)).slice(0, 6);
+    newIds[id] = 1;
+    return [id, new Date(+dt[0], +dt[1] - 1, +dt[2]), String(e.name), venue, stores, '自動取得'];
+  });
+  var ev = ss.getSheetByName('DB_イベント');
+  var last = ev.getLastRow(), keep = [], removed = 0;
+  if (last >= 2) ev.getRange(2, 1, last - 1, 6).getValues().forEach(function (r) {
+    if (r[0] === '') return;
+    var id = String(r[0]);
+    if (id.indexOf(PFX) !== 0) { keep.push(r); return; }        // 手動イベントは常に保持
+    var d = (r[1] instanceof Date) ? r[1] : new Date(r[1]);
+    var ym = d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2);
+    if (!monthSet[ym]) { keep.push(r); return; }                // 取得範囲外の自動行は歴史として保持
+    if (!newIds[id]) removed++;                                 // 取得範囲内だが今回無い＝掲載終了→削除
+  });
+  var out = keep.concat(rows);
+  if (last >= 2) ev.getRange(2, 1, last - 1, 6).clearContent();
+  if (out.length) { ev.getRange(2, 1, out.length, 6).setValues(out); ev.getRange(2, 2, out.length, 1).setNumberFormat('yyyy/m/d'); }
+  return { ok: true, upserted: rows.length, removed: removed, stores: stores ? stores.split(/[,、]/).map(function (s) { return s.trim(); }).filter(Boolean) : [] };
 }
