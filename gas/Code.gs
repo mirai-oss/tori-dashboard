@@ -43,7 +43,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v25', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v26', time: new Date().toISOString() });
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     if (action === 'perf') return out(perfDiag(p)); // パフォーマンス計測（専用トークン認証・ログイン不要・数字は返さず時間だけ）
     setupIfNeeded();
@@ -58,6 +58,9 @@ function handle(p) {
     if (action === 'accounts') return out(listAccounts(session));
     if (action === 'saveAccount')   return out(saveAccount(p, session));
     if (action === 'deleteAccount') return out(deleteAccount(p, session));
+    if (action === 'saveTargets') return out(saveTargets(p, session)); // 目標（日別売上＋月次）保存
+    if (action === 'saveEvent')   return out(saveEvent(p, session));   // イベント保存
+    if (action === 'deleteEvent') return out(deleteEvent(p, session)); // イベント削除
     return out({ ok: false, error: 'unknown action: ' + action });
   } catch (err) {
     return out({ ok: false, error: String(err && err.message || err) });
@@ -267,6 +270,33 @@ function setupIfNeeded() {
     );
     sidSh.setFrozenRows(1);
     sidSh.setColumnWidths(1, 1, 320); sidSh.setColumnWidths(2, 1, 160);
+  }
+
+  // 目標シート（DB_目標＝日別売上目標／DB_目標月次＝月次目標）。ダッシュボードの目標管理タブから入力される。
+  var tgSh = ss.getSheetByName('DB_目標');
+  if (!tgSh) {
+    tgSh = ss.insertSheet('DB_目標');
+    tgSh.getRange(1, 1, 1, 3).setValues([['日付', '店舗名', '売上目標']])
+      .setFontWeight('bold').setBackground('#efe9dd');
+    tgSh.getRange('A1').setNote('日別の売上目標。通常はダッシュボードの「目標管理」タブ →「✎ 目標を入力」から設定してください（昨年同週同曜日の売上を見ながら入力できます）。');
+    tgSh.setFrozenRows(1); tgSh.setColumnWidths(1, 3, 130);
+  }
+  var tgmSh = ss.getSheetByName('DB_目標月次');
+  if (!tgmSh) {
+    tgmSh = ss.insertSheet('DB_目標月次');
+    tgmSh.getRange(1, 1, 1, 7).setValues([['年月', '店舗名', 'PA人件費', '社員人件費', '仕入原価', 'ダイニー点数', '口コミ件数']])
+      .setFontWeight('bold').setBackground('#efe9dd');
+    tgmSh.getRange('A1').setNote('月次目標（1行＝年月×店舗）。口コミ件数は「その月に増やす件数」。ダッシュボードの「目標管理」タブから入力できます。');
+    tgmSh.setFrozenRows(1); tgmSh.setColumnWidths(1, 7, 110);
+  }
+  // イベントシート（DB_イベント）。対象店舗にチェック（カンマ区切りで保存）した店舗の画面にだけ表示される。
+  var evSh = ss.getSheetByName('DB_イベント');
+  if (!evSh) {
+    evSh = ss.insertSheet('DB_イベント');
+    evSh.getRange(1, 1, 1, 6).setValues([['ID', '日付', 'イベント名', '会場', '対象店舗', 'メモ']])
+      .setFontWeight('bold').setBackground('#efe9dd');
+    evSh.getRange('A1').setNote('横浜アリーナ・日産スタジアム等のイベント情報。対象店舗（カンマ区切り）に入っている店舗のダッシュボード・目標管理にだけ表示されます（空欄＝全店向け）。通常はダッシュボードの「目標管理」タブ→「＋イベント追加」から入力してください。');
+    evSh.setFrozenRows(1); evSh.setColumnWidths(1, 6, 130); evSh.setColumnWidths(5, 1, 260);
   }
 }
 
@@ -882,4 +912,86 @@ function deleteAccount(p, session) {
     if (rows[i].id === id) { sh.deleteRow(rows[i].row); return { ok: true }; }
   }
   return { ok: false, error: '該当アカウントが見つかりません' };
+}
+
+// ================== 目標（予実管理）とイベント ==================
+// 権限：全店でないアカウントは担当店舗のみ編集可
+function scopeAllows_(session, store) {
+  var s = String(session && session.stores || '').trim();
+  if (!s || s === '全店') return true;
+  return s.split(/[,、]/).map(function (x) { return x.trim(); }).indexOf(store) >= 0;
+}
+// 目標保存：日別売上目標（DB_目標）＋月次目標（DB_目標月次）。対象月×店舗の行を差し替え（他は保持）
+function saveTargets(p, session) {
+  var store = String(p.store || '').trim();
+  var month = String(p.month || '').trim();  // YYYY-MM
+  if (!store || !/^\d{4}-\d{2}$/.test(month)) return { ok: false, error: 'store/monthが不正です' };
+  if (!scopeAllows_(session, store)) return { ok: false, error: 'この店舗の目標を編集する権限がありません' };
+  var daily; try { daily = JSON.parse(p.daily || '[]'); } catch (e) { daily = []; }
+  var y = Number(month.slice(0, 4)), mo = Number(month.slice(5, 7));
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  // DB_目標（日別）
+  var sh = ss.getSheetByName('DB_目標');
+  var last = sh.getLastRow(), keep = [];
+  if (last >= 2) sh.getRange(2, 1, last - 1, 3).getValues().forEach(function (r) {
+    if (r[0] === '') return;
+    var d = (r[0] instanceof Date) ? r[0] : new Date(r[0]);
+    var same = String(r[1]).trim() === store && d.getFullYear() === y && (d.getMonth() + 1) === mo;
+    if (!same) keep.push(r);
+  });
+  var rows = [];
+  daily.forEach(function (a) {
+    var d = Number(a[0]), v = a[1];
+    if (v === '' || v == null) return; v = Number(v);
+    if (!(v > 0)) return;
+    rows.push([new Date(y, mo - 1, d), store, v]);
+  });
+  var out = keep.concat(rows);
+  if (last >= 2) sh.getRange(2, 1, last - 1, 3).clearContent();
+  if (out.length) { sh.getRange(2, 1, out.length, 3).setValues(out); sh.getRange(2, 1, out.length, 1).setNumberFormat('yyyy/m/d'); }
+  // DB_目標月次
+  var sm = ss.getSheetByName('DB_目標月次');
+  var l2 = sm.getLastRow(), keep2 = [];
+  if (l2 >= 2) sm.getRange(2, 1, l2 - 1, 7).getValues().forEach(function (r) {
+    if (r[0] === '') return;
+    var d = (r[0] instanceof Date) ? r[0] : new Date(r[0]);
+    var same = String(r[1]).trim() === store && d.getFullYear() === y && (d.getMonth() + 1) === mo;
+    if (!same) keep2.push(r);
+  });
+  var mvals = [p.pa, p.emp, p.cost, p.dinii, p.review].map(function (v) { v = String(v == null ? '' : v).trim(); return v === '' ? 0 : (Number(v) || 0); });
+  var hasM = mvals.some(function (v) { return v > 0; });
+  var out2 = keep2.slice();
+  if (hasM) out2.push([new Date(y, mo - 1, 1), store, mvals[0], mvals[1], mvals[2], mvals[3], mvals[4]]);
+  if (l2 >= 2) sm.getRange(2, 1, l2 - 1, 7).clearContent();
+  if (out2.length) { sm.getRange(2, 1, out2.length, 7).setValues(out2); sm.getRange(2, 1, out2.length, 1).setNumberFormat('yyyy/m/d'); }
+  return { ok: true, dailyRows: rows.length, monthly: hasM };
+}
+// イベント保存（ID一致なら更新・無ければ追加）。対象店舗はカンマ区切りで保存し、その店舗の画面にだけ表示される。
+function saveEvent(p, session) {
+  var date = String(p.date || '').trim(), name = String(p.name || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !name) return { ok: false, error: '日付とイベント名が必要です' };
+  var id = String(p.id || '').trim() || Utilities.getUuid().slice(0, 8);
+  var venue = String(p.venue || '').trim(), stores = String(p.stores || '').trim(), memo = String(p.memo || '').trim();
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_イベント');
+  var d = date.split('-');
+  var row = [id, new Date(Number(d[0]), Number(d[1]) - 1, Number(d[2])), name, venue, stores, memo];
+  var last = sh.getLastRow(), found = -1;
+  if (last >= 2) {
+    var vals = sh.getRange(2, 1, last - 1, 1).getValues();
+    for (var i = 0; i < vals.length; i++) if (String(vals[i][0]).trim() === id) { found = i + 2; break; }
+  }
+  var target = found > 0 ? found : last + 1;
+  sh.getRange(target, 1, 1, 6).setValues([row]);
+  sh.getRange(target, 2).setNumberFormat('yyyy/m/d');
+  return { ok: true, id: id };
+}
+function deleteEvent(p, session) {
+  var id = String(p.id || '').trim(); if (!id) return { ok: false, error: 'idが必要です' };
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_イベント');
+  var last = sh.getLastRow();
+  if (last >= 2) {
+    var vals = sh.getRange(2, 1, last - 1, 1).getValues();
+    for (var i = 0; i < vals.length; i++) if (String(vals[i][0]).trim() === id) { sh.deleteRow(i + 2); return { ok: true }; }
+  }
+  return { ok: false, error: '該当イベントが見つかりません' };
 }

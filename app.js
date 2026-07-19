@@ -23,12 +23,12 @@ const PALETTE = ['#3d5163','#b5502f','#5f7052','#c9a86a','#7d8b6f','#2a6f8f','#9
 const C_NOW='#3d5163', C_PREV='#c9b7a0', C_MID='#7d8b6f';
 const LS = { api:'toriApiUrl', sess:'toriSession', acc:'toriDemoAccounts', poll:'toriPollSec', months:'toriMonths' };
 const ROLE_TABS = {
-  '社長':       ['dash','analysis','detail','pl','deposit','ad','review','ai','accounts'],
-  '本部':       ['dash','analysis','detail','pl','deposit','ad','review','ai','accounts'],
-  'マネージャー':['dash','analysis','detail','pl','deposit','ad','review','ai'],
-  '店舗':       ['dash','analysis','detail','deposit','review','ai'],   // PL・広告管理は既定で非表示（アカウントごとの「表示タブ」で変更可）
+  '社長':       ['dash','target','analysis','detail','pl','deposit','ad','review','ai','accounts'],
+  '本部':       ['dash','target','analysis','detail','pl','deposit','ad','review','ai','accounts'],
+  'マネージャー':['dash','target','analysis','detail','pl','deposit','ad','review','ai'],
+  '店舗':       ['dash','target','analysis','detail','deposit','review','ai'],   // PL・広告管理は既定で非表示（アカウントごとの「表示タブ」で変更可）
 };
-const TAB_LABELS = { dash:'ダッシュボード', analysis:'推移分析', detail:'明細分析', pl:'PL（損益）', deposit:'入金管理', ad:'広告管理', review:'口コミ', ai:'AI検索', accounts:'アカウント管理' };
+const TAB_LABELS = { dash:'ダッシュボード', target:'目標管理', analysis:'推移分析', detail:'明細分析', pl:'PL（損益）', deposit:'入金管理', ad:'広告管理', review:'口コミ', ai:'AI検索', accounts:'アカウント管理' };
 // 口コミ集約：同じ実店舗にぶら下がる別名店舗（Googleマイビジネスが分かれているケース）
 // 親店舗（=分析_日別店舗の店舗名）に、口コミ上の子店舗名をぶら下げる
 const REVIEW_CHILDREN = {
@@ -102,11 +102,12 @@ const S = {
   revPeriod:'month', revMonth:'', revWeekIdx:null, revYear:'', revStart:'', revEnd:'',
   aMetric:'sales', aGran:'day', aBreak:'total', aRange:'30', aYoY:true, mediaMode:'media', detailTax:'excl',
   dPeriod:'month', dStore:'all', dRankMode:'sales', dBasis:'checkout', dDay:'', dMonth:'', dYear:'', dWeekIdx:null, dStart:'', dEnd:'',
+  tMonth:'', tStore:'',   // 目標管理タブ：対象月・対象店舗
   aiQ:'', aiResult:null, dataVersion:'',
   reportMode:null,   // {kind:'daily'|'weekly'|'monthly', date:'YYYY-MM-DD'} Lark日報用の1枚カード表示
   accounts:null, accErr:'', modal:null, loginErr:'',
 };
-const D = { daily:[], media:[], deposit:[], review:[], ad:[], adfx:[], tanka:{}, pl:[], dinii:[], diniiCols:[], extra:{}, storeAlias:{}, storeParent:{}, mediaClass:{}, holidays:null, detailData:null, detailKey:'', detailLoading:'', refDate:null, maxDate:null };
+const D = { daily:[], media:[], deposit:[], review:[], ad:[], adfx:[], tanka:{}, pl:[], dinii:[], diniiCols:[], targets:[], targetsM:[], events:[], extra:{}, storeAlias:{}, storeParent:{}, mediaClass:{}, holidays:null, detailData:null, detailKey:'', detailLoading:'', refDate:null, maxDate:null };
 let EXPORT = [];      // 現在タブのCSVエクスポート対象 [{title,headers,rows}]
 let pollTimer = null;
 
@@ -525,6 +526,53 @@ function mediaClassOf(media){
   return out;
 }
 // 祝日シート（DB_祝日）：日付が入ったセルを拾って祝日集合に加える。2028年以降はここに足すだけで反映。
+// ===== 目標（予実管理）とイベント情報 =====
+// DB_目標（日付,店舗名,売上目標）／ DB_目標月次（年月,店舗名,PA人件費,社員人件費,仕入原価,ダイニー点数,口コミ件数）／
+// DB_イベント（ID,日付,イベント名,会場,対象店舗=カンマ区切り,メモ）
+const isTargetMKey=(k)=>/目標月次|目標_月次/.test(String(k));
+const isTargetKey=(k)=>/^目標$|目標日別/.test(String(k).trim());
+const isEventKey=(k)=>/イベント|^event/i.test(String(k));
+function ingestTargets(rows){
+  const hi=findHeader(rows,['店舗','目標']); const H=rows[hi].map(h=>String(h).trim());
+  const iD=colAny(H,['日付','営業日']), iS=colAny(H,['店舗名','店舗']), iV=colAny(H,['売上目標','目標']);
+  if(iD<0||iS<0||iV<0){ D.diag['目標']='列不足（日付・店舗名・売上目標）'; return false; }
+  const recs=[];
+  for(let i=hi+1;i<rows.length;i++){ const c=rows[i]; const st=String(c[iS]||'').trim(); const t=parseDateStr(c[iD]);
+    if(!st||!t) continue; recs.push({store:st,t,goal:num(c[iV])}); }
+  D.targets=recs; D.diag['目標']='OK '+recs.length+'件'; return true;
+}
+function ingestTargetsM(rows){
+  const hi=findHeader(rows,['店舗','人件費']); const H=rows[hi].map(h=>String(h).trim());
+  const iM=colAny(H,['年月']), iS=colAny(H,['店舗名','店舗']),
+        iPA=colAny(H,['PA人件費','アルバイト人件費']), iEmp=colAny(H,['社員人件費']),
+        iC=colAny(H,['仕入原価','仕入','原価']), iDn=colAny(H,['ダイニー点数','ダイニー']), iRv=colAny(H,['口コミ件数','口コミ']);
+  if(iM<0||iS<0){ D.diag['目標月次']='列不足（年月・店舗名）'; return false; }
+  const recs=[];
+  for(let i=hi+1;i<rows.length;i++){ const c=rows[i]; const st=String(c[iS]||'').trim(); const t=parseDateStr(c[iM])||parseYm(c[iM]);
+    if(!st||!t) continue;
+    recs.push({store:st,t, pa:iPA>=0?num(c[iPA]):0, emp:iEmp>=0?num(c[iEmp]):0, cost:iC>=0?num(c[iC]):0,
+      dinii:iDn>=0?num(c[iDn]):0, review:iRv>=0?num(c[iRv]):0});
+  }
+  D.targetsM=recs; D.diag['目標月次']='OK '+recs.length+'件'; return true;
+}
+function ingestEvents(rows){
+  const hi=findHeader(rows,['イベント','日付']); const H=rows[hi].map(h=>String(h).trim());
+  const iId=colAny(H,['ID','id']), iD=colAny(H,['日付']), iN=colAny(H,['イベント名','イベント']),
+        iVn=colAny(H,['会場']), iSt=colAny(H,['対象店舗','店舗']), iMemo=colAny(H,['メモ']);
+  if(iD<0||iN<0){ D.diag['イベント']='列不足（日付・イベント名）'; return false; }
+  const recs=[];
+  for(let i=hi+1;i<rows.length;i++){ const c=rows[i]; const t=parseDateStr(c[iD]); const nm=String(c[iN]||'').trim();
+    if(!t||!nm) continue;
+    const stores=String(iSt>=0?c[iSt]||'':'').split(/[,、]/).map(s=>s.trim()).filter(Boolean);
+    recs.push({id:String(iId>=0?c[iId]||'':'').trim(), t, name:nm, venue:String(iVn>=0?c[iVn]||'':'').trim(), stores, memo:String(iMemo>=0?c[iMemo]||'':'').trim()});
+  }
+  D.events=recs; D.diag['イベント']='OK '+recs.length+'件'; return true;
+}
+// 対象日・対象店舗のイベントを返す（対象店舗のチェックが入っている店舗のみ表示。空＝全店向け）
+function eventsFor(t, storeNames){
+  const set=new Set(storeNames||[]);
+  return D.events.filter(e=>e.t===t && (e.stores.length===0 || e.stores.some(s=>set.has(s))));
+}
 const isHolidayKey=(k)=>/祝日|祝祭日|holiday/i.test(String(k));
 function ingestHoliday(rows){
   const set=new Set(); let n=0;
@@ -557,7 +605,7 @@ function ingestStoreParent(rows){
   return map;
 }
 function ingestSheets(sheets, partial){
-  if(!partial){ D.extra={}; D.diag={}; D.receivedKeys=Object.keys(sheets); D.ad=[]; D.adSrc=''; D.adfx=[]; D.tanka={}; D.rsv=[]; D.pl=[]; D.dinii=[]; D.storeAlias={}; D.storeParent={}; }  // 広告・PL・ダイニー・対応表・親子はフル受信のたびに入れ替え
+  if(!partial){ D.extra={}; D.diag={}; D.receivedKeys=Object.keys(sheets); D.ad=[]; D.adSrc=''; D.adfx=[]; D.tanka={}; D.rsv=[]; D.pl=[]; D.dinii=[]; D.targets=[]; D.targetsM=[]; D.events=[]; D.storeAlias={}; D.storeParent={}; }  // 広告・PL・ダイニー・目標・対応表・親子はフル受信のたびに入れ替え
   else { D.receivedKeys=(D.receivedKeys||[]).concat(Object.keys(sheets)); }
   const known=['daily','media','deposit','review','ad','広告'];
   if(!partial){ known.forEach(k=>{ if(!(k in sheets)) D.diag[k]='シート未受信（接続設定のシート名を確認）'; }); }
@@ -575,6 +623,9 @@ function ingestSheets(sheets, partial){
     else if(isPLKey(key)) ingestPL(rows);
     else if(isDiniiKey(key)) ingestDinii(rows);
     else if(isMediaClassKey(key)) ingestMediaClass(rows);
+    else if(isTargetMKey(key)) ingestTargetsM(rows);
+    else if(isTargetKey(key)) ingestTargets(rows);
+    else if(isEventKey(key)) ingestEvents(rows);
     else if(isHolidayKey(key)) ingestHoliday(rows);
     else if(isStoreParentKey(key)){ D.storeParent=ingestStoreParent(rows); D.diag[key]='OK '+Object.keys(D.storeParent).length+'件の親子'; }
     else if(isStoreMapKey(key)){ D.storeAlias=ingestStoreMap(rows); D.diag[key]='OK '+Object.keys(D.storeAlias).length+'件の対応'; }
@@ -936,6 +987,7 @@ function render(){
   if(!tabs.includes(S.tab)) S.tab=tabs[0];
   let body='';
   if(S.tab==='dash') body=viewDash();
+  else if(S.tab==='target') body=viewTarget();
   else if(S.tab==='detail') body=viewDetail();
   else if(S.tab==='analysis') body=viewAnalysis();
   else if(S.tab==='deposit') body=viewDeposit();
@@ -1224,6 +1276,16 @@ function viewDash(){
   EXPORT.push({ title:'KPI（'+r.label+(selName?'・'+selName:'・'+(sc.length===allStores().length?'全店':'担当店舗'))+'）',
     headers:['指標','値','前年比較'], rows:kpis.map(k=>[k.lb,k.vl+(k.sub?'（'+k.sub+'）':''),k.yy.t]) });
 
+  // 期間内のイベント（対象店舗のチェックが入っているものだけ表示）
+  if(D.events.length){
+    const evNames=selName?[selName]:sc; const evList=[];
+    for(let t=a;t<=b&&evList.length<20;t+=86400000){ eventsFor(t,evNames).forEach(e=>evList.push(e)); }
+    if(evList.length){
+      h+=`<div class="note-box no-print" style="border-left:3px solid #7a6f9a;background:#f7f5fb">🎪 <b>イベント予定</b>：`+
+        evList.map(e=>{ const d2=new Date(e.t); return `${d2.getMonth()+1}/${d2.getDate()}(${WD[d2.getDay()]}) ${e.venue?esc(e.venue)+'：':''}${esc(e.name)}`; }).join('　／　')+
+        `<span style="color:#8c8375">（詳細は目標管理タブ）</span></div>`;
+    }
+  }
   if(S.period==='month') h+=landingPanel(r,scopeSet,selName,sc);
   h+=dashChartPanel(r,scopeSet,selName);
   h+=`<div class="grid2">${flPanel(cur,prev)}${mediaPanel(a,b,pa2,pb2,scopeSet,selName)}</div>`;
@@ -2419,6 +2481,142 @@ function extraSheetsHtml(){
   return h;
 }
 
+/* ---------------- 目標管理（予実） ---------------- */
+// 昨年同週同曜日 = 364日前（52週前の同じ曜日）
+const LY_MS=364*86400000;
+function dailySalesOf(storeSet, t){ let s=0; for(const r of D.daily){ if(r.t===t&&storeSet.has(r.store)) s+=r.sales; } return s; }
+function tgtMonthDate(){ if(S.tMonth){ const p=S.tMonth.split('-'); return new Date(+p[0],+p[1]-1,1); } const ref=D.refDate||new Date(); return new Date(ref.getFullYear(),ref.getMonth(),1); }
+// 口コミ件数の増加数（期間末スナップショット − 期間開始前スナップショット）
+function reviewIncrease(storeNames, a, b){
+  let end=0, start=0, has=false;
+  storeNames.forEach(nm=>{ reviewNamesFor(nm).forEach(rn=>{
+    let le=null, ls=null;
+    for(const r of D.review){ if(r.store!==rn) continue;
+      if(r.t<=b && (!le||r.t>le.t)) le=r;
+      if(r.t<a && (!ls||r.t>ls.t)) ls=r; }
+    if(le){ end+=le.count; has=true; }
+    if(ls) start+=ls.count;
+  }); });
+  return has?Math.max(0,end-start):null;
+}
+function viewTarget(){
+  const sc=scopeStores();
+  const stores=sc;
+  if(S.tStore && !stores.includes(S.tStore)) S.tStore='';
+  const selN=S.tStore||null;
+  const scopeSet=new Set(selN?[selN]:stores);
+  const scopeNames=selN?[selN]:stores;
+  const m0=tgtMonthDate(); const y=m0.getFullYear(), m=m0.getMonth();
+  const mS=dayMs(new Date(y,m,1)), mE=dayMs(new Date(y,m+1,0));
+  const lastDay=new Date(y,m+1,0).getDate();
+  const mLabel=y+'年 '+(m+1)+'月';
+  const ref=D.refDate||new Date(); const today=dayMs(ref);
+  const canEdit=true; // 全ロール入力可（担当店舗の範囲内のみ）
+  let h=`<div class="ctrl-bar no-print">
+    <select onchange="App.set('tStore',this.value)" style="font-weight:700">
+      <option value="" ${!selN?'selected':''}>${stores.length>1?'担当店舗 合算':'全店'}</option>
+      ${stores.map(s=>`<option ${selN===s?'selected':''}>${esc(s)}</option>`).join('')}
+    </select>
+    ${ymSelect('tMonth', y, m)}
+    ${canEdit?`<button class="icon-btn primary" onclick="App.openTargetInput()">✎ 目標を入力</button>
+    <button class="icon-btn" onclick="App.openEventInput('')">＋ イベント追加</button>`:''}
+    <span class="period-label">目標と実績（${mLabel} ／ ${selN?esc(selN):'合算'}）</span>
+  </div>`;
+  // 目標データ
+  const goalByDay={}; let goalM=0;
+  for(const r of D.targets){ if(r.t<mS||r.t>mE) continue; if(!scopeSet.has(r.store)) continue; goalByDay[r.t]=(goalByDay[r.t]||0)+r.goal; goalM+=r.goal; }
+  const tm={pa:0,emp:0,cost:0,dinii:null,review:0,diniiN:0};
+  for(const r of D.targetsM){ const d2=new Date(r.t); if(d2.getFullYear()!==y||d2.getMonth()!==m) continue; if(!scopeSet.has(r.store)) continue;
+    tm.pa+=r.pa; tm.emp+=r.emp; tm.cost+=r.cost; tm.review+=r.review; if(r.dinii>0){ tm.dinii=(tm.dinii||0)+r.dinii; tm.diniiN++; } }
+  if(tm.dinii!=null&&tm.diniiN>0) tm.dinii=tm.dinii/tm.diniiN;   // 複数店舗は平均
+  // 実績
+  const cur=stat(scopeSet,mS,Math.min(mE,today),null);
+  const elapsedGoal=Object.keys(goalByDay).filter(t=>+t<=today).reduce((s,t)=>s+goalByDay[t],0);
+  const ds=diniiStats(scopeNames,mS,Math.min(mE,today));
+  const revInc=reviewIncrease(scopeNames,mS,Math.min(mE,today));
+  const rate=(a2,b2)=>b2>0?(a2/b2*100):null;
+  const pctTxt=(v)=>v==null?'—':v.toFixed(1)+'%';
+  const bar=(v,invert)=>{ if(v==null) return ''; const w=Math.min(120,v); const ok=invert?v<=100:v>=100;
+    return `<div style="height:7px;background:#efe9dd;border-radius:4px;overflow:hidden;margin-top:6px"><div style="height:100%;width:${Math.min(100,w)}%;background:${ok?'#4c7d5c':(v>=(invert?100:80)?'#b23b2e':'#c9a86a')}"></div></div>`; };
+  if(!D.targets.length&&!D.targetsM.length){
+    h+=`<div class="note-box no-print">目標がまだ入力されていません。「✎ 目標を入力」から、店舗・月を選んで日別売上目標と月次目標（人件費・仕入・ダイニー点数・口コミ件数）を設定してください。入力時には<b>昨年の同じ週の同じ曜日の売上</b>が指標として表示されます。</div>`;
+  }
+  // KPIカード（売上・達成率）
+  const achM=rate(cur.sales,goalM), achPace=rate(cur.sales,elapsedGoal);
+  h+=`<div class="kpi-grid">
+    <div class="kpi"><div class="lb">売上目標（${m+1}月）</div><div class="vl">${goalM>0?yen(goalM):'—'}</div><div class="yy">${goalM>0?'日別目標の合計':'未設定'}</div></div>
+    <div class="kpi"><div class="lb">売上実績（累計）</div><div class="vl">${yen(cur.sales)}</div><div class="yy">対月間目標 ${pctTxt(achM)}</div>${bar(achM)}</div>
+    <div class="kpi"><div class="lb">進捗達成率（対経過日目標）</div><div class="vl" style="color:${achPace==null?'inherit':(achPace>=100?'#4c7d5c':'#b5502f')}">${pctTxt(achPace)}</div><div class="yy">経過日目標 ${elapsedGoal>0?yen(elapsedGoal):'—'}</div>${bar(achPace)}</div>
+    <div class="kpi"><div class="lb">残り必要売上</div><div class="vl">${goalM>0?yen(Math.max(0,goalM-cur.sales)):'—'}</div><div class="yy">${goalM>0&&mE>today?('残り'+Math.round((mE-today)/86400000)+'日 ／ 日あたり '+yen(Math.max(0,goalM-cur.sales)/Math.max(1,Math.round((mE-today)/86400000)))):''}</div></div>
+  </div>`;
+  // その他目標（費用・品質）
+  const items=[
+    {lb:'アルバイト人件費', goal:tm.pa, act:cur.pa, fmt:yen, invert:true},
+    {lb:'社員人件費', goal:tm.emp, act:cur.emp, fmt:yen, invert:true},
+    {lb:'仕入原価', goal:tm.cost, act:cur.cost, fmt:yen, invert:true},
+    {lb:'ダイニー点数', goal:tm.dinii, act:ds.avg, fmt:(v)=>v==null?'—':Number(v).toFixed(2), invert:false, isScore:true},
+    {lb:'Google口コミ件数（月間増加）', goal:tm.review, act:revInc, fmt:(v)=>v==null?'—':cnt(v)+'件', invert:false},
+  ];
+  h+=`<div class="panel"><div class="panel-head"><div><h3>目標項目別 予実（${mLabel}）</h3><div class="sub">費用系は目標以下が◯／ダイニー点数・口コミは目標以上が◯</div></div></div>
+    <div class="scroll-x"><table class="tbl"><thead><tr><th>項目</th><th>目標</th><th>実績（累計）</th><th>達成率</th><th></th></tr></thead><tbody>`;
+  const expI=[];
+  items.forEach(it=>{
+    const hasGoal=it.goal!=null&&it.goal>0;
+    const r2=it.isScore?(hasGoal&&it.act!=null?it.act/it.goal*100:null):(hasGoal&&it.act!=null?rate(it.act,it.goal):null);
+    const ok=r2==null?null:(it.invert?r2<=100:r2>=100);
+    h+=`<tr><td>${esc(it.lb)}</td><td>${hasGoal?it.fmt(it.goal):'—'}</td><td>${it.act!=null?it.fmt(it.act):'—'}</td>
+      <td class="${ok==null?'mut':ok?'pos':'neg'}">${pctTxt(r2)}</td><td style="min-width:130px">${bar(r2,it.invert)}</td></tr>`;
+    expI.push([it.lb, hasGoal?String(it.fmt(it.goal)).replace(/[¥,]/g,''):'', it.act!=null?String(it.fmt(it.act)).replace(/[¥,]/g,''):'', pctTxt(r2)]);
+  });
+  h+=`</tbody></table></div></div>`;
+  EXPORT.push({ title:'目標項目別予実（'+mLabel+'）', headers:['項目','目標','実績','達成率'], rows:expI });
+  // イベント一覧（当月・対象店舗のみ）
+  const monthEvents=D.events.filter(e=>e.t>=mS&&e.t<=mE&&(e.stores.length===0||e.stores.some(s=>scopeSet.has(s)))).sort((a2,b2)=>a2.t-b2.t);
+  if(monthEvents.length||canEdit){
+    h+=`<div class="panel"><div class="panel-head"><div><h3>📅 イベント情報（${mLabel}）</h3><div class="sub">対象店舗にチェックが入っているイベントだけが、その店舗の画面に表示されます（会場例：横浜アリーナ・日産スタジアム）</div></div></div>`;
+    if(monthEvents.length){
+      h+=`<div class="scroll-x"><table class="tbl"><thead><tr><th>日付</th><th>イベント名</th><th>会場</th><th>対象店舗</th><th>メモ</th>${canEdit?'<th></th>':''}</tr></thead><tbody>`;
+      monthEvents.forEach(e=>{ const d2=new Date(e.t);
+        h+=`<tr><td>${mdw(d2)}</td><td style="text-align:left">${esc(e.name)}</td><td>${esc(e.venue||'—')}</td>
+          <td style="max-width:260px;white-space:normal;font-size:11px">${e.stores.length?esc(e.stores.map(shortStore).join('・')):'全店'}</td>
+          <td class="mut" style="white-space:normal">${esc(e.memo||'')}</td>
+          ${canEdit?`<td><button class="icon-btn" onclick="App.openEventInput(this.dataset.i)" data-i="${esc(e.id)}">編集</button></td>`:''}</tr>`; });
+      h+=`</tbody></table></div>`;
+    } else h+=`<div class="empty" style="padding:18px">この月のイベントはまだ登録されていません</div>`;
+    h+=`</div>`;
+  }
+  // 日別 予実テーブル
+  h+=`<div class="panel"><div class="panel-head"><div><h3>日別 予実（${mLabel} ／ ${selN?esc(selN):'合算'}）</h3><div class="sub">昨年同週同曜日＝364日前（52週前の同じ曜日）の売上実績</div></div></div>
+    <div class="scroll-x"><table class="tbl"><thead><tr><th>日付</th><th>イベント</th><th>目標</th><th>実績</th><th>差異</th><th>達成率</th><th>昨年同週同曜日</th><th>昨年比</th></tr></thead><tbody>`;
+  const expD=[]; let tG=0,tA=0,tL=0;
+  for(let d2=1;d2<=lastDay;d2++){
+    const t=dayMs(new Date(y,m,d2)); const dt=new Date(y,m,d2);
+    const g=goalByDay[t]||0; const future=t>today;
+    const act=future?null:dailySalesOf(scopeSet,t);
+    const ly=dailySalesOf(scopeSet,t-LY_MS);
+    const evs=eventsFor(t,scopeNames);
+    const evTxt=evs.map(e=>(e.venue?e.venue+':':'')+e.name).join('／');
+    tG+=g; if(act!=null)tA+=act; tL+=ly;
+    const diff=act!=null&&g>0?act-g:null; const r2=act!=null&&g>0?act/g*100:null;
+    const yoy=act!=null&&ly>0?((act/ly-1)*100):null;
+    h+=`<tr${isHolidayOrSunday(dt)?' style="background:#fbf6f3"':''}><td style="white-space:nowrap">${mdw(dt)}</td>
+      <td style="max-width:200px;white-space:normal;font-size:11px;color:#7a6f9a">${evTxt?('🎪 '+esc(evTxt)):''}</td>
+      <td>${g>0?yen(g):'—'}</td><td>${act!=null?yen(act):'<span class="mut">—</span>'}</td>
+      <td class="${diff==null?'mut':diff>=0?'pos':'neg'}">${diff==null?'—':(diff>=0?'+':'▲')+yen(Math.abs(diff)).slice(1)}</td>
+      <td class="${r2==null?'mut':r2>=100?'pos':'neg'}">${r2==null?'—':r2.toFixed(0)+'%'}</td>
+      <td class="mut">${ly>0?yen(ly):'—'}</td>
+      <td class="${yoy==null?'mut':yoy>=0?'pos':'neg'}">${yoy==null?'—':(yoy>=0?'+':'▲')+Math.abs(yoy).toFixed(1)+'%'}</td></tr>`;
+    expD.push([(m+1)+'/'+d2+'('+WD[dt.getDay()]+')',evTxt,Math.round(g),act!=null?Math.round(act):'',r2!=null?r2.toFixed(0)+'%':'',Math.round(ly)]);
+  }
+  h+=`<tr class="total"><td>合計</td><td></td><td>${yen(tG)}</td><td>${yen(tA)}</td>
+    <td class="${tA-tG>=0?'pos':'neg'}">${tG>0?((tA-tG>=0?'+':'▲')+yen(Math.abs(tA-tG)).slice(1)):'—'}</td>
+    <td>${tG>0?(tA/tG*100).toFixed(1)+'%':'—'}</td><td>${yen(tL)}</td><td></td></tr>`;
+  h+=`</tbody></table></div></div>`;
+  EXPORT.push({ title:'日別予実（'+mLabel+'）', headers:['日付','イベント','目標','実績','達成率','昨年同週同曜日'], rows:expD });
+  return h;
+}
+function isHolidayOrSunday(dt){ try{ const key=dt.getFullYear()+'-'+(dt.getMonth()+1)+'/'+dt.getDate(); return dt.getDay()===0||dt.getDay()===6||(D.holidays&&D.holidays.has(key))||JP_HOLIDAYS.has(key); }catch(e){ return dt.getDay()===0; } }
+
 /* ---------------- PL（損益） ---------------- */
 // 対象期間・対象店舗のPL経費（DB_PL）を費目別に集計。店舗名は売上側へ自動照合、子ブランドは親に合算。
 // 店舗名が空欄の行＝全社共通経費（全店/合算表示のときのみ算入）
@@ -3205,7 +3403,90 @@ async function loadAccounts(){
 function viewModal(){
   if(S.modal==='connect') return connectModal();
   if(S.modal&&S.modal.type==='account') return accountModal();
+  if(S.modal&&S.modal.type==='target') return targetModal();
+  if(S.modal&&S.modal.type==='event') return eventModal();
   return '';
+}
+/* ---- 目標入力モーダル：日別売上（昨年同週同曜日を指標表示）＋月次目標 ---- */
+function targetModal(){
+  const m=S.modal;
+  const stores=scopeStores();
+  const st=m.store&&stores.includes(m.store)?m.store:stores[0];
+  const [y,mo]=(m.month||'').split('-').map(Number);
+  const lastDay=new Date(y,mo,0).getDate();
+  const stSet=new Set([st]);
+  const goals={}; for(const r of D.targets){ if(r.store!==st) continue; const d2=new Date(r.t); if(d2.getFullYear()===y&&d2.getMonth()===mo-1) goals[d2.getDate()]=r.goal; }
+  const tmEx=D.targetsM.find(r=>{ const d2=new Date(r.t); return r.store===st&&d2.getFullYear()===y&&d2.getMonth()===mo-1; })||{};
+  let grid='';
+  for(let d2=1;d2<=lastDay;d2++){
+    const dt=new Date(y,mo-1,d2); const t=dayMs(dt);
+    const ly=dailySalesOf(stSet,t-LY_MS);
+    grid+=`<tr${isHolidayOrSunday(dt)?' style="background:#fbf6f3"':''}><td style="white-space:nowrap">${mdw(dt)}</td>
+      <td class="mut" style="white-space:nowrap">${ly>0?yen(ly):'—'}</td>
+      <td><input type="number" id="tg-d-${d2}" data-ly="${ly}" value="${goals[d2]!=null&&goals[d2]>0?Math.round(goals[d2]):''}" placeholder="${ly>0?Math.round(ly):''}" style="width:110px;text-align:right;padding:5px 8px"></td></tr>`;
+  }
+  return `<div class="modal-bg" onclick="if(event.target===this)App.closeModal()"><div class="modal" style="max-width:560px">
+    <h3>目標入力（${y}年${mo}月）</h3>
+    <div class="sub">「昨年同週同曜日」＝364日前（52週前の同じ曜日）の売上実績。空欄の日は目標なし扱いです。</div>
+    <div class="form-grid" style="margin-top:10px">
+      <div><label>店舗</label><select id="tg-store" onchange="App.tgtSwitch()">${stores.map(s=>`<option ${st===s?'selected':''}>${esc(s)}</option>`).join('')}</select></div>
+      <div><label>対象月</label><input type="month" id="tg-month" value="${m.month}" onchange="App.tgtSwitch()"></div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;margin:8px 0">
+      <span style="font-size:12px;color:#8c8375">一括入力：昨年同曜日 ×</span>
+      <input type="number" id="tg-pct" value="105" style="width:64px;text-align:right;padding:5px 8px">%
+      <button class="icon-btn" onclick="App.tgtFill()">全日に反映</button>
+      <button class="icon-btn" onclick="App.tgtClear()">クリア</button>
+    </div>
+    <div class="scroll-x" style="max-height:300px;overflow-y:auto;border:1px solid var(--line2);border-radius:10px">
+      <table class="tbl"><thead><tr><th>日付</th><th>昨年同週同曜日</th><th>売上目標</th></tr></thead><tbody>${grid}</tbody></table>
+    </div>
+    <div style="margin-top:14px;font-weight:700;font-size:13px">月次目標（この月・この店舗）</div>
+    <div class="form-grid" style="margin-top:8px">
+      <div><label>アルバイト人件費（円）</label><input type="number" id="tg-pa" value="${tmEx.pa>0?Math.round(tmEx.pa):''}"></div>
+      <div><label>社員人件費（円）</label><input type="number" id="tg-emp" value="${tmEx.emp>0?Math.round(tmEx.emp):''}"></div>
+      <div><label>仕入原価（円）</label><input type="number" id="tg-cost" value="${tmEx.cost>0?Math.round(tmEx.cost):''}"></div>
+      <div><label>ダイニー点数（例 4.5）</label><input type="number" step="0.1" id="tg-dinii" value="${tmEx.dinii>0?tmEx.dinii:''}"></div>
+      <div><label>Google口コミ件数（月間増加数）</label><input type="number" id="tg-review" value="${tmEx.review>0?Math.round(tmEx.review):''}"></div>
+    </div>
+    <div id="tg-msg" style="font-size:12px;color:#b5502f;margin:6px 0"></div>
+    <div class="modal-btns">
+      <button class="icon-btn primary" onclick="App.saveTargetInput()">保存</button>
+      <button class="icon-btn" onclick="App.closeModal()">キャンセル</button>
+    </div>
+  </div></div>`;
+}
+/* ---- イベント入力モーダル：会場・イベント名・対象店舗チェックリスト ---- */
+function eventModal(){
+  const m=S.modal;
+  const ev=m.id?D.events.find(e=>e.id===m.id):null;
+  const stores=scopeStores();
+  const checked=ev?ev.stores:(S.tStore?[S.tStore]:[]);
+  const ref=D.refDate||new Date();
+  const defDate=ev?(()=>{const d2=new Date(ev.t);return d2.getFullYear()+'-'+String(d2.getMonth()+1).padStart(2,'0')+'-'+String(d2.getDate()).padStart(2,'0');})():(S.tMonth?S.tMonth+'-01':ref.getFullYear()+'-'+String(ref.getMonth()+1).padStart(2,'0')+'-'+String(ref.getDate()).padStart(2,'0'));
+  return `<div class="modal-bg" onclick="if(event.target===this)App.closeModal()"><div class="modal">
+    <h3>${ev?'イベント編集':'イベント追加'}</h3>
+    <div class="sub">対象店舗にチェックを入れた店舗の画面にだけ表示されます（全店向けなら全部チェック、または未チェック＝全店扱い）。</div>
+    <div class="form-grid" style="margin-top:10px">
+      <div><label>日付</label><input type="date" id="ev-date" value="${defDate}"></div>
+      <div><label>会場（例 横浜アリーナ・日産スタジアム）</label><input type="text" id="ev-venue" value="${esc(ev?ev.venue:'')}" list="ev-venues"></div>
+      <datalist id="ev-venues"><option value="横浜アリーナ"><option value="日産スタジアム"><option value="Kアリーナ横浜"><option value="ぴあアリーナMM"><option value="東京ドーム"><option value="国立競技場"></datalist>
+    </div>
+    <label style="font-size:11px;color:#8c8375">イベント名</label>
+    <input type="text" id="ev-name" value="${esc(ev?ev.name:'')}" placeholder="例：◯◯ライブ／サッカー日本代表戦" style="width:100%;margin-bottom:10px">
+    <label style="font-size:11px;color:#8c8375">対象店舗（チェックした店舗の画面に表示）</label>
+    <div class="chk-stores" id="ev-stores">
+      ${stores.map(n=>`<label class="${checked.includes(n)?'on':''}"><input type="checkbox" ${checked.includes(n)?'checked':''} value="${esc(n)}" onchange="this.parentElement.classList.toggle('on',this.checked)">${esc(shortStore(n))}</label>`).join('')}
+    </div>
+    <label style="font-size:11px;color:#8c8375;display:block;margin-top:10px">メモ（任意）</label>
+    <input type="text" id="ev-memo" value="${esc(ev?ev.memo:'')}" style="width:100%">
+    <div id="ev-msg" style="font-size:12px;color:#b5502f;margin:6px 0"></div>
+    <div class="modal-btns">
+      ${ev?`<button class="icon-btn" style="margin-right:auto;color:#b5502f" onclick="App.deleteEventBtn('${esc(ev.id)}')">削除</button>`:''}
+      <button class="icon-btn primary" onclick="App.saveEventInput()">保存</button>
+      <button class="icon-btn" onclick="App.closeModal()">キャンセル</button>
+    </div>
+  </div></div>`;
 }
 function connectModal(){
   const url=apiUrl();
@@ -3356,6 +3637,57 @@ window.App = {
     S.reportMode={kind:kind||'daily',date:date||'',stores:list,group:group||''}; render();
   },
   reportExit(){ S.reportMode=null; render(); },
+  /* ---- 目標・イベント入力 ---- */
+  openTargetInput(){
+    const m0=tgtMonthDate();
+    const month=m0.getFullYear()+'-'+String(m0.getMonth()+1).padStart(2,'0');
+    S.modal={type:'target', store:S.tStore||scopeStores()[0], month}; render();
+  },
+  tgtSwitch(){ const st=$('tg-store')?$('tg-store').value:''; const mo=$('tg-month')?$('tg-month').value:''; S.modal={type:'target', store:st, month:mo||S.modal.month}; render(); },
+  tgtFill(){ const pct=Number($('tg-pct')&&$('tg-pct').value)||100;
+    document.querySelectorAll('[id^="tg-d-"]').forEach(i=>{ const ly=Number(i.dataset.ly)||0; if(ly>0) i.value=Math.round(ly*pct/100/1000)*1000; }); },
+  tgtClear(){ document.querySelectorAll('[id^="tg-d-"]').forEach(i=>{ i.value=''; }); },
+  async saveTargetInput(){
+    const msg=$('tg-msg');
+    if(!S.auth||!S.auth.token){ msg.textContent='スプレッドシート接続時のみ保存できます（デモモードでは保存不可）'; return; }
+    const store=$('tg-store').value, month=$('tg-month').value;
+    if(!store||!/^\d{4}-\d{2}$/.test(month)){ msg.textContent='店舗と対象月を確認してください'; return; }
+    const daily=[];
+    document.querySelectorAll('[id^="tg-d-"]').forEach(i=>{ const d2=Number(i.id.replace('tg-d-','')); const v=String(i.value).trim(); daily.push([d2, v===''?'':Number(v)||0]); });
+    const g=(id)=>{ const v=String($(id)&&$(id).value||'').trim(); return v===''?'':Number(v)||0; };
+    msg.style.color='#8c8375'; msg.textContent='保存中…';
+    try{
+      const d=await api({ action:'saveTargets', token:S.auth.token, store, month,
+        daily:JSON.stringify(daily), pa:g('tg-pa'), emp:g('tg-emp'), cost:g('tg-cost'), dinii:g('tg-dinii'), review:g('tg-review') });
+      if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'保存に失敗しました'; return; }
+      S.modal=null; S.tMonth=month; toast('目標を保存しました');
+      await fetchData(true,{ only:['目標','目標月次'], partial:true }); render();
+    }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
+  },
+  openEventInput(id){ S.modal={type:'event', id:id||''}; render(); },
+  async saveEventInput(){
+    const msg=$('ev-msg');
+    if(!S.auth||!S.auth.token){ msg.textContent='スプレッドシート接続時のみ保存できます'; return; }
+    const date=$('ev-date').value, name=$('ev-name').value.trim(), venue=$('ev-venue').value.trim(), memo=$('ev-memo').value.trim();
+    const stores=[...$('ev-stores').querySelectorAll('input:checked')].map(i=>i.value).join(', ');
+    if(!date||!name){ msg.textContent='日付とイベント名を入力してください'; return; }
+    msg.style.color='#8c8375'; msg.textContent='保存中…';
+    try{
+      const d=await api({ action:'saveEvent', token:S.auth.token, id:S.modal.id||'', date, name, venue, stores, memo });
+      if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'保存に失敗しました'; return; }
+      S.modal=null; toast('イベントを保存しました');
+      await fetchData(true,{ only:['イベント'], partial:true }); render();
+    }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
+  },
+  async deleteEventBtn(id){
+    if(!confirm('このイベントを削除しますか？')) return;
+    try{
+      const d=await api({ action:'deleteEvent', token:S.auth.token, id });
+      if(!d.ok){ toast(d.error||'削除に失敗しました'); return; }
+      S.modal=null; toast('イベントを削除しました');
+      await fetchData(true,{ only:['イベント'], partial:true }); render();
+    }catch(e){ toast('通信エラー: '+e.message); }
+  },
   refresh(){ if(S.auth&&S.auth.token){ fetchDataFast(); toast('最新データを取得中…'); } else { loadSampleData(); render(); toast('サンプルデータを再読込しました（API未接続）'); } },
   csv: downloadCsv,
   pdf: downloadPdf,
