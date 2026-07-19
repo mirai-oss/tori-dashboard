@@ -107,7 +107,7 @@ const S = {
   reportMode:null,   // {kind:'daily'|'weekly'|'monthly', date:'YYYY-MM-DD'} Lark日報用の1枚カード表示
   accounts:null, accErr:'', modal:null, loginErr:'',
 };
-const D = { daily:[], media:[], deposit:[], review:[], ad:[], adfx:[], tanka:{}, pl:[], dinii:[], diniiCols:[], targets:[], targetsM:[], events:[], extra:{}, storeAlias:{}, storeParent:{}, mediaClass:{}, holidays:null, detailData:null, detailKey:'', detailLoading:'', refDate:null, maxDate:null };
+const D = { daily:[], media:[], deposit:[], review:[], ad:[], adfx:[], tanka:{}, pl:[], dinii:[], diniiCols:[], targets:[], targetsM:[], events:[], extra:{}, storeAlias:{}, storeParent:{}, mediaClass:{}, holidays:null, detailData:null, detailKey:'', detailLoading:'', dashSeg:null, dashSegKey:'', dashSegLoading:'', refDate:null, maxDate:null };
 let EXPORT = [];      // 現在タブのCSVエクスポート対象 [{title,headers,rows}]
 let pollTimer = null;
 
@@ -573,21 +573,9 @@ function eventsFor(t, storeNames){
   const set=new Set(storeNames||[]);
   return D.events.filter(e=>e.t===t && (e.stores.length===0 || e.stores.some(s=>set.has(s))));
 }
-// 期間[a,b]・対象店舗のイベントを日付順で返す
-function eventsInRange(a, b, storeNames){
-  const set=new Set(storeNames||[]);
-  return D.events.filter(e=>e.t>=a && e.t<=b && (e.stores.length===0 || e.stores.some(s=>set.has(s)))).sort((x,y)=>x.t-y.t);
-}
 // イベントを1行の短い文字列にまとめる（会場：イベント名 を「／」区切り）
 function eventLineText(evs){
   return evs.map(e=>(e.venue?e.venue+'：':'')+e.name).join('／');
-}
-// 媒体別売上(分析_媒体別日次)を営業区分（ランチ/ディナー）で集計。売上・客数の内訳に使う。
-function segSplit(scopeSet, a, b){
-  let ln=0,dn=0,lg=0,dg=0;
-  for(const r of D.media){ if(!scopeSet.has(r.store))continue; if(r.t<a||r.t>b)continue;
-    if(mediaClassOf(r.media).seg==='ランチ'){ ln+=r.net; lg+=r.guests; } else { dn+=r.net; dg+=r.guests; } }
-  return { ln, dn, lg, dg, hasNet:(ln+dn)>0, hasG:(lg+dg)>0 };
 }
 const isHolidayKey=(k)=>/祝日|祝祭日|holiday/i.test(String(k));
 function ingestHoliday(rows){
@@ -892,6 +880,20 @@ async function fetchDataFast(){
     }
     D.mediaPending=false; render();
   })();
+}
+// ダッシュボードのランチ/ディナー内訳：BQ明細から来店時刻ベースで店舗別に取得（客数=お通しではなく会計数で按分）
+async function fetchDashSeg(from,to){
+  if(!S.auth||!S.auth.token) return;
+  const key=from+'|'+to;
+  if(D.dashSegKey===key && D.dashSeg) return;
+  if(D.dashSegLoading===key) return;
+  D.dashSegLoading=key;
+  try{
+    const d=await api({ action:'bqSeg', token:S.auth.token, from, to });
+    D.dashSeg=(d&&d.ok)?(d.store||[]):[];
+    D.dashSegKey=key;
+  }catch(e){ D.dashSeg=[]; D.dashSegKey=key; }
+  D.dashSegLoading=''; render();
 }
 // 軽量版：まず署名(version)だけ取り、変化があるときだけフル取得
 async function fetchVersion(){
@@ -1257,10 +1259,22 @@ function viewDash(){
 
   const y1=yoyStr(Ssl,pS), yG=yoyStr(cur.guests,prev.guests,'前年 '), ySp=yoyStr(spend,pSpend,'前年 ');
   const yF=ptStr(foodR,pFood,true), yL=ptStr(laborR,pLabor,true), yFL=ptStr(flR,pFood+pLabor,true);
-  // 営業区分（ランチ/ディナー）の内訳。媒体別売上の営業区分比で按分（店舗別内訳は出さない＝全体のみ）。
-  const seg=segSplit(scopeSet,a,b);
-  const rN=seg.hasNet?seg.ln/(seg.ln+seg.dn):null;   // ランチ売上比
-  const rG=seg.hasG?seg.lg/(seg.lg+seg.dg):null;     // ランチ客数比
+  // 営業区分（ランチ/ディナー）の内訳。BQ明細の来店時刻で判定（媒体名では正しく分けられないため）。
+  // 売上は売上比、客数・組数は会計数比で按分。店舗別内訳は出さない＝全体のみ。
+  const ymdD=(d)=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+  let rN=null, rG=null;  // rN=ランチ売上比 / rG=ランチ会計数比（客数・組数に使う）
+  if(S.auth&&S.auth.token){
+    const sf=ymdD(r.s), st2=ymdD(r.e); fetchDashSeg(sf,st2);
+    if(D.dashSegKey===(sf+'|'+st2) && Array.isArray(D.dashSeg) && D.dashSeg.length>1){
+      const H=D.dashSeg[0]; const iLS=hcol(H,'l_sales'),iDS=hcol(H,'d_sales'),iLC=hcol(H,'l_checks'),iDC=hcol(H,'d_checks');
+      const targets=selName?[selName]:sc; const tset=new Set(targets);
+      let ls=0,ds=0,lc=0,dc=0;
+      for(let i=1;i<D.dashSeg.length;i++){ const row=D.dashSeg[i]; if(!tset.has(String(row[0]).trim())) continue;
+        ls+=num(row[iLS]); ds+=num(row[iDS]); lc+=num(row[iLC]); dc+=num(row[iDC]); }
+      if(ls+ds>0) rN=ls/(ls+ds);
+      if(lc+dc>0) rG=lc/(lc+dc);
+    }
+  }
   const segY=(t,r)=> r==null?'':('🌤ランチ '+yen(t*r)+' ／ 🌙ディナー '+yen(t*(1-r)));
   const segC=(t,r,u)=> r==null?'':('🌤ランチ '+cnt(t*r)+u+' ／ 🌙ディナー '+cnt(t*(1-r))+u);
   const segSpend=()=>{ if(rN==null||rG==null||!(cur.guests>0)) return ''; const lg=cur.guests*rG,dg=cur.guests*(1-rG),ls=Ssl*rN,ds=Ssl*(1-rN);
@@ -1881,11 +1895,12 @@ function viewDetail(){
     <span class="period-label">${esc(r.label)} ／ ${S.dStore==='all'?(fullAccess?'全店':'担当店舗（一覧）'):esc(S.dStore)}（${taxLb}）</span>
   </div>
   <div class="note-box no-print" style="margin:4px 0 2px;padding:9px 13px;font-size:11.5px">ℹ️ POS明細の積み上げ（傾向・構成比を見る用／金額の正は日別売上）。客数はお通し数ベースの推定です。</div>`;
-  // この期間・対象店舗のイベント（上部にまとめて表示。明細は時間帯別なので日ごとの行が無いため）
-  { const evNames=(S.dStore&&S.dStore!=='all')?[S.dStore]:allowed;
-    const evs=eventsInRange(dayMs(new Date(r.from)),dayMs(new Date(r.to)),evNames);
-    if(evs.length){ h+=`<div class="panel" style="border-left:3px solid #7a6f9a;padding:12px 16px;margin:4px 0"><div style="font-size:12px;font-weight:700;color:#5c5348;margin-bottom:6px">🎪 この期間のイベント</div>`+
-      evs.map(e=>{ const d2=new Date(e.t); return `<div style="font-size:12px;color:#5c5348;padding:2px 0"><b>${mdw(d2)}</b> ${e.venue?esc(e.venue)+'：':''}${esc(e.name)}</div>`; }).join('')+`</div>`; } }
+  // その日のイベント（「日」表示かつ特定店舗を選んでいるときだけ・その店舗対象のイベントのみ）。
+  // 月/年/全店では出さない（多すぎ・対象外店舗のイベントが混じるため）。
+  if(S.dPeriod==='day' && S.dStore && S.dStore!=='all'){
+    const evs=eventsFor(dayMs(new Date(r.from)),[S.dStore]);
+    if(evs.length){ h+=`<div class="panel" style="border-left:3px solid #7a6f9a;padding:12px 16px;margin:4px 0"><div style="font-size:12px;font-weight:700;color:#5c5348;margin-bottom:4px">🎪 この日のイベント</div>`+
+      evs.map(e=>`<div style="font-size:12.5px;color:#5c5348;padding:2px 0">${e.venue?esc(e.venue)+'：':''}${esc(e.name)}${e.memo?' <span class="mut" style="font-size:11px">'+esc(e.memo)+'</span>':''}</div>`).join('')+`</div>`; } }
   if(!S.auth){ return h+`<div class="panel"><div class="empty">ログイン後、BigQueryの明細が表示されます</div></div>`; }
   if(D.detailKey!==key || !D.detailData){ return h+`<div class="panel"><div class="empty">読み込み中…（BigQuery集計）</div></div>`; }
   const dd=D.detailData;
