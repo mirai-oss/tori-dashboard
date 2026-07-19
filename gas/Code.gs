@@ -43,7 +43,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v28', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v29', time: new Date().toISOString() });
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     if (action === 'perf') return out(perfDiag(p)); // パフォーマンス計測（専用トークン認証・ログイン不要・数字は返さず時間だけ）
     setupIfNeeded();
@@ -290,9 +290,9 @@ function setupIfNeeded() {
   var tgmSh = ss.getSheetByName('DB_目標月次');
   if (!tgmSh) {
     tgmSh = ss.insertSheet('DB_目標月次');
-    tgmSh.getRange(1, 1, 1, 7).setValues([['年月', '店舗名', 'PA人件費', '社員人件費', '仕入原価', 'ダイニー点数', '口コミ件数']])
+    tgmSh.getRange(1, 1, 1, 7).setValues([['年月', '店舗名', 'PA人件費率', '社員人件費率', '仕入原価率', 'ダイニー点数', '口コミ件数']])
       .setFontWeight('bold').setBackground('#efe9dd');
-    tgmSh.getRange('A1').setNote('月次目標（1行＝年月×店舗）。口コミ件数は「その月に増やす件数」。ダッシュボードの「目標管理」タブから入力できます。');
+    tgmSh.getRange('A1').setNote('月次目標（1行＝年月×店舗）。人件費率・仕入原価率は「売上に対する％」（例 20 = 20%）。口コミ件数は「その月に増やす件数」。ダッシュボードの「目標管理」タブから入力できます。');
     tgmSh.setFrozenRows(1); tgmSh.setColumnWidths(1, 7, 110);
   }
   // イベントシート（DB_イベント）。対象店舗にチェック（カンマ区切りで保存）した店舗の画面にだけ表示される。

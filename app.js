@@ -544,8 +544,8 @@ function ingestTargets(rows){
 function ingestTargetsM(rows){
   const hi=findHeader(rows,['店舗','人件費']); const H=rows[hi].map(h=>String(h).trim());
   const iM=colAny(H,['年月']), iS=colAny(H,['店舗名','店舗']),
-        iPA=colAny(H,['PA人件費','アルバイト人件費']), iEmp=colAny(H,['社員人件費']),
-        iC=colAny(H,['仕入原価','仕入','原価']), iDn=colAny(H,['ダイニー点数','ダイニー']), iRv=colAny(H,['口コミ件数','口コミ']);
+        iPA=colAny(H,['PA人件費率','アルバイト人件費率','PA人件費','アルバイト人件費']), iEmp=colAny(H,['社員人件費率','社員人件費']),
+        iC=colAny(H,['仕入原価率','仕入原価','仕入率','原価率','仕入','原価']), iDn=colAny(H,['ダイニー点数','ダイニー']), iRv=colAny(H,['口コミ件数','口コミ']);
   if(iM<0||iS<0){ D.diag['目標月次']='列不足（年月・店舗名）'; return false; }
   const recs=[];
   for(let i=hi+1;i<rows.length;i++){ const c=rows[i]; const st=String(c[iS]||'').trim(); const t=parseDateStr(c[iM])||parseYm(c[iM]);
@@ -572,6 +572,22 @@ function ingestEvents(rows){
 function eventsFor(t, storeNames){
   const set=new Set(storeNames||[]);
   return D.events.filter(e=>e.t===t && (e.stores.length===0 || e.stores.some(s=>set.has(s))));
+}
+// 期間[a,b]・対象店舗のイベントを日付順で返す
+function eventsInRange(a, b, storeNames){
+  const set=new Set(storeNames||[]);
+  return D.events.filter(e=>e.t>=a && e.t<=b && (e.stores.length===0 || e.stores.some(s=>set.has(s)))).sort((x,y)=>x.t-y.t);
+}
+// イベントを1行の短い文字列にまとめる（会場：イベント名 を「／」区切り）
+function eventLineText(evs){
+  return evs.map(e=>(e.venue?e.venue+'：':'')+e.name).join('／');
+}
+// 媒体別売上(分析_媒体別日次)を営業区分（ランチ/ディナー）で集計。売上・客数の内訳に使う。
+function segSplit(scopeSet, a, b){
+  let ln=0,dn=0,lg=0,dg=0;
+  for(const r of D.media){ if(!scopeSet.has(r.store))continue; if(r.t<a||r.t>b)continue;
+    if(mediaClassOf(r.media).seg==='ランチ'){ ln+=r.net; lg+=r.guests; } else { dn+=r.net; dg+=r.guests; } }
+  return { ln, dn, lg, dg, hasNet:(ln+dn)>0, hasG:(lg+dg)>0 };
 }
 const isHolidayKey=(k)=>/祝日|祝祭日|holiday/i.test(String(k));
 function ingestHoliday(rows){
@@ -1241,21 +1257,29 @@ function viewDash(){
 
   const y1=yoyStr(Ssl,pS), yG=yoyStr(cur.guests,prev.guests,'前年 '), ySp=yoyStr(spend,pSpend,'前年 ');
   const yF=ptStr(foodR,pFood,true), yL=ptStr(laborR,pLabor,true), yFL=ptStr(flR,pFood+pLabor,true);
+  // 営業区分（ランチ/ディナー）の内訳。媒体別売上の営業区分比で按分（店舗別内訳は出さない＝全体のみ）。
+  const seg=segSplit(scopeSet,a,b);
+  const rN=seg.hasNet?seg.ln/(seg.ln+seg.dn):null;   // ランチ売上比
+  const rG=seg.hasG?seg.lg/(seg.lg+seg.dg):null;     // ランチ客数比
+  const segY=(t,r)=> r==null?'':('🌤ランチ '+yen(t*r)+' ／ 🌙ディナー '+yen(t*(1-r)));
+  const segC=(t,r,u)=> r==null?'':('🌤ランチ '+cnt(t*r)+u+' ／ 🌙ディナー '+cnt(t*(1-r))+u);
+  const segSpend=()=>{ if(rN==null||rG==null||!(cur.guests>0)) return ''; const lg=cur.guests*rG,dg=cur.guests*(1-rG),ls=Ssl*rN,ds=Ssl*(1-rN);
+    return '🌤ランチ '+yen(lg>0?ls/lg:0)+' ／ 🌙ディナー '+yen(dg>0?ds/dg:0); };
   // 組数（会計組数）＝日別売上シート「分析_日別店舗」の組数列（レジ準拠・キャンセル除外済み）。
   let checksKpi=null;
   if(cur.hasGroups){
     const perGrp=(cur.groups>0)?Ssl/cur.groups:0;
     const grpYY=yoyStr(cur.groups,prev.groups,'前年 ');
-    checksKpi={ lb:'組数', vl: cnt(cur.groups)+'組', yy: (cur.groups>0)?{t:'1組平均 '+yen(perGrp)+(prev.hasGroups?' ／ '+grpYY.t:''),cls:prev.hasGroups?grpYY.cls:'mut'}:{t:'日別売上シートより',cls:'mut'} };
+    checksKpi={ lb:'組数', vl: cnt(cur.groups)+'組', segsub:segC(cur.groups,rG,'組'), yy: (cur.groups>0)?{t:'1組平均 '+yen(perGrp)+(prev.hasGroups?' ／ '+grpYY.t:''),cls:prev.hasGroups?grpYY.cls:'mut'}:{t:'日別売上シートより',cls:'mut'} };
   }
   const kpis=[
-    { lb:(S.period==='day'?'日次':S.period==='week'?'週次':S.period==='month'?'月次':S.period==='year'?'累計':'期間')+'売上', vl:yen(Ssl), yy:y1 },
+    { lb:(S.period==='day'?'日次':S.period==='week'?'週次':S.period==='month'?'月次':S.period==='year'?'累計':'期間')+'売上', vl:yen(Ssl), segsub:segY(Ssl,rN), yy:y1 },
     { lb:'原価率 (F)', vl:Ssl>0?(foodR*100).toFixed(1)+'%':'—', sub:Ssl>0?yen(cur.cost):'', yy:yF },
     { lb:'人件費率 (L)', vl:Ssl>0?(laborR*100).toFixed(1)+'%':'—', sub:Ssl>0?('PA '+yen(cur.pa)+' ／ 社員 '+yen(cur.emp)):'', yy:yL },
     { lb:'FL合計', vl:Ssl>0?(flR*100).toFixed(1)+'%':'—', yy:yFL },
-    { lb:'客数', vl:cnt(cur.guests)+'人', yy:yG },
+    { lb:'客数', vl:cnt(cur.guests)+'人', segsub:segC(cur.guests,rG,'人'), yy:yG },
     ...(checksKpi?[checksKpi]:[]),
-    { lb:'客単価', vl:yen(spend), yy:ySp },
+    { lb:'客単価', vl:yen(spend), segsub:segSpend(), yy:ySp },
     { lb:'口コミ点数', vl:revScore, yy:revScoreYY },
     { lb:'口コミ件数', vl:revCount, yy:revCountYY },
   ];
@@ -1272,7 +1296,7 @@ function viewDash(){
     kpis.push({ lb:'ダイニー再来店意向', vl: ds.avg!=null?ds.avg.toFixed(2):'—', yy:dyy });
   }
   let h=periodCtrlHtml()+storeSegHtml();
-  h+=`<div class="kpi-grid">`+kpis.map(k=>`<div class="kpi"><div class="lb">${k.lb}</div><div class="vl">${k.vl}</div>${k.sub?`<div class="yy" style="color:#5c5348;font-weight:600;margin-bottom:2px">${k.sub}</div>`:''}<div class="yy ${k.yy.cls}">${k.yy.t}</div></div>`).join('')+`</div>`;
+  h+=`<div class="kpi-grid">`+kpis.map(k=>`<div class="kpi"><div class="lb">${k.lb}</div><div class="vl">${k.vl}</div>${k.sub?`<div class="yy" style="color:#5c5348;font-weight:600;margin-bottom:2px">${k.sub}</div>`:''}${k.segsub?`<div class="yy" style="color:#7a6f5c;font-size:10.5px;margin-bottom:2px">${k.segsub}</div>`:''}<div class="yy ${k.yy.cls}">${k.yy.t}</div></div>`).join('')+`</div>`;
   EXPORT.push({ title:'KPI（'+r.label+(selName?'・'+selName:'・'+(sc.length===allStores().length?'全店':'担当店舗'))+'）',
     headers:['指標','値','前年比較'], rows:kpis.map(k=>[k.lb,k.vl+(k.sub?'（'+k.sub+'）':''),k.yy.t]) });
 
@@ -1649,7 +1673,10 @@ function viewAnalysis(){
   const diffTxt=(d2)=>`<span class="${d2>0?'pos':d2<0?'neg':'mut'}">${d2===0?'—':(d2>0?'+':'▲')+(M==='guests'?cnt(Math.abs(d2))+'人':yen(Math.abs(d2)))}</span>`;
   h+=`<div class="panel"><div class="panel-head"><h3>明細</h3></div><div class="scroll-x"><table class="tbl"><thead><tr><th>期間</th>${series.map(x=>`<th>${esc(x.name)}</th>`).join('')}${hasYoY?'<th>差異（対前年）</th>':''}</tr></thead><tbody>`;
   buckets.forEach((bk,i)=>{
-    const dateCell=bk.dt?mdwH(bk.dt):esc(bk.label);
+    // 日別表示のときは、その日にイベントがあれば日付セルの下に小さく表示（🎪 会場：イベント名）
+    let evTxt='';
+    if(bk.dt){ const evs=eventsFor(dayMs(bk.dt),names); if(evs.length) evTxt=`<div style="font-size:10px;color:#7a6f9a;margin-top:2px;white-space:normal">🎪 ${esc(eventLineText(evs))}</div>`; }
+    const dateCell=(bk.dt?mdwH(bk.dt):esc(bk.label))+evTxt;
     h+=`<tr><td>${dateCell}</td>${series.map(x=>`<td>${fmtV(x.data[i])}</td>`).join('')}${hasYoY?`<td>${diffTxt(series[0].data[i]-series[1].data[i])}</td>`:''}</tr>`;
   });
   // 合計行（客単価は加重平均で算出）
@@ -1854,6 +1881,11 @@ function viewDetail(){
     <span class="period-label">${esc(r.label)} ／ ${S.dStore==='all'?(fullAccess?'全店':'担当店舗（一覧）'):esc(S.dStore)}（${taxLb}）</span>
   </div>
   <div class="note-box no-print" style="margin:4px 0 2px;padding:9px 13px;font-size:11.5px">ℹ️ POS明細の積み上げ（傾向・構成比を見る用／金額の正は日別売上）。客数はお通し数ベースの推定です。</div>`;
+  // この期間・対象店舗のイベント（上部にまとめて表示。明細は時間帯別なので日ごとの行が無いため）
+  { const evNames=(S.dStore&&S.dStore!=='all')?[S.dStore]:allowed;
+    const evs=eventsInRange(dayMs(new Date(r.from)),dayMs(new Date(r.to)),evNames);
+    if(evs.length){ h+=`<div class="panel" style="border-left:3px solid #7a6f9a;padding:12px 16px;margin:4px 0"><div style="font-size:12px;font-weight:700;color:#5c5348;margin-bottom:6px">🎪 この期間のイベント</div>`+
+      evs.map(e=>{ const d2=new Date(e.t); return `<div style="font-size:12px;color:#5c5348;padding:2px 0"><b>${mdw(d2)}</b> ${e.venue?esc(e.venue)+'：':''}${esc(e.name)}</div>`; }).join('')+`</div>`; } }
   if(!S.auth){ return h+`<div class="panel"><div class="empty">ログイン後、BigQueryの明細が表示されます</div></div>`; }
   if(D.detailKey!==key || !D.detailData){ return h+`<div class="panel"><div class="empty">読み込み中…（BigQuery集計）</div></div>`; }
   const dd=D.detailData;
@@ -2539,7 +2571,7 @@ function viewTarget(){
   const bar=(v,invert)=>{ if(v==null) return ''; const w=Math.min(120,v); const ok=invert?v<=100:v>=100;
     return `<div style="height:7px;background:#efe9dd;border-radius:4px;overflow:hidden;margin-top:6px"><div style="height:100%;width:${Math.min(100,w)}%;background:${ok?'#4c7d5c':(v>=(invert?100:80)?'#b23b2e':'#c9a86a')}"></div></div>`; };
   if(!D.targets.length&&!D.targetsM.length){
-    h+=`<div class="note-box no-print">目標がまだ入力されていません。「✎ 目標を入力」から、店舗・月を選んで日別売上目標と月次目標（人件費・仕入・ダイニー点数・口コミ件数）を設定してください。入力時には<b>昨年の同じ週の同じ曜日の売上</b>が指標として表示されます。</div>`;
+    h+=`<div class="note-box no-print">目標がまだ入力されていません。「✎ 目標を入力」から、店舗・月を選んで日別売上目標と月次目標（人件費率・仕入原価率＝売上に対する％／ダイニー点数・口コミ件数）を設定してください。入力時には<b>昨年の同じ週の同じ曜日の売上</b>が指標として表示されます。</div>`;
   }
   // KPIカード（売上・達成率）
   const achM=rate(cur.sales,goalM), achPace=rate(cur.sales,elapsedGoal);
@@ -2549,24 +2581,36 @@ function viewTarget(){
     <div class="kpi"><div class="lb">進捗達成率（対経過日目標）</div><div class="vl" style="color:${achPace==null?'inherit':(achPace>=100?'#4c7d5c':'#b5502f')}">${pctTxt(achPace)}</div><div class="yy">経過日目標 ${elapsedGoal>0?yen(elapsedGoal):'—'}</div>${bar(achPace)}</div>
     <div class="kpi"><div class="lb">残り必要売上</div><div class="vl">${goalM>0?yen(Math.max(0,goalM-cur.sales)):'—'}</div><div class="yy">${goalM>0&&mE>today?('残り'+Math.round((mE-today)/86400000)+'日 ／ 日あたり '+yen(Math.max(0,goalM-cur.sales)/Math.max(1,Math.round((mE-today)/86400000)))):''}</div></div>
   </div>`;
-  // その他目標（費用・品質）
+  // その他目標。人件費・仕入は「売上に対する％」で設定（金額でなく率）。点数・口コミは実数。
+  const salesAct=cur.sales;
   const items=[
-    {lb:'アルバイト人件費', goal:tm.pa, act:cur.pa, fmt:yen, invert:true},
-    {lb:'社員人件費', goal:tm.emp, act:cur.emp, fmt:yen, invert:true},
-    {lb:'仕入原価', goal:tm.cost, act:cur.cost, fmt:yen, invert:true},
+    {lb:'アルバイト人件費率', pct:true, goalPct:tm.pa, actAmt:cur.pa, invert:true},
+    {lb:'社員人件費率', pct:true, goalPct:tm.emp, actAmt:cur.emp, invert:true},
+    {lb:'仕入原価率', pct:true, goalPct:tm.cost, actAmt:cur.cost, invert:true},
     {lb:'ダイニー点数', goal:tm.dinii, act:ds.avg, fmt:(v)=>v==null?'—':Number(v).toFixed(2), invert:false, isScore:true},
     {lb:'Google口コミ件数（月間増加）', goal:tm.review, act:revInc, fmt:(v)=>v==null?'—':cnt(v)+'件', invert:false},
   ];
-  h+=`<div class="panel"><div class="panel-head"><div><h3>目標項目別 予実（${mLabel}）</h3><div class="sub">費用系は目標以下が◯／ダイニー点数・口コミは目標以上が◯</div></div></div>
+  h+=`<div class="panel"><div class="panel-head"><div><h3>目標項目別 予実（${mLabel}）</h3><div class="sub">人件費・仕入は売上に対する％で設定（費用系は目標以下が◯）／ダイニー点数・口コミは目標以上が◯</div></div></div>
     <div class="scroll-x"><table class="tbl"><thead><tr><th>項目</th><th>目標</th><th>実績（累計）</th><th>達成率</th><th></th></tr></thead><tbody>`;
   const expI=[];
   items.forEach(it=>{
-    const hasGoal=it.goal!=null&&it.goal>0;
-    const r2=it.isScore?(hasGoal&&it.act!=null?it.act/it.goal*100:null):(hasGoal&&it.act!=null?rate(it.act,it.goal):null);
-    const ok=r2==null?null:(it.invert?r2<=100:r2>=100);
-    h+=`<tr><td>${esc(it.lb)}</td><td>${hasGoal?it.fmt(it.goal):'—'}</td><td>${it.act!=null?it.fmt(it.act):'—'}</td>
+    let goalTxt,actTxt,r2,ok;
+    if(it.pct){
+      const hasGoal=it.goalPct!=null&&it.goalPct>0;
+      const actualPct=salesAct>0?it.actAmt/salesAct*100:null;
+      goalTxt=hasGoal?(it.goalPct.toFixed(1)+'%'+(goalM>0?' <span class="mut" style="font-size:10px">('+yen(goalM*it.goalPct/100)+')</span>':'')):'—';
+      actTxt=actualPct!=null?(actualPct.toFixed(1)+'% <span class="mut" style="font-size:10px">('+yen(it.actAmt)+')</span>'):'—';
+      r2=(hasGoal&&actualPct!=null)?actualPct/it.goalPct*100:null; ok=r2==null?null:(it.invert?r2<=100:r2>=100);
+      expI.push([it.lb, hasGoal?it.goalPct+'%':'', actualPct!=null?actualPct.toFixed(1)+'%':'', pctTxt(r2)]);
+    } else {
+      const hasGoal=it.goal!=null&&it.goal>0;
+      r2=it.isScore?(hasGoal&&it.act!=null?it.act/it.goal*100:null):(hasGoal&&it.act!=null?rate(it.act,it.goal):null);
+      ok=r2==null?null:(it.invert?r2<=100:r2>=100);
+      goalTxt=hasGoal?it.fmt(it.goal):'—'; actTxt=it.act!=null?it.fmt(it.act):'—';
+      expI.push([it.lb, hasGoal?String(it.fmt(it.goal)).replace(/[¥,]/g,''):'', it.act!=null?String(it.fmt(it.act)).replace(/[¥,]/g,''):'', pctTxt(r2)]);
+    }
+    h+=`<tr><td>${esc(it.lb)}</td><td>${goalTxt}</td><td>${actTxt}</td>
       <td class="${ok==null?'mut':ok?'pos':'neg'}">${pctTxt(r2)}</td><td style="min-width:130px">${bar(r2,it.invert)}</td></tr>`;
-    expI.push([it.lb, hasGoal?String(it.fmt(it.goal)).replace(/[¥,]/g,''):'', it.act!=null?String(it.fmt(it.act)).replace(/[¥,]/g,''):'', pctTxt(r2)]);
   });
   h+=`</tbody></table></div></div>`;
   EXPORT.push({ title:'目標項目別予実（'+mLabel+'）', headers:['項目','目標','実績','達成率'], rows:expI });
@@ -3442,10 +3486,11 @@ function targetModal(){
       <table class="tbl"><thead><tr><th>日付</th><th>昨年同週同曜日</th><th>売上目標</th></tr></thead><tbody>${grid}</tbody></table>
     </div>
     <div style="margin-top:14px;font-weight:700;font-size:13px">月次目標（この月・この店舗）</div>
-    <div class="form-grid" style="margin-top:8px">
-      <div><label>アルバイト人件費（円）</label><input type="number" id="tg-pa" value="${tmEx.pa>0?Math.round(tmEx.pa):''}"></div>
-      <div><label>社員人件費（円）</label><input type="number" id="tg-emp" value="${tmEx.emp>0?Math.round(tmEx.emp):''}"></div>
-      <div><label>仕入原価（円）</label><input type="number" id="tg-cost" value="${tmEx.cost>0?Math.round(tmEx.cost):''}"></div>
+    <div class="sub" style="margin:2px 0 6px">人件費・仕入は「売上に対する％」で入力（例 20 → 売上の20%）。点数・件数は実数。</div>
+    <div class="form-grid" style="margin-top:4px">
+      <div><label>アルバイト人件費率（%）</label><input type="number" step="0.1" id="tg-pa" value="${tmEx.pa>0?tmEx.pa:''}" placeholder="例 15"></div>
+      <div><label>社員人件費率（%）</label><input type="number" step="0.1" id="tg-emp" value="${tmEx.emp>0?tmEx.emp:''}" placeholder="例 12"></div>
+      <div><label>仕入原価率（%）</label><input type="number" step="0.1" id="tg-cost" value="${tmEx.cost>0?tmEx.cost:''}" placeholder="例 30"></div>
       <div><label>ダイニー点数（例 4.5）</label><input type="number" step="0.1" id="tg-dinii" value="${tmEx.dinii>0?tmEx.dinii:''}"></div>
       <div><label>Google口コミ件数（月間増加数）</label><input type="number" id="tg-review" value="${tmEx.review>0?Math.round(tmEx.review):''}"></div>
     </div>
