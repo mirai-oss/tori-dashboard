@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>タスク実行 — 鳥一代グループ</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="タスク実行">
+<meta name="theme-color" content="#2a2420">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700&family=Shippori+Mincho:wght@600;800&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#faf9f5; --panel:#ffffff; --line:#efe9dd; --line2:#e5ddcc;
+  --ink:#3d3a33; --ink2:#5c5348; --mut:#8c8375; --mut2:#a99f8c;
+  --navy:#3d5163; --gold:#c9a86a; --red:#b5502f; --green:#5f7052; --dark:#2a2420;
+  --sans:'Zen Kaku Gothic New',-apple-system,sans-serif; --serif:'Shippori Mincho',serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{overflow-x:hidden;max-width:100%}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px;-webkit-font-smoothing:antialiased;
+  padding-bottom:env(safe-area-inset-bottom)}
+.wrap{max-width:520px;margin:0 auto;padding:0 18px 60px}
+header.top{display:flex;align-items:center;gap:12px;padding:22px 0 16px}
+.logo-sq{width:38px;height:38px;border-radius:10px;background:var(--dark);display:flex;align-items:center;justify-content:center;
+  font-family:var(--serif);font-size:20px;color:var(--gold);flex-shrink:0}
+.brand h1{font-family:var(--serif);font-size:16px;font-weight:600;letter-spacing:.04em}
+.brand p{font-size:10.5px;color:var(--mut2);letter-spacing:.1em;margin-top:2px}
+.note-box{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--gold);border-radius:10px;
+  padding:12px 14px;font-size:12px;color:var(--ink2);line-height:1.7;margin-bottom:16px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:22px}
+@media(max-width:380px){.grid{grid-template-columns:1fr}}
+button.task{background:var(--panel);border:1px solid var(--line2);border-radius:14px;padding:16px 14px;
+  text-align:left;cursor:pointer;transition:transform .08s ease,border-color .15s ease;font-family:var(--sans)}
+button.task:active{transform:scale(.97)}
+button.task:hover{border-color:var(--gold)}
+button.task .lb{font-size:13.5px;font-weight:700;color:var(--ink);line-height:1.4}
+button.task .st{font-size:10.5px;color:var(--mut);margin-top:6px;display:flex;align-items:center;gap:5px}
+button.task .st .dot{width:6px;height:6px;border-radius:50%;background:var(--mut2);flex-shrink:0}
+button.task.busy{opacity:.6;pointer-events:none}
+button.task.busy .st .dot{background:var(--gold);animation:pulse 1s infinite}
+button.task.ok .st .dot{background:var(--green)}
+button.task.ng .st .dot{background:var(--red)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+h2.section{font-size:12.5px;color:var(--mut);letter-spacing:.06em;margin:0 0 10px;font-weight:700}
+.log-panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:6px 14px}
+.log-row{display:flex;align-items:baseline;gap:8px;padding:10px 0;border-top:1px solid var(--line)}
+.log-row:first-child{border-top:none}
+.log-row .badge{font-size:10px;font-weight:700;padding:2px 7px;border-radius:99px;flex-shrink:0}
+.log-row .badge.pending,.log-row .badge.processing{background:#f7f0dc;color:#a2803f}
+.log-row .badge.done{background:#e9f2e9;color:var(--green)}
+.log-row .badge.failed{background:#faf0ec;color:var(--red)}
+.log-row .body{flex:1;min-width:0}
+.log-row .lb{font-size:12.5px;font-weight:600}
+.log-row .meta{font-size:10.5px;color:var(--mut2);margin-top:2px}
+.log-row .result{font-size:11px;color:var(--ink2);margin-top:4px;white-space:pre-wrap;word-break:break-word}
+.empty{padding:22px 0;text-align:center;color:var(--mut2);font-size:12px}
+.foot{display:flex;justify-content:space-between;align-items:center;margin-top:16px}
+.foot button{background:none;border:none;color:var(--mut2);font-size:11px;text-decoration:underline;cursor:pointer;font-family:var(--sans)}
+.gate{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+.gate-card{width:100%;max-width:360px;background:var(--panel);border:1px solid var(--line2);border-radius:16px;padding:28px 24px}
+.gate-card h1{font-family:var(--serif);font-size:16px;margin-bottom:8px}
+.gate-card p{font-size:12px;color:var(--mut);margin-bottom:16px;line-height:1.7}
+.gate-card input{width:100%;padding:11px 13px;font-size:14px;border:1px solid var(--line2);border-radius:9px;margin-bottom:12px;font-family:var(--sans)}
+.gate-card button{width:100%;padding:12px;border-radius:9px;background:var(--navy);color:#fff;font-size:13.5px;font-weight:700;border:none;cursor:pointer;font-family:var(--sans)}
+.gate-err{color:var(--red);font-size:11.5px;margin-bottom:10px}
+[hidden]{display:none !important}
+</style>
+</head>
+<body>
+
+<div id="gate" class="gate" hidden>
+  <div class="gate-card">
+    <h1>🔑 アクセスキー</h1>
+    <p>このページからタスクを実行するための専用キーを入力してください（一度入力すればこの端末では次回から不要です）。</p>
+    <div id="gate-err" class="gate-err" hidden></div>
+    <input type="password" id="gate-input" placeholder="キーを入力" autocomplete="off">
+    <button onclick="saveToken()">保存して開く</button>
+  </div>
+</div>
+
+<div id="app" class="wrap" hidden>
+  <header class="top">
+    <div class="logo-sq">鳥</div>
+    <div class="brand">
+      <h1>タスク実行</h1>
+      <p>NS DAILY IMPORT</p>
+    </div>
+  </header>
+
+  <div class="note-box">
+    ボタンを押すとMac側に依頼が送られ、数分以内（次回ポーリング時）に自動実行されます。実行中に画面を閉じても処理は続きます。結果は下の履歴と、いつものLark通知で確認できます。
+  </div>
+
+  <h2 class="section">実行するタスク</h2>
+  <div class="grid" id="task-grid"></div>
+
+  <h2 class="section">依頼の履歴</h2>
+  <div class="log-panel"><div id="log-list"></div></div>
+
+  <div class="foot">
+    <button onclick="refreshStatus()">↻ 更新</button>
+    <button onclick="resetToken()">キーをリセット</button>
+  </div>
+</div>
+
+<script>
+const GAS_URL = 'https://script.google.com/macros/s/AKfycbz9rd37EZa6X8WRMVEBrXobN8DbYWkHRlhFNYU5rd1UZ0V8j0-6shMQjEeoi4HDWZ0B/exec';
+const LS_KEY = 'ns_task_queue_token_v1';
+const TASKS = [
+  { key:'smaregi-payroll',      label:'スマレジ人件費' },
+  { key:'zeroregi-akihabara',   label:'ZeroRegi売上（秋葉原）' },
+  { key:'infomart-siire',       label:'インフォマート仕入れ' },
+  { key:'dinii-media',          label:'Dinii媒体別' },
+  { key:'dinii-orders',         label:'Dinii注文明細' },
+  { key:'dinii-questionnaire',  label:'Diniiアンケート' },
+  { key:'dinii-payment-ns',     label:'Dinii支払い(NS)' },
+  { key:'dinii-payment-nstyle', label:'Dinii支払い(N-Style)' },
+  { key:'arena-events',         label:'横浜アリーナ イベント' },
+];
+const $=(id)=>document.getElementById(id);
+const esc=(s)=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+function getToken(){ try{ return localStorage.getItem(LS_KEY)||''; }catch(e){ return ''; } }
+function setToken(v){ try{ localStorage.setItem(LS_KEY, v); }catch(e){} }
+
+async function api(params){
+  const qs = new URLSearchParams(params).toString();
+  const res = await fetch(GAS_URL+'?'+qs, { method:'GET' });
+  return res.json();
+}
+
+function renderTasks(){
+  $('task-grid').innerHTML = TASKS.map(t=>
+    `<button class="task" id="tb-${t.key}" onclick="runTask('${t.key}')">
+      <div class="lb">${esc(t.label)}</div>
+      <div class="st"><span class="dot"></span><span class="txt">タップで実行</span></div>
+    </button>`
+  ).join('');
+}
+function setBtnState(key, cls, text){
+  const b=$('tb-'+key); if(!b) return;
+  b.classList.remove('busy','ok','ng'); if(cls) b.classList.add(cls);
+  b.querySelector('.txt').textContent = text;
+}
+
+async function runTask(key){
+  const t = TASKS.find(x=>x.key===key); if(!t) return;
+  setBtnState(key, 'busy', '送信中…');
+  $('tb-'+key).classList.add('busy');
+  try{
+    const d = await api({ action:'queueTask', token:getToken(), task:key });
+    if(!d.ok){
+      if(String(d.error||'').includes('unauthorized')){ resetToken(); return; }
+      setBtnState(key, 'ng', d.error||'エラー'); return;
+    }
+    setBtnState(key, 'ok', '受け付けました');
+    setTimeout(()=>{ setBtnState(key, '', 'タップで実行'); }, 4000);
+    refreshStatus();
+  }catch(e){
+    setBtnState(key, 'ng', '通信エラー');
+  }
+}
+
+function fmtTime(iso){
+  if(!iso) return '';
+  const d = new Date(iso);
+  if(isNaN(d)) return '';
+  const p=(n)=>String(n).padStart(2,'0');
+  return `${d.getMonth()+1}/${d.getDate()} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+const STATUS_LABEL = { pending:'待機中', processing:'実行中', done:'完了', failed:'失敗' };
+
+async function refreshStatus(){
+  try{
+    const d = await api({ action:'queueStatus', token:getToken() });
+    if(!d.ok){
+      if(String(d.error||'').includes('unauthorized')) resetToken();
+      return;
+    }
+    const items = d.items||[];
+    if(!items.length){ $('log-list').innerHTML = '<div class="empty">まだ依頼はありません</div>'; return; }
+    $('log-list').innerHTML = items.map(it=>`
+      <div class="log-row">
+        <span class="badge ${esc(it.status)}">${esc(STATUS_LABEL[it.status]||it.status)}</span>
+        <div class="body">
+          <div class="lb">${esc(it.label)}</div>
+          <div class="meta">${esc(fmtTime(it.at))}${it.doneAt?' 〜 '+esc(fmtTime(it.doneAt)):''}</div>
+          ${it.result?`<div class="result">${esc(it.result)}</div>`:''}
+        </div>
+      </div>`).join('');
+  }catch(e){ /* 静かに失敗（次回の更新で回復） */ }
+}
+
+function showGate(err){
+  $('app').hidden = true; $('gate').hidden = false;
+  $('gate-err').hidden = !err; if(err) $('gate-err').textContent = err;
+  $('gate-input').focus();
+}
+function showApp(){
+  $('gate').hidden = true; $('app').hidden = false;
+  renderTasks(); refreshStatus();
+}
+async function saveToken(){
+  const v = $('gate-input').value.trim();
+  if(!v){ $('gate-err').hidden=false; $('gate-err').textContent='キーを入力してください'; return; }
+  const d = await api({ action:'queueStatus', token:v }).catch(()=>null);
+  if(!d || !d.ok){ $('gate-err').hidden=false; $('gate-err').textContent='キーが正しくありません'; return; }
+  setToken(v); showApp();
+}
+function resetToken(){ setToken(''); showGate('キーの有効期限が切れたか、間違っている可能性があります'); }
+
+(function init(){
+  const tok = getToken();
+  if(tok) showApp(); else showGate();
+  setInterval(()=>{ if(!$('app').hidden) refreshStatus(); }, 15000); // 開いている間は15秒おきに自動更新
+})();
+</script>
+</body>
+</html>

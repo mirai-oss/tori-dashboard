@@ -43,13 +43,18 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v27', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v28', time: new Date().toISOString() });
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     if (action === 'perf') return out(perfDiag(p)); // パフォーマンス計測（専用トークン認証・ログイン不要・数字は返さず時間だけ）
     setupIfNeeded();
     if (action === 'login')  return out(login(p));
     if (action === 'logout') return out(logout(p));
     if (action === 'saveArenaEvents') return out(saveArenaEvents(p)); // イベント自動取得（専用トークン認証・ログイン不要）
+    // スマホ等から取込タスクを依頼するキュー（3アクションとも専用トークン認証・ログイン不要）
+    if (action === 'queueTask')    return out(queueTask(p));    // スマホ側：タスクを依頼（TASK_QUEUE_TOKEN）
+    if (action === 'queueStatus')  return out(queueStatus(p));  // スマホ側：直近の依頼状況（TASK_QUEUE_TOKEN）
+    if (action === 'pendingTasks') return out(pendingTasks(p)); // Mac側：未処理を取得して受領済みに（BQ_LOAD_TOKEN）
+    if (action === 'ackTask')      return out(ackTask(p));      // Mac側：完了/失敗を報告（BQ_LOAD_TOKEN）
 
     // ここから先はログイン必須
     var session = requireSession(p);
@@ -308,6 +313,16 @@ function setupIfNeeded() {
     vsSh.getRange(2, 1, 1, 2).setValues([['横浜アリーナ', '黒霧屋 新横浜, 鶏武者 新横浜, じんべえ 新横浜店']]);
     vsSh.getRange('A1').setNote('自動取得イベント（横浜アリーナ等）の「対象店舗」をこの表から自動で埋めます。\n・会場: 取得元の会場名（例 横浜アリーナ）\n・対象店舗: その会場の近くで影響を受ける店舗名をカンマ区切り（分析_日別店舗と同じ表記）\n※店舗が増えたら、この行に店舗名を足すだけで翌朝の自動取得から全イベントに反映されます。');
     vsSh.setFrozenRows(1); vsSh.setColumnWidths(1, 1, 140); vsSh.setColumnWidths(2, 1, 340);
+  }
+  // タスクキュー（DB_タスクキュー）。スマホのボタンページ（tasks.html）から依頼されたタスクを、
+  // ns-daily-import側のdispatch.jsが定期ポーリングして実行する。
+  var tqSh = ss.getSheetByName('DB_タスクキュー');
+  if (!tqSh) {
+    tqSh = ss.insertSheet('DB_タスクキュー');
+    tqSh.getRange(1, 1, 1, 6).setValues([['ID', 'タスク', '依頼日時', '状態', '完了日時', '結果']])
+      .setFontWeight('bold').setBackground('#efe9dd');
+    tqSh.getRange('A1').setNote('スマホのタスク実行ページ（tasks.html）からの依頼をここに記録します。直接編集は不要。\n状態: pending(未処理)→processing(Mac側が受領)→done/failed(完了)');
+    tqSh.setFrozenRows(1); tqSh.setColumnWidths(1, 1, 110); tqSh.setColumnWidths(2, 1, 160); tqSh.setColumnWidths(6, 1, 260);
   }
 }
 
@@ -1054,4 +1069,89 @@ function saveArenaEvents(p) {
   if (last >= 2) ev.getRange(2, 1, last - 1, 6).clearContent();
   if (out.length) { ev.getRange(2, 1, out.length, 6).setValues(out); ev.getRange(2, 2, out.length, 1).setNumberFormat('yyyy/m/d'); }
   return { ok: true, upserted: rows.length, removed: removed, stores: stores ? stores.split(/[,、]/).map(function (s) { return s.trim(); }).filter(Boolean) : [] };
+}
+
+// ================== タスクキュー（スマホ→Mac側の取込タスク依頼） ==================
+// ns-daily-import側で実行できるタスクの許可リスト（config.js/lark-listener.jsの一覧と合わせる。
+// 新タスクを追加したら、あちら側と一緒にここにも追記すること）
+var QUEUE_TASKS = [
+  { key: 'smaregi-payroll',      label: 'スマレジ人件費' },
+  { key: 'zeroregi-akihabara',   label: 'ZeroRegi売上(秋葉原)' },
+  { key: 'infomart-siire',       label: 'インフォマート仕入れ' },
+  { key: 'dinii-media',          label: 'Dinii媒体別' },
+  { key: 'dinii-orders',         label: 'Dinii注文明細' },
+  { key: 'dinii-questionnaire',  label: 'Diniiアンケート' },
+  { key: 'dinii-payment-ns',     label: 'Dinii支払い(NS)' },
+  { key: 'dinii-payment-nstyle', label: 'Dinii支払い(N-Style)' },
+  { key: 'arena-events',         label: '横浜アリーナ イベント' },
+];
+function queueTaskLabel_(key) { for (var i = 0; i < QUEUE_TASKS.length; i++) if (QUEUE_TASKS[i].key === key) return QUEUE_TASKS[i].label; return key; }
+
+// スマホ側：タスクを依頼（TASK_QUEUE_TOKEN認証）。許可リスト外のタスク名は拒否。
+function queueTask(p) {
+  var tk = PropertiesService.getScriptProperties().getProperty('TASK_QUEUE_TOKEN');
+  if (!tk || String(p.token) !== tk) return { ok: false, error: 'unauthorized' };
+  var key = String(p.task || '').trim();
+  var allowed = QUEUE_TASKS.some(function (t) { return t.key === key; });
+  if (!allowed) return { ok: false, error: '不明なタスク: ' + key };
+  setupIfNeeded(); // DB_タスクキューの存在を保証
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_タスクキュー');
+  var id = Utilities.getUuid().slice(0, 8);
+  sh.appendRow([id, key, new Date(), 'pending', '', '']);
+  var r = sh.getLastRow();
+  sh.getRange(r, 3).setNumberFormat('yyyy/m/d h:mm:ss');
+  return { ok: true, id: id, label: queueTaskLabel_(key) };
+}
+// スマホ側：直近の依頼状況を返す（結果画面用）。最新10件。
+function queueStatus(p) {
+  var tk = PropertiesService.getScriptProperties().getProperty('TASK_QUEUE_TOKEN');
+  if (!tk || String(p.token) !== tk) return { ok: false, error: 'unauthorized' };
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_タスクキュー');
+  if (!sh || sh.getLastRow() < 2) return { ok: true, items: [] };
+  var last = sh.getLastRow();
+  var n = Math.min(10, last - 1);
+  var vals = sh.getRange(last - n + 1, 1, n, 6).getValues();
+  var items = vals.map(function (r) {
+    return { id: r[0], task: r[1], label: queueTaskLabel_(r[1]), at: r[2] instanceof Date ? r[2].toISOString() : String(r[2]), status: r[3], doneAt: r[4] instanceof Date ? r[4].toISOString() : String(r[4] || ''), result: String(r[5] || '') };
+  }).reverse();
+  return { ok: true, items: items };
+}
+// Mac側：未処理(pending)を受領してprocessingに変え、そのリストを返す（BQ_LOAD_TOKEN認証）。
+// 受領と同時に状態を変えるので、同じ依頼を二重に拾うことはない。
+function pendingTasks(p) {
+  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+  if (!tk || String(p.token) !== tk) return { ok: false, error: 'unauthorized' };
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_タスクキュー');
+  if (!sh || sh.getLastRow() < 2) return { ok: true, tasks: [] };
+  var last = sh.getLastRow();
+  var vals = sh.getRange(2, 1, last - 1, 6).getValues();
+  var out = [];
+  for (var i = 0; i < vals.length; i++) {
+    if (String(vals[i][3]) !== 'pending') continue;
+    sh.getRange(i + 2, 4).setValue('processing');
+    out.push({ id: vals[i][0], task: vals[i][1] });
+  }
+  return { ok: true, tasks: out };
+}
+// Mac側：実行結果を報告（BQ_LOAD_TOKEN認証）
+function ackTask(p) {
+  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+  if (!tk || String(p.token) !== tk) return { ok: false, error: 'unauthorized' };
+  var id = String(p.id || '').trim(); if (!id) return { ok: false, error: 'idが必要です' };
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_タスクキュー');
+  var last = sh.getLastRow();
+  if (last >= 2) {
+    var vals = sh.getRange(2, 1, last - 1, 1).getValues();
+    for (var i = 0; i < vals.length; i++) {
+      if (String(vals[i][0]) === id) {
+        var row = i + 2;
+        sh.getRange(row, 4).setValue(String(p.status === 'failed' ? 'failed' : 'done'));
+        sh.getRange(row, 5).setValue(new Date());
+        sh.getRange(row, 5).setNumberFormat('yyyy/m/d h:mm:ss');
+        sh.getRange(row, 6).setValue(String(p.summary || '').slice(0, 500));
+        return { ok: true };
+      }
+    }
+  }
+  return { ok: false, error: '該当タスクが見つかりません' };
 }
