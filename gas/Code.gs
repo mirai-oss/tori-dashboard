@@ -43,7 +43,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v34', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v35', time: new Date().toISOString() });
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     if (action === 'perf') return out(perfDiag(p)); // パフォーマンス計測（専用トークン認証・ログイン不要・数字は返さず時間だけ）
     setupIfNeeded();
@@ -1066,21 +1066,33 @@ function depositHeaderRow_(sh) {
   for (var r = 0; r < scan; r++) { if (String(v[r][0]).trim() === '店舗') return r + 1; }
   return -1;
 }
-// 入金管理タブの「口座CSVを取込」から呼ばれる。rows=[[YYYY-MM-DD, 入金額, 摘要, 時刻, 残高|null],...]
-// 選択店舗に紐付けて、売上DBの入金DB と このスプレッドシートの入金DB の両方に追記する。
-// 重複判定: CSVに残高列があれば「店舗+日付+金額+残高」（同日同額の入金でも取引後残高はほぼ一意）、
-// 無ければ「店舗+日付+金額+時刻」で判定。既存の手動貼り付け行（残高なし）とも安全に共存する。
+// 店舗名の正規化（売上DB側の既存スクリプト _normStoreName と同一ルール）。
+// スペース違いを吸収し、登録した店舗だけ正解表記に統一。登録外はトリムのみ。
+var STORE_CANONICAL_BY_NOSPACE_ = {
+  '横濱ホルモン会館エース本厚木店': '横濱ホルモン会館　エース　本厚木店',
+  'うお蔵新横浜店': '黒霧屋 新横浜'
+};
+function normStoreName_(s) {
+  var t = String(s == null ? '' : s).trim();
+  var nospace = t.replace(/[\s　]/g, '');
+  return STORE_CANONICAL_BY_NOSPACE_[nospace] || t;
+}
+// 入金管理タブの「口座CSVを取込」から呼ばれる。rows=[[YYYY-MM-DD, 入金額, 摘要, 識別トークン],...]
+// 識別トークン＝入金DBのE列（取引時刻）。フロント(depTokenize)が 取引時刻／残高{n}／#出現順 の順で決定済み。
+// 売上DB側の既存スクリプト(importBankDepositCSV)と完全に同じ 6列構成・同じ重複キーで追記する：
+//   入金DB列: A店舗 B日付 C入金額 D摘要 E取引時刻 F取込日時
+//   重複キー: 店舗__日付__取引時刻(トークン)__金額  ← 既存スクリプトと一致するので相互に重複しない
 function importDeposits(p, session) {
-  var store = String(p.store || '').trim();
+  var store = normStoreName_(p.store);
   if (!store) return { ok: false, error: '店舗が未指定です' };
-  if (!scopeAllows_(session, store)) return { ok: false, error: 'この店舗の入金を取り込む権限がありません' };
+  if (!scopeAllows_(session, p.store)) return { ok: false, error: 'この店舗の入金を取り込む権限がありません' };
   var rows; try { rows = JSON.parse(p.rows || '[]'); } catch (e) { rows = []; }
   if (!rows.length) return { ok: false, error: '取込対象の行がありません' };
   if (rows.length > 3000) return { ok: false, error: '一度に取り込めるのは3000行までです' };
   var tz = Session.getScriptTimeZone() || 'Asia/Tokyo';
   var now = new Date();
-  // 取込先: ①売上DB（既存運用の本体） ②このスプレッドシート（ダッシュボードの配信元）
-  // ②がIMPORTRANGE等の数式なら自動同期されるので追記しない（数式を壊さない）
+  // 取込先: ①売上DB（既存運用の本体） ②このスプレッドシート（ダッシュボードの配信元）。
+  // ②がIMPORTRANGE等の数式（＝売上DBから自動同期）なら追記しない（数式を壊さない）。
   var targets = [];
   try {
     var src = SpreadsheetApp.openById(SALES_DB_ID).getSheetByName('入金DB');
@@ -1089,58 +1101,49 @@ function importDeposits(p, session) {
   var dst = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('入金DB');
   if (dst && !String(dst.getRange(1, 1).getFormula() || '')) targets.push({ label: 'ダッシュボード', sh: dst });
   if (!targets.length) return { ok: false, error: '入金DBシートが見つかりません' };
-  // 値の正規化（既存セルはDate/数値/文字列が混在し得るため、キー化して重複判定する）
+  // 既存セル値の正規化（Date/数値/文字列が混在し得るため、キー化して重複判定する）
   function dKey(v) {
     if (v instanceof Date) return v.getFullYear() + '/' + (v.getMonth() + 1) + '/' + v.getDate();
     var m = String(v).match(/(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
     return m ? (+m[1]) + '/' + (+m[2]) + '/' + (+m[3]) : String(v);
   }
-  function tKey(v) {
+  function tKey(v) {   // 既存スクリプト _normTime と同じ（時刻型に化けても文字列比較を一致させる）
     if (v instanceof Date) return Utilities.formatDate(v, tz, 'HH:mm:ss');
-    return String(v || '').trim();
+    return String(v == null ? '' : v).trim();
   }
   function aKey(v) { return String(Number(String(v).replace(/[,¥\s]/g, '')) || 0); }
-  // 残高列（列7）。無ければnull扱い（既存データに列7自体が無くても getValues は空文字を返すので安全）
-  function bKey(v) { var s = String(v == null ? '' : v).replace(/[,¥\s]/g, ''); return s === '' ? null : String(Number(s) || 0); }
   var added = 0, dup = 0, detail = {};
   targets.forEach(function (t, ti) {
     var sh = t.sh;
     var head = depositHeaderRow_(sh);
     if (head < 0) { detail[t.label] = 'ヘッダー行なし'; return; }
-    // 残高列の見出しが無ければ追加（既存6列構成には触れない・列7だけ追記）
-    if (String(sh.getRange(head, 7).getValue()).trim() === '') {
-      sh.getRange(head, 7).setValue('残高').setFontWeight('bold').setBackground('#efe9dd');
-    }
     var last = sh.getLastRow();
     var exist = {};
     if (last > head) {
-      var v = sh.getRange(head + 1, 1, last - head, 7).getValues();
+      var v = sh.getRange(head + 1, 1, last - head, 6).getValues();
       for (var i = 0; i < v.length; i++) {
         if (String(v[i][0]).trim() === '') continue;
-        var store_ = String(v[i][0]).trim(), d_ = dKey(v[i][1]), a_ = aKey(v[i][2]), b_ = bKey(v[i][6]);
-        var k = b_ != null ? (store_ + '|' + d_ + '|' + a_ + '|b' + b_) : (store_ + '|' + d_ + '|' + a_ + '|' + tKey(v[i][4]));
-        exist[k] = 1;
+        // 既存スクリプトと同じキー: 店舗+日付+取引時刻+金額
+        exist[normStoreName_(v[i][0]) + '__' + dKey(v[i][1]) + '__' + tKey(v[i][4]) + '__' + aKey(v[i][2])] = 1;
       }
     }
     var out = [], skipped = 0;
     rows.forEach(function (a) {
       var m = String(a[0]).match(/^(\d{4})-(\d{2})-(\d{2})$/); if (!m) return;
       var amt = Number(a[1]) || 0; if (!(amt > 0)) return;
-      var desc = String(a[2] || '').slice(0, 100), tm = String(a[3] || '').trim();
-      var bal = (a[4] === null || a[4] === undefined || a[4] === '') ? null : Number(a[4]);
-      var dKeyNow = (+m[1]) + '/' + (+m[2]) + '/' + (+m[3]);
-      var key = bal != null ? (store + '|' + dKeyNow + '|' + amt + '|b' + bal) : (store + '|' + dKeyNow + '|' + amt + '|' + tm);
+      var desc = String(a[2] || '').slice(0, 100), tok = String(a[3] == null ? '' : a[3]).trim();
+      var key = store + '__' + ((+m[1]) + '/' + (+m[2]) + '/' + (+m[3])) + '__' + tok + '__' + amt;
       if (exist[key]) { skipped++; return; }
       exist[key] = 1;
-      out.push([store, new Date(+m[1], +m[2] - 1, +m[3]), amt, desc, tm, now, bal == null ? '' : bal]);
+      out.push([store, new Date(+m[1], +m[2] - 1, +m[3]), amt, desc, tok, now]);
     });
     if (out.length) {
       var r0 = sh.getLastRow() + 1;
-      sh.getRange(r0, 1, out.length, 7).setValues(out);
+      sh.getRange(r0, 5, out.length, 1).setNumberFormat('@'); // E列(取引時刻)は文字列固定（時刻型変換による重複バグ防止）
+      sh.getRange(r0, 1, out.length, 6).setValues(out);
       sh.getRange(r0, 2, out.length, 1).setNumberFormat('yyyy/m/d');
       sh.getRange(r0, 3, out.length, 1).setNumberFormat('#,##0');
-      sh.getRange(r0, 6, out.length, 1).setNumberFormat('yyyy/m/d h:mm');
-      sh.getRange(r0, 7, out.length, 1).setNumberFormat('#,##0');
+      sh.getRange(r0, 6, out.length, 1).setNumberFormat('yyyy/m/d HH:mm');
     }
     detail[t.label] = out.length + '件追加' + (skipped ? '（重複' + skipped + '件スキップ）' : '');
     if (ti === 0) { added = out.length; dup = skipped; }

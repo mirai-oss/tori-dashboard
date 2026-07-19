@@ -3567,40 +3567,101 @@ function depImportModal(){
     </div>
   </div></div>`;
 }
-// 銀行CSVのテキストから入金行を抽出（列は見出しキーワードで自動判定）
+// 銀行CSVのテキストから入金行を抽出。売上DB側の既存スクリプトと同じ2形式＋汎用で判別する：
+//  形式A（ローソン/ゆうちょ等）: 「お預り金額」「摘要」＋ 年/月/日・時/分/秒 の分割列 → 取引時刻で識別
+//  形式B（GMOあおぞら等）: 「日付」「摘要」「入金金額」「出金金額」「残高」 → 残高で識別（同日同額を区別）
+//  それ以外の銀行: 汎用フォールバック（見出しキーワードで自動判定）
+// 返り値の各行 {t,amt,desc,tm,bal}。識別トークン（＝入金DBのE列）は depTokenize で決定する。
 function depParseCsv(text){
   const rows=csvToRows(text);
-  // ヘッダー行: 「入金 or 預入」と「日」を含む行（先頭15行から探す）
-  let hi=-1;
+  const toInt=(v)=>parseInt(String(v==null?'':v).replace(/[,"¥\s]/g,'').trim(),10)||0;
+  let hi=-1, fmt='';
   for(let i=0;i<Math.min(rows.length,15);i++){
-    const l=rows[i].join(',');
-    if(/入金|預入/.test(l)&&/日|取引/.test(l)){ hi=i; break; }
+    const s=rows[i].join(',');
+    if(s.indexOf('お預り')>=0 && s.indexOf('摘要')>=0){ hi=i; fmt='A'; break; }
+    if(s.indexOf('入金金額')>=0 && s.indexOf('摘要')>=0 && s.indexOf('日付')>=0){ hi=i; fmt='B'; break; }
+    if(/入金|預入/.test(s)&&/日|取引/.test(s)){ hi=i; fmt='G'; break; }
   }
-  if(hi<0) return { error:'CSVの見出し行が見つかりません（「入金」または「預入」を含む列が必要です）' };
+  if(hi<0) return { error:'CSVの見出し行が見つかりません（「入金」「お預り」等を含む列が必要です）' };
   const H=rows[hi].map(h2=>String(h2).trim());
-  const iD=colAny(H,['取引日','取扱日','操作日','日付','年月日','日時']);
-  const iA=H.findIndex(h2=>/入金|預入/.test(h2)&&!/出金|引出/.test(h2));
-  const iDesc=colAny(H,['摘要','取引内容','内容','明細','備考']);
-  const iTime=H.findIndex(h2=>/時刻|時間/.test(h2));
-  const iBal=colAny(H,['残高']);   // 取引後残高。同日同額の入金でも行を一意に区別できる強力な手がかり
-  if(iD<0||iA<0) return { error:'必要な列が見つかりません（日付列と入金列）。見出し: '+H.join(' / ') };
+  const col=(kw)=>H.findIndex(h2=>h2.indexOf(kw)>=0);
   const out=[];
-  for(let i=hi+1;i<rows.length;i++){
-    const c=rows[i]; if(!c||!c.length) continue;
-    const rawD=String(c[iD]==null?'':c[iD]).trim();
-    let t=parseDateStr(rawD);
-    if(!t){ const m8=rawD.match(/^(\d{4})(\d{2})(\d{2})$/); if(m8) t=new Date(+m8[1],+m8[2]-1,+m8[3]).getTime(); } // YYYYMMDD形式
-    if(!t) continue;
-    const amt=num(c[iA]); if(!(amt>0)) continue;   // 入金額>0の行だけ（出金・空行は除外）
-    const desc=iDesc>=0?String(c[iDesc]||'').trim():'';
-    let tm=iTime>=0?String(c[iTime]||'').trim():'';
-    if(!tm){ const mt=rawD.match(/(\d{1,2}:\d{2}(?::\d{2})?)/); if(mt) tm=mt[1]; }  // 日時列に時刻が含まれる形式
-    const bal=(iBal>=0&&String(c[iBal]||'').trim()!=='')?num(c[iBal]):null;
-    out.push({ t, amt, desc, tm, bal });
+  if(fmt==='A'){
+    const cY=col('操作日(年)')>=0?col('操作日(年)'):col('年');
+    const cM=col('操作日(月)')>=0?col('操作日(月)'):col('月');
+    const cD=col('操作日(日)')>=0?col('操作日(日)'):col('日');
+    const cTekiyo=col('摘要'), cDep=col('お預り'), cPay=col('お支払');
+    const cH=col('時'), cMi=col('分'), cS=col('秒'), cSeq=col('取引順');
+    if(cY<0||cM<0||cD<0||cTekiyo<0||cDep<0) return { error:'必要な列(年/月/日/摘要/お預り金額)が見つかりません。見出し: '+H.join(' / ') };
+    for(let i=hi+1;i<rows.length;i++){
+      const r=rows[i]; if(!r) continue;
+      const y=parseInt(r[cY],10), mo=parseInt(r[cM],10), d=parseInt(r[cD],10);
+      if(!y||!mo||!d) continue;
+      if(cPay>=0&&toInt(r[cPay])>0) continue;            // 支払い(出金)は除外
+      const dep=toInt(r[cDep]); if(dep<=0) continue;
+      const desc=String(r[cTekiyo]||'').trim();
+      const hh=cH>=0?String(r[cH]||'').trim().padStart(2,'0'):'';
+      const mm=cMi>=0?String(r[cMi]||'').trim().padStart(2,'0'):'';
+      const sscc=cS>=0?String(r[cS]||'').trim().padStart(2,'0'):'';
+      const tm=(hh||mm||sscc)?`${hh}:${mm}:${sscc}`:(cSeq>=0?String(r[cSeq]||'').trim():'');
+      out.push({ t:new Date(y,mo-1,d).getTime(), amt:dep, desc, tm, bal:null });
+    }
+  } else if(fmt==='B'){
+    const cDate=col('日付'), cTekiyo=col('摘要'), cDep=col('入金金額'), cPay=col('出金金額'), cBal=col('残高');
+    if(cDate<0||cTekiyo<0||cDep<0) return { error:'必要な列(日付/摘要/入金金額)が見つかりません。見出し: '+H.join(' / ') };
+    for(let i=hi+1;i<rows.length;i++){
+      const r=rows[i]; if(!r) continue;
+      const t=depParseYmd(r[cDate]); if(!t) continue;
+      if(cPay>=0&&toInt(r[cPay])>0) continue;            // 出金(手数料/振込)は除外
+      const dep=toInt(r[cDep]); if(dep<=0) continue;
+      const desc=String(r[cTekiyo]||'').trim();
+      const bal=(cBal>=0&&String(r[cBal]||'').trim()!=='')?toInt(r[cBal]):null;
+      out.push({ t, amt:dep, desc, tm:'', bal });
+    }
+  } else {   // 汎用（その他の銀行）
+    const iD=colAny(H,['取引日','取扱日','操作日','日付','年月日','日時']);
+    const iA=H.findIndex(h2=>/入金|預入/.test(h2)&&!/出金|引出/.test(h2));
+    const iDesc=colAny(H,['摘要','取引内容','内容','明細','備考']);
+    const iTime=H.findIndex(h2=>/時刻|時間/.test(h2));
+    const iBal=colAny(H,['残高']);
+    const iPay=H.findIndex(h2=>/出金|引出|お支払/.test(h2));
+    if(iD<0||iA<0) return { error:'必要な列が見つかりません（日付列と入金列）。見出し: '+H.join(' / ') };
+    for(let i=hi+1;i<rows.length;i++){
+      const c=rows[i]; if(!c) continue;
+      const rawD=String(c[iD]==null?'':c[iD]).trim();
+      const t=depParseYmd(rawD); if(!t) continue;
+      if(iPay>=0&&toInt(c[iPay])>0) continue;
+      const amt=toInt(c[iA]); if(amt<=0) continue;
+      const desc=iDesc>=0?String(c[iDesc]||'').trim():'';
+      let tm=iTime>=0?String(c[iTime]||'').trim():'';
+      if(!tm){ const mt=rawD.match(/(\d{1,2}:\d{2}(?::\d{2})?)/); if(mt) tm=mt[1]; }  // 日時列に時刻が含まれる形式
+      const bal=(iBal>=0&&String(c[iBal]||'').trim()!=='')?toInt(c[iBal]):null;
+      out.push({ t, amt, desc, tm, bal });
+    }
   }
   if(!out.length) return { error:'入金行（入金額>0）が見つかりませんでした' };
   out.sort((a,b)=>a.t-b.t);
-  return { rows:out };
+  return { rows:out, fmt };
+}
+// 日付パース: YYYYMMDD / 2026/6/17 / 2026-06-17 など
+function depParseYmd(v){
+  const s=String(v==null?'':v).trim(); if(!s) return 0;
+  let t=parseDateStr(s);
+  if(!t){ const digits=s.replace(/[^0-9]/g,''); if(/^\d{8}$/.test(digits)) t=new Date(+digits.slice(0,4),+digits.slice(4,6)-1,+digits.slice(6,8)).getTime(); }
+  return t||0;
+}
+// 各行に識別トークン（入金DBのE列＝取引時刻）を付与。売上DB側スクリプトと同一ルール：
+//   取引時刻があればそれ／無ければ 残高{n}／それも無ければ 同日同額の #出現順。
+// occ は「実際に取り込む行集合」内で数える（＝ATMフィルタ後の集合。既存スクリプトと同じ）。
+function depTokenize(rows){
+  const occ={};
+  return rows.map(r=>{
+    let token;
+    if(r.tm) token=String(r.tm);
+    else if(r.bal!=null) token='残高'+r.bal;
+    else { const dt=new Date(r.t); const k=dt.getFullYear()+'/'+(dt.getMonth()+1)+'/'+dt.getDate()+'_'+r.amt; occ[k]=(occ[k]||0)+1; token='#'+occ[k]; }
+    return Object.assign({}, r, { token });
+  });
 }
 /* ---- イベント入力モーダル：会場・イベント名・対象店舗チェックリスト ---- */
 function eventModal(){
@@ -3851,15 +3912,15 @@ window.App = {
     const rows=DEP_IMPORT.rows.filter(r=>!atmOnly||isAtm(r.desc));
     if(!DEP_IMPORT.rows.length){ box.innerHTML='<div class="empty" style="padding:14px;font-size:12.5px">CSVファイルを選択してください</div>'; if(runBtn)runBtn.disabled=true; return; }
     if(!rows.length){ box.innerHTML='<div class="empty" style="padding:14px;font-size:12.5px">ATM入金の行がありません（チェックを外すと全入金行が対象になります）</div>'; if(runBtn)runBtn.disabled=true; return; }
-    const total=rows.reduce((s,r)=>s+r.amt,0);
-    const hasBal=rows.some(r=>r.bal!=null);
-    let h2=`<div style="font-size:12.5px;font-weight:700;color:#3d5163;margin-bottom:4px">取込対象 ${rows.length}件 ／ 合計 ${yen(total)} <span class="mut" style="font-weight:400">（${esc(DEP_IMPORT.file)}）</span></div>
+    const toks=depTokenize(rows);
+    const total=toks.reduce((s,r)=>s+r.amt,0);
+    let h2=`<div style="font-size:12.5px;font-weight:700;color:#3d5163;margin-bottom:4px">取込対象 ${toks.length}件 ／ 合計 ${yen(total)} <span class="mut" style="font-weight:400">（${esc(DEP_IMPORT.file)}）</span></div>
       <div class="scroll-x" style="max-height:220px;overflow-y:auto;border:1px solid var(--line2);border-radius:8px">
-      <table class="tbl"><thead><tr><th>日付</th><th>入金額</th><th>摘要</th><th>時刻</th>${hasBal?'<th>残高</th>':''}</tr></thead><tbody>`;
-    rows.slice(0,300).forEach(r=>{ const dt=new Date(r.t);
-      h2+=`<tr><td style="white-space:nowrap">${dt.getFullYear()}/${dt.getMonth()+1}/${dt.getDate()}</td><td style="text-align:right">${yen(r.amt)}</td><td style="font-size:11px">${esc(r.desc)}</td><td class="mut" style="font-size:11px">${esc(r.tm)}</td>${hasBal?`<td class="mut" style="text-align:right;font-size:11px">${r.bal!=null?yen(r.bal):'—'}</td>`:''}</tr>`; });
-    h2+=`</tbody></table></div>`;
-    if(hasBal) h2+=`<div class="mut" style="font-size:11px;margin-top:3px">※CSVの残高列を取込済み。重複判定の精度が上がります（同日同額の入金も区別できます）</div>`;
+      <table class="tbl"><thead><tr><th>日付</th><th>入金額</th><th>摘要</th><th>識別（取引時刻/残高）</th></tr></thead><tbody>`;
+    toks.slice(0,300).forEach(r=>{ const dt=new Date(r.t);
+      h2+=`<tr><td style="white-space:nowrap">${dt.getFullYear()}/${dt.getMonth()+1}/${dt.getDate()}</td><td style="text-align:right">${yen(r.amt)}</td><td style="font-size:11px">${esc(r.desc)}</td><td class="mut" style="font-size:11px">${esc(r.token)}</td></tr>`; });
+    h2+=`</tbody></table></div>
+      <div class="mut" style="font-size:11px;margin-top:3px">※「識別」は入金DBの取引時刻列に入る値。時刻が無いCSVは残高で同日同額を区別します（既存のCSV取込と同じ方式）。</div>`;
     if(rows.length>300) h2+=`<div class="mut" style="font-size:11px;margin-top:3px">※プレビューは300件まで表示（取込は全${rows.length}件）</div>`;
     box.innerHTML=h2; if(runBtn)runBtn.disabled=false;
   },
@@ -3870,10 +3931,10 @@ window.App = {
     if(!store){ msg.textContent='店舗を選択してください'; return; }
     const atmOnly=$('dp-atm')&&$('dp-atm').checked;
     const isAtm=(d2)=>String(d2||'').normalize('NFKC').toUpperCase().indexOf('ATM')>=0;
-    const rows=DEP_IMPORT.rows.filter(r=>!atmOnly||isAtm(r.desc));
+    const rows=depTokenize(DEP_IMPORT.rows.filter(r=>!atmOnly||isAtm(r.desc)));
     if(!rows.length){ msg.textContent='取込対象の行がありません'; return; }
     const payload=rows.map(r=>{ const dt=new Date(r.t);
-      return [dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0'), r.amt, r.desc, r.tm, r.bal]; });
+      return [dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0'), r.amt, r.desc, r.token]; });
     const runBtn=$('dp-run'); if(runBtn)runBtn.disabled=true;
     msg.style.color='#8c8375'; msg.textContent='取込中…（'+rows.length+'件）';
     try{
