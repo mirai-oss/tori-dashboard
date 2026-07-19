@@ -639,6 +639,12 @@ function testBQ() { Logger.log(JSON.stringify(bqRows_(bqSqls_()['明細時間帯
 
 // 店舗名→店舗ID（DB_店舗ID対応の逆引き）
 function reverseStoreId_(name) { var m = bqStoreMap_(); for (var id in m) { if (m[id] === name) return id; } return null; }
+// 文字列をMD5(16進32字)に短縮。CacheServiceのキー上限(250字)超えを防ぐ用。
+function md5Hex_(s) {
+  var b = Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, String(s), Utilities.Charset.UTF_8);
+  var h = ''; for (var i = 0; i < b.length; i++) { h += ('0' + (b[i] & 0xFF).toString(16)).slice(-2); }
+  return h;
+}
 // 明細分析（対話的）：期間 from〜to・店舗で絞り、時間帯別/商品別/店舗別を集計して返す。
 // guests=客数はお通し数ベースの推定（お通し=1人1品の慣習）。checks=会計数(組)。
 function bqDetail(p, session) {
@@ -670,7 +676,9 @@ function bqDetail(p, session) {
   var basis = (p.basis === 'order' || p.basis === 'arrival') ? p.basis : 'checkout';
   // キャッシュ（同じ条件は再クエリしない・15分）。scopeKeyを含め、権限の違うユーザー間でキャッシュが混ざらないようにする。
   var cache = CacheService.getScriptCache();
-  var ck = 'det_' + from + '_' + to + '_' + (p.store || 'all') + '_' + basis + '_' + scopeKey;
+  // 担当店舗が多いとscopeKey(店舗IDの連結)が長くなりキー上限250字を超える→MD5で短縮する
+  var ckRaw = 'det_' + from + '_' + to + '_' + (p.store || 'all') + '_' + basis + '_' + scopeKey;
+  var ck = ckRaw.length > 200 ? 'det_' + md5Hex_(ckRaw) : ckRaw;
   var hit = cache.get(ck);
   if (hit) { try { var o = JSON.parse(hit); o.cached = true; return o; } catch (e2) {} }
   var T = BQ_TABLE, G = "SUM(IF(menu LIKE '%お通し%', qty, 0)) AS guests";

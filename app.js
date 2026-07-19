@@ -1760,10 +1760,13 @@ async function fetchDetail(){
   D.detailLoading=''; render();
 }
 function viewDetail(){
-  // 権限：全店アクセスでないアカウント（店舗・担当店舗のみ）は自分の店舗に限定する
+  // 権限：全店アクセスでないアカウントは担当店舗のみ。担当が複数あるマネージャー等は
+  // 'all'（担当店舗合算）も選べる。担当が1店だけのアカウントはその1店に固定する。
   const allowed=scopeStores();
   const fullAccess=allowed.length>=allStores().length;
-  if(!fullAccess && (S.dStore==='all' || !allowed.includes(S.dStore))) S.dStore=allowed[0]||'all';
+  const canAgg=fullAccess||allowed.length>1;   // 合算（全店／担当店舗合算）を選べるか
+  if(S.dStore==='all'){ if(!canAgg) S.dStore=allowed[0]||'all'; }
+  else if(!fullAccess && !allowed.includes(S.dStore)) S.dStore=canAgg?'all':(allowed[0]||'all');
   const stores=fullAccess?allStores():allowed;
   const taxExcl=(S.detailTax||'excl')==='excl'; const taxLb=taxExcl?'税別':'税込';
   const r=detailRange(); const key=[r.from,r.to,S.dStore,S.dBasis||'checkout'].join('|');
@@ -1778,13 +1781,15 @@ function viewDetail(){
   else if(P==='month') picker=ymSelect('dMonth',py,pmo);
   else if(P==='year'){ const ys=D.daily.map(x=>new Date(x.t).getFullYear()).filter(v=>v>2000); ys.push(ref.getFullYear()); const mn=Math.min(...ys),mx=Math.max(...ys); const yy=[]; for(let v=mn;v<=mx;v++)yy.push(v); picker=`<select class="ym-pick" onchange="App.set('dYear',this.value)">${yy.map(v=>`<option value="${v}" ${String(S.dYear||ref.getFullYear())===String(v)?'selected':''}>${v}年</option>`).join('')}</select>`; }
   else picker=`<input type="date" value="${S.dStart}" onchange="App.set('dStart',this.value)"> 〜 <input type="date" value="${S.dEnd}" onchange="App.set('dEnd',this.value)">`;
-  const storeOpts=(fullAccess?`<option value="all" ${S.dStore==='all'?'selected':''}>全店</option>`:'')+stores.map(s=>`<option ${S.dStore===s?'selected':''}>${esc(s)}</option>`).join('');
+  const aggOpt=fullAccess?`<option value="all" ${S.dStore==='all'?'selected':''}>全店</option>`
+    :(allowed.length>1?`<option value="all" ${S.dStore==='all'?'selected':''}>担当店舗（一覧）</option>`:'');
+  const storeOpts=aggOpt+stores.map(s=>`<option ${S.dStore===s?'selected':''}>${esc(s)}</option>`).join('');
   let h=`<div class="ctrl-bar no-print">
     <select onchange="App.set('dStore',this.value)" style="font-weight:700">${storeOpts}</select>
     <div class="seg">${[['day','日'],['week','週'],['month','月'],['year','年'],['custom','期間指定']].map(([k,l])=>`<button class="${P===k?'on':''}" onclick="App.set('dPeriod','${k}')">${l}</button>`).join('')}</div>
     ${picker}
     <div class="seg">${[['excl','税別'],['incl','税込']].map(([k,l])=>`<button class="${(S.detailTax||'excl')===k?'on':''}" onclick="App.set('detailTax','${k}')">${l}</button>`).join('')}</div>
-    <span class="period-label">${esc(r.label)} ／ ${S.dStore==='all'?'全店':esc(S.dStore)}（${taxLb}）</span>
+    <span class="period-label">${esc(r.label)} ／ ${S.dStore==='all'?(fullAccess?'全店':'担当店舗（一覧）'):esc(S.dStore)}（${taxLb}）</span>
   </div>
   <div class="note-box no-print" style="margin:4px 0 2px;padding:9px 13px;font-size:11.5px">ℹ️ POS明細の積み上げ（傾向・構成比を見る用／金額の正は日別売上）。客数はお通し数ベースの推定です。</div>`;
   if(!S.auth){ return h+`<div class="panel"><div class="empty">ログイン後、BigQueryの明細が表示されます</div></div>`; }
@@ -1804,7 +1809,7 @@ function viewDetail(){
       recs.forEach(x=>{ const bk=hasBk?`<td>${yen(x.drink)} ${shr(x.drink,x.sales)}</td><td>${yen(x.food)} ${shr(x.food,x.sales)}</td><td>${yen(x.karaoke)} ${shr(x.karaoke,x.sales)}</td>`:''; h+=`<tr><td>${shortStoreTd(x.store)}</td><td>${yen(x.sales)}</td>${bk}<td>${cnt(x.checks)}組</td><td>${cnt(x.guests)}人</td><td>${yen(x.guests>0?x.sales/x.guests:0)}</td><td>${tot>0?(x.sales/tot*100).toFixed(1):'—'}%</td></tr>`; });
       const sumD=recs.reduce((s,x)=>s+x.drink,0),sumF=recs.reduce((s,x)=>s+x.food,0),sumK=recs.reduce((s,x)=>s+x.karaoke,0);
       const bkTot=hasBk?`<td>${yen(sumD)} ${shr(sumD,tot)}</td><td>${yen(sumF)} ${shr(sumF,tot)}</td><td>${yen(sumK)} ${shr(sumK,tot)}</td>`:'';
-      h+=`<tr class="total"><td>全店合計</td><td>${yen(tot)}</td>${bkTot}<td>${cnt(recs.reduce((s,x)=>s+x.checks,0))}組</td><td>${cnt(recs.reduce((s,x)=>s+x.guests,0))}人</td><td></td><td>100%</td></tr></tbody></table></div></div>`;
+      h+=`<tr class="total"><td>${fullAccess?'全店合計':'担当店舗 合計'}</td><td>${yen(tot)}</td>${bkTot}<td>${cnt(recs.reduce((s,x)=>s+x.checks,0))}組</td><td>${cnt(recs.reduce((s,x)=>s+x.guests,0))}人</td><td></td><td>100%</td></tr></tbody></table></div></div>`;
       const bkH=hasBk?['ドリンク','ドリンク比','フード','フード比','カラオケ','カラオケ比']:[];
       EXPORT.push({ title:'店舗別('+taxLb+')', headers:['店舗','売上',...bkH,'会計数','客数','客単価','構成比'], rows:recs.map(x=>[x.store,Math.round(x.sales),...(hasBk?[Math.round(x.drink),(x.sales>0?(x.drink/x.sales*100).toFixed(0)+'%':''),Math.round(x.food),(x.sales>0?(x.food/x.sales*100).toFixed(0)+'%':''),Math.round(x.karaoke),(x.sales>0?(x.karaoke/x.sales*100).toFixed(0)+'%':'')]:[]),Math.round(x.checks),Math.round(x.guests),Math.round(x.guests>0?x.sales/x.guests:0),tot>0?(x.sales/tot*100).toFixed(1)+'%':'']) });
     }
