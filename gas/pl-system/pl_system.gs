@@ -543,3 +543,44 @@ function syncToDbPl(){
   ui.alert('転記完了','DB_PLへ 手入力 '+rows.length+' 行＋媒体販促費（自動）'+autoRows.length+' 行を転記しました。\n手入力対象月: '+Object.keys(months).sort().join(', ')+'\n（対象月の既存行は差し替え、それ以外の月は保持）',ui.ButtonSet.OK);
 }
 
+/* ---------- 媒体販促費（自動）の毎日DB_PL反映（トリガー用・UIなし） ----------
+ * 当月は媒体売上が毎日増えるため、手動「DB_PLへ転記」だとダッシュボードがすぐ古くなる。
+ * このトリガーで媒体販促費（自動）だけを毎朝DB_PLへ反映する。手入力行・他科目・他月は一切触らない。 */
+function autoPromoToDbPl_() {
+  var ss = SpreadsheetApp.getActive(), tz = Session.getScriptTimeZone();
+  var auto = computeAutoPromoRows(ss);                  // [年月, 店舗, 科目, 'O', 金額, AUTO_MEMO] ...
+  var autoMonths = {}; auto.forEach(function (r) { autoMonths[r[0]] = true; });
+  var dash = SpreadsheetApp.openById(DASH_ID), dp = dash.getSheetByName('DB_PL');
+  if (!dp) return { error: 'DB_PLが無い' };
+  var dlast = dp.getLastRow(), keep = [];
+  if (dlast >= 2) {
+    dp.getRange(2, 1, dlast - 1, 6).getValues().forEach(function (r) {
+      if (r[0] === '') return;
+      var ym = ymKey(r[0], tz);
+      // 媒体販促費の自動行のうち「今回更新する月」だけ捨てる。それ以外（手入力・他月の自動）は全て残す。
+      if (String(r[5]) === AUTO_MEMO) { if (!autoMonths[ym]) keep.push(r); }
+      else keep.push(r);
+    });
+  }
+  var autoRows = auto.map(function (r) {
+    var ym = r[0].split('/');
+    return [new Date(Number(ym[0]), Number(ym[1]) - 1, 1), r[1], r[2], r[3], r[4], r[5]];
+  });
+  var out = keep.concat(autoRows);
+  if (dlast >= 2) dp.getRange(2, 1, dlast - 1, 6).clearContent();
+  if (out.length) {
+    dp.getRange(2, 1, out.length, 6).setValues(out);
+    dp.getRange(2, 1, out.length, 1).setNumberFormat('yyyy/m/d');
+  }
+  return { promoRows: autoRows.length, kept: keep.length };
+}
+
+// 初回だけ実行して承認する。毎朝8時に autoPromoToDbPl_ を回すトリガーを設置し、即1回実行して今すぐ最新化する。
+function installPromoDailyTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'autoPromoToDbPl_') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('autoPromoToDbPl_').timeBased().atHour(8).everyDays(1).create();
+  autoPromoToDbPl_();
+}
+
