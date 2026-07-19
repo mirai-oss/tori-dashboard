@@ -43,7 +43,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v31', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v32', time: new Date().toISOString() });
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     if (action === 'perf') return out(perfDiag(p)); // パフォーマンス計測（専用トークン認証・ログイン不要・数字は返さず時間だけ）
     setupIfNeeded();
@@ -65,6 +65,7 @@ function handle(p) {
     if (action === 'saveAccount')   return out(saveAccount(p, session));
     if (action === 'deleteAccount') return out(deleteAccount(p, session));
     if (action === 'saveTargets') return out(saveTargets(p, session)); // 目標（日別売上＋月次）保存
+    if (action === 'saveTargetDay') return out(saveTargetDay(p, session)); // 日別売上目標を1日だけ修正
     if (action === 'saveEvent')   return out(saveEvent(p, session));   // イベント保存
     if (action === 'deleteEvent') return out(deleteEvent(p, session)); // イベント削除
     return out({ ok: false, error: 'unknown action: ' + action });
@@ -991,6 +992,36 @@ function saveTargets(p, session) {
   if (l2 >= 2) sm.getRange(2, 1, l2 - 1, 7).clearContent();
   if (out2.length) { sm.getRange(2, 1, out2.length, 7).setValues(out2); sm.getRange(2, 1, out2.length, 1).setNumberFormat('yyyy/m/d'); }
   return { ok: true, dailyRows: rows.length, monthly: hasM };
+}
+// 日別売上目標を1日だけ更新（日別予実テーブルの「編集」から）。月次目標や他日には触れない。
+// goalが空/0なら該当日の行を削除、正数なら更新（無ければ追加）。
+function saveTargetDay(p, session) {
+  var store = String(p.store || '').trim();
+  var date = String(p.date || '').trim();  // YYYY-MM-DD
+  if (!store || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return { ok: false, error: 'store/dateが不正です' };
+  if (!scopeAllows_(session, store)) return { ok: false, error: 'この店舗の目標を編集する権限がありません' };
+  var gv = String(p.goal == null ? '' : p.goal).trim();
+  var goal = gv === '' ? 0 : (Number(gv) || 0);
+  var parts = date.split('-'), y = Number(parts[0]), mo = Number(parts[1]), da = Number(parts[2]);
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sh = ss.getSheetByName('DB_目標');
+  if (!sh) return { ok: false, error: 'DB_目標シートがありません' };
+  var last = sh.getLastRow(), foundRow = -1;
+  if (last >= 2) {
+    var vals = sh.getRange(2, 1, last - 1, 3).getValues();
+    for (var i = 0; i < vals.length; i++) {
+      var r = vals[i]; if (r[0] === '') continue;
+      var d = (r[0] instanceof Date) ? r[0] : new Date(r[0]);
+      if (String(r[1]).trim() === store && d.getFullYear() === y && (d.getMonth() + 1) === mo && d.getDate() === da) { foundRow = 2 + i; break; }
+    }
+  }
+  if (goal > 0) {
+    if (foundRow > 0) { sh.getRange(foundRow, 3).setValue(goal); }
+    else { var nr = sh.getLastRow() + 1; sh.getRange(nr, 1, 1, 3).setValues([[new Date(y, mo - 1, da), store, goal]]); sh.getRange(nr, 1).setNumberFormat('yyyy/m/d'); }
+  } else if (foundRow > 0) {
+    sh.deleteRow(foundRow);
+  }
+  return { ok: true, goal: goal };
 }
 // イベント保存（ID一致なら更新・無ければ追加）。対象店舗はカンマ区切りで保存し、その店舗の画面にだけ表示される。
 function saveEvent(p, session) {

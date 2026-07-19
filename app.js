@@ -983,6 +983,18 @@ function downloadCsv(){
   a.click(); URL.revokeObjectURL(a.href);
   toast('CSVをダウンロードしました');
 }
+// EXPORT の中からタイトルが prefix で始まる表だけをCSV化して単独ダウンロード（各パネルの ⬇CSV ボタン用）
+function downloadCsvSection(prefix){
+  const tabs=EXPORT.filter(t=>t.title&&t.title.indexOf(prefix)===0);
+  if(!tabs.length){ toast('この表のエクスポート対象がありません'); return; }
+  let out='';
+  tabs.forEach(t=>{ out+=t.title+'\n'+t.headers.map(csvCell).join(',')+'\n'; t.rows.forEach(r=>{ out+=r.map(csvCell).join(',')+'\n'; }); out+='\n'; });
+  const blob=new Blob([new Uint8Array([0xEF,0xBB,0xBF]), out],{type:'text/csv'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+  const d=new Date(), ds=d.getFullYear()+String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0');
+  a.download=prefix+'_'+ds+'.csv'; a.click(); URL.revokeObjectURL(a.href);
+  toast('CSVをダウンロードしました');
+}
 function csvCell(v){ const s=String(v==null?'':v); return /[",\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s; }
 function downloadPdf(){ window.print(); }
 
@@ -2618,7 +2630,9 @@ function viewTarget(){
     h+=`</div>`;
   }
   // 日別 予実テーブル
-  h+=`<div class="panel"><div class="panel-head"><div><h3>日別 予実（${mLabel} ／ ${selN?esc(selN):'合算'}）</h3><div class="sub">昨年同週同曜日＝364日前（52週前の同じ曜日）の売上実績</div></div></div>
+  const dayEdit=canEdit&&!!selN;   // 単一店舗を選んでいるときだけ、日別の目標を直接編集できる
+  h+=`<div class="panel"><div class="panel-head"><div><h3>日別 予実（${mLabel} ／ ${selN?esc(selN):'合算'}）</h3><div class="sub">昨年同週同曜日＝364日前（52週前の同じ曜日）の売上実績${dayEdit?'／「編集」で各日の目標を修正できます':'（店舗を1つ選ぶと各日の目標を編集できます）'}</div></div>
+      <button class="icon-btn no-print" onclick="App.csvSection('日別予実')">⬇ CSV</button></div>
     <div class="scroll-x"><table class="tbl"><thead><tr><th>日付</th><th>イベント</th><th>目標</th><th>実績</th><th>差異</th><th>達成率</th><th>昨年同週同曜日</th><th>昨年比</th></tr></thead><tbody>`;
   const expD=[]; let tG=0,tA=0,tL=0;
   for(let d2=1;d2<=lastDay;d2++){
@@ -2633,7 +2647,7 @@ function viewTarget(){
     const yoy=act!=null&&ly>0?((act/ly-1)*100):null;
     h+=`<tr${isHolidayOrSunday(dt)?' style="background:#fbf6f3"':''}><td style="white-space:nowrap">${mdw(dt)}</td>
       <td style="max-width:200px;white-space:normal;font-size:11px;color:#7a6f9a">${evTxt?('🎪 '+esc(evTxt)):''}</td>
-      <td>${g>0?yen(g):'—'}</td><td>${act!=null?yen(act):'<span class="mut">—</span>'}</td>
+      <td style="white-space:nowrap">${g>0?yen(g):'<span class="mut">—</span>'}${dayEdit?` <button class="icon-btn no-print" style="padding:1px 7px;font-size:10px;margin-left:3px" data-st="${esc(selN)}" data-dt="${y}-${String(m+1).padStart(2,'0')}-${String(d2).padStart(2,'0')}" onclick="App.openTargetDay(this.dataset.st,this.dataset.dt)">編集</button>`:''}</td><td>${act!=null?yen(act):'<span class="mut">—</span>'}</td>
       <td class="${diff==null?'mut':diff>=0?'pos':'neg'}">${diff==null?'—':(diff>=0?'+':'▲')+yen(Math.abs(diff)).slice(1)}</td>
       <td class="${r2==null?'mut':r2>=100?'pos':'neg'}">${r2==null?'—':r2.toFixed(0)+'%'}</td>
       <td class="mut">${ly>0?yen(ly):'—'}</td>
@@ -3436,6 +3450,7 @@ function viewModal(){
   if(S.modal==='connect') return connectModal();
   if(S.modal&&S.modal.type==='account') return accountModal();
   if(S.modal&&S.modal.type==='target') return targetModal();
+  if(S.modal&&S.modal.type==='targetDay') return targetDayModal();
   if(S.modal&&S.modal.type==='event') return eventModal();
   return '';
 }
@@ -3492,6 +3507,32 @@ function targetModal(){
     <div id="tg-msg" style="font-size:12px;color:#b5502f;margin:6px 0"></div>
     <div class="modal-btns">
       <button class="icon-btn primary" onclick="App.saveTargetInput()">保存</button>
+      <button class="icon-btn" onclick="App.closeModal()">キャンセル</button>
+    </div>
+  </div></div>`;
+}
+/* ---- 日別 目標の1日修正モーダル（日別予実の「編集」から）---- */
+function targetDayModal(){
+  const m=S.modal; const store=m.store, date=m.date;
+  const [y,mo,da]=date.split('-').map(Number);
+  const dt=new Date(y,mo-1,da); const t=dayMs(dt); const stSet=new Set([store]);
+  const cur=D.targets.find(r=>r.store===store && dayMs(new Date(r.t))===t);
+  const goal=cur?Math.round(cur.goal):'';
+  const ly=dailySalesOf(stSet,t-LY_MS);
+  const act=t<=dayMs(D.refDate||new Date())?dailySalesOf(stSet,t):null;
+  return `<div class="modal-bg" onclick="if(event.target===this)App.closeModal()"><div class="modal" style="max-width:380px">
+    <h3>目標の修正</h3>
+    <div class="sub">${esc(store)} ／ ${mdw(dt)}</div>
+    <div style="margin:10px 0;font-size:12.5px;color:#5c5348;line-height:1.7">
+      昨年同週同曜日：<b>${ly>0?yen(ly):'—'}</b><br>
+      売上実績：<b>${act!=null?yen(act):'—（未確定）'}</b>
+    </div>
+    <div><label style="font-size:12px;color:#8c8375">売上目標（円）</label>
+      <input type="number" id="td-goal" value="${goal}" placeholder="${ly>0?Math.round(ly):'例 300000'}" style="width:100%;text-align:right;padding:7px 10px;margin-top:3px"></div>
+    <div class="sub" style="margin-top:5px">空欄にして保存すると、この日の目標を削除します。</div>
+    <div id="td-msg" style="font-size:12px;color:#b5502f;margin:8px 0"></div>
+    <div class="modal-btns">
+      <button class="icon-btn primary" onclick="App.saveTargetDay()">保存</button>
       <button class="icon-btn" onclick="App.closeModal()">キャンセル</button>
     </div>
   </div></div>`;
@@ -3708,6 +3749,20 @@ window.App = {
       await fetchData(true,{ only:['目標','目標月次'], partial:true }); render();
     }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
   },
+  openTargetDay(store,date){ S.modal={type:'targetDay', store, date}; render(); },
+  async saveTargetDay(){
+    const msg=$('td-msg'); const m=S.modal;
+    if(!S.auth||!S.auth.token){ msg.textContent='スプレッドシート接続時のみ保存できます'; return; }
+    const v=String($('td-goal')&&$('td-goal').value||'').trim();
+    msg.style.color='#8c8375'; msg.textContent='保存中…';
+    try{
+      const d=await api({ action:'saveTargetDay', token:S.auth.token, store:m.store, date:m.date, goal:v });
+      if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'保存に失敗しました'; return; }
+      S.modal=null; toast(v===''?'この日の目標を削除しました':'目標を更新しました');
+      await fetchData(true,{ only:['目標'], partial:true }); render();
+    }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
+  },
+  csvSection(prefix){ downloadCsvSection(prefix); },
   openEventInput(id){ S.modal={type:'event', id:id||''}; render(); },
   async saveEventInput(){
     const msg=$('ev-msg');
