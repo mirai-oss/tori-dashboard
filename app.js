@@ -1295,16 +1295,6 @@ function viewDash(){
   EXPORT.push({ title:'KPI（'+r.label+(selName?'・'+selName:'・'+(sc.length===allStores().length?'全店':'担当店舗'))+'）',
     headers:['指標','値','前年比較'], rows:kpis.map(k=>[k.lb,k.vl+(k.sub?'（'+k.sub+'）':''),k.yy.t]) });
 
-  // 期間内のイベント（対象店舗のチェックが入っているものだけ表示）
-  if(D.events.length){
-    const evNames=selName?[selName]:sc; const evList=[];
-    for(let t=a;t<=b&&evList.length<20;t+=86400000){ eventsFor(t,evNames).forEach(e=>evList.push(e)); }
-    if(evList.length){
-      h+=`<div class="note-box no-print" style="border-left:3px solid #7a6f9a;background:#f7f5fb">🎪 <b>イベント予定</b>：`+
-        evList.map(e=>{ const d2=new Date(e.t); return `${d2.getMonth()+1}/${d2.getDate()}(${WD[d2.getDay()]}) ${e.venue?esc(e.venue)+'：':''}${esc(e.name)}`; }).join('　／　')+
-        `<span style="color:#8c8375">（詳細は目標管理タブ）</span></div>`;
-    }
-  }
   if(S.period==='month') h+=landingPanel(r,scopeSet,selName,sc);
   h+=dashChartPanel(r,scopeSet,selName);
   h+=`<div class="grid2">${flPanel(cur,prev)}${mediaPanel(a,b,pa2,pb2,scopeSet,selName)}</div>`;
