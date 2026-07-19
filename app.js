@@ -2036,6 +2036,7 @@ function viewDeposit(){
   let h=`
   <div class="ctrl-bar no-print">
     ${ymSelect('depMonth', y, m)}
+    <button class="icon-btn primary" onclick="App.openDepositImport()">⬆ 口座CSVを取込</button>
     <span class="period-label">現金売上（入金予定）と ATM入金の照合 ／ ${esc(scopeLabel)}</span>
   </div>`+storeSegHtml();
 
@@ -3451,6 +3452,7 @@ function viewModal(){
   if(S.modal&&S.modal.type==='account') return accountModal();
   if(S.modal&&S.modal.type==='target') return targetModal();
   if(S.modal&&S.modal.type==='targetDay') return targetDayModal();
+  if(S.modal&&S.modal.type==='depImport') return depImportModal();
   if(S.modal&&S.modal.type==='event') return eventModal();
   return '';
 }
@@ -3536,6 +3538,67 @@ function targetDayModal(){
       <button class="icon-btn" onclick="App.closeModal()">キャンセル</button>
     </div>
   </div></div>`;
+}
+/* ---- 口座CSVインポートモーダル（入金管理）----
+ * 銀行の入出金明細CSVを選ぶ→入金行(入金額>0)を抽出してプレビュー→取込実行で
+ * GAS経由で 売上DBスプレッドシートの入金DB と ダッシュボードの入金DB の両方に追記する。
+ * 店舗はプルダウンで選んだ1店舗に紐付け（口座＝店舗単位のため）。重複行はサーバー側でスキップ。 */
+let DEP_IMPORT={rows:[],file:''};
+function depImportModal(){
+  const stores=scopeStores();
+  const cur=selStoreName()&&stores.includes(selStoreName())?selStoreName():stores[0];
+  return `<div class="modal-bg" onclick="if(event.target===this)App.closeModal()"><div class="modal" style="max-width:560px">
+    <h3>口座CSVの取込（入金）</h3>
+    <div class="sub">銀行からダウンロードした入出金明細CSVを選ぶと、入金行だけを抽出して取り込みます（文字コードはShift_JIS/UTF-8どちらでも可）。取り込んだ内容はスプレッドシート（売上DBの入金DB）にも自動反映されます。</div>
+    <div class="form-grid" style="margin-top:12px">
+      <div><label>この口座（CSV）の店舗</label>
+        <select id="dp-store">${stores.map(s=>`<option ${s===cur?'selected':''}>${esc(s)}</option>`).join('')}</select></div>
+      <div><label>CSVファイル</label>
+        <input type="file" id="dp-file" accept=".csv,text/csv" onchange="App.depFileChosen(this)" style="width:100%;font-size:12px;padding:6px 0"></div>
+    </div>
+    <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;margin:10px 0 4px;cursor:pointer">
+      <input type="checkbox" id="dp-atm" checked onchange="App.depPreview()"> ATM入金のみ取り込む（摘要に「ATM」を含む行だけ）
+    </label>
+    <div id="dp-preview" style="margin-top:6px"><div class="empty" style="padding:14px;font-size:12.5px">CSVファイルを選択してください</div></div>
+    <div id="dp-msg" style="font-size:12px;color:#b5502f;margin:8px 0"></div>
+    <div class="modal-btns">
+      <button class="icon-btn primary" id="dp-run" onclick="App.runDepositImport()" disabled>取込実行</button>
+      <button class="icon-btn" onclick="App.closeModal()">キャンセル</button>
+    </div>
+  </div></div>`;
+}
+// 銀行CSVのテキストから入金行を抽出（列は見出しキーワードで自動判定）
+function depParseCsv(text){
+  const rows=csvToRows(text);
+  // ヘッダー行: 「入金 or 預入」と「日」を含む行（先頭15行から探す）
+  let hi=-1;
+  for(let i=0;i<Math.min(rows.length,15);i++){
+    const l=rows[i].join(',');
+    if(/入金|預入/.test(l)&&/日|取引/.test(l)){ hi=i; break; }
+  }
+  if(hi<0) return { error:'CSVの見出し行が見つかりません（「入金」または「預入」を含む列が必要です）' };
+  const H=rows[hi].map(h2=>String(h2).trim());
+  const iD=colAny(H,['取引日','取扱日','操作日','日付','年月日','日時']);
+  const iA=H.findIndex(h2=>/入金|預入/.test(h2)&&!/出金|引出/.test(h2));
+  const iDesc=colAny(H,['摘要','取引内容','内容','明細','備考']);
+  const iTime=H.findIndex(h2=>/時刻|時間/.test(h2));
+  if(iD<0||iA<0) return { error:'必要な列が見つかりません（日付列と入金列）。見出し: '+H.join(' / ') };
+  const out=[];
+  for(let i=hi+1;i<rows.length;i++){
+    const c=rows[i]; if(!c||!c.length) continue;
+    const rawD=String(c[iD]==null?'':c[iD]).trim();
+    let t=parseDateStr(rawD);
+    if(!t){ const m8=rawD.match(/^(\d{4})(\d{2})(\d{2})$/); if(m8) t=new Date(+m8[1],+m8[2]-1,+m8[3]).getTime(); } // YYYYMMDD形式
+    if(!t) continue;
+    const amt=num(c[iA]); if(!(amt>0)) continue;   // 入金額>0の行だけ（出金・空行は除外）
+    const desc=iDesc>=0?String(c[iDesc]||'').trim():'';
+    let tm=iTime>=0?String(c[iTime]||'').trim():'';
+    if(!tm){ const mt=rawD.match(/(\d{1,2}:\d{2}(?::\d{2})?)/); if(mt) tm=mt[1]; }  // 日時列に時刻が含まれる形式
+    out.push({ t, amt, desc, tm });
+  }
+  if(!out.length) return { error:'入金行（入金額>0）が見つかりませんでした' };
+  out.sort((a,b)=>a.t-b.t);
+  return { rows:out };
 }
 /* ---- イベント入力モーダル：会場・イベント名・対象店舗チェックリスト ---- */
 function eventModal(){
@@ -3763,6 +3826,60 @@ window.App = {
     }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
   },
   csvSection(prefix){ downloadCsvSection(prefix); },
+  /* ---- 口座CSVインポート（入金管理） ---- */
+  openDepositImport(){ DEP_IMPORT={rows:[],file:''}; S.modal={type:'depImport'}; render(); },
+  async depFileChosen(inp){
+    const msg=$('dp-msg'); msg.textContent='';
+    const f=inp.files&&inp.files[0]; if(!f) return;
+    try{
+      const buf=await f.arrayBuffer();
+      let text=new TextDecoder('utf-8',{fatal:false}).decode(buf);
+      if(text.indexOf('�')>=0) text=new TextDecoder('shift-jis').decode(buf);  // 銀行CSVはShift_JISが多い
+      const r=depParseCsv(text);
+      if(r.error){ DEP_IMPORT={rows:[],file:''}; msg.textContent=r.error; this.depPreview(); return; }
+      DEP_IMPORT={rows:r.rows, file:f.name};
+      this.depPreview();
+    }catch(e){ msg.textContent='ファイルを読み込めませんでした: '+e.message; }
+  },
+  // プレビュー描画（ATMフィルタを反映）。取込対象の件数・合計もここで表示
+  depPreview(){
+    const box=$('dp-preview'), runBtn=$('dp-run'); if(!box) return;
+    const atmOnly=$('dp-atm')&&$('dp-atm').checked;
+    const isAtm=(d2)=>String(d2||'').normalize('NFKC').toUpperCase().indexOf('ATM')>=0;
+    const rows=DEP_IMPORT.rows.filter(r=>!atmOnly||isAtm(r.desc));
+    if(!DEP_IMPORT.rows.length){ box.innerHTML='<div class="empty" style="padding:14px;font-size:12.5px">CSVファイルを選択してください</div>'; if(runBtn)runBtn.disabled=true; return; }
+    if(!rows.length){ box.innerHTML='<div class="empty" style="padding:14px;font-size:12.5px">ATM入金の行がありません（チェックを外すと全入金行が対象になります）</div>'; if(runBtn)runBtn.disabled=true; return; }
+    const total=rows.reduce((s,r)=>s+r.amt,0);
+    let h2=`<div style="font-size:12.5px;font-weight:700;color:#3d5163;margin-bottom:4px">取込対象 ${rows.length}件 ／ 合計 ${yen(total)} <span class="mut" style="font-weight:400">（${esc(DEP_IMPORT.file)}）</span></div>
+      <div class="scroll-x" style="max-height:220px;overflow-y:auto;border:1px solid var(--line2);border-radius:8px">
+      <table class="tbl"><thead><tr><th>日付</th><th>入金額</th><th>摘要</th><th>時刻</th></tr></thead><tbody>`;
+    rows.slice(0,300).forEach(r=>{ const dt=new Date(r.t);
+      h2+=`<tr><td style="white-space:nowrap">${dt.getFullYear()}/${dt.getMonth()+1}/${dt.getDate()}</td><td style="text-align:right">${yen(r.amt)}</td><td style="font-size:11px">${esc(r.desc)}</td><td class="mut" style="font-size:11px">${esc(r.tm)}</td></tr>`; });
+    h2+=`</tbody></table></div>`;
+    if(rows.length>300) h2+=`<div class="mut" style="font-size:11px;margin-top:3px">※プレビューは300件まで表示（取込は全${rows.length}件）</div>`;
+    box.innerHTML=h2; if(runBtn)runBtn.disabled=false;
+  },
+  async runDepositImport(){
+    const msg=$('dp-msg');
+    if(!S.auth||!S.auth.token){ msg.textContent='スプレッドシート接続時のみ取込できます（デモモードでは不可）'; return; }
+    const store=$('dp-store')&&$('dp-store').value;
+    if(!store){ msg.textContent='店舗を選択してください'; return; }
+    const atmOnly=$('dp-atm')&&$('dp-atm').checked;
+    const isAtm=(d2)=>String(d2||'').normalize('NFKC').toUpperCase().indexOf('ATM')>=0;
+    const rows=DEP_IMPORT.rows.filter(r=>!atmOnly||isAtm(r.desc));
+    if(!rows.length){ msg.textContent='取込対象の行がありません'; return; }
+    const payload=rows.map(r=>{ const dt=new Date(r.t);
+      return [dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0'), r.amt, r.desc, r.tm]; });
+    const runBtn=$('dp-run'); if(runBtn)runBtn.disabled=true;
+    msg.style.color='#8c8375'; msg.textContent='取込中…（'+rows.length+'件）';
+    try{
+      const d=await api({ action:'importDeposits', token:S.auth.token, store, rows:JSON.stringify(payload) });
+      if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'取込に失敗しました'; if(runBtn)runBtn.disabled=false; return; }
+      S.modal=null;
+      toast(`入金 ${d.added}件を取り込みました`+(d.dup>0?`（重複スキップ ${d.dup}件）`:''));
+      await fetchData(true,{ only:['deposit'], partial:true }); render();
+    }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; if(runBtn)runBtn.disabled=false; }
+  },
   openEventInput(id){ S.modal={type:'event', id:id||''}; render(); },
   async saveEventInput(){
     const msg=$('ev-msg');

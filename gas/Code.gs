@@ -43,7 +43,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v32', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v33', time: new Date().toISOString() });
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     if (action === 'perf') return out(perfDiag(p)); // パフォーマンス計測（専用トークン認証・ログイン不要・数字は返さず時間だけ）
     setupIfNeeded();
@@ -68,6 +68,7 @@ function handle(p) {
     if (action === 'saveTargetDay') return out(saveTargetDay(p, session)); // 日別売上目標を1日だけ修正
     if (action === 'saveEvent')   return out(saveEvent(p, session));   // イベント保存
     if (action === 'deleteEvent') return out(deleteEvent(p, session)); // イベント削除
+    if (action === 'importDeposits') return out(importDeposits(p, session)); // 口座CSVの入金取込（入金管理タブ）
     return out({ ok: false, error: 'unknown action: ' + action });
   } catch (err) {
     return out({ ok: false, error: String(err && err.message || err) });
@@ -1051,6 +1052,88 @@ function deleteEvent(p, session) {
     for (var i = 0; i < vals.length; i++) if (String(vals[i][0]).trim() === id) { sh.deleteRow(i + 2); return { ok: true }; }
   }
   return { ok: false, error: '該当イベントが見つかりません' };
+}
+
+// ================== 入金取込（口座CSV → 入金DB） ==================
+// 売上DBスプレッドシート（CSV取込_入金 の親）。ダッシュボードから取り込んだ入金は
+// ここにも書き込んで、既存の「CSV取込_入金に貼り付け」運用と同じ状態を保つ。
+var SALES_DB_ID = '1z_22yVxPRo7cpL9A4nluYzXbQ9FH_zFk9Mb5gHiOF3E';
+// 入金DBシートのヘッダー行（1列目が「店舗」の行）を探す。売上DB側は1行目がタイトル・2行目が見出し。
+function depositHeaderRow_(sh) {
+  var scan = Math.min(sh.getLastRow(), 5);
+  if (scan < 1) return -1;
+  var v = sh.getRange(1, 1, scan, 1).getValues();
+  for (var r = 0; r < scan; r++) { if (String(v[r][0]).trim() === '店舗') return r + 1; }
+  return -1;
+}
+// 入金管理タブの「口座CSVを取込」から呼ばれる。rows=[[YYYY-MM-DD, 入金額, 摘要, 時刻],...]
+// 選択店舗に紐付けて、売上DBの入金DB と このスプレッドシートの入金DB の両方に追記する。
+// 既存行（店舗+日付+金額+時刻が一致）はスキップするので、同じCSVを2回取り込んでも重複しない。
+function importDeposits(p, session) {
+  var store = String(p.store || '').trim();
+  if (!store) return { ok: false, error: '店舗が未指定です' };
+  if (!scopeAllows_(session, store)) return { ok: false, error: 'この店舗の入金を取り込む権限がありません' };
+  var rows; try { rows = JSON.parse(p.rows || '[]'); } catch (e) { rows = []; }
+  if (!rows.length) return { ok: false, error: '取込対象の行がありません' };
+  if (rows.length > 3000) return { ok: false, error: '一度に取り込めるのは3000行までです' };
+  var tz = Session.getScriptTimeZone() || 'Asia/Tokyo';
+  var now = new Date();
+  // 取込先: ①売上DB（既存運用の本体） ②このスプレッドシート（ダッシュボードの配信元）
+  // ②がIMPORTRANGE等の数式なら自動同期されるので追記しない（数式を壊さない）
+  var targets = [];
+  try {
+    var src = SpreadsheetApp.openById(SALES_DB_ID).getSheetByName('入金DB');
+    if (src) targets.push({ label: '売上DB', sh: src });
+  } catch (e) { /* 権限が無い場合はダッシュボード側のみ */ }
+  var dst = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('入金DB');
+  if (dst && !String(dst.getRange(1, 1).getFormula() || '')) targets.push({ label: 'ダッシュボード', sh: dst });
+  if (!targets.length) return { ok: false, error: '入金DBシートが見つかりません' };
+  // 値の正規化（既存セルはDate/数値/文字列が混在し得るため、キー化して重複判定する）
+  function dKey(v) {
+    if (v instanceof Date) return v.getFullYear() + '/' + (v.getMonth() + 1) + '/' + v.getDate();
+    var m = String(v).match(/(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+    return m ? (+m[1]) + '/' + (+m[2]) + '/' + (+m[3]) : String(v);
+  }
+  function tKey(v) {
+    if (v instanceof Date) return Utilities.formatDate(v, tz, 'HH:mm:ss');
+    return String(v || '').trim();
+  }
+  function aKey(v) { return String(Number(String(v).replace(/[,¥\s]/g, '')) || 0); }
+  var added = 0, dup = 0, detail = {};
+  targets.forEach(function (t, ti) {
+    var sh = t.sh;
+    var head = depositHeaderRow_(sh);
+    if (head < 0) { detail[t.label] = 'ヘッダー行なし'; return; }
+    var last = sh.getLastRow();
+    var exist = {};
+    if (last > head) {
+      var v = sh.getRange(head + 1, 1, last - head, 5).getValues();
+      for (var i = 0; i < v.length; i++) {
+        if (String(v[i][0]).trim() === '') continue;
+        exist[String(v[i][0]).trim() + '|' + dKey(v[i][1]) + '|' + aKey(v[i][2]) + '|' + tKey(v[i][4])] = 1;
+      }
+    }
+    var out = [], skipped = 0;
+    rows.forEach(function (a) {
+      var m = String(a[0]).match(/^(\d{4})-(\d{2})-(\d{2})$/); if (!m) return;
+      var amt = Number(a[1]) || 0; if (!(amt > 0)) return;
+      var desc = String(a[2] || '').slice(0, 100), tm = String(a[3] || '').trim();
+      var key = store + '|' + (+m[1]) + '/' + (+m[2]) + '/' + (+m[3]) + '|' + amt + '|' + tm;
+      if (exist[key]) { skipped++; return; }
+      exist[key] = 1;
+      out.push([store, new Date(+m[1], +m[2] - 1, +m[3]), amt, desc, tm, now]);
+    });
+    if (out.length) {
+      var r0 = sh.getLastRow() + 1;
+      sh.getRange(r0, 1, out.length, 6).setValues(out);
+      sh.getRange(r0, 2, out.length, 1).setNumberFormat('yyyy/m/d');
+      sh.getRange(r0, 3, out.length, 1).setNumberFormat('#,##0');
+      sh.getRange(r0, 6, out.length, 1).setNumberFormat('yyyy/m/d h:mm');
+    }
+    detail[t.label] = out.length + '件追加' + (skipped ? '（重複' + skipped + '件スキップ）' : '');
+    if (ti === 0) { added = out.length; dup = skipped; }
+  });
+  return { ok: true, added: added, dup: dup, detail: detail };
 }
 
 // ================== イベント自動取得（横浜アリーナ等） ==================
