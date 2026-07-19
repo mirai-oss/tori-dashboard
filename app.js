@@ -801,9 +801,11 @@ async function fetchData(silent, opts){
     if(!opts.partial){ S.connState='error'; if(!silent) toast('データ取得エラー: '+e.message); render(); }
   }
 }
-// 初回・更新で重い/タブ専用のデータ（媒体別・入金・口コミ明細・広告・予約）。
-// フェーズ1では読まず、表示後に裏で優先順に先読みする。
-const HEAVY_KEYS=['media','deposit','dinii','広告','広告効果','単価設定','予約'];
+// 初回・更新で「本当に重い」データだけ（実測：media=12s/dinii=6.3s/deposit=5.4s/予約=3.3s）。
+// 広告・広告効果・単価設定は実測200〜250msと軽いためフェーズ1に含める（除外すると広告管理タブが
+// 裏読み完了前に開かれた場合「未接続」と誤診断されてしまうため）。
+// フェーズ1では重いものだけ読まず、表示後に裏で優先順に先読みする。
+const HEAVY_KEYS=['media','deposit','dinii','予約'];
 let prefetchRun=0;
 // 初回・更新時：まずダッシュボードに必要な軽いデータだけ出し、重い/他タブ用は裏で先読み
 async function fetchDataFast(){
@@ -812,10 +814,10 @@ async function fetchDataFast(){
   render();
   // data は version を返さないので、初回に署名を取得（次の自動更新のムダ取得を防ぐ）
   fetchVersion().then(v=>{ if(v!==null) S.dataVersion=v; });
-  // フェーズ2：裏で先読み。優先順＝ダッシュボード関連(口コミ明細・媒体別)→他タブ(入金・広告・予約)
+  // フェーズ2：裏で先読み。優先順＝ダッシュボード関連(口コミ明細・媒体別)→他タブ(入金・予約)
   const myRun=++prefetchRun;
   (async()=>{
-    const groups=[['dinii','media'], ['deposit','広告','広告効果','単価設定','予約']];
+    const groups=[['dinii','media'], ['deposit','予約']];
     for(const g of groups){
       if(myRun!==prefetchRun) return;                    // 新しい読込が始まったら中断（多重先読み防止）
       try{ await fetchData(true, { only:g, partial:true }); }catch(e){}
