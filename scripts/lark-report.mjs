@@ -86,33 +86,47 @@ async function send() {
   const imageUrl = process.env.IMAGE_URL || '';
   const t = d.tot;
   const spend = t.guests > 0 ? t.sales / t.guests : 0;
-  const up = d.rows.filter((r) => r.prevSales > 0 && r.sales >= r.prevSales).length;
-  const down = d.rows.filter((r) => r.prevSales > 0 && r.sales < r.prevSales).length;
-  const medal = ['🥇', '🥈', '🥉'];
-  const topLines = d.rows.filter((r) => r.sales > 0).slice(0, 3)
-    .map((r, i) => `${medal[i] || '　'} **${r.store}**　${yen(r.sales)}（前年比 ${yoy(r.sales, r.prevSales)}）`).join('\n');
+  const single = d.singleStore || null;
 
   // 「日報」はWebhookのカスタムキーワード。ヘッダーにも入るが note でも必ず含める
   const frTxt = t.fr != null ? (t.fr * 100).toFixed(1) + '%' : '—';
   const lrTxt = t.lr != null ? (t.lr * 100).toFixed(1) + '%' : '—';
   const dnTxt = t.dinii != null ? t.dinii.toFixed(2) : '—';
-  const headline = `【${d.title}】${d.sub}`;
+  const headline = single ? `【${single} ${d.title}】${d.sub}` : `【${d.title}】${d.sub}`;
   const summary =
-    `**全店${d.salesLabel} ${yen(t.sales)}**（前年比 ${yoy(t.sales, t.prevSales)}）\n` +
+    `**${single ? '' : '全店'}${d.salesLabel} ${yen(t.sales)}**（前年比 ${yoy(t.sales, t.prevSales)}）\n` +
     `客数 ${cnt(t.guests)}人 ／ 客単価 ${yen(spend)} ／ F率 ${frTxt} ／ L率 ${lrTxt}` +
     (d.hasDinii ? `\nダイニー再来店 **${dnTxt}**（${d.diniiRangeLabel}・${cnt(t.diniiCount)}件）` : '') +
     (d.kind === 'monthly' ? '' : `\n月間累計 ${yen(t.cum)}（前年比 ${yoy(t.cum, t.cumPrev)}）`) +
-    `\n<font color="green">前年超え ${up}店</font> ／ <font color="red">前年割れ ${down}店</font>`;
+    (single ? '' : (() => {
+      const up = d.rows.filter((r) => r.prevSales > 0 && r.sales >= r.prevSales).length;
+      const down = d.rows.filter((r) => r.prevSales > 0 && r.sales < r.prevSales).length;
+      return `\n<font color="green">前年超え ${up}店</font> ／ <font color="red">前年割れ ${down}店</font>`;
+    })());
 
-  const elements = [
-    { tag: 'markdown', content: summary },
-    { tag: 'hr' },
-    { tag: 'markdown', content: `**店舗別トップ**\n${topLines}` },
-  ];
+  // 単店舗＝ランチ/ディナー内訳、複数店舗＝店舗別トップ3
+  let detailBlock;
+  if (single && d.seg && (d.seg.hasNet || d.seg.hasG)) {
+    const segLine = (label, sales, prevSales, guests) => {
+      const sp = guests > 0 ? sales / guests : 0;
+      return `${label}　${yen(sales)}（前年比 ${yoy(sales, prevSales)}）／ 客数 ${cnt(guests)}人 ・ 客単価 ${yen(sp)}`;
+    };
+    detailBlock = `**ランチ/ディナー内訳**\n${segLine('🌤 ランチ', d.seg.ln, d.seg.prevLn, d.seg.lg)}\n${segLine('🌙 ディナー', d.seg.dn, d.seg.prevDn, d.seg.dg)}`;
+  } else if (!single) {
+    const medal = ['🥇', '🥈', '🥉'];
+    const topLines = d.rows.filter((r) => r.sales > 0).slice(0, 3)
+      .map((r, i) => `${medal[i] || '　'} **${r.store}**　${yen(r.sales)}（前年比 ${yoy(r.sales, r.prevSales)}）`).join('\n');
+    detailBlock = `**店舗別トップ**\n${topLines}`;
+  } else {
+    detailBlock = '';
+  }
+
+  const elements = [{ tag: 'markdown', content: summary }];
+  if (detailBlock) elements.push({ tag: 'hr' }, { tag: 'markdown', content: detailBlock });
   if (imageUrl) {
     elements.push({
       tag: 'action',
-      actions: [{ tag: 'button', text: { tag: 'plain_text', content: '📊 日報の全体画像を見る（全店）' }, type: 'primary', url: imageUrl }],
+      actions: [{ tag: 'button', text: { tag: 'plain_text', content: single ? `📊 ${single}の${d.title}画像を見る` : '📊 日報の全体画像を見る（全店）' }, type: 'primary', url: imageUrl }],
     });
   }
   elements.push({ tag: 'note', elements: [{ tag: 'plain_text', content: `自動日報Bot ／ ダッシュボード: ${SITE_URL} ／ 生成 ${d.gen}` }] });

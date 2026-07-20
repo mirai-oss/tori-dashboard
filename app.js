@@ -3353,6 +3353,22 @@ function viewReview(){
 
 /* ---------------- 日報/週報/月報カード（Lark配信用・1枚画像レイアウト） ---------------- */
 // 対象期間のレポートデータを生成（店舗別・売上降順）
+// 単店舗レポート用：期間の推移（10日以内は日次、それ以上は7日バケットで前年同曜日区間と比較）
+function reportTrend(store, s, e){
+  const days=Math.round((dayMs(e)-dayMs(s))/86400000)+1;
+  const chunkLen=days<=10?1:7;
+  const pts=[]; let cur=new Date(s);
+  while(dayMs(cur)<=dayMs(e)){
+    const chunkEnd=new Date(Math.min(dayMs(addD(cur,chunkLen-1)),dayMs(e)));
+    const c=stat(null,dayMs(cur),dayMs(chunkEnd),store);
+    const p=stat(null,dayMs(addD(cur,-364)),dayMs(addD(chunkEnd,-364)),store);
+    const oneDay=dayMs(cur)===dayMs(chunkEnd);
+    const label=oneDay?(cur.getMonth()+1)+'/'+cur.getDate():(cur.getMonth()+1)+'/'+cur.getDate()+'〜'+(chunkEnd.getMonth()+1)+'/'+chunkEnd.getDate();
+    pts.push({ label, sales:c.sales, prevSales:p.sales });
+    cur=addD(chunkEnd,1);
+  }
+  return pts;
+}
 function reportData(kind, dateStr, storeFilter, group){
   const ref0=D.refDate||new Date();
   const pI=(s2)=>{const p2=String(s2).split('-');return new Date(+p2[0],+p2[1]-1,+p2[2]);};
@@ -3427,8 +3443,17 @@ function reportData(kind, dateStr, storeFilter, group){
   const pad=(n)=>String(n).padStart(2,'0');
   const grp=String(group||'').replace(/[^a-zA-Z0-9_-]/g,'');
   const fileKey=kind+'-'+e.getFullYear()+pad(e.getMonth()+1)+pad(e.getDate())+(grp?'-'+grp:'');   // 例 daily-20260707-tori
-  if(isFiltered) sub+='（'+stores.length+'店舗）';
-  const data={ kind, title, sub, salesLabel, fileKey, rows, tot, hasDinii, diniiRangeLabel, isFiltered,
+  const singleStore=stores.length===1?stores[0]:null;
+  if(isFiltered&&!singleStore) sub+='（'+stores.length+'店舗）';
+  // 単店舗のときは店舗比較の代わりにランチ/ディナー内訳と直近推移を付ける
+  let seg=null, trend=null;
+  if(singleStore){
+    const s1=segSplit(null,a,b,singleStore), s0=segSplit(null,pa,pb,singleStore);
+    seg={ ln:s1.ln, dn:s1.dn, lg:s1.lg, dg:s1.dg, hasNet:s1.hasNet, hasG:s1.hasG,
+      prevLn:s0.ln, prevDn:s0.dn, prevLg:s0.lg, prevDg:s0.dg };
+    trend=reportTrend(singleStore, kind==='daily'?addD(e,-6):s, e);
+  }
+  const data={ kind, title, sub, salesLabel, fileKey, rows, tot, hasDinii, diniiRangeLabel, isFiltered, singleStore, seg, trend,
     gen:new Date().toLocaleString('ja-JP',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}) };
   try{ window.__REPORT_JSON=data; }catch(err){}
   return data;
@@ -3441,15 +3466,24 @@ function viewReport(kind, dateStr, storeFilter, group){
   const spend=d.tot.guests>0?d.tot.sales/d.tot.guests:0;
   const fl=d.tot.sales>0?((d.tot.cost+d.tot.labor)/d.tot.sales*100).toFixed(1)+'%':'—';
   const showFl=(kind!=='daily'||d.tot.cost>0||d.tot.labor>0);
-  // 店舗別バーチャート（売上降順）
-  const chartRows=d.rows.filter(r=>r.sales>0||r.prevSales>0);
-  const chart=chartRows.length?barChart(chartRows.map(r=>r.store.replace(/[\s　]/,'\n')),
-    [{name:'当期',color:'#3d5163',data:chartRows.map(r=>r.sales)},{name:'前年',color:'#c9b7a0',data:chartRows.map(r=>r.prevSales)}],{twoLine:true}):'';
   const salesLabel=kind==='monthly'?'月売上':kind==='weekly'?'週売上':'売上';
+  // 単店舗：店舗比較チャートの代わりに直近推移チャート／全店・複数店舗：店舗別バーチャート（売上降順）
+  let chart='', chartLabel='';
+  if(d.singleStore&&d.trend&&d.trend.length){
+    chart=barChart(d.trend.map(p=>p.label),
+      [{name:'当期',color:'#3d5163',data:d.trend.map(p=>p.sales)},{name:'前年',color:'#c9b7a0',data:d.trend.map(p=>p.prevSales)}]);
+    chartLabel=(kind==='monthly'?'週別 推移':'直近の推移')+'（■当期 ■前年）';
+  } else {
+    const chartRows=d.rows.filter(r=>r.sales>0||r.prevSales>0);
+    chart=chartRows.length?barChart(chartRows.map(r=>r.store.replace(/[\s　]/,'\n')),
+      [{name:'当期',color:'#3d5163',data:chartRows.map(r=>r.sales)},{name:'前年',color:'#c9b7a0',data:chartRows.map(r=>r.prevSales)}],{twoLine:true}):'';
+    chartLabel='店舗別 '+salesLabel+'（■当期 ■前年）';
+  }
+  const brandLine=d.singleStore?esc(d.singleStore):'鳥一代グループ';
   let h=`<div id="report-card" style="width:1080px;margin:0 auto;background:#faf9f5;border:1px solid #e5ddcc;font-family:'Zen Kaku Gothic New',sans-serif;color:#3d3a33">
     <div style="background:#2a2420;padding:22px 32px;display:flex;align-items:center;gap:16px">
       <div style="width:44px;height:44px;border-radius:10px;background:#3a332c;display:flex;align-items:center;justify-content:center;font-family:'Shippori Mincho',serif;font-size:24px;color:#c9a86a">鳥</div>
-      <div><div style="font-family:'Shippori Mincho',serif;font-size:21px;color:#f3ede1;letter-spacing:.1em">鳥一代グループ ${esc(d.title)}</div>
+      <div><div style="font-family:'Shippori Mincho',serif;font-size:21px;color:#f3ede1;letter-spacing:.1em">${brandLine} ${esc(d.title)}</div>
       <div style="font-size:13px;color:#9a8f7c;margin-top:3px">${esc(d.sub)}</div></div>
       <div style="margin-left:auto;font-size:11px;color:#9a8f7c">自動生成 ${esc(d.gen)}</div>
     </div>
@@ -3457,7 +3491,7 @@ function viewReport(kind, dateStr, storeFilter, group){
       const pctTxt=(v)=>v!=null?(v*100).toFixed(1)+'%':'—';
       const dnTxt=d.tot.dinii!=null?d.tot.dinii.toFixed(2):'—';
       const cards=[
-        ['全店'+salesLabel,yen(d.tot.sales),'前年比 '+totYoy.t,totYoy.cls],
+        [(d.singleStore?'':'全店')+salesLabel,yen(d.tot.sales),'前年比 '+totYoy.t,totYoy.cls],
         ['客数',cnt(d.tot.guests)+'人','客単価 '+yen(spend),''],
         ['F率（原価）',pctTxt(d.tot.fr),'FL計 '+pctTxt(d.tot.fl),''],
         ['L率（人件費）',pctTxt(d.tot.lr),'FL計 '+pctTxt(d.tot.fl),''],
@@ -3471,8 +3505,49 @@ function viewReport(kind, dateStr, storeFilter, group){
           <div style="font-size:11px;color:${k[3]||'#a99f8c'}">${k[2]}</div></div>`).join('')+`</div>`;
     })()}
     <div style="padding:14px 32px 0">${chart?`<div style="background:#fff;border:1px solid #efe9dd;border-radius:12px;padding:14px 16px 6px">
-      <div style="font-size:12.5px;color:#8c8375;margin-bottom:6px">店舗別 ${salesLabel}（■当期 ■前年）</div>${chart}</div>`:''}</div>
-    <div style="padding:14px 32px 20px">
+      <div style="font-size:12.5px;color:#8c8375;margin-bottom:6px">${esc(chartLabel)}</div>${chart}</div>`:''}</div>`;
+  if(d.singleStore){
+    const sg=d.seg||{ln:0,dn:0,lg:0,dg:0,hasNet:false,hasG:false,prevLn:0,prevDn:0,prevLg:0,prevDg:0};
+    const segRows=(sg.hasNet||sg.hasG)?[['🌤 ランチ',sg.ln,sg.prevLn,sg.lg],['🌙 ディナー',sg.dn,sg.prevDn,sg.dg]]:[];
+    h+=`<div style="padding:14px 32px 20px">`;
+    if(segRows.length){
+      h+=`<table style="width:100%;border-collapse:collapse;background:#fff;border:1px solid #efe9dd;border-radius:12px;overflow:hidden">
+        <thead><tr style="background:#efe9dd">
+          <th style="text-align:left;padding:9px 12px;font-size:11.5px;color:#5c5348">区分</th>
+          <th style="text-align:right;padding:9px 12px;font-size:11.5px;color:#5c5348">売上</th>
+          <th style="text-align:right;padding:9px 12px;font-size:11.5px;color:#5c5348">前年比</th>
+          <th style="text-align:right;padding:9px 12px;font-size:11.5px;color:#5c5348">客数</th>
+          <th style="text-align:right;padding:9px 12px;font-size:11.5px;color:#5c5348">客単価</th>
+        </tr></thead><tbody>`;
+      let tS=0,tP=0,tG=0;
+      segRows.forEach(([label,sales,prev,guests],i)=>{
+        const ry=yoy(sales,prev), sp=guests>0?sales/guests:0;
+        tS+=sales; tP+=prev; tG+=guests;
+        h+=`<tr style="border-top:1px solid #efe9dd${i%2?';background:#fbf9f4':''}">
+          <td style="padding:8px 12px;font-size:13px;font-weight:500">${label}</td>
+          <td style="padding:8px 12px;font-size:13px;text-align:right;font-variant-numeric:tabular-nums">${yen(sales)}</td>
+          <td style="padding:8px 12px;font-size:12.5px;text-align:right;color:${ry.cls||'#a99f8c'}">${ry.t}</td>
+          <td style="padding:8px 12px;font-size:13px;text-align:right">${cnt(guests)}人</td>
+          <td style="padding:8px 12px;font-size:13px;text-align:right">${yen(sp)}</td>
+        </tr>`;
+      });
+      const tYoy=yoy(tS,tP), tSp=tG>0?tS/tG:0;
+      h+=`<tr style="border-top:2px solid #d8cfbd;background:#efe9dd;font-weight:700">
+          <td style="padding:9px 12px;font-size:13px">合計</td>
+          <td style="padding:9px 12px;font-size:13px;text-align:right">${yen(tS)}</td>
+          <td style="padding:9px 12px;font-size:12.5px;text-align:right;color:${tYoy.cls||'#5c5348'}">${tYoy.t}</td>
+          <td style="padding:9px 12px;font-size:13px;text-align:right">${cnt(tG)}人</td>
+          <td style="padding:9px 12px;font-size:13px;text-align:right">${yen(tSp)}</td>
+        </tr></tbody></table>`;
+    } else {
+      h+=`<div style="padding:24px;text-align:center;color:#a99f8c;font-size:12.5px;background:#fff;border:1px solid #efe9dd;border-radius:12px">媒体別売上データが未登録のため、ランチ/ディナー内訳は表示できません</div>`;
+    }
+    h+=`<div style="font-size:11px;color:#a99f8c;margin-top:10px;text-align:right">${brandLine} ／ ${esc(d.gen)} 自動生成</div>
+    </div></div>
+    <div class="no-print" style="text-align:center;padding:14px"><button class="icon-btn" onclick="App.reportExit()">← ダッシュボードに戻る</button></div>`;
+    return h;
+  }
+  h+=`<div style="padding:14px 32px 20px">
       <table style="width:100%;border-collapse:collapse;background:#fff;border:1px solid #efe9dd;border-radius:12px;overflow:hidden">
         <thead><tr style="background:#efe9dd">
           <th style="text-align:left;padding:9px 12px;font-size:11.5px;color:#5c5348">店舗</th>
