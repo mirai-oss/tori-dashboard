@@ -1,5 +1,11 @@
 name: Lark自動レポート（日報・週報・月報）
 
+# 発火は「外部cron（cron-job.org 等）」から workflow_dispatch API を叩いて行う。
+#   POST https://api.github.com/repos/<repo>/actions/workflows/lark-report.yml/dispatches
+#   body: {"ref":"main","inputs":{"kind":"daily"}}   （kind = daily / weekly / monthly）
+# GitHub内蔵の schedule: は時刻が数十分〜数時間ずれる（無料/publicの仕様）ため使わない。
+# ※どうしても手が空かない時の予備として、下の schedule: をコメント解除すれば併用も可能
+#   （ただし遅延発火で二重送信になりうる点に注意）。
 on:
   workflow_dispatch:
     inputs:
@@ -9,6 +15,10 @@ on:
         default: 'daily'
         type: choice
         options: [daily, weekly, monthly]
+  # schedule:
+  #   - cron: '0 3 * * *'             # 日報 12:00 JST（予備・遅延あり）
+  #   - cron: '10 3 1,8,15,22,29 * *' # 週報（予備）
+  #   - cron: '20 3 1 * *'            # 月報（予備）
 
 permissions:
   contents: write   # 画像をGitHub Releaseにアップロードするため
@@ -123,3 +133,123 @@ jobs:
           path: report.png
           if-no-files-found: ignore
           retention-days: 14
+
+  # ================= グループ別レポート（Larkグループごとに、担当店舗を1店舗ずつ送る） =================
+  # 店舗を1つだけ渡すと、店舗比較表ではなく「直近推移＋ランチ/ディナー内訳＋媒体別売上」の
+  # 単店舗フォーマットになる（app.js の viewReport が自動で切り替える）。
+  # 1グループにつき、担当店舗の枚数ぶんカードが連続して届く（まとめて1枚にはしない）。
+  #
+  # ▼ グループを追加/変更する手順
+  #   1. LarkグループでWebhookを取得（設定 → ボット → ボットを追加 → カスタムボット）
+  #      ※カスタムキーワードを設定する場合は「日報」にすること（全カードのnote行に必ず含まれる）
+  #   2. GitHub → Settings → Secrets and variables → Actions で
+  #      名前 LARK_WEBHOOK_GROUPn ／ 値 そのWebhook URL を登録
+  #   3. 下の matrix に1ブロック追記
+  #      stores は「正式店舗名|画像ファイル名キー」をカンマ区切りで並べる（店舗名は分析_日別店舗の表記に合わせる）
+  # Secret が未登録のグループは自動でスキップされるので、先に matrix だけ書いても安全。
+  # 別グループに同じ店舗が入っていてもよい（同じ内容の画像を作り直すだけで害はない）。
+  group-report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false    # 1グループ失敗しても他グループの配信は続行する
+      max-parallel: 1     # ダッシュボード(GAS)への同時ログインを避けるため1グループずつ
+      matrix:
+        include:
+          - group: group1
+            secret: LARK_WEBHOOK_GROUP1
+            stores: '鳥一代 本店|honten,鳥一代 はなれ|hanare,芝の鳥一代|shiba,鳥一代 新橋|shinbashi'
+          - group: group2
+            secret: LARK_WEBHOOK_GROUP2
+            stores: '鳥一代 恵比寿|ebisu,黒霧屋 新横浜|kurokiriya-shinyoko,鶏武者 川崎店|torimusha-kawasaki'
+          - group: group3
+            secret: LARK_WEBHOOK_GROUP3
+            stores: '黒霧屋 新横浜|kurokiriya-shinyoko,鶏武者 川崎店|torimusha-kawasaki,鶏武者 新横浜|torimusha-shinyoko'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 設定チェック（Secret未登録ならスキップ）
+        env:
+          HOOK: ${{ secrets[matrix.secret] }}
+          DID: ${{ secrets.DASH_ID }}
+        run: |
+          if [ -z "$HOOK" ]; then
+            echo "::notice::${{ matrix.secret }} が未登録のため ${{ matrix.group }} はスキップ"
+            echo "SKIP=1" >> "$GITHUB_ENV"
+          elif [ -z "$DID" ]; then
+            echo "::notice::DASH_ID が未設定のためスキップ"
+            echo "SKIP=1" >> "$GITHUB_ENV"
+          fi
+
+      - name: レポート種別を決定
+        if: env.SKIP != '1'
+        run: |
+          K="${{ github.event.inputs.kind }}"
+          [ -z "$K" ] && K=daily
+          echo "REPORT_KIND=$K" >> "$GITHUB_ENV"
+
+      - name: puppeteer をインストール
+        if: env.SKIP != '1'
+        run: npm install puppeteer --no-save
+
+      - name: 店舗ごとに生成して送信
+        if: env.SKIP != '1'
+        env:
+          REPORT_KIND: ${{ env.REPORT_KIND }}
+          DASH_ID: ${{ secrets.DASH_ID }}
+          DASH_PW: ${{ secrets.DASH_PW }}
+          LARK_WEBHOOK: ${{ secrets[matrix.secret] }}
+          STORES: ${{ matrix.stores }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -u
+          OK=0; FAIL=0; FAILED=""
+          IFS=',' read -ra ENTRIES <<< "$STORES"
+          for entry in "${ENTRIES[@]}"; do
+            STORE="${entry%%|*}"
+            KEY="${entry##*|}"
+            echo "::group::$STORE"
+
+            rm -f report.png report-meta.json
+            if ! REPORT_STORES="$STORE" REPORT_GROUP="$KEY" node scripts/lark-report.mjs capture; then
+              echo "::warning::$STORE の画像生成に失敗"
+              FAIL=$((FAIL+1)); FAILED="$FAILED $STORE"; echo "::endgroup::"; continue
+            fi
+
+            # 生成物が本当にこの店舗のものか検証してから送る（取り違え防止）
+            if ! FILEKEY=$(STORE_CHECK="$STORE" node -e "
+              const d=require('./report-meta.json');
+              if(d.singleStore!==process.env.STORE_CHECK){ console.error('店舗不一致: '+d.singleStore); process.exit(1); }
+              console.log(d.fileKey);
+            "); then
+              echo "::warning::$STORE のメタ検証に失敗"
+              FAIL=$((FAIL+1)); FAILED="$FAILED $STORE"; echo "::endgroup::"; continue
+            fi
+
+            cp report.png "$FILEKEY.png"
+            gh release view reports >/dev/null 2>&1 || gh release create reports --title "自動レポート画像" --notes "日報/週報/月報の画像置き場（自動更新）"
+            if ! gh release upload reports "$FILEKEY.png" --clobber; then
+              echo "::warning::$STORE の画像アップロードに失敗"
+              rm -f "$FILEKEY.png"; FAIL=$((FAIL+1)); FAILED="$FAILED $STORE"; echo "::endgroup::"; continue
+            fi
+            rm -f "$FILEKEY.png"
+
+            if IMAGE_URL="https://github.com/$REPO/releases/download/reports/$FILEKEY.png" node scripts/lark-report.mjs send; then
+              echo "$STORE ✓ 送信完了"; OK=$((OK+1))
+            else
+              echo "::warning::$STORE の送信に失敗"
+              FAIL=$((FAIL+1)); FAILED="$FAILED $STORE"
+            fi
+            echo "::endgroup::"
+          done
+
+          echo "::notice::${{ matrix.group }} 結果: 成功 $OK 件 / 失敗 $FAIL 件"
+          # 1店舗でも失敗したらジョブを失敗させる（黙って欠落させない）
+          if [ "$FAIL" -gt 0 ]; then
+            echo "::error::${{ matrix.group }} で $FAIL 件送信できませんでした:$FAILED"
+            exit 1
+          fi
