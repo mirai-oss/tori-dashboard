@@ -48,9 +48,11 @@ async function capture() {
       await page.type('#li-pw', DASH_PW);
       await page.click('#li-btn');
       log('ログイン送信、データ読込待ち…');
+      // 媒体別(D.media)はフェーズ2の裏読みで後から届く。ランチ/ディナー内訳と媒体別売上が
+      // 空のまま撮影されるのを防ぐため mediaPending===false まで待つ（読込失敗時もfalseになるので固まらない）。
       await Promise.race([
-        page.waitForFunction(() => typeof S !== 'undefined' && S.auth && S.connState === 'live' && typeof D !== 'undefined' && D.daily.length > 0, { timeout: 150000, polling: 2000 }),
-        page.waitForFunction(() => { const el = document.querySelector('.login-err'); return el && el.textContent.length > 0 ? el.textContent : false; }, { timeout: 150000, polling: 2000 })
+        page.waitForFunction(() => typeof S !== 'undefined' && S.auth && S.connState === 'live' && typeof D !== 'undefined' && D.daily.length > 0 && D.mediaPending === false, { timeout: 180000, polling: 2000 }),
+        page.waitForFunction(() => { const el = document.querySelector('.login-err'); return el && el.textContent.length > 0 ? el.textContent : false; }, { timeout: 180000, polling: 2000 })
           .then(async (h) => { throw new Error('ログイン失敗: ' + (await h.jsonValue())); }),
       ]);
     };
