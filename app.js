@@ -3369,6 +3369,16 @@ function reportTrend(store, s, e){
   }
   return pts;
 }
+// 単店舗レポート用：口コミの星・累計件数のスナップショット（別名店舗があれば加重平均で合算）
+function reviewStatsAt(store, limit){
+  let ws=0, cs=0, latestT=0;
+  reviewNamesFor(store).forEach(rn=>{
+    let latest=null;
+    for(const r of D.review){ if(r.store!==rn) continue; if(limit!=null&&r.t>limit) continue; if(!latest||r.t>latest.t) latest=r; }
+    if(latest&&latest.count>0){ ws+=latest.star*latest.count; cs+=latest.count; if(latest.t>latestT) latestT=latest.t; }
+  });
+  return cs>0?{ star:ws/cs, count:cs, t:latestT }:null;
+}
 function reportData(kind, dateStr, storeFilter, group){
   const ref0=D.refDate||new Date();
   const pI=(s2)=>{const p2=String(s2).split('-');return new Date(+p2[0],+p2[1]-1,+p2[2]);};
@@ -3445,15 +3455,31 @@ function reportData(kind, dateStr, storeFilter, group){
   const fileKey=kind+'-'+e.getFullYear()+pad(e.getMonth()+1)+pad(e.getDate())+(grp?'-'+grp:'');   // 例 daily-20260707-tori
   const singleStore=stores.length===1?stores[0]:null;
   if(isFiltered&&!singleStore) sub+='（'+stores.length+'店舗）';
-  // 単店舗のときは店舗比較の代わりにランチ/ディナー内訳と直近推移を付ける
-  let seg=null, trend=null;
+  // 単店舗のときは店舗比較の代わりにランチ/ディナー内訳・媒体別売上・直近推移・累計F/L率・口コミ増加を付ける
+  let seg=null, trend=null, cumRate=null, review=null, media=null;
   if(singleStore){
     const s1=segSplit(null,a,b,singleStore), s0=segSplit(null,pa,pb,singleStore);
     seg={ ln:s1.ln, dn:s1.dn, lg:s1.lg, dg:s1.dg, hasNet:s1.hasNet, hasG:s1.hasG,
       prevLn:s0.ln, prevDn:s0.dn, prevLg:s0.lg, prevDg:s0.dg };
     trend=reportTrend(singleStore, kind==='daily'?addD(e,-6):s, e);
+    // 累計F率・L率（月間累計＝月初〜期間末日、月報のときは期間そのものと同じなので出さない）
+    const cumStat=stat(null,dayMs(mcS),b,singleStore);
+    cumRate={ fr:cumStat.sales>0?cumStat.cost/cumStat.sales:null, lr:cumStat.sales>0?cumStat.labor/cumStat.sales:null,
+      fl:cumStat.sales>0?(cumStat.cost+cumStat.labor)/cumStat.sales:null };
+    // Google口コミ：現在の星・累計件数と、レポート期間内の増加件数
+    const revEnd=reviewStatsAt(singleStore,b), revStart=reviewStatsAt(singleStore,dayMs(addD(s,-1)));
+    if(revEnd) review={ star:revEnd.star, count:revEnd.count, inc:revStart?(revEnd.count-revStart.count):null };
+    // 媒体別売上（正規化した媒体名で集計・売上降順）
+    const mediaAgg={};
+    for(const r of D.media){
+      if(r.store!==singleStore||r.t<a||r.t>b) continue;
+      const key=canonMedia(r.media)||'(不明)';
+      if(!mediaAgg[key]) mediaAgg[key]={ media:key, sales:0, guests:0 };
+      mediaAgg[key].sales+=r.net; mediaAgg[key].guests+=r.guests;
+    }
+    media=Object.values(mediaAgg).filter(x=>x.sales>0||x.guests>0).sort((x,y)=>y.sales-x.sales);
   }
-  const data={ kind, title, sub, salesLabel, fileKey, rows, tot, hasDinii, diniiRangeLabel, isFiltered, singleStore, seg, trend,
+  const data={ kind, title, sub, salesLabel, fileKey, rows, tot, hasDinii, diniiRangeLabel, isFiltered, singleStore, seg, trend, cumRate, review, media,
     gen:new Date().toLocaleString('ja-JP',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}) };
   try{ window.__REPORT_JSON=data; }catch(err){}
   return data;
@@ -3497,8 +3523,18 @@ function viewReport(kind, dateStr, storeFilter, group){
         ['L率（人件費）',pctTxt(d.tot.lr),'FL計 '+pctTxt(d.tot.fl),''],
       ];
       if(d.hasDinii) cards.push(['ダイニー再来店',dnTxt,d.diniiRangeLabel+'・'+cnt(d.tot.diniiCount)+'件','']);
-      cards.push([(kind==='monthly'?'年間累計':'月間累計'),yen(kind==='monthly'?d.tot.sales:d.tot.cum),'前年比 '+(kind==='monthly'?totYoy.t:cumYoy.t),(kind==='monthly'?totYoy.cls:cumYoy.cls)]);
-      return `<div style="display:grid;grid-template-columns:repeat(${cards.length},1fr);gap:10px;padding:20px 32px 4px">`+
+      cards.push([(kind==='monthly'?'年間累計':'累計売上（月間）'),yen(kind==='monthly'?d.tot.sales:d.tot.cum),'前年比 '+(kind==='monthly'?totYoy.t:cumYoy.t),(kind==='monthly'?totYoy.cls:cumYoy.cls)]);
+      if(d.singleStore&&d.cumRate&&kind!=='monthly'){
+        cards.push(['累計F率（月間）',pctTxt(d.cumRate.fr),'FL計 '+pctTxt(d.cumRate.fl),'']);
+        cards.push(['累計L率（月間）',pctTxt(d.cumRate.lr),'FL計 '+pctTxt(d.cumRate.fl),'']);
+      }
+      if(d.singleStore&&d.review){
+        const incTxt=d.review.inc==null?'—':(d.review.inc>=0?'+':'')+d.review.inc+'件';
+        const periodLb=kind==='monthly'?'今月':kind==='weekly'?'今週':'本日';
+        cards.push(['Google口コミ','★'+d.review.star.toFixed(2)+'（'+cnt(d.review.count)+'件）',periodLb+' '+incTxt,d.review.inc>0?'#4c7d5c':'']);
+      }
+      const cardCols=d.singleStore?Math.min(cards.length,4):cards.length;
+      return `<div style="display:grid;grid-template-columns:repeat(${cardCols},1fr);gap:10px;padding:20px 32px 4px">`+
         cards.map(k=>`<div style="background:#fff;border:1px solid #efe9dd;border-radius:12px;padding:13px 14px">
           <div style="font-size:11.5px;color:#8c8375">${esc(k[0])}</div>
           <div style="font-size:21px;font-weight:700;margin:4px 0 2px">${k[1]}</div>
@@ -3511,7 +3547,8 @@ function viewReport(kind, dateStr, storeFilter, group){
     const segRows=(sg.hasNet||sg.hasG)?[['🌤 ランチ',sg.ln,sg.prevLn,sg.lg],['🌙 ディナー',sg.dn,sg.prevDn,sg.dg]]:[];
     h+=`<div style="padding:14px 32px 20px">`;
     if(segRows.length){
-      h+=`<table style="width:100%;border-collapse:collapse;background:#fff;border:1px solid #efe9dd;border-radius:12px;overflow:hidden">
+      h+=`<div style="font-size:12.5px;color:#8c8375;margin-bottom:6px">ランチ/ディナー内訳</div>
+      <table style="width:100%;border-collapse:collapse;background:#fff;border:1px solid #efe9dd;border-radius:12px;overflow:hidden">
         <thead><tr style="background:#efe9dd">
           <th style="text-align:left;padding:9px 12px;font-size:11.5px;color:#5c5348">区分</th>
           <th style="text-align:right;padding:9px 12px;font-size:11.5px;color:#5c5348">売上</th>
@@ -3541,6 +3578,44 @@ function viewReport(kind, dateStr, storeFilter, group){
         </tr></tbody></table>`;
     } else {
       h+=`<div style="padding:24px;text-align:center;color:#a99f8c;font-size:12.5px;background:#fff;border:1px solid #efe9dd;border-radius:12px">媒体別売上データが未登録のため、ランチ/ディナー内訳は表示できません</div>`;
+    }
+    // 媒体別 売上（正規化した媒体名・売上降順・上位8＋その他）
+    const mrows=d.media||[];
+    if(mrows.length){
+      const MAXM=8;
+      const shown=mrows.slice(0,MAXM), rest=mrows.slice(MAXM);
+      const mTot=mrows.reduce((s2,r)=>s2+r.sales,0);
+      h+=`<div style="font-size:12.5px;color:#8c8375;margin:14px 0 6px">媒体別 売上${rest.length?'（上位'+MAXM+'・他'+rest.length+'媒体は「その他」に集約）':''}</div>
+      <table style="width:100%;border-collapse:collapse;background:#fff;border:1px solid #efe9dd;border-radius:12px;overflow:hidden">
+        <thead><tr style="background:#efe9dd">
+          <th style="text-align:left;padding:9px 12px;font-size:11.5px;color:#5c5348">媒体</th>
+          <th style="text-align:right;padding:9px 12px;font-size:11.5px;color:#5c5348">売上</th>
+          <th style="text-align:right;padding:9px 12px;font-size:11.5px;color:#5c5348">構成比</th>
+          <th style="text-align:right;padding:9px 12px;font-size:11.5px;color:#5c5348">客数</th>
+        </tr></thead><tbody>`;
+      shown.forEach((r,i)=>{
+        const pct=mTot>0?(r.sales/mTot*100).toFixed(1)+'%':'—';
+        h+=`<tr style="border-top:1px solid #efe9dd${i%2?';background:#fbf9f4':''}">
+          <td style="padding:8px 12px;font-size:13px;font-weight:500">${esc(r.media)}</td>
+          <td style="padding:8px 12px;font-size:13px;text-align:right;font-variant-numeric:tabular-nums">${yen(r.sales)}</td>
+          <td style="padding:8px 12px;font-size:12.5px;text-align:right;color:#8c8375">${pct}</td>
+          <td style="padding:8px 12px;font-size:13px;text-align:right">${cnt(r.guests)}人</td>
+        </tr>`;
+      });
+      if(rest.length){
+        const restSales=rest.reduce((s2,r)=>s2+r.sales,0), restG=rest.reduce((s2,r)=>s2+r.guests,0);
+        const pct=mTot>0?(restSales/mTot*100).toFixed(1)+'%':'—';
+        h+=`<tr style="border-top:1px solid #efe9dd">
+          <td style="padding:8px 12px;font-size:13px;color:#8c8375">その他（${rest.length}媒体）</td>
+          <td style="padding:8px 12px;font-size:13px;text-align:right;color:#8c8375">${yen(restSales)}</td>
+          <td style="padding:8px 12px;font-size:12.5px;text-align:right;color:#8c8375">${pct}</td>
+          <td style="padding:8px 12px;font-size:13px;text-align:right;color:#8c8375">${cnt(restG)}人</td>
+        </tr>`;
+      }
+      h+=`</tbody></table>`;
+    } else {
+      h+=`<div style="font-size:12.5px;color:#8c8375;margin:14px 0 6px">媒体別 売上</div>
+      <div style="padding:24px;text-align:center;color:#a99f8c;font-size:12.5px;background:#fff;border:1px solid #efe9dd;border-radius:12px">媒体別売上データがありません</div>`;
     }
     h+=`<div style="font-size:11px;color:#a99f8c;margin-top:10px;text-align:right">${brandLine} ／ ${esc(d.gen)} 自動生成</div>
     </div></div>

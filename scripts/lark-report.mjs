@@ -93,19 +93,22 @@ async function send() {
   const lrTxt = t.lr != null ? (t.lr * 100).toFixed(1) + '%' : '—';
   const dnTxt = t.dinii != null ? t.dinii.toFixed(2) : '—';
   const headline = single ? `【${single} ${d.title}】${d.sub}` : `【${d.title}】${d.sub}`;
+  const pctTxt = (v) => (v != null ? (v * 100).toFixed(1) + '%' : '—');
   const summary =
     `**${single ? '' : '全店'}${d.salesLabel} ${yen(t.sales)}**（前年比 ${yoy(t.sales, t.prevSales)}）\n` +
     `客数 ${cnt(t.guests)}人 ／ 客単価 ${yen(spend)} ／ F率 ${frTxt} ／ L率 ${lrTxt}` +
     (d.hasDinii ? `\nダイニー再来店 **${dnTxt}**（${d.diniiRangeLabel}・${cnt(t.diniiCount)}件）` : '') +
-    (d.kind === 'monthly' ? '' : `\n月間累計 ${yen(t.cum)}（前年比 ${yoy(t.cum, t.cumPrev)}）`) +
+    (d.kind === 'monthly' ? '' : `\n累計売上（月間） ${yen(t.cum)}（前年比 ${yoy(t.cum, t.cumPrev)}）`) +
+    (single && d.cumRate && d.kind !== 'monthly' ? `\n累計F率 ${pctTxt(d.cumRate.fr)} ／ 累計L率 ${pctTxt(d.cumRate.lr)}（月間）` : '') +
+    (single && d.review ? `\nGoogle口コミ ★${d.review.star.toFixed(2)}（${cnt(d.review.count)}件）／ ${d.kind === 'monthly' ? '今月' : d.kind === 'weekly' ? '今週' : '本日'}${d.review.inc == null ? ' —' : (d.review.inc >= 0 ? ' +' : ' ') + d.review.inc + '件'}` : '') +
     (single ? '' : (() => {
       const up = d.rows.filter((r) => r.prevSales > 0 && r.sales >= r.prevSales).length;
       const down = d.rows.filter((r) => r.prevSales > 0 && r.sales < r.prevSales).length;
       return `\n<font color="green">前年超え ${up}店</font> ／ <font color="red">前年割れ ${down}店</font>`;
     })());
 
-  // 単店舗＝ランチ/ディナー内訳、複数店舗＝店舗別トップ3
-  let detailBlock;
+  // 単店舗＝ランチ/ディナー内訳＋媒体別トップ3、複数店舗＝店舗別トップ3
+  let detailBlock, mediaBlock = '';
   if (single && d.seg && (d.seg.hasNet || d.seg.hasG)) {
     const segLine = (label, sales, prevSales, guests) => {
       const sp = guests > 0 ? sales / guests : 0;
@@ -120,9 +123,16 @@ async function send() {
   } else {
     detailBlock = '';
   }
+  if (single && d.media && d.media.length) {
+    const mTot = d.media.reduce((s, r) => s + r.sales, 0);
+    const lines = d.media.slice(0, 3)
+      .map((r) => `・${r.media}　${yen(r.sales)}${mTot > 0 ? `（${(r.sales / mTot * 100).toFixed(1)}%）` : ''}`).join('\n');
+    mediaBlock = `**媒体別 売上トップ3**\n${lines}`;
+  }
 
   const elements = [{ tag: 'markdown', content: summary }];
   if (detailBlock) elements.push({ tag: 'hr' }, { tag: 'markdown', content: detailBlock });
+  if (mediaBlock) elements.push({ tag: 'markdown', content: mediaBlock });
   if (imageUrl) {
     elements.push({
       tag: 'action',
