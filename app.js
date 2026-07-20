@@ -565,7 +565,7 @@ function ingestWkReports(rows){
   if(!rows||rows.length<2){ D.wkRep=[]; D.diag['週報']='0件'; return false; }
   const H=rows[0].map(h=>String(h).trim());
   const iId=colAny(H,['ID']), iW=colAny(H,['週開始日','週']), iU=colAny(H,['投稿者ID']), iN=colAny(H,['投稿者名']),
-        iS=colAny(H,['店舗']), iP=colAny(H,['役職']), iT=colAny(H,['提出日時']);
+        iS=colAny(H,['店舗']), iP=colAny(H,['役職']), iT=colAny(H,['提出日時']), iUp=colAny(H,['更新日時']);
   if(iId<0||iW<0||iU<0){ D.diag['週報']='列が見つかりません'; return false; }
   const recs=[];
   for(let i=1;i<rows.length;i++){
@@ -573,7 +573,7 @@ function ingestWkReports(rows){
     if(!id||!t) continue;
     recs.push({ id, week:t, userId:String(c[iU]||'').trim(), userName:String(iN>=0?c[iN]||'':'').trim(),
       store:String(iS>=0?c[iS]||'':'').trim(), position:String(iP>=0?c[iP]||'':'').trim(),
-      submittedAt:iT>=0?parseDateStr(c[iT]):0 });
+      submittedAt:iT>=0?parseDateStr(c[iT]):0, updatedAt:iUp>=0?parseDateStr(c[iUp]):0 });
   }
   D.wkRep=recs; D.diag['週報']='OK '+recs.length+'件'; return true;
 }
@@ -1199,6 +1199,8 @@ async function api(params){
   return r.json();
 }
 function stampNow(){ const n=new Date(); return (n.getMonth()+1)+'/'+n.getDate()+' '+String(n.getHours()).padStart(2,'0')+':'+String(n.getMinutes()).padStart(2,'0'); }
+// タイムスタンプ(ms)を「M/D HH:mm」に整形（週報の提出・編集日時表示用）
+function fmtDT(t){ if(!t) return ''; const d=new Date(t); return (d.getMonth()+1)+'/'+d.getDate()+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); }
 function monthsWindow(){ const v=localStorage.getItem(LS.months); return v==null?13:Number(v); } // 0=全期間, 既定13ヶ月(前年比の最小)
 async function fetchData(silent, opts){
   if(!S.auth||!S.auth.token) return;
@@ -3318,11 +3320,20 @@ function wkEnd(s){ return addD(s,6); }                       // 月曜
 function wkSubmitDue(s){ const d=addD(s,7); d.setHours(WK_DUE_HOUR,0,0,0); return d; }   // 翌火16:00
 function wkFbDue(s){ const d=addD(s,8); d.setHours(WK_DUE_HOUR,0,0,0); return d; }       // 翌水16:00
 function wkLabel(s){ const e=wkEnd(s); return `${s.getMonth()+1}/${s.getDate()}(火)〜${e.getMonth()+1}/${e.getDate()}(月)`; }
-// いま対象にすべき週（締切前は先週、締切後は今週を書く運用に合わせ「直近の完了した週」を既定にする）
+// いま対象にすべき週（既定は「今日を含む週」＝火曜〜翌月曜。今日7/20なら7/14〜7/20）
 function wkCurrent(){
   if(S.wkWeek){ const p=S.wkWeek.split('-'); return new Date(+p[0],+p[1]-1,+p[2]); }
   const ref=D.refDate||new Date();
-  return addD(wkStart(ref),-7);
+  return wkStart(ref);
+}
+// 週選択プルダウンの選択肢（先2週〜過去16週。範囲外の選択中の週も必ず含める）
+function wkWeekOptions(sel){
+  const base=wkStart(D.refDate||new Date()), selT=dayMs(sel), weeks=[];
+  for(let i=2;i>=-16;i--) weeks.push(addD(base,i*7));
+  if(!weeks.some(w=>dayMs(w)===selT)) weeks.push(sel);
+  weeks.sort((a,b)=>dayMs(b)-dayMs(a));
+  return weeks.map(w=>{ const v=w.getFullYear()+'-'+String(w.getMonth()+1).padStart(2,'0')+'-'+String(w.getDate()).padStart(2,'0');
+    return `<option value="${v}" ${dayMs(w)===selT?'selected':''}>${wkLabel(w)}</option>`; }).join('');
 }
 function wkMyPosition(){ const a=S.auth&&S.auth.account; return (a&&a.position)||''; }
 // 役職に対応するテンプレート（未設定なら「社員」→最初に見つかったもの、の順で探す）
@@ -3363,6 +3374,7 @@ function viewWeekly(){
   const mine=(D.wkRep||[]).find(r=>r.userId===acc.id&&r.week===weekT);
   const nav=`<div class="ctrl-bar no-print">
     <div class="mini-nav"><button onclick="App.wkNav(-1)">‹</button><span class="lbl">${wkLabel(s)}</span><button onclick="App.wkNav(1)">›</button></div>
+    <select class="wk-pick" onchange="App.wkPick(this.value)">${wkWeekOptions(s)}</select>
     <button class="icon-btn" onclick="App.wkNav(0)">今週へ</button>
     <span class="period-label">週報（火曜〜月曜）／ 提出期限 ${wkSubmitDue(s).getMonth()+1}/${wkSubmitDue(s).getDate()} 16:00 ・ FB期限 ${wkFbDue(s).getMonth()+1}/${wkFbDue(s).getDate()} 16:00</span>
   </div>`;
@@ -3375,27 +3387,41 @@ function viewWeekly(){
   h+=wkListPanel(s,weekT);
   return h;
 }
-// 自分の週報（入力フォーム）
-function wkMyForm(s,weekT,tpl,mine){
-  const acc=S.auth.account;
-  const store=selStoreName()||scopeStores()[0]||'';
+// 週報に自動で載せる数値のKPI表示（入力パネル・モーダル共通）
+function wkAutoHtml(store,s){
   const st=wkAutoStats(store,s);
   const yy=(c,p)=>p>0?((c-p)/p*100>=0?'+':'▲')+Math.abs((c-p)/p*100).toFixed(1)+'%':'—';
-  const auto=`<div class="kpi-grid" style="margin:2px 0 12px">
+  return `<div class="kpi-grid" style="margin:2px 0 12px">
     <div class="kpi"><div class="lb">週売上</div><div class="vl">${yen(st.sales)}</div><div class="yy">前年比 ${yy(st.sales,st.prevSales)}</div></div>
     <div class="kpi"><div class="lb">客数</div><div class="vl">${cnt(st.guests)}人</div><div class="yy">客単価 ${yen(st.spend)}</div></div>
     <div class="kpi"><div class="lb">FL率</div><div class="vl">${st.fl!=null?(st.fl*100).toFixed(1)+'%':'—'}</div><div class="yy">原価＋人件費</div></div>
     <div class="kpi"><div class="lb">ダイニー再来店</div><div class="vl">${st.dinii!=null?st.dinii.toFixed(2):'—'}</div><div class="yy">${cnt(st.diniiCount)}件</div></div>
   </div>`;
+}
+// 自分の週報（KPI＋入力ボタン。入力は目標入力と同じくモーダルで行う）
+function wkMyForm(s,weekT,tpl,mine){
+  const acc=S.auth.account;
+  const store=selStoreName()||scopeStores()[0]||'';
+  const auto=wkAutoHtml(store,s);
   if(!tpl.length){
     return `<div class="panel"><div class="panel-head"><div><h3>今週の自分の週報</h3></div></div>${auto}
       <div class="note-box">あなたの役職（${esc(wkMyPosition()||'未設定')}）のフォーマットが見つかりません。スプレッドシートの <code>DB_週報テンプレート</code> に行を追加するか、アカウント管理で役職を設定してください。</div></div>`;
   }
-  const ansMap={}; (D.wkAns[mine&&mine.id]||[]).forEach(a=>{ ansMap[a.label]=a.value; });
   const overdue=!mine&&Date.now()>wkSubmitDue(s).getTime();
   const badge=mine?'<span class="badge ok">提出済み</span>':(overdue?'<span class="badge ng">期限切れ・未提出</span>':'<span class="badge mid">未提出</span>');
-  let f=`<div class="panel"><div class="panel-head"><div><h3>今週の自分の週報 ${badge}</h3>
-    <div class="sub">${esc(acc.name||acc.id)}${wkMyPosition()?' ／ '+esc(wkMyPosition()):''}${store?' ／ '+esc(store):''}${mine?' ／ 提出済みの内容を編集できます':''}</div></div></div>${auto}`;
+  return `<div class="panel"><div class="panel-head"><div><h3>今週の自分の週報 ${badge}</h3>
+    <div class="sub">${esc(acc.name||acc.id)}${wkMyPosition()?' ／ '+esc(wkMyPosition()):''}${store?' ／ '+esc(store):''}${mine?' ／ 提出済み（内容は下の一覧で確認、ボタンから編集できます）':''}</div></div>
+    <button class="icon-btn primary no-print" onclick="App.openWeekly()">${mine?'✎ 週報を編集':'✎ 週報を入力'}</button></div>${auto}</div>`;
+}
+// 週報入力モーダル（目標入力と同じ操作感）
+function weeklyModal(){
+  const s=wkCurrent(), weekT=dayMs(s);
+  const acc=S.auth.account;
+  const tpl=wkTemplateFor(wkMyPosition());
+  const mine=(D.wkRep||[]).find(r=>r.userId===acc.id&&r.week===weekT);
+  const store=selStoreName()||scopeStores()[0]||'';
+  const ansMap={}; (D.wkAns[mine&&mine.id]||[]).forEach(a=>{ ansMap[a.label]=a.value; });
+  let f='';
   tpl.forEach((it,i)=>{
     const v=esc(ansMap[it.label]||'');
     f+=`<label style="display:block;font-size:12px;color:#5c5348;font-weight:700;margin:12px 0 5px">${esc(it.label)}${it.required?' <span style="color:#b5502f">*</span>':''}</label>`;
@@ -3403,9 +3429,17 @@ function wkMyForm(s,weekT,tpl,mine){
       ? `<input type="text" id="wk-${i}" style="width:100%" value="${v}">`
       : `<textarea id="wk-${i}" rows="4" style="width:100%;font-family:var(--sans);font-size:13px;color:var(--ink);background:#fff;border:1px solid var(--line2);border-radius:8px;padding:9px 11px;outline:none">${v}</textarea>`;
   });
-  f+=`<div id="wk-msg" style="font-size:12px;color:#b5502f;margin:10px 0 0"></div>
-    <div style="margin-top:12px"><button class="icon-btn primary" onclick="App.saveWeekly()">${mine?'週報を更新':'週報を提出'}</button></div></div>`;
-  return f;
+  return `<div class="modal-bg" onclick="if(event.target===this)App.closeModal()"><div class="modal" style="max-width:560px">
+    <h3>週報入力（${wkLabel(s)}）${mine?' ・編集':''}</h3>
+    <div class="sub">${esc(acc.name||acc.id)}${wkMyPosition()?' ／ '+esc(wkMyPosition()):''}${store?' ／ '+esc(store):''}</div>
+    ${wkAutoHtml(store,s)}
+    ${f}
+    <div id="wk-msg" style="font-size:12px;color:#b5502f;margin:10px 0 0"></div>
+    <div class="modal-btns">
+      <button class="icon-btn primary" onclick="App.saveWeekly()">${mine?'週報を更新':'週報を提出'}</button>
+      <button class="icon-btn" onclick="App.closeModal()">キャンセル</button>
+    </div>
+  </div></div>`;
 }
 // 本部・社長向け：提出状況のまとめ
 function wkAdminPanel(s,weekT){
@@ -3464,7 +3498,8 @@ function wkListPanel(s,weekT,filtered){
         <span class="mut" style="font-size:11.5px">${esc(r.position||'')}${r.store?' ／ '+esc(r.store):''}</span>
         ${late?'<span class="badge ng">期限後の提出</span>':'<span class="badge ok">期限内</span>'}
         <span class="mut" style="font-size:11px;margin-left:auto">${fbs.length?'FB '+fbs.length+'件':'<span style="color:#b5502f">FB未実施</span>'}</span>
-      </div>`;
+      </div>
+      <div class="mut" style="font-size:11px;margin-top:3px">提出 ${r.submittedAt?fmtDT(r.submittedAt):'—'}${(r.updatedAt&&r.submittedAt&&r.updatedAt-r.submittedAt>60000)?' ／ <span style="color:#b5502f">最終編集 '+fmtDT(r.updatedAt)+'</span>':''}</div>`;
     ans.forEach(a=>{ h+=`<div style="margin-top:9px"><div style="font-size:11.5px;color:#8c8375;font-weight:700">${esc(a.label)}</div>
       <div style="font-size:13px;white-space:pre-wrap;line-height:1.7">${esc(a.value)||'<span class="mut">—</span>'}</div></div>`; });
     if(fbs.length){
@@ -3508,6 +3543,7 @@ function viewWeeklyAdmin(){
 
   let h=`<div class="ctrl-bar no-print">
     <div class="mini-nav"><button onclick="App.wkNav(-1)">‹</button><span class="lbl">${wkLabel(s)}</span><button onclick="App.wkNav(1)">›</button></div>
+    <select class="wk-pick" onchange="App.wkPick(this.value)">${wkWeekOptions(s)}</select>
     <button class="icon-btn" onclick="App.wkNav(0)">今週へ</button>
     <span class="period-label">提出期限 ${wkSubmitDue(s).getMonth()+1}/${wkSubmitDue(s).getDate()} 16:00 ・ FB期限 ${wkFbDue(s).getMonth()+1}/${wkFbDue(s).getDate()} 16:00</span>
   </div>`;
@@ -4107,8 +4143,13 @@ function aiTrendChart(per, nameSet, media, metric){
 function answerQuery(q){
   if(!q||!q.trim()) return { text:'質問を入力してください（例：鳥一代 本店 今年のランチの単価は？ 推移も）' };
   const allowed=scopeStores();
+  const tabs=myTabs();
+  const canPL=tabs.includes('pl'), canDep=tabs.includes('deposit'), canRev=tabs.includes('review');
   const ref=D.refDate||new Date();
-  const store=detectStore(q,allowed);
+  // 担当外の店名を指定されたら、自店にフォールバックせず明示的に断る
+  const detected=detectStore(q,allStores());
+  if(detected&&!allowed.includes(detected)) return { text:'「'+detected+'」は担当外のため表示できません。あなたが見られるのは「'+allowed.join('、')+'」です。' };
+  const store=detected;
   const scopeNames=store?[store]:allowed;
   const nameSet=new Set(scopeNames);
   const per=parsePeriod(q,ref);
@@ -4125,6 +4166,7 @@ function answerQuery(q){
 
   // 口コミ
   if(want(/口コミ|評価|星/)){
+    if(!canRev) return { text:'口コミを見る権限がありません（管理者にご確認ください）。' };
     let ws=0,cs=0;
     scopeNames.forEach(nm=>{ reviewNamesFor(nm).forEach(rn=>{ let latest=null; for(const r of D.review){ if(r.store!==rn)continue; if(r.t>b)continue; if(!latest||r.t>latest.t)latest=r; } if(latest&&latest.count>0){ws+=latest.star*latest.count;cs+=latest.count;} }); });
     lines.push('　口コミ点数：'+(cs>0?(ws/cs).toFixed(2):'—')+'（Google加重平均）');
@@ -4149,21 +4191,24 @@ function answerQuery(q){
   for(const r of D.daily){ if(!nameSet.has(r.store))continue; if(r.t>=a&&r.t<=b){o.sales+=r.sales;o.guests+=r.guests;o.cost+=r.cost;o.labor+=r.labor;o.cash+=r.cash;} if(r.t>=pa2&&r.t<=pb2){po.sales+=r.sales;po.guests+=r.guests;} }
   const S2=o.sales, sp=o.guests>0?S2/o.guests:0, psp=po.guests>0?po.sales/po.guests:0;
   const pct=n=>S2>0?(n/S2*100).toFixed(1)+'%':'—';
-  let hit=false, metric='sales';
+  let hit=false, metric='sales'; const denied=[];
   if(want(/売上/)){ lines.push('　売上：'+yen(S2)+'（'+yy(S2,po.sales)+'）'); hit=true; metric='sales'; }
   if(want(/客数/)){ lines.push('　客数：'+cnt(o.guests)+'人（'+yy(o.guests,po.guests)+'）'); hit=true; metric='guests'; }
   if(want(/単価/)){ lines.push('　客単価：'+yen(sp)+'（'+yy(sp,psp)+'）'); hit=true; metric='spend'; }
-  if(want(/原価|仕入/)){ lines.push('　原価率：'+pct(o.cost)+'（仕入 '+yen(o.cost)+'）'); hit=true; }
-  if(want(/人件費/)){ lines.push('　人件費率：'+pct(o.labor)); hit=true; }
-  if(want(/FL/i)){ lines.push('　FL率：'+pct(o.cost+o.labor)); hit=true; }
-  if(want(/利益/)){ lines.push('　利益(FL後)：'+yen(S2-o.cost-o.labor)+'（'+pct(S2-o.cost-o.labor)+'）'); hit=true; }
-  if(want(/未入金|入金/)){ let dep=0; for(const r of D.deposit){ if(nameSet.has(r.store)&&r.t>=a&&r.t<=b)dep+=r.amount; } lines.push('　現金売上：'+yen(o.cash)+' ／ 入金：'+yen(dep)+' ／ 未入金：'+yen(o.cash-dep)); hit=true; }
-  if(!hit){
+  if(want(/原価|仕入/)){ if(canPL){ lines.push('　原価率：'+pct(o.cost)+'（仕入 '+yen(o.cost)+'）'); hit=true; } else denied.push('原価'); }
+  if(want(/人件費/)){ if(canPL){ lines.push('　人件費率：'+pct(o.labor)); hit=true; } else denied.push('人件費'); }
+  if(want(/FL/i)){ if(canPL){ lines.push('　FL率：'+pct(o.cost+o.labor)); hit=true; } else denied.push('FL'); }
+  if(want(/利益/)){ if(canPL){ lines.push('　利益(FL後)：'+yen(S2-o.cost-o.labor)+'（'+pct(S2-o.cost-o.labor)+'）'); hit=true; } else denied.push('利益'); }
+  if(want(/未入金|入金/)){ if(canDep){ let dep=0; for(const r of D.deposit){ if(nameSet.has(r.store)&&r.t>=a&&r.t<=b)dep+=r.amount; } lines.push('　現金売上：'+yen(o.cash)+' ／ 入金：'+yen(dep)+' ／ 未入金：'+yen(o.cash-dep)); hit=true; } else denied.push('入金'); }
+  if(!hit&&!denied.length){
     lines.push('　売上：'+yen(S2)+'（'+yy(S2,po.sales)+'）');
     lines.push('　客数：'+cnt(o.guests)+'人 ／ 客単価：'+yen(sp));
-    lines.push('　原価率：'+pct(o.cost)+' ／ 人件費率：'+pct(o.labor)+' ／ FL：'+pct(o.cost+o.labor));
-    lines.push('　利益(FL後)：'+yen(S2-o.cost-o.labor));
+    if(canPL){
+      lines.push('　原価率：'+pct(o.cost)+' ／ 人件費率：'+pct(o.labor)+' ／ FL：'+pct(o.cost+o.labor));
+      lines.push('　利益(FL後)：'+yen(S2-o.cost-o.labor));
+    }
   }
+  if(denied.length) lines.push('　※ '+denied.join('・')+'は閲覧権限がないため表示できません');
   return { text:lines.join('\n'), chart: want(/推移|グラフ/)?aiTrendChart(per,nameSet,null,metric):null };
 }
 function viewAI(){
@@ -4239,6 +4284,7 @@ function viewModal(){
   if(S.modal==='connect') return connectModal();
   if(S.modal&&S.modal.type==='account') return accountModal();
   if(S.modal&&S.modal.type==='invite') return inviteModal();
+  if(S.modal&&S.modal.type==='weekly') return weeklyModal();
   if(S.modal&&S.modal.type==='target') return targetModal();
   if(S.modal&&S.modal.type==='targetDay') return targetDayModal();
   if(S.modal&&S.modal.type==='depImport') return depImportModal();
@@ -4736,18 +4782,24 @@ function inviteModal(){
   if(d){
     const urls=d.urls||[];
     const many=urls.length>1;
+    const rows=urls.map((u,i)=>`<div style="display:flex;gap:6px;align-items:center;margin-top:6px">
+      ${many?`<span class="mut" style="font-size:11px;min-width:30px;text-align:right">#${i+1}</span>`:''}
+      <input type="text" id="iv-url-${i}" readonly onclick="this.select()" value="${esc(u)}"
+        style="flex:1;font-family:var(--sans);font-size:12px;color:var(--ink);background:#fff;border:1px solid var(--line2);border-radius:8px;padding:8px 10px;outline:none">
+      <button class="icon-btn" onclick="App.copyInviteOne(${i})">コピー</button>
+    </div>`).join('');
     return `<div class="modal-bg" onclick="if(event.target===this)App.closeModal()"><div class="modal">
       <h3>招待リンクを${urls.length}件発行しました</h3>
-      <div class="sub"><b>1リンクにつき1人だけ</b>登録できます（使うと無効）。${many?'それぞれ別の方に送ってください。':''}期限は ${esc(d.expires)} です。</div>
-      <div class="note-box" style="margin-bottom:10px;font-size:12px">
+      <div class="sub"><b>1リンクにつき1人だけ</b>登録できます（使うと無効）。${many?'各リンクの「コピー」で1枚ずつコピーして、それぞれ別の方に送ってください。':''}期限は ${esc(d.expires)} です。</div>
+      <div class="note-box" style="margin-bottom:4px;font-size:12px">
         権限：<b>${esc(d.role)}</b>${d.position?' ／ 役職：<b>'+esc(d.position)+'</b>':''}<br>担当店舗：${esc(d.stores)}
       </div>
-      <textarea id="iv-url" rows="${Math.min(urls.length+1,8)}" readonly onclick="this.select()"
-        style="width:100%;font-family:var(--sans);font-size:12px;color:var(--ink);background:#fff;border:1px solid var(--line2);border-radius:8px;padding:9px 11px;outline:none">${esc(urls.join('\n'))}</textarea>
-      <div class="sub" style="margin-top:6px">本人がリンクを開くと、ログインIDとパスワードを自分で設定して登録します。登録後はアカウント管理に表示され、退職時はそこで無効化できます。</div>
+      ${rows}
+      <textarea id="iv-url" readonly style="position:absolute;left:-9999px;top:-9999px" aria-hidden="true">${esc(urls.join('\n'))}</textarea>
+      <div class="sub" style="margin-top:8px">本人がリンクを開くと、ログインIDとパスワードを自分で設定して登録します。登録後はアカウント管理に表示され、退職時はそこで無効化できます。</div>
       <div class="modal-btns">
-        <button class="icon-btn primary" onclick="App.copyInvite()">${many?'すべてコピー':'リンクをコピー'}</button>
-        <button class="icon-btn" onclick="App.closeModal()">閉じる</button>
+        ${many?`<button class="icon-btn" onclick="App.copyInvite()">すべてまとめてコピー</button>`:''}
+        <button class="icon-btn primary" onclick="App.closeModal()">閉じる</button>
       </div></div></div>`;
   }
   const all=allStores();
@@ -4988,6 +5040,12 @@ window.App = {
     S.wkWeek=n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0')+'-'+String(n.getDate()).padStart(2,'0');
     render();
   },
+  wkPick(v){ S.wkWeek=v; render(); },
+  openWeekly(){
+    const tpl=wkTemplateFor(wkMyPosition());
+    if(!tpl.length){ toast('あなたの役職には週報フォーマットがありません'); return; }
+    S.modal={type:'weekly'}; render();
+  },
   async saveWeekly(){
     const msg=$('wk-msg');
     const s=wkCurrent();
@@ -5005,7 +5063,7 @@ window.App = {
     try{
       const d=await api({ action:'saveWeekly', token:S.auth.token, week, store, position:wkMyPosition(), answers:JSON.stringify(answers) });
       if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'保存に失敗しました'; return; }
-      msg.textContent=''; toast('週報を保存しました'); fetchDataFast();
+      S.modal=null; toast('週報を保存しました'); fetchDataFast(); render();
     }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
   },
   async saveFeedback(reportId){
@@ -5038,7 +5096,8 @@ window.App = {
       render();
     }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
   },
-  copyInvite(){ const el=$('iv-url'); if(el){ el.select(); document.execCommand('copy'); toast('招待リンクをコピーしました'); } },
+  copyInvite(){ const el=$('iv-url'); if(el){ el.select(); document.execCommand('copy'); toast('招待リンクをすべてコピーしました'); } },
+  copyInviteOne(i){ const el=$('iv-url-'+i); if(el){ el.select(); el.setSelectionRange(0,99999); document.execCommand('copy'); toast('リンク #'+(i+1)+' をコピーしました'); } },
   async doRegister(){
     const msg=$('rg-msg');
     const id=$('rg-id').value.trim(), pw=$('rg-pw').value, pw2=$('rg-pw2').value, name=$('rg-name').value.trim();
