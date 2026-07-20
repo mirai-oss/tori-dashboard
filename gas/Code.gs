@@ -43,7 +43,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'weekly-v41', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'roledef-v42', time: new Date().toISOString() });
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     if (action === 'perf') return out(perfDiag(p)); // パフォーマンス計測（専用トークン認証・ログイン不要・数字は返さず時間だけ）
     setupIfNeeded();
@@ -96,6 +96,7 @@ function setupIfNeeded() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   weeklySheets_();          // 週報・回答・FB・招待
   weeklyTemplateSheet_();   // 週報フォーマット（社長が編集する場所）
+  roleDefSheet_();          // 役職・権限ごとの既定（表示タブ・使える機能）
 
   // アカウントシート
   var acc = ss.getSheetByName('アカウント');
@@ -1801,6 +1802,35 @@ function weeklySheets_() {
   };
 }
 // テンプレート（社長が自由に編集する場所）。無ければ初期サンプルを入れて作る。
+// 役職・権限ごとの「表示タブ / 使える機能」の既定を置く場所。
+// ここを編集すれば、コードを変えずに全員へ反映される（アカウント個別の上書きより弱い）。
+function roleDefSheet_() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sh = ss.getSheetByName('DB_権限定義');
+  if (!sh) {
+    sh = ss.insertSheet('DB_権限定義');
+    sh.getRange(1, 1, 1, 4).setValues([['区分', '名称', '表示するタブ', '使える機能']])
+      .setFontWeight('bold').setBackground('#efe9dd');
+    var T = 'ダッシュボード,目標管理,推移分析,明細分析,PL（損益）,入金管理,広告管理,口コミ,週報,週報管理,AI検索';
+    var ALL = '口座CSVを取込,経費を入力,広告費を入力,売上を入力,予約CSVを取込';
+    sh.getRange(2, 1, 6, 4).setValues([
+      ['権限', '社長',        T + ',アカウント管理', ALL],
+      ['権限', '本部',        T + ',アカウント管理', ALL],
+      ['権限', 'マネージャー', T,                    'なし'],
+      ['権限', '店舗',        'ダッシュボード,目標管理,推移分析,明細分析,入金管理,口コミ,週報,AI検索', 'なし'],
+      ['役職', '店長',        '', ''],
+      ['役職', '社員',        '', ''],
+    ]);
+    sh.getRange('A1').setNote(
+      '役職・権限ごとの既定値。空欄の行は上の「権限」の既定に従います。\n' +
+      '・区分=権限（社長/本部/マネージャー/店舗）または 役職（店長/社員 など任意）\n' +
+      '・役職の行を書くと、その役職の人は権限より優先してこの設定になります\n' +
+      '・使える機能に「なし」と書くと1つも使えません（空欄＝上位の既定に従う）\n' +
+      '・アカウント個別に設定した内容は、このシートより優先されます');
+    sh.setFrozenRows(1); sh.setColumnWidths(1, 2, 110); sh.setColumnWidth(3, 380); sh.setColumnWidth(4, 300);
+  }
+  return sh;
+}
 function weeklyTemplateSheet_() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sh = ss.getSheetByName('DB_週報テンプレート');
@@ -1882,11 +1912,18 @@ function createInvite(p, session) {
   var role = String(p.role || '').trim();
   if (['社長', '本部', 'マネージャー', '店舗'].indexOf(role) < 0) return { ok: false, error: '権限の指定が不正です' };
   var days = Number(p.days || 7); if (!(days > 0 && days <= 60)) days = 7;
-  var token = Utilities.getUuid().replace(/-/g, '');   // 32桁・推測不可
+  // 1リンク＝1人しか登録できないため、同じ条件で複数人ぶん欲しい場合は count でまとめて発行する
+  var count = Number(p.count || 1); if (!(count >= 1 && count <= 20)) count = 1;
   var exp = new Date(); exp.setDate(exp.getDate() + days);
   var sh = weeklySheets_();
-  sh.inv.appendRow([token, role, String(p.position || ''), String(p.stores || ''), session.id, new Date(), exp, 'FALSE', '']);
-  return { ok: true, token: token, expires: ymd_(exp) };
+  var now = new Date(), tokens = [], rows = [];
+  for (var i = 0; i < count; i++) {
+    var token = Utilities.getUuid().replace(/-/g, '');   // 32桁・推測不可
+    tokens.push(token);
+    rows.push([token, role, String(p.position || ''), String(p.stores || ''), session.id, now, exp, 'FALSE', '']);
+  }
+  sh.inv.getRange(sh.inv.getLastRow() + 1, 1, rows.length, 9).setValues(rows);
+  return { ok: true, tokens: tokens, token: tokens[0], expires: ymd_(exp) };
 }
 // トークンの中身を返す（未ログインで呼ばれる。権限・役職・店舗だけ返し、他の情報は一切返さない）
 function checkInvite(p) {

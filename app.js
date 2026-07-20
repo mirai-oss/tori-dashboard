@@ -23,12 +23,12 @@ const PALETTE = ['#3d5163','#b5502f','#5f7052','#c9a86a','#7d8b6f','#2a6f8f','#9
 const C_NOW='#3d5163', C_PREV='#c9b7a0', C_MID='#7d8b6f';
 const LS = { api:'toriApiUrl', sess:'toriSession', acc:'toriDemoAccounts', poll:'toriPollSec', months:'toriMonths' };
 const ROLE_TABS = {
-  '社長':       ['dash','target','analysis','detail','pl','deposit','ad','review','weekly','ai','accounts'],
-  '本部':       ['dash','target','analysis','detail','pl','deposit','ad','review','weekly','ai','accounts'],
-  'マネージャー':['dash','target','analysis','detail','pl','deposit','ad','review','weekly','ai'],
+  '社長':       ['dash','target','analysis','detail','pl','deposit','ad','review','weekly','weeklyAdmin','ai','accounts'],
+  '本部':       ['dash','target','analysis','detail','pl','deposit','ad','review','weekly','weeklyAdmin','ai','accounts'],
+  'マネージャー':['dash','target','analysis','detail','pl','deposit','ad','review','weekly','weeklyAdmin','ai'],
   '店舗':       ['dash','target','analysis','detail','deposit','review','weekly','ai'],   // PL・広告管理は既定で非表示（アカウントごとの「表示タブ」で変更可）
 };
-const TAB_LABELS = { dash:'ダッシュボード', target:'目標管理', analysis:'推移分析', detail:'明細分析', pl:'PL（損益）', deposit:'入金管理', ad:'広告管理', review:'口コミ', weekly:'週報', ai:'AI検索', accounts:'アカウント管理' };
+const TAB_LABELS = { dash:'ダッシュボード', target:'目標管理', analysis:'推移分析', detail:'明細分析', pl:'PL（損益）', deposit:'入金管理', ad:'広告管理', review:'口コミ', weekly:'週報', weeklyAdmin:'週報管理', ai:'AI検索', accounts:'アカウント管理' };
 // 入力・取込系の機能権限。閲覧は「表示タブ」で、データを書き込む操作はこちらで制御する。
 // 既定は権限ごとの ROLE_FEATURES、アカウントごとに上書きしたい場合は「アカウント」シートのI列に保存する。
 const FEATURE_LABELS = {
@@ -120,11 +120,11 @@ const S = {
   dPeriod:'month', dStore:'all', dRankMode:'sales', dBasis:'checkout', dDay:'', dMonth:'', dYear:'', dWeekIdx:null, dStart:'', dEnd:'',
   tMonth:'', tStore:'',   // 目標管理タブ：対象月・対象店舗
   aiQ:'', aiResult:null, dataVersion:'',
-  reportMode:null, invite:null, inviteDone:false, wkWeek:'',   // {kind:'daily'|'weekly'|'monthly', date:'YYYY-MM-DD'} Lark日報用の1枚カード表示
+  reportMode:null, invite:null, inviteDone:false, wkWeek:'', wkFStore:'', wkFPos:'', wkFState:'', wkFQ:'',   // {kind:'daily'|'weekly'|'monthly', date:'YYYY-MM-DD'} Lark日報用の1枚カード表示
   accounts:null, accErr:'', modal:null, loginErr:'',
 };
 const D = { daily:[], media:[], deposit:[], review:[], ad:[], adfx:[], tanka:{}, pl:[], dinii:[], diniiCols:[], targets:[], targetsM:[], events:[], extra:{}, storeAlias:{}, storeParent:{}, mediaClass:{}, adMediaMaster:[], adPlanMaster:{}, adStoreMaster:[], holidays:null, detailData:null, detailKey:'', detailLoading:'', refDate:null, maxDate:null,
-  wkTpl:{}, wkRep:[], wkAns:{}, wkFb:{} };
+  wkTpl:{}, wkRep:[], wkAns:{}, wkFb:{}, roleDef:{} };
 let EXPORT = [];      // 現在タブのCSVエクスポート対象 [{title,headers,rows}]
 let pollTimer = null;
 
@@ -507,6 +507,32 @@ function tankaOf(store,cm){
 function tkOf(m,store,cm){ m=m||{}; return m[store+'|'+cm]||m[store+'|']||m['|'+cm]||m['|']||0; }
 function tankaAvgOf(store,cm){ return tkOf(D.tankaAvg,store,cm); }
 function tankaCvOf(store,cm){ return tkOf(D.tankaCv,store,cm); }
+/* ---- 役職・権限ごとの既定（DB_権限定義） ----
+ * 優先順位: アカウント個別の設定 → 役職の行 → 権限の行 → コード内の既定
+ * シートを編集すればコード変更なしで全員に反映される。 */
+const isRoleDefKey=(k)=>/^権限定義$|^役職定義$/.test(String(k).trim());
+function ingestRoleDef(rows){
+  if(!rows||rows.length<2){ D.roleDef={}; D.diag['権限定義']='0件'; return false; }
+  const H=rows[0].map(h=>String(h).trim());
+  const iK=colAny(H,['区分']), iN=colAny(H,['名称','名前']), iT=colAny(H,['表示するタブ','表示タブ','タブ']), iF=colAny(H,['使える機能','機能']);
+  if(iN<0){ D.diag['権限定義']='列が見つかりません（必要: 名称）'; return false; }
+  const out={}; let n=0;
+  for(let i=1;i<rows.length;i++){
+    const c=rows[i]; const name=String(c[iN]||'').trim(); if(!name) continue;
+    const kind=String(iK>=0?c[iK]||'':'').trim()||'権限';
+    out[kind+'|'+name]={ tabs:String(iT>=0?c[iT]||'':'').trim(), feats:String(iF>=0?c[iF]||'':'').trim() };
+    n++;
+  }
+  D.roleDef=out; D.diag['権限定義']='OK '+n+'件'; return true;
+}
+// シートに書かれた既定を引く（役職優先→権限）。未設定・空欄なら null を返して次の候補へ委ねる
+function roleDefOf(field){
+  const acc=S.auth&&S.auth.account; if(!acc) return null;
+  const d=D.roleDef||{};
+  const cand=[acc.position?('役職|'+acc.position):null, acc.role?('権限|'+acc.role):null].filter(Boolean);
+  for(const k of cand){ const r=d[k]; if(r&&r[field]) return r[field]; }
+  return null;
+}
 /* ---- 週報（DB_週報 / DB_週報回答 / DB_週報FB / DB_週報テンプレート） ----
  * 週の区切りは「火曜〜翌月曜」。分析タブの月内ブロック週（1-7日…）とは別物。
  * 判定は厳密一致にする（「週報回答」が「週報」にも前方一致してしまうため）。 */
@@ -941,6 +967,7 @@ function ingestSheets(sheets, partial){
     else if(key==='広告店舗マスタ') ingestAdStoreMaster(rows);
     else if(isStoreParentKey(key)){ D.storeParent=ingestStoreParent(rows); D.diag[key]='OK '+Object.keys(D.storeParent).length+'件の親子'; }
     else if(isStoreMapKey(key)){ D.storeAlias=ingestStoreMap(rows); D.diag[key]='OK '+Object.keys(D.storeAlias).length+'件の対応'; }
+    else if(isRoleDefKey(key)) ingestRoleDef(rows);
     else if(isWkTplKey(key)) ingestWkTemplate(rows);
     else if(isWkAnsKey(key)) ingestWkAnswers(rows);   // 「回答」を先に判定（週報にも前方一致するため）
     else if(isWkFbKey(key)) ingestWkFb(rows);
@@ -986,7 +1013,8 @@ function parseTabsSpec(s){
 }
 function myTabs(){
   const acc=S.auth&&S.auth.account;
-  const base=ROLE_TABS[acc&&acc.role]||ROLE_TABS['店舗'];
+  // 既定はシート（DB_権限定義）→ 無ければコード内の既定
+  const base=parseTabsSpec(roleDefOf('tabs'))||ROLE_TABS[acc&&acc.role]||ROLE_TABS['店舗'];
   const ov=parseTabsSpec(acc&&acc.tabs);
   if(!ov) return base;
   const admin=acc&&(acc.role==='社長'||acc.role==='本部');
@@ -1011,8 +1039,11 @@ function parseFeatureSpec(s){
 // いま操作している人がその機能を使えるか。閲覧タブとは独立に判定する。
 function myFeatures(){
   const acc=S.auth&&S.auth.account;
-  const ov=parseFeatureSpec(acc&&acc.perms);
-  return ov||ROLE_FEATURES[acc&&acc.role]||[];
+  const ov=parseFeatureSpec(acc&&acc.perms);            // アカウント個別が最優先
+  if(ov) return ov;
+  const sheet=parseFeatureSpec(roleDefOf('feats'));     // 次にシートの既定
+  if(sheet) return sheet;
+  return ROLE_FEATURES[acc&&acc.role]||[];
 }
 function canUse(feature){ return myFeatures().indexOf(feature)>=0; }
 // 画面のボタンを隠すだけでなく、操作の入口でも弾く（開発者ツールから直接呼ばれた場合の保険）
@@ -1350,6 +1381,7 @@ function render(){
   else if(S.tab==='ad') body=viewAd();
   else if(S.tab==='review') body=viewReview();
   else if(S.tab==='weekly') body=viewWeekly();
+  else if(S.tab==='weeklyAdmin') body=viewWeeklyAdmin();
   else if(S.tab==='ai') body=viewAI();
   else if(S.tab==='accounts') body=viewAccounts();
   root.innerHTML=`<div class="app">${viewHeader()}${diagBanner()}${viewNav()}${body}</div>${ctxBarHtml()}${S.modal?viewModal():''}`;
@@ -3294,11 +3326,11 @@ function wkCurrent(){
 }
 function wkMyPosition(){ const a=S.auth&&S.auth.account; return (a&&a.position)||''; }
 // 役職に対応するテンプレート（未設定なら「社員」→最初に見つかったもの、の順で探す）
+// 役職が一致したときだけフォーマットを返す。役職が未設定の人（社長など）は提出対象にしない。
+// ここで「社員」等に自動フォールバックすると、提出しない立場の人にも入力欄が出てしまう。
 function wkTemplateFor(pos){
   const t=D.wkTpl||{};
-  if(pos&&t[pos]) return t[pos];
-  if(t['社員']) return t['社員'];
-  const k=Object.keys(t); return k.length?t[k[0]]:[];
+  return (pos&&t[pos])?t[pos]:[];
 }
 // 週報に自動で載せる数値（その人の店舗・その週）
 function wkAutoStats(store,s){
@@ -3336,7 +3368,10 @@ function viewWeekly(){
   </div>`;
   let h=nav;
   if(isAdminRole()) h+=wkAdminPanel(s,weekT);
-  h+=wkMyForm(s,weekT,tpl,mine);
+  // 自分の役職にフォーマットがある人（＝提出対象者）だけ入力欄を出す。
+  // 社長など提出しない立場の人は一覧とフィードバックだけ見えるようにして画面を軽くする。
+  if(tpl.length) h+=wkMyForm(s,weekT,tpl,mine);
+  else h+=`<div class="note-box no-print" style="margin:10px 0">あなたの役職（${esc(wkMyPosition()||'未設定')}）は週報の提出対象ではありません。下の一覧を確認してフィードバックできます。${isAdminRole()?'提出状況の全体像は「週報管理」タブで見られます。':''}</div>`;
   h+=wkListPanel(s,weekT);
   return h;
 }
@@ -3399,10 +3434,27 @@ function wkAdminPanel(s,weekT){
   return h;
 }
 // 週報の一覧（同じ店舗なら全員見える）
-function wkListPanel(s,weekT){
-  const list=wkVisibleReports(weekT).slice().sort((a,b)=>(a.store||'').localeCompare(b.store||'')||(a.userName||'').localeCompare(b.userName||''));
-  if(!list.length) return `<div class="panel"><div class="panel-head"><div><h3>みんなの週報（${wkLabel(s)}）</h3></div></div><div class="empty">まだ提出がありません</div></div>`;
-  let h=`<div class="panel"><div class="panel-head"><div><h3>みんなの週報（${wkLabel(s)}）</h3><div class="sub">同じ店舗のメンバーとフィードバックが見られます ／ ${list.length}件</div></div></div>`;
+function wkListPanel(s,weekT,filtered){
+  let list=wkVisibleReports(weekT).slice().sort((a,b)=>(a.store||'').localeCompare(b.store||'')||(a.userName||'').localeCompare(b.userName||''));
+  const total=list.length;
+  if(filtered){
+    const q=String(S.wkFQ||'').trim().toLowerCase();
+    list=list.filter(r=>{
+      if(S.wkFStore&&!(String(r.store||'').split(/[,、]/).map(x=>x.trim()).includes(S.wkFStore))) return false;
+      if(S.wkFPos&&r.position!==S.wkFPos) return false;
+      if(S.wkFState==='nofb'&&(D.wkFb[r.id]||[]).length) return false;
+      if(S.wkFState==='late'&&!(r.submittedAt&&r.submittedAt>wkSubmitDue(s).getTime())) return false;
+      if(q){
+        const hay=[r.userName,r.userId,r.store,r.position].concat((D.wkAns[r.id]||[]).map(a=>a.label+' '+a.value))
+          .concat((D.wkFb[r.id]||[]).map(f=>f.userName+' '+f.body)).join(' ').toLowerCase();
+        if(hay.indexOf(q)<0) return false;
+      }
+      return true;
+    });
+  }
+  const title=filtered?'週報一覧':'みんなの週報';
+  if(!list.length) return `<div class="panel"><div class="panel-head"><div><h3>${title}（${wkLabel(s)}）</h3></div></div><div class="empty">${total?'条件に合う週報がありません':'まだ提出がありません'}</div></div>`;
+  let h=`<div class="panel"><div class="panel-head"><div><h3>${title}（${wkLabel(s)}）</h3><div class="sub">${filtered?(list.length===total?`${total}件`:`${list.length}件を表示（全${total}件）`):'同じ店舗のメンバーとフィードバックが見られます ／ '+list.length+'件'}</div></div></div>`;
   list.forEach(r=>{
     const ans=D.wkAns[r.id]||[]; const fbs=D.wkFb[r.id]||[];
     const late=r.submittedAt&&r.submittedAt>wkSubmitDue(s).getTime();
@@ -3427,6 +3479,72 @@ function wkListPanel(s,weekT){
       <button class="icon-btn" onclick="App.saveFeedback(this.dataset.i)" data-i="${esc(r.id)}">送信</button></div></div>`;
   });
   return h+`</div>`;
+}
+/* ---- 週報管理（社長・本部・マネージャー向け。提出状況の把握とフィードバック） ---- */
+// 週報の提出対象者。アカウント一覧のうち、有効かつ役職テンプレートがある人。
+function wkExpectedMembers(){
+  const list=(S.accounts||[]).filter(a=>a.active!==false);
+  const admin=isAdminRole();
+  const mine=new Set(scopeStores());
+  return list.filter(a=>{
+    if(!wkTemplateFor(a.position||'').length) return false;   // 提出フォーマットが無い人は対象外
+    if(String(a.stores||'')==='全店') return false;            // 全店担当（社長・本部）は提出対象にしない
+    if(admin) return true;
+    return String(a.stores||'').split(/[,、]/).some(x=>mine.has(x.trim()));
+  });
+}
+function viewWeeklyAdmin(){
+  const live=!!(S.auth&&S.auth.token);
+  if(live&&S.accounts===null){ loadAccounts(); }
+  const s=wkCurrent(), weekT=dayMs(s);
+  const reps=wkVisibleReports(weekT);
+  const members=wkExpectedMembers();
+  const repByUser={}; reps.forEach(r=>{ repByUser[r.userId]=r; });
+  const notYet=members.filter(m=>!repByUser[m.id]);
+  const now=Date.now(), subOver=now>wkSubmitDue(s).getTime(), fbOver=now>wkFbDue(s).getTime();
+  const withFb=reps.filter(r=>(D.wkFb[r.id]||[]).length>0);
+  const noFb=reps.filter(r=>!(D.wkFb[r.id]||[]).length);
+  const rate=members.length?Math.round(reps.length/members.length*100):null;
+
+  let h=`<div class="ctrl-bar no-print">
+    <div class="mini-nav"><button onclick="App.wkNav(-1)">‹</button><span class="lbl">${wkLabel(s)}</span><button onclick="App.wkNav(1)">›</button></div>
+    <button class="icon-btn" onclick="App.wkNav(0)">今週へ</button>
+    <span class="period-label">提出期限 ${wkSubmitDue(s).getMonth()+1}/${wkSubmitDue(s).getDate()} 16:00 ・ FB期限 ${wkFbDue(s).getMonth()+1}/${wkFbDue(s).getDate()} 16:00</span>
+  </div>`;
+  h+=`<div class="kpi-grid">
+    <div class="kpi"><div class="lb">提出率</div><div class="vl">${rate!=null?rate+'%':'—'}</div><div class="yy">${cnt(reps.length)} / ${cnt(members.length)}人</div></div>
+    <div class="kpi"><div class="lb">未提出</div><div class="vl" style="color:${notYet.length?'#b5502f':'#3d3a33'}">${cnt(notYet.length)}人</div><div class="yy">${subOver?'提出期限すぎ':'期限まで受付中'}</div></div>
+    <div class="kpi"><div class="lb">未フィードバック</div><div class="vl" style="color:${noFb.length?'#b5502f':'#3d3a33'}">${cnt(noFb.length)}件</div><div class="yy">${fbOver?'FB期限すぎ':'期限まで受付中'}</div></div>
+    <div class="kpi"><div class="lb">FB率</div><div class="vl">${reps.length?Math.round(withFb.length/reps.length*100)+'%':'—'}</div><div class="yy">提出に対するFBの割合</div></div>
+  </div>`;
+  if(!live){ h+=`<div class="note-box">API未接続のため、提出対象者（アカウント一覧）を読み込めません。未提出者の判定は本番環境でのみ動作します。</div>`; }
+
+  // 未提出者
+  if(notYet.length){
+    h+=`<div class="panel" style="border-color:#e8cfc2"><div class="panel-head"><div><h3 style="color:#b5502f">未提出 ${notYet.length}人（${wkLabel(s)}）</h3>
+      <div class="sub">提出期限 ${wkSubmitDue(s).getMonth()+1}/${wkSubmitDue(s).getDate()} 16:00${subOver?' ／ <b style="color:#b5502f">期限を過ぎています</b>':''}</div></div></div>
+      <div class="chk-stores">${notYet.map(m=>`<span style="background:#faf0ec;border:1px solid #e8cfc2;border-radius:8px;padding:6px 10px;font-size:12px">${esc(m.name||m.id)}<span class="mut" style="font-size:10.5px"> ／ ${esc(m.position||'')}${m.stores?' ／ '+esc(m.stores):''}</span></span>`).join('')}</div></div>`;
+  } else if(members.length){
+    h+=`<div class="panel" style="border-color:#cfe0d2"><div class="panel-head"><div><h3 style="color:#4c7d5c">全員提出済み（${cnt(members.length)}人）</h3></div></div></div>`;
+  }
+
+  // 検索・フィルター
+  const stores=[...new Set(members.concat(reps.map(r=>({stores:r.store}))).map(x=>String(x.stores||'')).flatMap(x=>x.split(/[,、]/)).map(x=>x.trim()).filter(Boolean))].sort();
+  const positions=[...new Set(reps.map(r=>r.position).concat(members.map(m=>m.position)).filter(Boolean))].sort();
+  h+=`<div class="panel"><div class="panel-head"><div><h3>週報を探す</h3><div class="sub">店舗・役職・キーワードで絞り込めます（本文も検索対象）</div></div></div>
+    <div class="form-grid">
+      <div><label>店舗</label><select id="wa-store" onchange="App.set('wkFStore',this.value)"><option value="">すべて</option>${stores.map(n=>`<option ${S.wkFStore===n?'selected':''}>${esc(n)}</option>`).join('')}</select></div>
+      <div><label>役職</label><select id="wa-pos" onchange="App.set('wkFPos',this.value)"><option value="">すべて</option>${positions.map(n=>`<option ${S.wkFPos===n?'selected':''}>${esc(n)}</option>`).join('')}</select></div>
+      <div><label>状態</label><select id="wa-state" onchange="App.set('wkFState',this.value)">
+        <option value="">すべて</option>
+        <option value="nofb" ${S.wkFState==='nofb'?'selected':''}>FB未実施のみ</option>
+        <option value="late" ${S.wkFState==='late'?'selected':''}>期限後の提出のみ</option>
+      </select></div>
+      <div><label>キーワード（名前・本文）</label><input type="text" id="wa-q" value="${esc(S.wkFQ||'')}" oninput="App.wkSearch(this.value)" placeholder="例: 田中 / 客単価"></div>
+    </div></div>`;
+
+  h+=wkListPanel(s,weekT,true);
+  return h;
 }
 function viewReview(){
   const sc=scopeStores(); const selName=selStoreName();
@@ -4616,17 +4734,19 @@ function connectModal(){
 function inviteModal(){
   const d=S.modal.data;
   if(d){
+    const urls=d.urls||[];
+    const many=urls.length>1;
     return `<div class="modal-bg" onclick="if(event.target===this)App.closeModal()"><div class="modal">
-      <h3>招待リンクを発行しました</h3>
-      <div class="sub">このリンクを本人に送ってください。<b>1回使うと無効</b>になり、${esc(d.expires)} で期限切れになります。</div>
-      <label style="font-size:11px;color:#8c8375">招待リンク</label>
-      <input type="text" id="iv-url" value="${esc(d.url)}" readonly onclick="this.select()">
-      <div class="note-box" style="margin-top:8px;font-size:12px">
-        権限：<b>${esc(d.role)}</b>${d.position?' ／ 役職：<b>'+esc(d.position)+'</b>':''}<br>担当店舗：${esc(d.stores)}<br>
-        <span class="mut">本人がリンクを開くと、ログインIDとパスワードを自分で設定して登録します。登録後はアカウント管理に表示され、退職時はここで無効化できます。</span>
+      <h3>招待リンクを${urls.length}件発行しました</h3>
+      <div class="sub"><b>1リンクにつき1人だけ</b>登録できます（使うと無効）。${many?'それぞれ別の方に送ってください。':''}期限は ${esc(d.expires)} です。</div>
+      <div class="note-box" style="margin-bottom:10px;font-size:12px">
+        権限：<b>${esc(d.role)}</b>${d.position?' ／ 役職：<b>'+esc(d.position)+'</b>':''}<br>担当店舗：${esc(d.stores)}
       </div>
+      <textarea id="iv-url" rows="${Math.min(urls.length+1,8)}" readonly onclick="this.select()"
+        style="width:100%;font-family:var(--sans);font-size:12px;color:var(--ink);background:#fff;border:1px solid var(--line2);border-radius:8px;padding:9px 11px;outline:none">${esc(urls.join('\n'))}</textarea>
+      <div class="sub" style="margin-top:6px">本人がリンクを開くと、ログインIDとパスワードを自分で設定して登録します。登録後はアカウント管理に表示され、退職時はそこで無効化できます。</div>
       <div class="modal-btns">
-        <button class="icon-btn primary" onclick="App.copyInvite()">リンクをコピー</button>
+        <button class="icon-btn primary" onclick="App.copyInvite()">${many?'すべてコピー':'リンクをコピー'}</button>
         <button class="icon-btn" onclick="App.closeModal()">閉じる</button>
       </div></div></div>`;
   }
@@ -4638,6 +4758,7 @@ function inviteModal(){
       <div><label>権限</label><select id="iv-role">${['店舗','マネージャー','本部','社長'].map(r=>`<option>${r}</option>`).join('')}</select></div>
       <div><label>役職（週報フォーマットの出し分けに使用）</label><input type="text" id="iv-pos" placeholder="例: 店長 / 社員" value="社員"></div>
       <div><label>リンクの有効期限</label><select id="iv-days"><option value="3">3日</option><option value="7" selected>7日</option><option value="14">14日</option><option value="30">30日</option></select></div>
+      <div><label>発行枚数（1リンク＝1人）</label><select id="iv-count">${[1,2,3,4,5,6,8,10,15,20].map(n=>`<option value="${n}">${n}枚</option>`).join('')}</select></div>
     </div>
     <label style="font-size:11px;color:#8c8375;display:block;margin-top:10px">担当店舗（社長・本部は自動的に全店）</label>
     <div class="chk-stores" id="iv-stores">
@@ -4857,6 +4978,10 @@ window.App = {
   csvSection(prefix){ downloadCsvSection(prefix); },
   /* ---- 口座CSVインポート（入金管理） ---- */
   /* ---- 週報 ---- */
+  wkSearch(v){
+    S.wkFQ=v; render();
+    const el=$('wa-q'); if(el){ el.focus(); el.setSelectionRange(el.value.length,el.value.length); }
+  },
   wkNav(d){
     if(d===0){ S.wkWeek=''; render(); return; }
     const cur=wkCurrent(); const n=addD(cur,d*7);
@@ -4898,15 +5023,18 @@ window.App = {
   async createInvite(){
     const msg=$('iv-msg');
     const role=$('iv-role').value, position=$('iv-pos').value.trim(), days=$('iv-days').value;
+    const count=$('iv-count')?$('iv-count').value:1;
     const checked=[...$('iv-stores').querySelectorAll('input:checked')].map(i=>i.value);
     const stores=(role==='社長'||role==='本部')?'全店':(checked.includes('全店')?'全店':checked.join(', '));
     if(!stores){ msg.style.color='#b5502f'; msg.textContent='担当店舗を選択してください'; return; }
     if(!(S.auth&&S.auth.token)){ msg.style.color='#b5502f'; msg.textContent='API未接続のため発行できません（デモモード）'; return; }
     msg.style.color='#8c8375'; msg.textContent='発行中…';
     try{
-      const d=await api({ action:'createInvite', token:S.auth.token, role, position, stores, days });
+      const d=await api({ action:'createInvite', token:S.auth.token, role, position, stores, days, count });
       if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'発行に失敗しました'; return; }
-      S.modal={type:'invite',data:{ url:location.origin+location.pathname+'?invite='+d.token, expires:d.expires, role, position, stores }};
+      const base=location.origin+location.pathname+'?invite=';
+      const urls=(d.tokens&&d.tokens.length?d.tokens:[d.token]).map(t=>base+t);
+      S.modal={type:'invite',data:{ urls, expires:d.expires, role, position, stores }};
       render();
     }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
   },
