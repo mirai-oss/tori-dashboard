@@ -43,7 +43,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v38', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v39', time: new Date().toISOString() });
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     if (action === 'perf') return out(perfDiag(p)); // パフォーマンス計測（専用トークン認証・ログイン不要・数字は返さず時間だけ）
     setupIfNeeded();
@@ -440,7 +440,8 @@ var MGMT_TABS = [
   { key: '単価設定', re: /単価設定/ },         // ⚙単価設定 → 想定客単価
   { key: '予約',     re: /予約DB|予約明細|予約一覧/ },  // 💾予約DB → 曜日別・当日予約の時刻分析
   { key: '媒体マスタ',   re: /媒体マスタ/ },    // ⚙️媒体マスタ → 広告費入力モーダルの媒体プルダウン
-  { key: 'プランマスタ', re: /プランマスタ/ }   // ⚙️プランマスタ → プランプルダウン（標準料金付き）
+  { key: 'プランマスタ', re: /プランマスタ/ },  // ⚙️プランマスタ → プランプルダウン（標準料金付き）
+  { key: '広告店舗マスタ', re: /店舗マスタ/ }   // ⚙️店舗マスタ → 広告費・売上入力の店舗プルダウン（広告側の店舗名）
 ];
 
 function mgmtOpen() {
@@ -1084,6 +1085,37 @@ function normStoreName_(s) {
   var nospace = t.replace(/[\s　]/g, '');
   return STORE_CANONICAL_BY_NOSPACE_[nospace] || t;
 }
+// 広告側の店舗名（⚙️店舗マスタの「匠味（新横浜）」等）を、売上側の店舗名へ解決する。
+// DB_店舗名対応（別表記→正式名）→ DB_店舗親子（子ブランド→親店舗）の順に引く。
+// 解決できなければ元の名前を返す。※権限チェックのために使う。
+function resolveAdStore_(name) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var cur = String(name == null ? '' : name).trim();
+  if (!cur) return '';
+  function lookup(sheetName) {
+    var sh = ss.getSheetByName(sheetName);
+    if (!sh || sh.getLastRow() < 2) return null;
+    var v = sh.getRange(1, 1, sh.getLastRow(), 2).getValues();
+    var key = storeKey_(cur);
+    for (var i = 0; i < v.length; i++) {
+      var a = String(v[i][0]).trim(), b = String(v[i][1]).trim();
+      if (!a || !b) continue;
+      if (storeKey_(a) === key && storeKey_(b) !== key) return b;   // 左＝別表記/子 → 右＝正式/親
+    }
+    return null;
+  }
+  var mapped = lookup('DB_店舗名対応');
+  if (mapped) cur = mapped;
+  var parent = lookup('DB_店舗親子');
+  if (parent) cur = parent;
+  return cur;
+}
+// 広告関連（広告費・売上）の権限判定。広告側の店舗名でも、解決後の売上店舗で担当かどうかを見る。
+function adScopeAllows_(session, name) {
+  if (scopeAllows_(session, name)) return true;
+  var resolved = resolveAdStore_(name);
+  return resolved && resolved !== name ? scopeAllows_(session, resolved) : false;
+}
 // 入金管理タブの「口座CSVを取込」から呼ばれる。rows=[[YYYY-MM-DD, 入金額, 摘要, 識別トークン],...]
 // 識別トークン＝入金DBのE列（取引時刻）。フロント(depTokenize)が 取引時刻／残高{n}／#出現順 の順で決定済み。
 // 売上DB側の既存スクリプト(importBankDepositCSV)と完全に同じ 6列構成・同じ重複キーで追記する：
@@ -1265,7 +1297,7 @@ function saveAdFee(p, session) {
   if (!/^\d{4}-\d{2}$/.test(ym)) return { ok: false, error: '対象月が不正です' };
   var dashStore = String(p.store || '').trim();
   if (!dashStore) return { ok: false, error: '店舗が未指定です' };
-  if (!scopeAllows_(session, dashStore)) return { ok: false, error: 'この店舗の広告費を編集する権限がありません' };
+  if (!adScopeAllows_(session, dashStore)) return { ok: false, error: 'この店舗の広告費を編集する権限がありません' };
   var media = String(p.media || '').trim().slice(0, 40);
   if (!media) return { ok: false, error: '媒体を入力してください' };
   var plan = String(p.plan || '').trim().slice(0, 40) || '一式';
@@ -1415,7 +1447,7 @@ function saveAdSales(p, session) {
   if (!/^\d{4}-\d{2}$/.test(ym)) return { ok: false, error: '対象月が不正です' };
   var dashStore = String(p.store || '').trim();
   if (!dashStore) return { ok: false, error: '店舗が未指定です' };
-  if (!scopeAllows_(session, dashStore)) return { ok: false, error: 'この店舗の売上を編集する権限がありません' };
+  if (!adScopeAllows_(session, dashStore)) return { ok: false, error: 'この店舗の売上を編集する権限がありません' };
   var media = String(p.media || '').trim().slice(0, 40);
   if (!media) return { ok: false, error: '媒体を選択してください' };
   var vals; try { vals = JSON.parse(p.values || '{}'); } catch (e) { vals = {}; }

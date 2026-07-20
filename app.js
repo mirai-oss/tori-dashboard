@@ -107,7 +107,7 @@ const S = {
   reportMode:null,   // {kind:'daily'|'weekly'|'monthly', date:'YYYY-MM-DD'} Lark日報用の1枚カード表示
   accounts:null, accErr:'', modal:null, loginErr:'',
 };
-const D = { daily:[], media:[], deposit:[], review:[], ad:[], adfx:[], tanka:{}, pl:[], dinii:[], diniiCols:[], targets:[], targetsM:[], events:[], extra:{}, storeAlias:{}, storeParent:{}, mediaClass:{}, holidays:null, detailData:null, detailKey:'', detailLoading:'', refDate:null, maxDate:null };
+const D = { daily:[], media:[], deposit:[], review:[], ad:[], adfx:[], tanka:{}, pl:[], dinii:[], diniiCols:[], targets:[], targetsM:[], events:[], extra:{}, storeAlias:{}, storeParent:{}, mediaClass:{}, adMediaMaster:[], adPlanMaster:{}, adStoreMaster:[], holidays:null, detailData:null, detailKey:'', detailLoading:'', refDate:null, maxDate:null };
 let EXPORT = [];      // 現在タブのCSVエクスポート対象 [{title,headers,rows}]
 let pollTimer = null;
 
@@ -528,6 +528,43 @@ function ingestPlanMaster(rows){
   D.adPlanMaster=map;
   D.diag['プランマスタ']='OK '+Object.keys(map).length+'媒体 / '+Object.values(map).reduce((s,v)=>s+v.length,0)+'プラン（'+String.fromCharCode(65+iP)+'列＝プラン名）'; return true;
 }
+// ⚙️店舗マスタ（管理シート）：B=店舗ID / C=店舗名 / D=エリア。広告側の店舗名（匠味（新横浜）等）を
+// 広告費・売上入力のプルダウン候補にする。売上側に無い広告専用の店舗もここから選べるようになる。
+function ingestAdStoreMaster(rows){
+  const hi=findHeaderExact(rows,['店舗名']);
+  if(hi<0){ D.diag['広告店舗マスタ']='見出し行（店舗名）が見つかりません'; return false; }
+  const H=rows[hi].map(h=>String(h).trim());
+  const iN=colPick(H,'店舗名',2);   // 既定はC列
+  const iO=colPick(H,'表示順',null);
+  const out=[];
+  for(let i=hi+1;i<rows.length;i++){
+    const nm=String((rows[i]||[])[iN]||'').trim(); if(!nm)continue;
+    out.push({name:nm, order:iO>=0?num(rows[i][iO])||999:999});
+  }
+  out.sort((a,b)=>a.order-b.order);
+  D.adStoreMaster=[...new Set(out.map(x=>x.name))];
+  D.diag['広告店舗マスタ']='OK '+D.adStoreMaster.length+'件（'+String.fromCharCode(65+iN)+'列＝店舗名）'; return true;
+}
+// 広告費・売上入力の店舗候補。⚙️店舗マスタ（広告側の店舗名）を、DB_店舗名対応・DB_店舗親子で
+// 売上側の店舗に解決したうえで、そのアカウントの担当店舗ぶんだけに絞る。
+// マスタ未受信のときは従来どおり売上側の店舗（scopeStores）を返す。
+function adStoreOptions(){
+  const sales=scopeStores();
+  if(!D.adStoreMaster.length) return sales;
+  const acc=S.auth&&S.auth.account;
+  const sp=String(acc&&acc.stores||'').trim();
+  const isAll=!acc||!sp||sp==='全店';
+  const allowed=new Set(sales.map(normStore));
+  const out=[];
+  D.adStoreMaster.forEach(nm=>{
+    if(isAll){ out.push(nm); return; }
+    const res=resolveStoreEx(nm);                       // 対応表→親子で売上側の店舗へ解決
+    if(res&&allowed.has(normStore(res.parent))) out.push(nm);
+  });
+  // 売上側にあってマスタに無い店舗（じんべえ等）も選べるように残す
+  sales.forEach(nm=>{ if(!out.some(x=>normStore(x)===normStore(nm))) out.push(nm); });
+  return out.length?out:sales;
+}
 // 店舗名対応表シート（左＝広告等の店舗名 / 右＝売上側の正式な店舗名）を取り込む
 const isStoreMapKey=(k)=>/店舗名対応|店舗マッピング|店舗名変換|店舗対応|storemap|storealias/i.test(String(k));
 function ingestStoreMap(rows){
@@ -678,7 +715,7 @@ function ingestStoreParent(rows){
   return map;
 }
 function ingestSheets(sheets, partial){
-  if(!partial){ D.extra={}; D.diag={}; D.receivedKeys=Object.keys(sheets); D.ad=[]; D.adSrc=''; D.adfx=[]; D.tanka={}; D.rsv=[]; D.pl=[]; D.dinii=[]; D.targets=[]; D.targetsM=[]; D.events=[]; D.storeAlias={}; D.storeParent={}; D.adMediaMaster=[]; D.adPlanMaster={}; }  // 広告・PL・ダイニー・目標・対応表・親子はフル受信のたびに入れ替え
+  if(!partial){ D.extra={}; D.diag={}; D.receivedKeys=Object.keys(sheets); D.ad=[]; D.adSrc=''; D.adfx=[]; D.tanka={}; D.rsv=[]; D.pl=[]; D.dinii=[]; D.targets=[]; D.targetsM=[]; D.events=[]; D.storeAlias={}; D.storeParent={}; D.adMediaMaster=[]; D.adPlanMaster={}; D.adStoreMaster=[]; }  // 広告・PL・ダイニー・目標・対応表・親子はフル受信のたびに入れ替え
   else { D.receivedKeys=(D.receivedKeys||[]).concat(Object.keys(sheets)); }
   const known=['daily','media','deposit','review','ad','広告'];
   if(!partial){ known.forEach(k=>{ if(!(k in sheets)) D.diag[k]='シート未受信（接続設定のシート名を確認）'; }); }
@@ -702,6 +739,7 @@ function ingestSheets(sheets, partial){
     else if(isHolidayKey(key)) ingestHoliday(rows);
     else if(key==='媒体マスタ') ingestMediaMaster(rows);
     else if(key==='プランマスタ') ingestPlanMaster(rows);
+    else if(key==='広告店舗マスタ') ingestAdStoreMaster(rows);
     else if(isStoreParentKey(key)){ D.storeParent=ingestStoreParent(rows); D.diag[key]='OK '+Object.keys(D.storeParent).length+'件の親子'; }
     else if(isStoreMapKey(key)){ D.storeAlias=ingestStoreMap(rows); D.diag[key]='OK '+Object.keys(D.storeAlias).length+'件の対応'; }
     else D.extra[key]=rows;
@@ -3809,7 +3847,7 @@ function plInputModal(){
  * 管理シートの💾広告費DB（キー=年月_店舗_媒体_プラン・同一キー上書き）へ1件ずつupsert。
  * ダッシュボードの広告データは💾広告費DB由来なので、保存後の再取得で自動反映される。 */
 function adInputModal(){
-  const m=S.modal; const stores=scopeStores();
+  const m=S.modal; const stores=adStoreOptions();   // 広告側の店舗（⚙️店舗マスタ）＋売上側の店舗
   const st=m.store&&stores.includes(m.store)?m.store:stores[0];
   const [y,mo]=(m.ym||'').split('-').map(Number);
   const t0=new Date(y,mo-1,1).getTime(), t1=new Date(y,mo,1).getTime();
@@ -3868,7 +3906,7 @@ const AD_SALES_FIELDS=[
   {k:'totSales', lb:'総売上（円）'}
 ];
 function adSalesModal(){
-  const m=S.modal; const stores=scopeStores();
+  const m=S.modal; const stores=adStoreOptions();   // 広告側の店舗（⚙️店舗マスタ）＋売上側の店舗
   const st=m.store&&stores.includes(m.store)?m.store:stores[0];
   const [y,mo]=(m.ym||'').split('-').map(Number);
   const t0=new Date(y,mo-1,1).getTime(), t1=new Date(y,mo,1).getTime();
@@ -4303,7 +4341,8 @@ window.App = {
     const ref=D.refDate||new Date();
     const m0=S.adMonth?new Date(+S.adMonth.split('-')[0],+S.adMonth.split('-')[1]-1,1):new Date(ref.getFullYear(),ref.getMonth(),1);
     const ym=m0.getFullYear()+'-'+String(m0.getMonth()+1).padStart(2,'0');
-    S.modal={type:'adInput', ym, store:selStoreName()||scopeStores()[0]}; render();
+    const opts=adStoreOptions(); const sel=selStoreName();
+    S.modal={type:'adInput', ym, store:(sel&&opts.includes(sel))?sel:opts[0]}; render();
   },
   adSwitch(){ const ym=$('adi-ym')&&$('adi-ym').value, st=$('adi-store')&&$('adi-store').value;
     const md=$('adi-media')&&$('adi-media').value;
@@ -4350,7 +4389,8 @@ window.App = {
     const ref=D.refDate||new Date();
     const m0=S.adMonth?new Date(+S.adMonth.split('-')[0],+S.adMonth.split('-')[1]-1,1):new Date(ref.getFullYear(),ref.getMonth(),1);
     const ym=m0.getFullYear()+'-'+String(m0.getMonth()+1).padStart(2,'0');
-    S.modal={type:'adSales', ym, store:selStoreName()||scopeStores()[0]}; render();
+    const opts=adStoreOptions(); const sel=selStoreName();
+    S.modal={type:'adSales', ym, store:(sel&&opts.includes(sel))?sel:opts[0]}; render();
   },
   adSalesSwitch(){
     S.modal={type:'adSales', ym:$('as-ym')&&$('as-ym').value||S.modal.ym,
