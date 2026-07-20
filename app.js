@@ -23,12 +23,12 @@ const PALETTE = ['#3d5163','#b5502f','#5f7052','#c9a86a','#7d8b6f','#2a6f8f','#9
 const C_NOW='#3d5163', C_PREV='#c9b7a0', C_MID='#7d8b6f';
 const LS = { api:'toriApiUrl', sess:'toriSession', acc:'toriDemoAccounts', poll:'toriPollSec', months:'toriMonths' };
 const ROLE_TABS = {
-  '社長':       ['dash','target','analysis','detail','pl','deposit','ad','review','ai','accounts'],
-  '本部':       ['dash','target','analysis','detail','pl','deposit','ad','review','ai','accounts'],
-  'マネージャー':['dash','target','analysis','detail','pl','deposit','ad','review','ai'],
-  '店舗':       ['dash','target','analysis','detail','deposit','review','ai'],   // PL・広告管理は既定で非表示（アカウントごとの「表示タブ」で変更可）
+  '社長':       ['dash','target','analysis','detail','pl','deposit','ad','review','weekly','ai','accounts'],
+  '本部':       ['dash','target','analysis','detail','pl','deposit','ad','review','weekly','ai','accounts'],
+  'マネージャー':['dash','target','analysis','detail','pl','deposit','ad','review','weekly','ai'],
+  '店舗':       ['dash','target','analysis','detail','deposit','review','weekly','ai'],   // PL・広告管理は既定で非表示（アカウントごとの「表示タブ」で変更可）
 };
-const TAB_LABELS = { dash:'ダッシュボード', target:'目標管理', analysis:'推移分析', detail:'明細分析', pl:'PL（損益）', deposit:'入金管理', ad:'広告管理', review:'口コミ', ai:'AI検索', accounts:'アカウント管理' };
+const TAB_LABELS = { dash:'ダッシュボード', target:'目標管理', analysis:'推移分析', detail:'明細分析', pl:'PL（損益）', deposit:'入金管理', ad:'広告管理', review:'口コミ', weekly:'週報', ai:'AI検索', accounts:'アカウント管理' };
 // 入力・取込系の機能権限。閲覧は「表示タブ」で、データを書き込む操作はこちらで制御する。
 // 既定は権限ごとの ROLE_FEATURES、アカウントごとに上書きしたい場合は「アカウント」シートのI列に保存する。
 const FEATURE_LABELS = {
@@ -120,10 +120,11 @@ const S = {
   dPeriod:'month', dStore:'all', dRankMode:'sales', dBasis:'checkout', dDay:'', dMonth:'', dYear:'', dWeekIdx:null, dStart:'', dEnd:'',
   tMonth:'', tStore:'',   // 目標管理タブ：対象月・対象店舗
   aiQ:'', aiResult:null, dataVersion:'',
-  reportMode:null,   // {kind:'daily'|'weekly'|'monthly', date:'YYYY-MM-DD'} Lark日報用の1枚カード表示
+  reportMode:null, invite:null, inviteDone:false, wkWeek:'',   // {kind:'daily'|'weekly'|'monthly', date:'YYYY-MM-DD'} Lark日報用の1枚カード表示
   accounts:null, accErr:'', modal:null, loginErr:'',
 };
-const D = { daily:[], media:[], deposit:[], review:[], ad:[], adfx:[], tanka:{}, pl:[], dinii:[], diniiCols:[], targets:[], targetsM:[], events:[], extra:{}, storeAlias:{}, storeParent:{}, mediaClass:{}, adMediaMaster:[], adPlanMaster:{}, adStoreMaster:[], holidays:null, detailData:null, detailKey:'', detailLoading:'', refDate:null, maxDate:null };
+const D = { daily:[], media:[], deposit:[], review:[], ad:[], adfx:[], tanka:{}, pl:[], dinii:[], diniiCols:[], targets:[], targetsM:[], events:[], extra:{}, storeAlias:{}, storeParent:{}, mediaClass:{}, adMediaMaster:[], adPlanMaster:{}, adStoreMaster:[], holidays:null, detailData:null, detailKey:'', detailLoading:'', refDate:null, maxDate:null,
+  wkTpl:{}, wkRep:[], wkAns:{}, wkFb:{} };
 let EXPORT = [];      // 現在タブのCSVエクスポート対象 [{title,headers,rows}]
 let pollTimer = null;
 
@@ -506,6 +507,81 @@ function tankaOf(store,cm){
 function tkOf(m,store,cm){ m=m||{}; return m[store+'|'+cm]||m[store+'|']||m['|'+cm]||m['|']||0; }
 function tankaAvgOf(store,cm){ return tkOf(D.tankaAvg,store,cm); }
 function tankaCvOf(store,cm){ return tkOf(D.tankaCv,store,cm); }
+/* ---- 週報（DB_週報 / DB_週報回答 / DB_週報FB / DB_週報テンプレート） ----
+ * 週の区切りは「火曜〜翌月曜」。分析タブの月内ブロック週（1-7日…）とは別物。
+ * 判定は厳密一致にする（「週報回答」が「週報」にも前方一致してしまうため）。 */
+const isWkTplKey=(k)=>/^週報テンプレート$|^週報フォーマット$/.test(String(k).trim());
+const isWkAnsKey=(k)=>/^週報回答$/.test(String(k).trim());
+const isWkFbKey =(k)=>/^週報FB$|^週報フィードバック$/i.test(String(k).trim());
+const isWkRepKey=(k)=>/^週報$/.test(String(k).trim());
+// テンプレート: 役職 / 表示順 / 項目名 / 入力形式 / 必須
+function ingestWkTemplate(rows){
+  if(!rows||rows.length<2){ D.diag['週報テンプレート']='0件'; return false; }
+  const H=rows[0].map(h=>String(h).trim());
+  const iP=colAny(H,['役職']), iO=colAny(H,['表示順','順']), iL=colAny(H,['項目名','項目','質問']),
+        iT=colAny(H,['入力形式','形式']), iR=colAny(H,['必須']);
+  if(iP<0||iL<0){ D.diag['週報テンプレート']='列が見つかりません（必要: 役職・項目名）'; return false; }
+  const out={};
+  for(let i=1;i<rows.length;i++){
+    const c=rows[i]; const pos=String(c[iP]||'').trim(), label=String(c[iL]||'').trim();
+    if(!pos||!label) continue;
+    (out[pos]=out[pos]||[]).push({
+      order: iO>=0?(num(c[iO])||i):i, label,
+      type: (iT>=0?String(c[iT]||'').trim():'')||'長文',
+      required: iR<0?true:/^(TRUE|1|はい|必須|○|◯)$/i.test(String(c[iR]||'').trim()),
+    });
+  }
+  Object.keys(out).forEach(k=>out[k].sort((a,b)=>a.order-b.order));
+  D.wkTpl=out; D.diag['週報テンプレート']='OK '+Object.keys(out).length+'役職'; return true;
+}
+// 提出記録: ID / 週開始日 / 投稿者ID / 投稿者名 / 店舗 / 役職 / 提出日時 / 更新日時
+function ingestWkReports(rows){
+  if(!rows||rows.length<2){ D.wkRep=[]; D.diag['週報']='0件'; return false; }
+  const H=rows[0].map(h=>String(h).trim());
+  const iId=colAny(H,['ID']), iW=colAny(H,['週開始日','週']), iU=colAny(H,['投稿者ID']), iN=colAny(H,['投稿者名']),
+        iS=colAny(H,['店舗']), iP=colAny(H,['役職']), iT=colAny(H,['提出日時']);
+  if(iId<0||iW<0||iU<0){ D.diag['週報']='列が見つかりません'; return false; }
+  const recs=[];
+  for(let i=1;i<rows.length;i++){
+    const c=rows[i]; const id=String(c[iId]||'').trim(); const t=parseDateStr(c[iW]);
+    if(!id||!t) continue;
+    recs.push({ id, week:t, userId:String(c[iU]||'').trim(), userName:String(iN>=0?c[iN]||'':'').trim(),
+      store:String(iS>=0?c[iS]||'':'').trim(), position:String(iP>=0?c[iP]||'':'').trim(),
+      submittedAt:iT>=0?parseDateStr(c[iT]):0 });
+  }
+  D.wkRep=recs; D.diag['週報']='OK '+recs.length+'件'; return true;
+}
+// 回答（縦持ち）: 週報ID / 表示順 / 項目名 / 回答
+function ingestWkAnswers(rows){
+  if(!rows||rows.length<2){ D.wkAns={}; D.diag['週報回答']='0件'; return false; }
+  const H=rows[0].map(h=>String(h).trim());
+  const iId=colAny(H,['週報ID']), iO=colAny(H,['表示順','順']), iL=colAny(H,['項目名','項目']), iV=colAny(H,['回答']);
+  if(iId<0||iL<0){ D.diag['週報回答']='列が見つかりません'; return false; }
+  const map={}; let n=0;
+  for(let i=1;i<rows.length;i++){
+    const c=rows[i]; const id=String(c[iId]||'').trim(); if(!id) continue;
+    (map[id]=map[id]||[]).push({ order:iO>=0?(num(c[iO])||i):i, label:String(c[iL]||'').trim(), value:String(iV>=0?c[iV]||'':'') });
+    n++;
+  }
+  Object.keys(map).forEach(k=>map[k].sort((a,b)=>a.order-b.order));
+  D.wkAns=map; D.diag['週報回答']='OK '+n+'件'; return true;
+}
+// フィードバック: ID / 週報ID / 投稿者ID / 投稿者名 / 本文 / 日時
+function ingestWkFb(rows){
+  if(!rows||rows.length<2){ D.wkFb={}; D.diag['週報FB']='0件'; return false; }
+  const H=rows[0].map(h=>String(h).trim());
+  const iR=colAny(H,['週報ID']), iU=colAny(H,['投稿者ID']), iN=colAny(H,['投稿者名']), iB=colAny(H,['本文']), iT=colAny(H,['日時']);
+  if(iR<0||iB<0){ D.diag['週報FB']='列が見つかりません'; return false; }
+  const map={}; let n=0;
+  for(let i=1;i<rows.length;i++){
+    const c=rows[i]; const rid=String(c[iR]||'').trim(); const body=String(c[iB]||'').trim();
+    if(!rid||!body) continue;
+    (map[rid]=map[rid]||[]).push({ userId:String(iU>=0?c[iU]||'':'').trim(), userName:String(iN>=0?c[iN]||'':'').trim(),
+      body, t:iT>=0?parseDateStr(c[iT]):0 });
+    n++;
+  }
+  D.wkFb=map; D.diag['週報FB']='OK '+n+'件'; return true;
+}
 // PL経費シート（DB_PL: 年月×店舗×費目×金額の縦持ち）を取り込む
 const isPLKey=(k)=>/^pl$|^ＰＬ$|損益|pl経費|経費db/i.test(String(k).trim());
 // ダイニー来店アンケート（また来たいと思いますか？の点数）を取り込む
@@ -865,6 +941,10 @@ function ingestSheets(sheets, partial){
     else if(key==='広告店舗マスタ') ingestAdStoreMaster(rows);
     else if(isStoreParentKey(key)){ D.storeParent=ingestStoreParent(rows); D.diag[key]='OK '+Object.keys(D.storeParent).length+'件の親子'; }
     else if(isStoreMapKey(key)){ D.storeAlias=ingestStoreMap(rows); D.diag[key]='OK '+Object.keys(D.storeAlias).length+'件の対応'; }
+    else if(isWkTplKey(key)) ingestWkTemplate(rows);
+    else if(isWkAnsKey(key)) ingestWkAnswers(rows);   // 「回答」を先に判定（週報にも前方一致するため）
+    else if(isWkFbKey(key)) ingestWkFb(rows);
+    else if(isWkRepKey(key)) ingestWkReports(rows);
     else D.extra[key]=rows;
   }
 }
@@ -1254,6 +1334,7 @@ function downloadPdf(){ window.print(); }
  * ===================================================================== */
 function render(){
   const root=$('root');
+  if(S.invite||S.inviteDone){ root.innerHTML=viewRegister(); return; }
   if(!S.auth){ root.innerHTML=viewLogin(); return; }
   if(S.reportMode){ root.innerHTML=viewReport(S.reportMode.kind, S.reportMode.date, S.reportMode.stores, S.reportMode.group); return; }
   EXPORT=[];
@@ -1268,6 +1349,7 @@ function render(){
   else if(S.tab==='pl') body=viewPL();
   else if(S.tab==='ad') body=viewAd();
   else if(S.tab==='review') body=viewReview();
+  else if(S.tab==='weekly') body=viewWeekly();
   else if(S.tab==='ai') body=viewAI();
   else if(S.tab==='accounts') body=viewAccounts();
   root.innerHTML=`<div class="app">${viewHeader()}${diagBanner()}${viewNav()}${body}</div>${ctxBarHtml()}${S.modal?viewModal():''}`;
@@ -3193,6 +3275,159 @@ function viewPL(){
 }
 
 /* ---------------- 口コミ ---------------- */
+/* =====================================================================
+ * 週報（火曜〜翌月曜。提出＝翌火16時 / FB＝翌水16時）
+ * 数値（売上・ダイニー）は自動反映。フォーマットは DB_週報テンプレート で変えられる。
+ * ===================================================================== */
+const WK_DUE_HOUR=16;
+// 日付を含む「火曜始まりの週」の火曜日
+function wkStart(d){ const x=new Date(d.getFullYear(),d.getMonth(),d.getDate()); x.setDate(x.getDate()-((x.getDay()-2+7)%7)); return x; }
+function wkEnd(s){ return addD(s,6); }                       // 月曜
+function wkSubmitDue(s){ const d=addD(s,7); d.setHours(WK_DUE_HOUR,0,0,0); return d; }   // 翌火16:00
+function wkFbDue(s){ const d=addD(s,8); d.setHours(WK_DUE_HOUR,0,0,0); return d; }       // 翌水16:00
+function wkLabel(s){ const e=wkEnd(s); return `${s.getMonth()+1}/${s.getDate()}(火)〜${e.getMonth()+1}/${e.getDate()}(月)`; }
+// いま対象にすべき週（締切前は先週、締切後は今週を書く運用に合わせ「直近の完了した週」を既定にする）
+function wkCurrent(){
+  if(S.wkWeek){ const p=S.wkWeek.split('-'); return new Date(+p[0],+p[1]-1,+p[2]); }
+  const ref=D.refDate||new Date();
+  return addD(wkStart(ref),-7);
+}
+function wkMyPosition(){ const a=S.auth&&S.auth.account; return (a&&a.position)||''; }
+// 役職に対応するテンプレート（未設定なら「社員」→最初に見つかったもの、の順で探す）
+function wkTemplateFor(pos){
+  const t=D.wkTpl||{};
+  if(pos&&t[pos]) return t[pos];
+  if(t['社員']) return t['社員'];
+  const k=Object.keys(t); return k.length?t[k[0]]:[];
+}
+// 週報に自動で載せる数値（その人の店舗・その週）
+function wkAutoStats(store,s){
+  const a=dayMs(s), b=dayMs(wkEnd(s));
+  const names=store?[store]:scopeStores();
+  const set=new Set(names);
+  const cur=stat(store?null:set,a,b,store||null);
+  const pv=stat(store?null:set,dayMs(sub1y(s)),dayMs(sub1y(wkEnd(s))),store||null);
+  const dn=D.dinii.length?diniiStats(names,a,b):{avg:null,count:0};
+  return { sales:cur.sales, prevSales:pv.sales, guests:cur.guests,
+    spend:cur.guests>0?cur.sales/cur.guests:0,
+    fl:cur.sales>0?(cur.cost+cur.labor)/cur.sales:null, dinii:dn.avg, diniiCount:dn.count };
+}
+// 自分が見られる週報（同じ店舗なら全員／マネージャーは担当店舗／社長・本部は全店）
+function wkVisibleReports(weekT){
+  const acc=S.auth&&S.auth.account; if(!acc) return [];
+  const admin=isAdminRole();
+  const mine=new Set(scopeStores());
+  return (D.wkRep||[]).filter(r=>{
+    if(weekT&&r.week!==weekT) return false;
+    if(admin) return true;
+    if(r.userId===acc.id) return true;
+    return r.store?mine.has(normStore(r.store))||mine.has(r.store):false;
+  });
+}
+function viewWeekly(){
+  const s=wkCurrent(), weekT=dayMs(s);
+  const acc=S.auth.account;
+  const tpl=wkTemplateFor(wkMyPosition());
+  const mine=(D.wkRep||[]).find(r=>r.userId===acc.id&&r.week===weekT);
+  const nav=`<div class="ctrl-bar no-print">
+    <div class="mini-nav"><button onclick="App.wkNav(-1)">‹</button><span class="lbl">${wkLabel(s)}</span><button onclick="App.wkNav(1)">›</button></div>
+    <button class="icon-btn" onclick="App.wkNav(0)">今週へ</button>
+    <span class="period-label">週報（火曜〜月曜）／ 提出期限 ${wkSubmitDue(s).getMonth()+1}/${wkSubmitDue(s).getDate()} 16:00 ・ FB期限 ${wkFbDue(s).getMonth()+1}/${wkFbDue(s).getDate()} 16:00</span>
+  </div>`;
+  let h=nav;
+  if(isAdminRole()) h+=wkAdminPanel(s,weekT);
+  h+=wkMyForm(s,weekT,tpl,mine);
+  h+=wkListPanel(s,weekT);
+  return h;
+}
+// 自分の週報（入力フォーム）
+function wkMyForm(s,weekT,tpl,mine){
+  const acc=S.auth.account;
+  const store=selStoreName()||scopeStores()[0]||'';
+  const st=wkAutoStats(store,s);
+  const yy=(c,p)=>p>0?((c-p)/p*100>=0?'+':'▲')+Math.abs((c-p)/p*100).toFixed(1)+'%':'—';
+  const auto=`<div class="kpi-grid" style="margin:2px 0 12px">
+    <div class="kpi"><div class="lb">週売上</div><div class="vl">${yen(st.sales)}</div><div class="yy">前年比 ${yy(st.sales,st.prevSales)}</div></div>
+    <div class="kpi"><div class="lb">客数</div><div class="vl">${cnt(st.guests)}人</div><div class="yy">客単価 ${yen(st.spend)}</div></div>
+    <div class="kpi"><div class="lb">FL率</div><div class="vl">${st.fl!=null?(st.fl*100).toFixed(1)+'%':'—'}</div><div class="yy">原価＋人件費</div></div>
+    <div class="kpi"><div class="lb">ダイニー再来店</div><div class="vl">${st.dinii!=null?st.dinii.toFixed(2):'—'}</div><div class="yy">${cnt(st.diniiCount)}件</div></div>
+  </div>`;
+  if(!tpl.length){
+    return `<div class="panel"><div class="panel-head"><div><h3>今週の自分の週報</h3></div></div>${auto}
+      <div class="note-box">あなたの役職（${esc(wkMyPosition()||'未設定')}）のフォーマットが見つかりません。スプレッドシートの <code>DB_週報テンプレート</code> に行を追加するか、アカウント管理で役職を設定してください。</div></div>`;
+  }
+  const ansMap={}; (D.wkAns[mine&&mine.id]||[]).forEach(a=>{ ansMap[a.label]=a.value; });
+  const overdue=!mine&&Date.now()>wkSubmitDue(s).getTime();
+  const badge=mine?'<span class="badge ok">提出済み</span>':(overdue?'<span class="badge ng">期限切れ・未提出</span>':'<span class="badge mid">未提出</span>');
+  let f=`<div class="panel"><div class="panel-head"><div><h3>今週の自分の週報 ${badge}</h3>
+    <div class="sub">${esc(acc.name||acc.id)}${wkMyPosition()?' ／ '+esc(wkMyPosition()):''}${store?' ／ '+esc(store):''}${mine?' ／ 提出済みの内容を編集できます':''}</div></div></div>${auto}`;
+  tpl.forEach((it,i)=>{
+    const v=esc(ansMap[it.label]||'');
+    f+=`<label style="display:block;font-size:12px;color:#5c5348;font-weight:700;margin:12px 0 5px">${esc(it.label)}${it.required?' <span style="color:#b5502f">*</span>':''}</label>`;
+    f+= it.type==='短文'||it.type==='数値'
+      ? `<input type="text" id="wk-${i}" style="width:100%" value="${v}">`
+      : `<textarea id="wk-${i}" rows="4" style="width:100%;font-family:var(--sans);font-size:13px;color:var(--ink);background:#fff;border:1px solid var(--line2);border-radius:8px;padding:9px 11px;outline:none">${v}</textarea>`;
+  });
+  f+=`<div id="wk-msg" style="font-size:12px;color:#b5502f;margin:10px 0 0"></div>
+    <div style="margin-top:12px"><button class="icon-btn primary" onclick="App.saveWeekly()">${mine?'週報を更新':'週報を提出'}</button></div></div>`;
+  return f;
+}
+// 本部・社長向け：提出状況のまとめ
+function wkAdminPanel(s,weekT){
+  const reps=(D.wkRep||[]).filter(r=>r.week===weekT);
+  const submitted=reps.length;
+  const withFb=reps.filter(r=>(D.wkFb[r.id]||[]).length>0).length;
+  const now=Date.now();
+  const subOver=now>wkSubmitDue(s).getTime(), fbOver=now>wkFbDue(s).getTime();
+  // 店舗別の提出数
+  const byStore={};
+  reps.forEach(r=>{ const k=r.store||'（店舗未設定）'; byStore[k]=byStore[k]||{n:0,fb:0}; byStore[k].n++; if((D.wkFb[r.id]||[]).length) byStore[k].fb++; });
+  let h=`<div class="kpi-grid" style="margin:8px 0">
+    <div class="kpi"><div class="lb">提出数</div><div class="vl">${cnt(submitted)}件</div><div class="yy">${subOver?'提出期限すぎ':'期限まで受付中'}</div></div>
+    <div class="kpi"><div class="lb">FB済み</div><div class="vl">${cnt(withFb)}件</div><div class="yy ${submitted&&withFb<submitted?'dn':''}">未FB ${cnt(submitted-withFb)}件${fbOver?'（期限すぎ）':''}</div></div>
+    <div class="kpi"><div class="lb">FB率</div><div class="vl">${submitted?Math.round(withFb/submitted*100)+'%':'—'}</div><div class="yy">提出に対するFBの割合</div></div>
+    <div class="kpi"><div class="lb">対象週</div><div class="vl" style="font-size:16px">${wkLabel(s)}</div><div class="yy">提出 ${wkSubmitDue(s).getMonth()+1}/${wkSubmitDue(s).getDate()}16時まで</div></div>
+  </div>`;
+  const keys=Object.keys(byStore).sort();
+  if(keys.length){
+    h+=`<div class="panel"><div class="panel-head"><div><h3>店舗別 提出状況（${wkLabel(s)}）</h3><div class="sub">提出された週報のうち、フィードバックが付いた件数</div></div></div>
+    <div class="scroll-x"><table class="tbl"><thead><tr><th>店舗</th><th>提出</th><th>FB済み</th><th>未FB</th></tr></thead><tbody>`;
+    keys.forEach(k=>{ const v=byStore[k];
+      h+=`<tr><td>${esc(k)}</td><td>${cnt(v.n)}件</td><td>${cnt(v.fb)}件</td><td class="${v.n-v.fb>0?'neg':'mut'}">${cnt(v.n-v.fb)}件</td></tr>`; });
+    h+=`</tbody></table></div></div>`;
+  }
+  return h;
+}
+// 週報の一覧（同じ店舗なら全員見える）
+function wkListPanel(s,weekT){
+  const list=wkVisibleReports(weekT).slice().sort((a,b)=>(a.store||'').localeCompare(b.store||'')||(a.userName||'').localeCompare(b.userName||''));
+  if(!list.length) return `<div class="panel"><div class="panel-head"><div><h3>みんなの週報（${wkLabel(s)}）</h3></div></div><div class="empty">まだ提出がありません</div></div>`;
+  let h=`<div class="panel"><div class="panel-head"><div><h3>みんなの週報（${wkLabel(s)}）</h3><div class="sub">同じ店舗のメンバーとフィードバックが見られます ／ ${list.length}件</div></div></div>`;
+  list.forEach(r=>{
+    const ans=D.wkAns[r.id]||[]; const fbs=D.wkFb[r.id]||[];
+    const late=r.submittedAt&&r.submittedAt>wkSubmitDue(s).getTime();
+    h+=`<div style="border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin:10px 0;background:#fff">
+      <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap">
+        <b style="font-size:14px">${esc(r.userName||r.userId)}</b>
+        <span class="mut" style="font-size:11.5px">${esc(r.position||'')}${r.store?' ／ '+esc(r.store):''}</span>
+        ${late?'<span class="badge ng">期限後の提出</span>':'<span class="badge ok">期限内</span>'}
+        <span class="mut" style="font-size:11px;margin-left:auto">${fbs.length?'FB '+fbs.length+'件':'<span style="color:#b5502f">FB未実施</span>'}</span>
+      </div>`;
+    ans.forEach(a=>{ h+=`<div style="margin-top:9px"><div style="font-size:11.5px;color:#8c8375;font-weight:700">${esc(a.label)}</div>
+      <div style="font-size:13px;white-space:pre-wrap;line-height:1.7">${esc(a.value)||'<span class="mut">—</span>'}</div></div>`; });
+    if(fbs.length){
+      h+=`<div style="margin-top:12px;border-top:1px solid var(--line);padding-top:9px">`;
+      fbs.forEach(f=>{ h+=`<div style="background:#f7f4ec;border-radius:8px;padding:8px 11px;margin-top:6px">
+        <div style="font-size:11px;color:#8c8375">💬 ${esc(f.userName||f.userId)}</div>
+        <div style="font-size:12.5px;white-space:pre-wrap;line-height:1.7">${esc(f.body)}</div></div>`; });
+      h+=`</div>`;
+    }
+    h+=`<div style="margin-top:10px;display:flex;gap:8px">
+      <input type="text" id="fb-${esc(r.id)}" placeholder="フィードバックを入力…" style="flex:1">
+      <button class="icon-btn" onclick="App.saveFeedback(this.dataset.i)" data-i="${esc(r.id)}">送信</button></div></div>`;
+  });
+  return h+`</div>`;
+}
 function viewReview(){
   const sc=scopeStores(); const selName=selStoreName();
   const baseStores=selName?[selName]:sc;
@@ -3847,11 +4082,12 @@ function viewAccounts(){
   const list=live?(S.accounts||[]):demoAccounts();
   let h=`<div class="ctrl-bar no-print">
     <button class="icon-btn primary" onclick="App.editAccount('')">＋ 新規アカウント発行</button>
+    <button class="icon-btn primary" onclick="App.openInvite()">🔗 招待リンクを発行</button>
     <span class="period-label">${live?'スプレッドシート「アカウント」シートと連動しています':'デモモード：このブラウザ内にのみ保存されます（API接続後はシート管理）'}</span>
   </div>`;
   if(S.accErr) h+=`<div class="login-err" style="margin:10px 0">${esc(S.accErr)}</div>`;
   h+=`<div class="panel"><div class="panel-head"><div><h3>発行済みアカウント</h3><div class="sub">権限: 社長・本部＝全店＋アカウント管理 ／ マネージャー＝担当店舗 ／ 店舗＝自店のみ</div></div></div>
-  <div class="scroll-x"><table class="tbl"><thead><tr><th>ログインID</th><th>表示名</th><th>権限</th><th>担当店舗</th><th>表示タブ</th><th>使える機能</th><th>状態</th><th>メモ</th><th></th></tr></thead><tbody>`;
+  <div class="scroll-x"><table class="tbl"><thead><tr><th>ログインID</th><th>表示名</th><th>権限</th><th>役職</th><th>担当店舗</th><th>表示タブ</th><th>使える機能</th><th>状態</th><th>メモ</th><th></th></tr></thead><tbody>`;
   list.forEach(a=>{
     const ovTabs=parseTabsSpec(a.tabs);
     const ovPerms=parseFeatureSpec(a.perms);
@@ -3859,6 +4095,7 @@ function viewAccounts(){
       ? (ovPerms.length?esc(ovPerms.map(k=>FEATURE_LABELS[k].replace(/（.*$/,'')).join('・')):'<span class="mut">なし</span>')
       : ((ROLE_FEATURES[a.role]||[]).length?'<span class="mut">既定（全部）</span>':'<span class="mut">既定（なし）</span>');
     h+=`<tr><td>${esc(a.id)}</td><td style="text-align:right">${esc(a.name)}</td><td>${esc(a.role)}</td>
+    <td>${a.position?esc(a.position):'<span class="mut">—</span>'}</td>
     <td style="max-width:280px;white-space:normal">${esc(a.stores)}</td>
     <td style="max-width:220px;white-space:normal;font-size:11px">${ovTabs?esc(ovTabs.map(k=>TAB_LABELS[k]).join('・')):'<span class="mut">既定</span>'}</td>
     <td style="max-width:200px;white-space:normal;font-size:11px">${permCell}</td>
@@ -3883,6 +4120,7 @@ async function loadAccounts(){
 function viewModal(){
   if(S.modal==='connect') return connectModal();
   if(S.modal&&S.modal.type==='account') return accountModal();
+  if(S.modal&&S.modal.type==='invite') return inviteModal();
   if(S.modal&&S.modal.type==='target') return targetModal();
   if(S.modal&&S.modal.type==='targetDay') return targetDayModal();
   if(S.modal&&S.modal.type==='depImport') return depImportModal();
@@ -4375,9 +4613,76 @@ function connectModal(){
     </div>
   </div></div>`;
 }
+function inviteModal(){
+  const d=S.modal.data;
+  if(d){
+    return `<div class="modal-bg" onclick="if(event.target===this)App.closeModal()"><div class="modal">
+      <h3>招待リンクを発行しました</h3>
+      <div class="sub">このリンクを本人に送ってください。<b>1回使うと無効</b>になり、${esc(d.expires)} で期限切れになります。</div>
+      <label style="font-size:11px;color:#8c8375">招待リンク</label>
+      <input type="text" id="iv-url" value="${esc(d.url)}" readonly onclick="this.select()">
+      <div class="note-box" style="margin-top:8px;font-size:12px">
+        権限：<b>${esc(d.role)}</b>${d.position?' ／ 役職：<b>'+esc(d.position)+'</b>':''}<br>担当店舗：${esc(d.stores)}<br>
+        <span class="mut">本人がリンクを開くと、ログインIDとパスワードを自分で設定して登録します。登録後はアカウント管理に表示され、退職時はここで無効化できます。</span>
+      </div>
+      <div class="modal-btns">
+        <button class="icon-btn primary" onclick="App.copyInvite()">リンクをコピー</button>
+        <button class="icon-btn" onclick="App.closeModal()">閉じる</button>
+      </div></div></div>`;
+  }
+  const all=allStores();
+  return `<div class="modal-bg" onclick="if(event.target===this)App.closeModal()"><div class="modal">
+    <h3>招待リンクを発行</h3>
+    <div class="sub">権限・役職・担当店舗を決めてリンクを発行します。本人がリンクから自分でID・パスワードを登録します。</div>
+    <div class="form-grid">
+      <div><label>権限</label><select id="iv-role">${['店舗','マネージャー','本部','社長'].map(r=>`<option>${r}</option>`).join('')}</select></div>
+      <div><label>役職（週報フォーマットの出し分けに使用）</label><input type="text" id="iv-pos" placeholder="例: 店長 / 社員" value="社員"></div>
+      <div><label>リンクの有効期限</label><select id="iv-days"><option value="3">3日</option><option value="7" selected>7日</option><option value="14">14日</option><option value="30">30日</option></select></div>
+    </div>
+    <label style="font-size:11px;color:#8c8375;display:block;margin-top:10px">担当店舗（社長・本部は自動的に全店）</label>
+    <div class="chk-stores" id="iv-stores">
+      <label><input type="checkbox" value="全店" onchange="App.toggleZen(this)">全店</label>
+      ${all.map(n=>`<label><input type="checkbox" value="${esc(n)}" onchange="this.parentElement.classList.toggle('on',this.checked)">${esc(n)}</label>`).join('')}
+    </div>
+    <div id="iv-msg" style="font-size:12px;color:#b5502f;margin:10px 0 0"></div>
+    <div class="modal-btns">
+      <button class="icon-btn primary" onclick="App.createInvite()">リンクを発行</button>
+      <button class="icon-btn" onclick="App.closeModal()">キャンセル</button>
+    </div></div></div>`;
+}
+// 招待リンクを開いた従業員向けの登録画面（未ログインで表示される）
+function viewRegister(){
+  if(S.inviteDone){
+    return `<div class="login-wrap"><div class="login-card">
+      <div class="login-head"><div class="login-logo">鳥</div><h1>登録が完了しました</h1></div>
+      <div class="login-body"><div class="note-box" style="margin-bottom:14px">アカウントを作成しました。設定したIDとパスワードでログインしてください。</div>
+      <button class="btn-login" onclick="location.href=location.pathname">ログイン画面へ</button></div></div></div>`;
+  }
+  const iv=S.invite;
+  if(!iv) return '';
+  if(iv.error){
+    return `<div class="login-wrap"><div class="login-card">
+      <div class="login-head"><div class="login-logo">鳥</div><h1>リンクが使えません</h1></div>
+      <div class="login-body"><div class="login-err">${esc(iv.error)}</div>
+      <div class="login-note">お手数ですが、担当者に新しい招待リンクの発行を依頼してください。</div></div></div></div>`;
+  }
+  return `<div class="login-wrap"><div class="login-card">
+    <div class="login-head"><div class="login-logo">鳥</div><h1>アカウント登録</h1><p>鳥一代グループ ダッシュボード</p></div>
+    <div class="login-body">
+      <div class="note-box" style="margin-bottom:14px;font-size:12px">
+        権限：<b>${esc(iv.role)}</b>${iv.position?' ／ 役職：<b>'+esc(iv.position)+'</b>':''}<br>担当店舗：${esc(iv.stores||'—')}
+      </div>
+      <label>お名前（表示名）</label><input type="text" id="rg-name" placeholder="例: 山田 太郎">
+      <label>ログインID（半角英数字）</label><input type="text" id="rg-id" placeholder="例: yamada">
+      <label>パスワード（8文字以上）</label><input type="password" id="rg-pw">
+      <label>パスワード（確認）</label><input type="password" id="rg-pw2">
+      <div id="rg-msg" style="font-size:12px;color:#b5502f;margin:2px 0 10px"></div>
+      <button class="btn-login" onclick="App.doRegister()">登録する</button>
+    </div></div></div>`;
+}
 function accountModal(){
   const m=S.modal;
-  const a=m.data||{ id:'', name:'', role:'店舗', stores:'', active:true, memo:'', tabs:'', perms:'' };
+  const a=m.data||{ id:'', name:'', role:'店舗', stores:'', active:true, memo:'', tabs:'', perms:'', position:'' };
   const isNew=!m.id;
   const all=allStores();
   const tabKeys=Object.keys(TAB_LABELS).filter(k=>k!=='accounts');
@@ -4392,6 +4697,7 @@ function accountModal(){
       <div><label>ログインID ${isNew?'':'（変更不可）'}</label><input type="text" id="ac-id" value="${esc(a.id)}" ${isNew?'':'disabled'}></div>
       <div><label>表示名</label><input type="text" id="ac-name" value="${esc(a.name)}"></div>
       <div><label>パスワード${isNew?'':'（空欄＝変更なし）'}</label><input type="text" id="ac-pw" value="" placeholder="${isNew?'必須':'変更する場合のみ入力'}"></div>
+      <div><label>役職（週報フォーマットの出し分け）</label><input type="text" id="ac-position" value="${esc(a.position||'')}" placeholder="例: 店長 / 社員"></div>
       <div><label>権限</label><select id="ac-role" onchange="App.roleHint(this.value)">
         ${['社長','本部','マネージャー','店舗'].map(r2=>`<option ${a.role===r2?'selected':''}>${r2}</option>`).join('')}
       </select></div>
@@ -4550,6 +4856,74 @@ window.App = {
   },
   csvSection(prefix){ downloadCsvSection(prefix); },
   /* ---- 口座CSVインポート（入金管理） ---- */
+  /* ---- 週報 ---- */
+  wkNav(d){
+    if(d===0){ S.wkWeek=''; render(); return; }
+    const cur=wkCurrent(); const n=addD(cur,d*7);
+    S.wkWeek=n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0')+'-'+String(n.getDate()).padStart(2,'0');
+    render();
+  },
+  async saveWeekly(){
+    const msg=$('wk-msg');
+    const s=wkCurrent();
+    const tpl=wkTemplateFor(wkMyPosition());
+    const answers=[]; 
+    for(let i=0;i<tpl.length;i++){
+      const el=$('wk-'+i); const v=el?el.value.trim():'';
+      if(tpl[i].required&&!v){ msg.style.color='#b5502f'; msg.textContent='「'+tpl[i].label+'」は必須です'; return; }
+      answers.push({ order:i+1, label:tpl[i].label, value:v });
+    }
+    const week=s.getFullYear()+'-'+String(s.getMonth()+1).padStart(2,'0')+'-'+String(s.getDate()).padStart(2,'0');
+    const store=selStoreName()||scopeStores()[0]||'';
+    if(!(S.auth&&S.auth.token)){ msg.style.color='#b5502f'; msg.textContent='API未接続のため保存できません（デモモード）'; return; }
+    msg.style.color='#8c8375'; msg.textContent='保存中…';
+    try{
+      const d=await api({ action:'saveWeekly', token:S.auth.token, week, store, position:wkMyPosition(), answers:JSON.stringify(answers) });
+      if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'保存に失敗しました'; return; }
+      msg.textContent=''; toast('週報を保存しました'); fetchDataFast();
+    }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
+  },
+  async saveFeedback(reportId){
+    const el=$('fb-'+reportId); const body=el?el.value.trim():'';
+    if(!body){ toast('フィードバックを入力してください'); return; }
+    if(!(S.auth&&S.auth.token)){ toast('API未接続のため保存できません（デモモード）'); return; }
+    try{
+      const d=await api({ action:'saveFeedback', token:S.auth.token, reportId, body });
+      if(!d.ok){ toast(d.error||'保存に失敗しました'); return; }
+      el.value=''; toast('フィードバックを送信しました'); fetchDataFast();
+    }catch(e){ toast('通信エラー: '+e.message); }
+  },
+  /* ---- 招待リンク ---- */
+  openInvite(){ if(!isAdminRole())return; S.modal={type:'invite',data:null}; render(); },
+  async createInvite(){
+    const msg=$('iv-msg');
+    const role=$('iv-role').value, position=$('iv-pos').value.trim(), days=$('iv-days').value;
+    const checked=[...$('iv-stores').querySelectorAll('input:checked')].map(i=>i.value);
+    const stores=(role==='社長'||role==='本部')?'全店':(checked.includes('全店')?'全店':checked.join(', '));
+    if(!stores){ msg.style.color='#b5502f'; msg.textContent='担当店舗を選択してください'; return; }
+    if(!(S.auth&&S.auth.token)){ msg.style.color='#b5502f'; msg.textContent='API未接続のため発行できません（デモモード）'; return; }
+    msg.style.color='#8c8375'; msg.textContent='発行中…';
+    try{
+      const d=await api({ action:'createInvite', token:S.auth.token, role, position, stores, days });
+      if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'発行に失敗しました'; return; }
+      S.modal={type:'invite',data:{ url:location.origin+location.pathname+'?invite='+d.token, expires:d.expires, role, position, stores }};
+      render();
+    }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
+  },
+  copyInvite(){ const el=$('iv-url'); if(el){ el.select(); document.execCommand('copy'); toast('招待リンクをコピーしました'); } },
+  async doRegister(){
+    const msg=$('rg-msg');
+    const id=$('rg-id').value.trim(), pw=$('rg-pw').value, pw2=$('rg-pw2').value, name=$('rg-name').value.trim();
+    if(!id||!pw||!name){ msg.textContent='すべて入力してください'; return; }
+    if(pw.length<8){ msg.textContent='パスワードは8文字以上にしてください'; return; }
+    if(pw!==pw2){ msg.textContent='パスワードが一致しません'; return; }
+    msg.style.color='#8c8375'; msg.textContent='登録中…';
+    try{
+      const d=await api({ action:'registerFromInvite', token:S.invite.token, id, pw, name });
+      if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'登録に失敗しました'; return; }
+      S.invite=null; S.inviteDone=true; render();
+    }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
+  },
   openDepositImport(){ if(!requireFeature('depositImport'))return; DEP_IMPORT={rows:[],file:''}; S.modal={type:'depImport'}; render(); },
   async depFileChosen(inp){
     const msg=$('dp-msg'); msg.textContent='';
@@ -4886,6 +5260,7 @@ window.App = {
     const role=$('ac-role').value;
     const active=$('ac-active').value;
     const memo=$('ac-memo').value;
+    const position=($('ac-position')?$('ac-position').value:'').trim();
     let stores;
     if(role==='社長'||role==='本部') stores='全店';
     else{
@@ -4909,7 +5284,7 @@ window.App = {
     if(live){
       msg.style.color='#8c8375'; msg.textContent='保存中…';
       try{
-        const d=await api({ action:'saveAccount', token:S.auth.token, accountId:id, pw, name, role, stores, active, memo, tabs, perms });
+        const d=await api({ action:'saveAccount', token:S.auth.token, accountId:id, pw, name, role, stores, active, memo, tabs, perms, position });
         if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'保存に失敗しました'; return; }
         S.accounts=null; S.modal=null; toast('アカウントを保存しました'); render();
       }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
@@ -4920,8 +5295,8 @@ window.App = {
     const ex=list.find(a=>a.id===id);
     if(isNew&&ex){ msg.textContent='このIDは既に存在します'; return; }
     if(isNew&&!pw){ msg.textContent='新規アカウントにはパスワードが必要です'; return; }
-    if(ex){ ex.name=name; if(pw)ex.pw=pw; ex.role=role; ex.stores=stores; ex.active=active!=='FALSE'; ex.memo=memo; ex.tabs=tabs; ex.perms=perms; }
-    else list.push({ id, pw, name, role, stores, active:active!=='FALSE', memo, tabs, perms });
+    if(ex){ ex.name=name; if(pw)ex.pw=pw; ex.role=role; ex.stores=stores; ex.active=active!=='FALSE'; ex.memo=memo; ex.tabs=tabs; ex.perms=perms; ex.position=position; }
+    else list.push({ id, pw, name, role, stores, active:active!=='FALSE', memo, tabs, perms, position });
     saveDemoAccounts(list);
     S.modal=null; toast('アカウントを保存しました（デモ：このブラウザのみ）'); render();
   },
@@ -4946,6 +5321,18 @@ window.App = {
 (function init(){
   loadSampleData();
   // URLパラメータ ?report=daily|weekly|monthly(&date=YYYY-MM-DD) でレポートカード表示（Lark日報の撮影用）
+  // 招待リンク（?invite=トークン）→ 登録画面。ログインより先に判定する
+  try{
+    const iq=new URLSearchParams(location.search).get('invite');
+    if(iq){
+      S.invite={ token:iq, loading:true };
+      api({ action:'checkInvite', token:iq }).then(d=>{
+        S.invite = d.ok ? { token:iq, role:d.role, position:d.position, stores:d.stores }
+                        : { token:iq, error:d.error||'このリンクは使用できません' };
+        render();
+      }).catch(e=>{ S.invite={ token:iq, error:'通信エラー: '+e.message }; render(); });
+    }
+  }catch(e){}
   try{
     const q=new URLSearchParams(location.search);
     if(q.get('report')) S.reportMode={ kind:q.get('report'), date:q.get('date')||'',

@@ -43,11 +43,13 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'perms-v40', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'weekly-v41', time: new Date().toISOString() });
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     if (action === 'perf') return out(perfDiag(p)); // パフォーマンス計測（専用トークン認証・ログイン不要・数字は返さず時間だけ）
     setupIfNeeded();
     if (action === 'login')  return out(login(p));
+    if (action === 'checkInvite')      return out(checkInvite(p));      // 招待リンクの確認（未ログイン）
+    if (action === 'registerFromInvite') return out(registerFromInvite(p)); // 招待から自己登録（未ログイン）
     if (action === 'logout') return out(logout(p));
     if (action === 'saveArenaEvents') return out(saveArenaEvents(p)); // イベント自動取得（専用トークン認証・ログイン不要）
     // スマホ等から取込タスクを依頼するキュー（3アクションとも専用トークン認証・ログイン不要）
@@ -74,6 +76,9 @@ function handle(p) {
     if (action === 'saveAdFee') return out(saveAdFee(p, session)); // 広告費の手入力（管理シート💾広告費DBへupsert）
     if (action === 'saveAdSales') return out(saveAdSales(p, session)); // 売上・反響の手入力（管理シート💾売上DBへupsert）
     if (action === 'importReservations') return out(importReservations(p, session)); // 予約CSV取込（管理シート💾予約DBへ追記）
+    if (action === 'saveWeekly')   return out(saveWeekly(p, session));   // 週報の提出・更新
+    if (action === 'saveFeedback') return out(saveFeedback(p, session)); // 週報へのフィードバック
+    if (action === 'createInvite') return out(createInvite(p, session)); // 招待リンク発行（社長・本部）
     return out({ ok: false, error: 'unknown action: ' + action });
   } catch (err) {
     return out({ ok: false, error: String(err && err.message || err) });
@@ -89,6 +94,8 @@ function out(obj) {
 
 function setupIfNeeded() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
+  weeklySheets_();          // 週報・回答・FB・招待
+  weeklyTemplateSheet_();   // 週報フォーマット（社長が編集する場所）
 
   // アカウントシート
   var acc = ss.getSheetByName('アカウント');
@@ -338,7 +345,7 @@ function setupIfNeeded() {
 function accountRows() {
   var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('アカウント');
   if (!sh || sh.getLastRow() < 2) return [];
-  var vals = sh.getRange(2, 1, sh.getLastRow() - 1, 9).getValues();
+  var vals = sh.getRange(2, 1, sh.getLastRow() - 1, 10).getValues();
   var rows = [];
   for (var i = 0; i < vals.length; i++) {
     var v = vals[i];
@@ -353,7 +360,8 @@ function accountRows() {
       active: String(v[5]).toUpperCase() !== 'FALSE' && String(v[5]) !== '無効' && String(v[5]) !== '0',
       memo: String(v[6] || ''),
       tabs: String(v[7] || '').trim(),  // 表示タブ（空欄＝権限の既定）
-      perms: String(v[8] || '').trim()  // 使える機能（空欄＝権限の既定 / 'なし'＝全部不可）
+      perms: String(v[8] || '').trim(), // 使える機能（空欄＝権限の既定 / 'なし'＝全部不可）
+      position: String(v[9] || '').trim() // 役職（店長/社員 等。週報テンプレートの出し分けに使う）
     });
   }
   return rows;
@@ -386,6 +394,39 @@ function sessionCleanup(){ // 期限切れの古いトークンを掃除
   }
 }
 
+// ================== パスワードの保護 ==================
+// スプレッドシートに平文で置かないため、SHA-256＋アカウントごとのランダムsaltで保存する。
+// 保存形式: 'sha256$<salt>$<hex>'。旧データ（平文）はログイン成功時に自動でこの形式へ移行する。
+function pwHash_(salt, plain) {
+  var raw = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(salt) + '|' + String(plain), Utilities.Charset.UTF_8);
+  var hex = '';
+  for (var i = 0; i < raw.length; i++) {
+    var b = (raw[i] < 0 ? raw[i] + 256 : raw[i]).toString(16);
+    hex += (b.length === 1 ? '0' : '') + b;
+  }
+  return hex;
+}
+function pwEncode_(plain) {
+  var salt = Utilities.getUuid().replace(/-/g, '').slice(0, 16);
+  return 'sha256$' + salt + '$' + pwHash_(salt, plain);
+}
+function pwIsHashed_(stored) { return /^sha256\$/.test(String(stored || '')); }
+// 照合。平文で保存されている旧アカウントも受け付ける（呼び出し側で移行する）
+function pwVerify_(stored, plain) {
+  stored = String(stored == null ? '' : stored);
+  if (!pwIsHashed_(stored)) return stored !== '' && stored === String(plain);
+  var parts = stored.split('$');
+  if (parts.length !== 3) return false;
+  return parts[2] === pwHash_(parts[1], plain);
+}
+// 平文のまま残っている行を、ログイン成功時にその場でハッシュへ差し替える
+function pwUpgradeRow_(row, plain) {
+  try {
+    var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('アカウント');
+    if (sh && row > 1) sh.getRange(row, 2).setValue(pwEncode_(plain));
+  } catch (e) {}
+}
+
 function login(p) {
   var id = String(p.id || '').trim();
   var pw = String(p.pw || '');
@@ -400,11 +441,12 @@ function login(p) {
   var rows = accountRows();
   for (var i = 0; i < rows.length; i++) {
     var a = rows[i];
-    if (a.id === id && a.pw === pw) {
+    if (a.id === id && pwVerify_(a.pw, pw)) {
       if (!a.active) return { ok: false, error: 'このアカウントは無効化されています' };
+      if (!pwIsHashed_(a.pw)) pwUpgradeRow_(a.row, pw);   // 旧平文 → ハッシュへ自動移行
       sessionCleanup();
       var token = Utilities.getUuid();
-      var sess = { id: a.id, name: a.name, role: a.role, stores: a.stores, tabs: a.tabs, perms: a.perms };
+      var sess = { id: a.id, name: a.name, role: a.role, stores: a.stores, tabs: a.tabs, perms: a.perms, position: a.position };
       sessionPut(token, sess);
       cache.remove(failKey);
       return { ok: true, token: token, account: sess };
@@ -905,7 +947,7 @@ function dataVersion() {
 function listAccounts(session) {
   if (!isAdmin(session)) return { ok: false, error: 'アカウント管理の権限がありません' };
   var rows = accountRows().map(function (a) {
-    return { id: a.id, name: a.name, role: a.role, stores: a.stores, active: a.active, memo: a.memo, tabs: a.tabs, perms: a.perms, hasPw: a.pw !== '' };
+    return { id: a.id, name: a.name, role: a.role, stores: a.stores, active: a.active, memo: a.memo, tabs: a.tabs, perms: a.perms, position: a.position, hasPw: a.pw !== '' };
   });
   return { ok: true, accounts: rows };
 }
@@ -924,19 +966,20 @@ function saveAccount(p, session) {
 
   var values = [
     id,
-    String(p.pw || (target ? target.pw : '')),
+    (String(p.pw || '') ? pwEncode_(String(p.pw)) : (target ? target.pw : '')),   // 新パスワードは必ずハッシュ化
     String(p.name || (target ? target.name : id)),
     role,
     String(p.stores || (target ? target.stores : '全店')),
     (String(p.active || 'TRUE').toUpperCase() === 'FALSE') ? 'FALSE' : 'TRUE',
     String(p.memo || (target ? target.memo : '')),
     String(p.tabs != null ? p.tabs : (target ? target.tabs : '')),  // 表示タブ（空欄＝権限の既定）
-    String(p.perms != null ? p.perms : (target ? target.perms : ''))  // 使える機能（空欄＝権限の既定）
+    String(p.perms != null ? p.perms : (target ? target.perms : '')),  // 使える機能（空欄＝権限の既定）
+    String(p.position != null ? p.position : (target ? target.position : ''))  // 役職
   ];
   if (!values[1]) return { ok: false, error: '新規アカウントにはパスワードが必要です' };
 
-  if (target) sh.getRange(target.row, 1, 1, 9).setValues([values]);
-  else sh.getRange(sh.getLastRow() + 1, 1, 1, 9).setValues([values]);
+  if (target) sh.getRange(target.row, 1, 1, 10).setValues([values]);
+  else sh.getRange(sh.getLastRow() + 1, 1, 1, 10).setValues([values]);
   return { ok: true };
 }
 
@@ -1713,4 +1756,177 @@ function ackTask(p) {
     }
   }
   return { ok: false, error: '該当タスクが見つかりません' };
+}
+
+// ================== 週報（提出・フィードバック・招待） ==================
+// 週の区切りは「火曜〜翌月曜」。分析用の月内ブロック週（1-7日…）とは別物なので混同しないこと。
+// 締切: 提出＝週明け火曜16:00 ／ フィードバック＝水曜16:00
+var WEEKLY_DUE_HOUR = 16;
+
+// 任意の日付を含む「火曜始まりの週」の火曜日を返す
+function weekStartTue_(d) {
+  var x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  var diff = (x.getDay() - 2 + 7) % 7;   // 火曜=2
+  x.setDate(x.getDate() - diff);
+  return x;
+}
+function ymd_(d) {
+  return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2);
+}
+function parseYmd_(s) {
+  var m = String(s || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : null;
+}
+function sheetOrCreate_(name, headers, note) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sh = ss.getSheetByName(name);
+  if (!sh) {
+    sh = ss.insertSheet(name);
+    sh.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight('bold').setBackground('#efe9dd');
+    if (note) sh.getRange('A1').setNote(note);
+    sh.setFrozenRows(1); sh.setColumnWidths(1, headers.length, 140);
+  }
+  return sh;
+}
+function weeklySheets_() {
+  return {
+    rep: sheetOrCreate_('DB_週報', ['ID', '週開始日(火)', '投稿者ID', '投稿者名', '店舗', '役職', '提出日時', '更新日時'],
+      '週報の提出記録（1行=1提出）。ダッシュボードの「週報」タブから投稿されます。手で編集しないでください。'),
+    ans: sheetOrCreate_('DB_週報回答', ['週報ID', '表示順', '項目名', '回答'],
+      '週報の各項目の回答（縦持ち）。フォーマットを変えたい場合は DB_週報テンプレート を編集してください。'),
+    fb: sheetOrCreate_('DB_週報FB', ['ID', '週報ID', '投稿者ID', '投稿者名', '本文', '日時'],
+      '週報へのフィードバック。1つの週報に複数人が書けます。'),
+    inv: sheetOrCreate_('DB_招待', ['トークン', '権限', '役職', '担当店舗', '発行者', '発行日時', '有効期限', '使用済み', '使用者ID'],
+      'アカウント招待リンク。発行はダッシュボードのアカウント管理から。使用済み=TRUE の行は再利用できません。')
+  };
+}
+// テンプレート（社長が自由に編集する場所）。無ければ初期サンプルを入れて作る。
+function weeklyTemplateSheet_() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sh = ss.getSheetByName('DB_週報テンプレート');
+  if (!sh) {
+    sh = ss.insertSheet('DB_週報テンプレート');
+    sh.getRange(1, 1, 1, 5).setValues([['役職', '表示順', '項目名', '入力形式', '必須']])
+      .setFontWeight('bold').setBackground('#efe9dd');
+    sh.getRange(2, 1, 7, 5).setValues([
+      ['店長', 1, '今週の振り返り（できたこと）', '長文', 'TRUE'],
+      ['店長', 2, '課題・うまくいかなかったこと', '長文', 'TRUE'],
+      ['店長', 3, '来週の重点KPI', '短文', 'TRUE'],
+      ['店長', 4, '来週やること（タスク）', '長文', 'TRUE'],
+      ['社員', 1, '今週やったこと', '長文', 'TRUE'],
+      ['社員', 2, '来週やること', '長文', 'TRUE'],
+      ['社員', 3, '困っていること・相談したいこと', '長文', 'FALSE'],
+    ]);
+    sh.getRange('A1').setNote('週報のフォーマット。行を足す/消す/並べ替えるだけでダッシュボードの入力欄が変わります（再デプロイ不要）。役職はアカウントの「役職」と一致させてください。入力形式は 長文/短文/数値。');
+    sh.setFrozenRows(1); sh.setColumnWidths(1, 5, 150); sh.setColumnWidth(3, 260);
+  }
+  return sh;
+}
+
+// 週報を保存（同じ人・同じ週なら上書き）
+function saveWeekly(p, session) {
+  var week = String(p.week || '').trim();
+  if (!parseYmd_(week)) return { ok: false, error: '週の指定が不正です' };
+  var answers = p.answers;
+  if (typeof answers === 'string') { try { answers = JSON.parse(answers); } catch (e) { answers = null; } }
+  if (!answers || !answers.length) return { ok: false, error: '回答がありません' };
+
+  var sh = weeklySheets_();
+  var now = new Date();
+  var last = sh.rep.getLastRow();
+  var id = '', row = -1, submittedAt = now;
+  if (last >= 2) {
+    var vals = sh.rep.getRange(2, 1, last - 1, 3).getValues();
+    for (var i = 0; i < vals.length; i++) {
+      // 同じ投稿者＆同じ週の行があれば更新（二重投稿を防ぐ）
+      if (String(vals[i][2]).trim() === session.id && ymd_(new Date(vals[i][1])) === week) {
+        id = String(vals[i][0]).trim(); row = i + 2;
+        submittedAt = sh.rep.getRange(row, 7).getValue() || now;
+        break;
+      }
+    }
+  }
+  if (!id) id = Utilities.getUuid().slice(0, 12);
+  var rec = [id, parseYmd_(week), session.id, session.name || session.id,
+             String(p.store || session.stores || ''), String(p.position || session.position || ''), submittedAt, now];
+  var target = row > 0 ? row : sh.rep.getLastRow() + 1;
+  sh.rep.getRange(target, 1, 1, 8).setValues([rec]);
+  sh.rep.getRange(target, 2).setNumberFormat('yyyy/m/d');
+
+  // 回答は入れ替え（この週報IDの既存行を消してから書き直す）
+  var aLast = sh.ans.getLastRow();
+  if (aLast >= 2) {
+    var aVals = sh.ans.getRange(2, 1, aLast - 1, 1).getValues();
+    for (var j = aVals.length - 1; j >= 0; j--) if (String(aVals[j][0]).trim() === id) sh.ans.deleteRow(j + 2);
+  }
+  var rows = answers.map(function (a, idx) {
+    return [id, Number(a.order || idx + 1), String(a.label || ''), String(a.value == null ? '' : a.value)];
+  });
+  if (rows.length) sh.ans.getRange(sh.ans.getLastRow() + 1, 1, rows.length, 4).setValues(rows);
+  return { ok: true, id: id };
+}
+
+// フィードバックを追加
+function saveFeedback(p, session) {
+  var reportId = String(p.reportId || '').trim();
+  var body = String(p.body || '').trim();
+  if (!reportId || !body) return { ok: false, error: '対象の週報と本文が必要です' };
+  var sh = weeklySheets_();
+  sh.fb.appendRow([Utilities.getUuid().slice(0, 12), reportId, session.id, session.name || session.id, body, new Date()]);
+  return { ok: true };
+}
+
+// ---- 招待リンク ----
+function createInvite(p, session) {
+  if (!isAdmin(session)) return { ok: false, error: '招待リンクの発行権限がありません' };
+  var role = String(p.role || '').trim();
+  if (['社長', '本部', 'マネージャー', '店舗'].indexOf(role) < 0) return { ok: false, error: '権限の指定が不正です' };
+  var days = Number(p.days || 7); if (!(days > 0 && days <= 60)) days = 7;
+  var token = Utilities.getUuid().replace(/-/g, '');   // 32桁・推測不可
+  var exp = new Date(); exp.setDate(exp.getDate() + days);
+  var sh = weeklySheets_();
+  sh.inv.appendRow([token, role, String(p.position || ''), String(p.stores || ''), session.id, new Date(), exp, 'FALSE', '']);
+  return { ok: true, token: token, expires: ymd_(exp) };
+}
+// トークンの中身を返す（未ログインで呼ばれる。権限・役職・店舗だけ返し、他の情報は一切返さない）
+function checkInvite(p) {
+  var token = String(p.token || '').trim();
+  if (!token) return { ok: false, error: 'リンクが不正です' };
+  var sh = weeklySheets_();
+  var last = sh.inv.getLastRow(); if (last < 2) return { ok: false, error: 'リンクが無効です' };
+  var vals = sh.inv.getRange(2, 1, last - 1, 9).getValues();
+  for (var i = 0; i < vals.length; i++) {
+    if (String(vals[i][0]).trim() !== token) continue;
+    if (String(vals[i][7]).toUpperCase() === 'TRUE') return { ok: false, error: 'このリンクは既に使用されています' };
+    if (vals[i][6] && new Date(vals[i][6]) < new Date()) return { ok: false, error: 'このリンクは期限切れです' };
+    return { ok: true, role: String(vals[i][1]), position: String(vals[i][2]), stores: String(vals[i][3]) };
+  }
+  return { ok: false, error: 'リンクが無効です' };
+}
+// 招待リンクから従業員が自分でアカウントを作る（未ログインで呼ばれる）
+function registerFromInvite(p) {
+  var token = String(p.token || '').trim();
+  var chk = checkInvite({ token: token });
+  if (!chk.ok) return chk;
+  var id = String(p.id || '').trim();
+  var pw = String(p.pw || '');
+  var name = String(p.name || '').trim() || id;
+  if (!/^[A-Za-z0-9_.-]{3,32}$/.test(id)) return { ok: false, error: 'ログインIDは半角英数字3〜32文字で入力してください' };
+  if (pw.length < 8) return { ok: false, error: 'パスワードは8文字以上にしてください' };
+
+  var rows = accountRows();
+  for (var i = 0; i < rows.length; i++) if (rows[i].id === id) return { ok: false, error: 'このログインIDは既に使われています' };
+
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('アカウント');
+  sh.getRange(sh.getLastRow() + 1, 1, 1, 10).setValues([[
+    id, pwEncode_(pw), name, chk.role, chk.stores, 'TRUE', '招待リンクから登録', '', '', chk.position
+  ]]);
+  // トークンを使用済みにする（1回きり）
+  var ish = weeklySheets_().inv;
+  var last = ish.getLastRow();
+  var vals = ish.getRange(2, 1, last - 1, 1).getValues();
+  for (var j = 0; j < vals.length; j++) {
+    if (String(vals[j][0]).trim() === token) { ish.getRange(j + 2, 8).setValue('TRUE'); ish.getRange(j + 2, 9).setValue(id); break; }
+  }
+  return { ok: true };
 }
