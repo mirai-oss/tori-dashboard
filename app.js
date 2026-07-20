@@ -29,6 +29,22 @@ const ROLE_TABS = {
   '店舗':       ['dash','target','analysis','detail','deposit','review','ai'],   // PL・広告管理は既定で非表示（アカウントごとの「表示タブ」で変更可）
 };
 const TAB_LABELS = { dash:'ダッシュボード', target:'目標管理', analysis:'推移分析', detail:'明細分析', pl:'PL（損益）', deposit:'入金管理', ad:'広告管理', review:'口コミ', ai:'AI検索', accounts:'アカウント管理' };
+// 入力・取込系の機能権限。閲覧は「表示タブ」で、データを書き込む操作はこちらで制御する。
+// 既定は権限ごとの ROLE_FEATURES、アカウントごとに上書きしたい場合は「アカウント」シートのI列に保存する。
+const FEATURE_LABELS = {
+  depositImport:'口座CSVを取込（入金管理）',
+  plInput:'経費を入力（PL）',
+  adInput:'広告費を入力（広告管理）',
+  adSales:'売上を入力（広告管理）',
+  rsvImport:'予約CSVを取込（広告管理）',
+};
+const ALL_FEATURES = Object.keys(FEATURE_LABELS);
+const ROLE_FEATURES = {
+  '社長':       ALL_FEATURES.slice(),
+  '本部':       ALL_FEATURES.slice(),
+  'マネージャー':[],   // 既定は閲覧のみ（アカウントごとに個別許可できる）
+  '店舗':       [],
+};
 // 口コミ集約：同じ実店舗にぶら下がる別名店舗（Googleマイビジネスが分かれているケース）
 // 親店舗（=分析_日別店舗の店舗名）に、口コミ上の子店舗名をぶら下げる
 const REVIEW_CHILDREN = {
@@ -899,6 +915,32 @@ function myTabs(){
   return tabs.length?tabs:base;
 }
 function isAdminRole(){ const a=S.auth&&S.auth.account; return a&&(a.role==='社長'||a.role==='本部'); }
+// アカウントの「使える機能」指定をパース。'plInput,adInput' でも '経費を入力、広告費を入力' でもOK。
+// 空＝権限の既定に追従（null）／'なし' 等＝1つも許可しない（空配列）を区別する。
+function parseFeatureSpec(s){
+  s=String(s==null?'':s).trim(); if(!s) return null;
+  if(/^(なし|無し|none|-)$/i.test(s)) return [];
+  const out=[];
+  s.split(/[,、\/\s]+/).forEach(t=>{
+    t=t.trim(); if(!t) return;
+    const k=ALL_FEATURES.includes(t)?t:ALL_FEATURES.find(k2=>FEATURE_LABELS[k2]===t||FEATURE_LABELS[k2].indexOf(t)===0);
+    if(k&&!out.includes(k)) out.push(k);
+  });
+  return out;
+}
+// いま操作している人がその機能を使えるか。閲覧タブとは独立に判定する。
+function myFeatures(){
+  const acc=S.auth&&S.auth.account;
+  const ov=parseFeatureSpec(acc&&acc.perms);
+  return ov||ROLE_FEATURES[acc&&acc.role]||[];
+}
+function canUse(feature){ return myFeatures().indexOf(feature)>=0; }
+// 画面のボタンを隠すだけでなく、操作の入口でも弾く（開発者ツールから直接呼ばれた場合の保険）
+function requireFeature(feature){
+  if(canUse(feature)) return true;
+  toast('この操作の権限がありません（管理者にご確認ください）');
+  return false;
+}
 function selStoreName(){ return S.store==='all'?null:S.store; }
 
 /* ---------------- 集計 ---------------- */
@@ -2261,7 +2303,7 @@ function viewDeposit(){
   let h=`
   <div class="ctrl-bar no-print">
     ${ymSelect('depMonth', y, m)}
-    ${isAdminRole()?`<button class="icon-btn primary" onclick="App.openDepositImport()">⬆ 口座CSVを取込</button>`:''}
+    ${canUse('depositImport')?`<button class="icon-btn primary" onclick="App.openDepositImport()">⬆ 口座CSVを取込</button>`:''}
     <span class="period-label">現金売上（入金予定）と ATM入金の照合 ／ ${esc(scopeLabel)}</span>
   </div>`+storeSegHtml();
 
@@ -2444,8 +2486,8 @@ function viewAd(){
       }
     }
     return storeSegHtml()+`<div class="ctrl-bar no-print">
-      <button class="icon-btn primary" onclick="App.openAdInput()">✎ 広告費を入力</button>
-      <button class="icon-btn" onclick="App.openRsvImport()">⬆ 予約CSVを取込</button>
+      ${canUse('adInput')?`<button class="icon-btn primary" onclick="App.openAdInput()">✎ 広告費を入力</button>`:''}
+      ${canUse('rsvImport')?`<button class="icon-btn" onclick="App.openRsvImport()">⬆ 予約CSVを取込</button>`:''}
     </div><div class="panel"><div class="panel-head"><div><h3>広告管理</h3><div class="sub">実データ（DB_広告シート）のみ表示・サンプルは入っていません</div></div></div>
     ${diagBox||`<div class="note-box">
       広告データはまだ接続されていません。スプレッドシートに <code>DB_広告</code> という名前のシートを作り、
@@ -2498,9 +2540,9 @@ function viewAd(){
   h+=`<div class="ctrl-bar no-print">
     <div class="seg">${[['month','月'],['year','年'],['custom','期間指定']].map(([k,l])=>`<button class="${P===k?'on':''}" onclick="App.set('adPeriod','${k}')">${l}</button>`).join('')}</div>
     ${ctrlHtml}
-    <button class="icon-btn primary" onclick="App.openAdInput()">✎ 広告費を入力</button>
-    <button class="icon-btn primary" onclick="App.openAdSales()">✎ 売上を入力</button>
-    <button class="icon-btn" onclick="App.openRsvImport()">⬆ 予約CSVを取込</button>
+    ${canUse('adInput')?`<button class="icon-btn primary" onclick="App.openAdInput()">✎ 広告費を入力</button>`:''}
+    ${canUse('adSales')?`<button class="icon-btn primary" onclick="App.openAdSales()">✎ 売上を入力</button>`:''}
+    ${canUse('rsvImport')?`<button class="icon-btn" onclick="App.openRsvImport()">⬆ 予約CSVを取込</button>`:''}
     <span class="period-label">広告費用対効果（${mLabel}${selN?' ／ '+esc(selN):''}）</span></div>`;
   // データの出どころを見える化：この画面の数字がどこから来ているかを表示
   let a0=0,a1=0; for(const r of D.ad){ if(!a0||r.t<a0)a0=r.t; if(r.t>a1)a1=r.t; }
@@ -2986,7 +3028,7 @@ function viewPL(){
   let h=`<div class="ctrl-bar no-print">
     <div class="seg">${[['month','月次'],['year','年間'],['custom','期間指定']].map(([k,l])=>`<button class="${P===k?'on':''}" onclick="App.set('plPeriod','${k}')">${l}</button>`).join('')}</div>
     ${ctrlHtml}
-    <button class="icon-btn primary" onclick="App.openPlInput()">✎ 経費を入力</button>
+    ${canUse('plInput')?`<button class="icon-btn primary" onclick="App.openPlInput()">✎ 経費を入力</button>`:''}
     <span class="period-label">損益（${mLabel} ／ ${esc(scopeLabel)}）</span></div>`+storeSegHtml();
 
   // KPIカード
@@ -3809,12 +3851,17 @@ function viewAccounts(){
   </div>`;
   if(S.accErr) h+=`<div class="login-err" style="margin:10px 0">${esc(S.accErr)}</div>`;
   h+=`<div class="panel"><div class="panel-head"><div><h3>発行済みアカウント</h3><div class="sub">権限: 社長・本部＝全店＋アカウント管理 ／ マネージャー＝担当店舗 ／ 店舗＝自店のみ</div></div></div>
-  <div class="scroll-x"><table class="tbl"><thead><tr><th>ログインID</th><th>表示名</th><th>権限</th><th>担当店舗</th><th>表示タブ</th><th>状態</th><th>メモ</th><th></th></tr></thead><tbody>`;
+  <div class="scroll-x"><table class="tbl"><thead><tr><th>ログインID</th><th>表示名</th><th>権限</th><th>担当店舗</th><th>表示タブ</th><th>使える機能</th><th>状態</th><th>メモ</th><th></th></tr></thead><tbody>`;
   list.forEach(a=>{
     const ovTabs=parseTabsSpec(a.tabs);
+    const ovPerms=parseFeatureSpec(a.perms);
+    const permCell=ovPerms
+      ? (ovPerms.length?esc(ovPerms.map(k=>FEATURE_LABELS[k].replace(/（.*$/,'')).join('・')):'<span class="mut">なし</span>')
+      : ((ROLE_FEATURES[a.role]||[]).length?'<span class="mut">既定（全部）</span>':'<span class="mut">既定（なし）</span>');
     h+=`<tr><td>${esc(a.id)}</td><td style="text-align:right">${esc(a.name)}</td><td>${esc(a.role)}</td>
     <td style="max-width:280px;white-space:normal">${esc(a.stores)}</td>
     <td style="max-width:220px;white-space:normal;font-size:11px">${ovTabs?esc(ovTabs.map(k=>TAB_LABELS[k]).join('・')):'<span class="mut">既定</span>'}</td>
+    <td style="max-width:200px;white-space:normal;font-size:11px">${permCell}</td>
     <td>${a.active!==false?'<span class="badge ok">有効</span>':'<span class="badge ng">無効</span>'}</td>
     <td class="mut" style="white-space:normal">${esc(a.memo||'')}</td>
     <td><button class="icon-btn" onclick="App.editAccount(this.dataset.i)" data-i="${esc(a.id)}">編集</button></td></tr>`;
@@ -4330,11 +4377,12 @@ function connectModal(){
 }
 function accountModal(){
   const m=S.modal;
-  const a=m.data||{ id:'', name:'', role:'店舗', stores:'', active:true, memo:'', tabs:'' };
+  const a=m.data||{ id:'', name:'', role:'店舗', stores:'', active:true, memo:'', tabs:'', perms:'' };
   const isNew=!m.id;
   const all=allStores();
   const tabKeys=Object.keys(TAB_LABELS).filter(k=>k!=='accounts');
   const curTabs=(parseTabsSpec(a.tabs)||ROLE_TABS[a.role]||ROLE_TABS['店舗']).filter(k=>k!=='accounts');
+  const curPerms=parseFeatureSpec(a.perms)||ROLE_FEATURES[a.role]||[];
   const selected=String(a.stores||'')==='全店'?all.slice():String(a.stores||'').split(/[,、]/).map(s=>s.trim()).filter(Boolean);
   const isZen=String(a.stores||'')==='全店';
   return `<div class="modal-bg" onclick="if(event.target===this)App.closeModal()"><div class="modal">
@@ -4357,6 +4405,10 @@ function accountModal(){
     <label style="font-size:11px;color:#8c8375;display:block;margin-top:14px">表示するタブ（チェックした項目だけメニューに表示。権限を変えると既定に戻ります／アカウント管理は社長・本部のみ自動表示）</label>
     <div class="chk-stores" id="ac-tabs">
       ${tabKeys.map(k=>`<label class="${curTabs.includes(k)?'on':''}"><input type="checkbox" ${curTabs.includes(k)?'checked':''} value="${k}" onchange="this.parentElement.classList.toggle('on',this.checked)">${esc(TAB_LABELS[k])}</label>`).join('')}
+    </div>
+    <label style="font-size:11px;color:#8c8375;display:block;margin-top:14px">使える機能（データを入力・取り込む操作。チェックを外すとボタン自体が表示されません／既定は 社長・本部＝全部、マネージャー・店舗＝なし）</label>
+    <div class="chk-stores" id="ac-perms">
+      ${ALL_FEATURES.map(k=>`<label class="${curPerms.includes(k)?'on':''}"><input type="checkbox" ${curPerms.includes(k)?'checked':''} value="${k}" onchange="this.parentElement.classList.toggle('on',this.checked)">${esc(FEATURE_LABELS[k])}</label>`).join('')}
     </div>
     <div class="form-grid" style="margin-top:14px">
       <div><label>状態</label><select id="ac-active"><option value="TRUE" ${a.active!==false?'selected':''}>有効</option><option value="FALSE" ${a.active===false?'selected':''}>無効</option></select></div>
@@ -4498,7 +4550,7 @@ window.App = {
   },
   csvSection(prefix){ downloadCsvSection(prefix); },
   /* ---- 口座CSVインポート（入金管理） ---- */
-  openDepositImport(){ DEP_IMPORT={rows:[],file:''}; S.modal={type:'depImport'}; render(); },
+  openDepositImport(){ if(!requireFeature('depositImport'))return; DEP_IMPORT={rows:[],file:''}; S.modal={type:'depImport'}; render(); },
   async depFileChosen(inp){
     const msg=$('dp-msg'); msg.textContent='';
     const f=inp.files&&inp.files[0]; if(!f) return;
@@ -4555,6 +4607,7 @@ window.App = {
   },
   /* ---- PL経費入力 ---- */
   openPlInput(){
+    if(!requireFeature('plInput'))return;
     const m0=plMonthDate();
     const ym=m0.getFullYear()+'-'+String(m0.getMonth()+1).padStart(2,'0');
     S.modal={type:'plInput', ym, store:selStoreName()||scopeStores()[0]}; render();
@@ -4615,6 +4668,7 @@ window.App = {
   },
   /* ---- 広告費入力 ---- */
   openAdInput(){
+    if(!requireFeature('adInput'))return;
     const ref=D.refDate||new Date();
     const m0=S.adMonth?new Date(+S.adMonth.split('-')[0],+S.adMonth.split('-')[1]-1,1):new Date(ref.getFullYear(),ref.getMonth(),1);
     const ym=m0.getFullYear()+'-'+String(m0.getMonth()+1).padStart(2,'0');
@@ -4663,6 +4717,7 @@ window.App = {
   },
   /* ---- 売上入力（広告管理・💾売上DB） ---- */
   openAdSales(){
+    if(!requireFeature('adSales'))return;
     const ref=D.refDate||new Date();
     const m0=S.adMonth?new Date(+S.adMonth.split('-')[0],+S.adMonth.split('-')[1]-1,1):new Date(ref.getFullYear(),ref.getMonth(),1);
     const ym=m0.getFullYear()+'-'+String(m0.getMonth()+1).padStart(2,'0');
@@ -4691,7 +4746,7 @@ window.App = {
     }catch(e){ if(btn)btn.disabled=false; msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
   },
   /* ---- 予約CSV取込 ---- */
-  openRsvImport(){ RSV_IMPORT={rows:[],file:''}; S.modal={type:'rsvImport'}; render(); },
+  openRsvImport(){ if(!requireFeature('rsvImport'))return; RSV_IMPORT={rows:[],file:''}; S.modal={type:'rsvImport'}; render(); },
   async rsvFileChosen(inp){
     const msg=$('rv-msg'); msg.textContent='';
     const f=inp.files&&inp.files[0]; if(!f) return;
@@ -4842,6 +4897,11 @@ window.App = {
     const tabsChecked=[...$('ac-tabs').querySelectorAll('input:checked')].map(i=>i.value);
     const defTabs=(ROLE_TABS[role]||ROLE_TABS['店舗']).filter(k=>k!=='accounts');
     const tabs=(tabsChecked.length===defTabs.length&&tabsChecked.every(k=>defTabs.includes(k)))?'':tabsChecked.join(',');
+    // 使える機能：権限の既定と同じなら空（＝既定に追従）、1つも無いなら'なし'（既定に戻らないよう明示）
+    const permsChecked=[...$('ac-perms').querySelectorAll('input:checked')].map(i=>i.value);
+    const defPerms=ROLE_FEATURES[role]||[];
+    const sameAsDefault=permsChecked.length===defPerms.length&&permsChecked.every(k=>defPerms.includes(k));
+    const perms=sameAsDefault?'':(permsChecked.length?permsChecked.join(','):'なし');
     if(!id){ msg.textContent='ログインIDを入力してください'; return; }
     if(!stores){ msg.textContent='担当店舗を1つ以上選択してください'; return; }
     if(!tabsChecked.length){ msg.textContent='表示するタブを1つ以上選択してください'; return; }
@@ -4849,7 +4909,7 @@ window.App = {
     if(live){
       msg.style.color='#8c8375'; msg.textContent='保存中…';
       try{
-        const d=await api({ action:'saveAccount', token:S.auth.token, accountId:id, pw, name, role, stores, active, memo, tabs });
+        const d=await api({ action:'saveAccount', token:S.auth.token, accountId:id, pw, name, role, stores, active, memo, tabs, perms });
         if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'保存に失敗しました'; return; }
         S.accounts=null; S.modal=null; toast('アカウントを保存しました'); render();
       }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
@@ -4860,8 +4920,8 @@ window.App = {
     const ex=list.find(a=>a.id===id);
     if(isNew&&ex){ msg.textContent='このIDは既に存在します'; return; }
     if(isNew&&!pw){ msg.textContent='新規アカウントにはパスワードが必要です'; return; }
-    if(ex){ ex.name=name; if(pw)ex.pw=pw; ex.role=role; ex.stores=stores; ex.active=active!=='FALSE'; ex.memo=memo; ex.tabs=tabs; }
-    else list.push({ id, pw, name, role, stores, active:active!=='FALSE', memo, tabs });
+    if(ex){ ex.name=name; if(pw)ex.pw=pw; ex.role=role; ex.stores=stores; ex.active=active!=='FALSE'; ex.memo=memo; ex.tabs=tabs; ex.perms=perms; }
+    else list.push({ id, pw, name, role, stores, active:active!=='FALSE', memo, tabs, perms });
     saveDemoAccounts(list);
     S.modal=null; toast('アカウントを保存しました（デモ：このブラウザのみ）'); render();
   },

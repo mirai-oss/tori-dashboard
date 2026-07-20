@@ -43,7 +43,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v39', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'perms-v40', time: new Date().toISOString() });
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     if (action === 'perf') return out(perfDiag(p)); // パフォーマンス計測（専用トークン認証・ログイン不要・数字は返さず時間だけ）
     setupIfNeeded();
@@ -338,7 +338,7 @@ function setupIfNeeded() {
 function accountRows() {
   var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('アカウント');
   if (!sh || sh.getLastRow() < 2) return [];
-  var vals = sh.getRange(2, 1, sh.getLastRow() - 1, 8).getValues();
+  var vals = sh.getRange(2, 1, sh.getLastRow() - 1, 9).getValues();
   var rows = [];
   for (var i = 0; i < vals.length; i++) {
     var v = vals[i];
@@ -352,7 +352,8 @@ function accountRows() {
       stores: String(v[4]).trim(),
       active: String(v[5]).toUpperCase() !== 'FALSE' && String(v[5]) !== '無効' && String(v[5]) !== '0',
       memo: String(v[6] || ''),
-      tabs: String(v[7] || '').trim()   // 表示タブ（空欄＝権限の既定）
+      tabs: String(v[7] || '').trim(),  // 表示タブ（空欄＝権限の既定）
+      perms: String(v[8] || '').trim()  // 使える機能（空欄＝権限の既定 / 'なし'＝全部不可）
     });
   }
   return rows;
@@ -403,7 +404,7 @@ function login(p) {
       if (!a.active) return { ok: false, error: 'このアカウントは無効化されています' };
       sessionCleanup();
       var token = Utilities.getUuid();
-      var sess = { id: a.id, name: a.name, role: a.role, stores: a.stores, tabs: a.tabs };
+      var sess = { id: a.id, name: a.name, role: a.role, stores: a.stores, tabs: a.tabs, perms: a.perms };
       sessionPut(token, sess);
       cache.remove(failKey);
       return { ok: true, token: token, account: sess };
@@ -904,7 +905,7 @@ function dataVersion() {
 function listAccounts(session) {
   if (!isAdmin(session)) return { ok: false, error: 'アカウント管理の権限がありません' };
   var rows = accountRows().map(function (a) {
-    return { id: a.id, name: a.name, role: a.role, stores: a.stores, active: a.active, memo: a.memo, tabs: a.tabs, hasPw: a.pw !== '' };
+    return { id: a.id, name: a.name, role: a.role, stores: a.stores, active: a.active, memo: a.memo, tabs: a.tabs, perms: a.perms, hasPw: a.pw !== '' };
   });
   return { ok: true, accounts: rows };
 }
@@ -929,12 +930,13 @@ function saveAccount(p, session) {
     String(p.stores || (target ? target.stores : '全店')),
     (String(p.active || 'TRUE').toUpperCase() === 'FALSE') ? 'FALSE' : 'TRUE',
     String(p.memo || (target ? target.memo : '')),
-    String(p.tabs != null ? p.tabs : (target ? target.tabs : ''))   // 表示タブ（空欄＝権限の既定）
+    String(p.tabs != null ? p.tabs : (target ? target.tabs : '')),  // 表示タブ（空欄＝権限の既定）
+    String(p.perms != null ? p.perms : (target ? target.perms : ''))  // 使える機能（空欄＝権限の既定）
   ];
   if (!values[1]) return { ok: false, error: '新規アカウントにはパスワードが必要です' };
 
-  if (target) sh.getRange(target.row, 1, 1, 8).setValues([values]);
-  else sh.getRange(sh.getLastRow() + 1, 1, 1, 8).setValues([values]);
+  if (target) sh.getRange(target.row, 1, 1, 9).setValues([values]);
+  else sh.getRange(sh.getLastRow() + 1, 1, 1, 9).setValues([values]);
   return { ok: true };
 }
 
