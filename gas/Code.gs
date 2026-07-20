@@ -43,7 +43,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v36', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v37', time: new Date().toISOString() });
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     if (action === 'perf') return out(perfDiag(p)); // パフォーマンス計測（専用トークン認証・ログイン不要・数字は返さず時間だけ）
     setupIfNeeded();
@@ -70,6 +70,7 @@ function handle(p) {
     if (action === 'deleteEvent') return out(deleteEvent(p, session)); // イベント削除
     if (action === 'importDeposits') return out(importDeposits(p, session)); // 口座CSVの入金取込（入金管理タブ）
     if (action === 'savePlEntries') return out(savePlEntries(p, session)); // PL経費の手入力（PL管理システム＋DB_PL両反映）
+    if (action === 'savePlBulk') return out(savePlBulk(p, session)); // PL経費の期間一括計上（例: 家賃を12ヶ月分）
     if (action === 'saveAdFee') return out(saveAdFee(p, session)); // 広告費の手入力（管理シート💾広告費DBへupsert）
     if (action === 'importReservations') return out(importReservations(p, session)); // 予約CSV取込（管理シート💾予約DBへ追記）
     return out({ ok: false, error: 'unknown action: ' + action });
@@ -436,7 +437,9 @@ var MGMT_TABS = [
   { key: '広告',     re: /広告費DB/ },        // 💾広告費DB → 広告費
   { key: '広告効果', re: /売上DB|広告効果/ },  // 💾売上DB → アクセス数・ネット予約・電話数
   { key: '単価設定', re: /単価設定/ },         // ⚙単価設定 → 想定客単価
-  { key: '予約',     re: /予約DB|予約明細|予約一覧/ }  // 💾予約DB → 曜日別・当日予約の時刻分析
+  { key: '予約',     re: /予約DB|予約明細|予約一覧/ },  // 💾予約DB → 曜日別・当日予約の時刻分析
+  { key: '媒体マスタ',   re: /媒体マスタ/ },    // ⚙️媒体マスタ → 広告費入力モーダルの媒体プルダウン
+  { key: 'プランマスタ', re: /プランマスタ/ }   // ⚙️プランマスタ → プランプルダウン（標準料金付き）
 ];
 
 function mgmtOpen() {
@@ -1281,36 +1284,125 @@ function saveAdFee(p, session) {
     }
   }
   if (hr < 0) return { ok: false, error: '💾広告費DBの見出し行（年月）が見つかりません' };
-  var ymSlash = ym.slice(0, 4) + '/' + ym.slice(5, 7);
+  // 対象月リスト（ymTo指定で期間一括。例 2026-01〜2026-12 → 12ヶ月分を同条件でupsert）
+  var ymTo = String(p.ymTo || '').trim();
+  var mlist = [];
+  {
+    var y1 = +ym.slice(0, 4), m1 = +ym.slice(5, 7);
+    var y2 = y1, m2 = m1;
+    if (ymTo) {
+      if (!/^\d{4}-\d{2}$/.test(ymTo)) return { ok: false, error: '終了月が不正です' };
+      y2 = +ymTo.slice(0, 4); m2 = +ymTo.slice(5, 7);
+    }
+    var nMon = (y2 - y1) * 12 + (m2 - m1) + 1;
+    if (nMon < 1) return { ok: false, error: '終了月が開始月より前です' };
+    if (nMon > 36) return { ok: false, error: '期間一括は36ヶ月までです' };
+    for (var mi = 0; mi < nMon; mi++) { var yy = y1 + Math.floor((m1 - 1 + mi) / 12), mm = (m1 - 1 + mi) % 12 + 1; mlist.push(yy + '/' + ('0' + mm).slice(-2)); }
+  }
   var store = mgmtStoreName_(mss, dashStore);   // 管理シートの店舗マスタ表記へ変換
-  var last = sh.getLastRow(), found = -1;
-  if (last > hr) {
-    var v = sh.getRange(hr + 1, c0, last - hr, 4).getValues();  // 年月|店舗|媒体|プラン
-    for (var i = 0; i < v.length; i++) {
-      if (String(v[i][0]) === '' && String(v[i][1]) === '') continue;
-      if (ymOf_(v[i][0]) === ymSlash && storeKey_(v[i][1]) === storeKey_(store) &&
-          String(v[i][2]).trim() === media && String(v[i][3]).trim() === plan) { found = hr + 1 + i; break; }
+  var now = new Date();
+  var last = sh.getLastRow();
+  var v = last > hr ? sh.getRange(hr + 1, c0, last - hr, 4).getValues() : [];  // 年月|店舗|媒体|プラン
+  var foundBy = {};   // ymSlash → 行番号
+  for (var i = 0; i < v.length; i++) {
+    if (String(v[i][0]) === '' && String(v[i][1]) === '') continue;
+    if (storeKey_(v[i][1]) === storeKey_(store) && String(v[i][2]).trim() === media && String(v[i][3]).trim() === plan) {
+      foundBy[ymOf_(v[i][0])] = hr + 1 + i;
     }
   }
-  var now = new Date();
-  var key = ymSlash + '_' + store + '_' + media + '_' + plan;
-  if (cost <= 0) {   // 削除
-    if (found < 0) return { ok: false, error: '削除対象（' + ymSlash + '×' + store + '×' + media + '×' + plan + '）が見つかりません' };
-    sh.deleteRow(found);
-    return { ok: true, deleted: true };
+  if (cost <= 0) {   // 削除（該当月の行を下から順に削除）
+    var delRows = mlist.map(function (ms) { return foundBy[ms]; }).filter(function (r) { return r > 0; });
+    if (!delRows.length) return { ok: false, error: '削除対象（' + store + '×' + media + '×' + plan + '）が見つかりません' };
+    delRows.sort(function (a, b) { return b - a; }).forEach(function (r) { sh.deleteRow(r); });
+    return { ok: true, deleted: true, months: delRows.length };
   }
-  if (found > 0) {   // 上書き（広告費・更新日・備考・キー）
-    sh.getRange(found, c0 + 4).setValue(cost).setNumberFormat('#,##0');
-    sh.getRange(found, c0 + 6).setValue(now).setNumberFormat('yyyy/mm/dd');
-    sh.getRange(found, c0 + 7).setValue(memo);
-    sh.getRange(found, c0 + 8).setValue(key);
-    return { ok: true, updated: true };
+  var appendRows = [];
+  mlist.forEach(function (ms) {
+    var key = ms + '_' + store + '_' + media + '_' + plan;
+    var fr = foundBy[ms];
+    if (fr > 0) {   // 上書き（広告費・更新日・備考・キー）
+      sh.getRange(fr, c0 + 4).setValue(cost).setNumberFormat('#,##0');
+      sh.getRange(fr, c0 + 6).setValue(now).setNumberFormat('yyyy/mm/dd');
+      sh.getRange(fr, c0 + 7).setValue(memo);
+      sh.getRange(fr, c0 + 8).setValue(key);
+    } else {
+      appendRows.push([ms, store, media, plan, cost, now, now, memo, key]);
+    }
+  });
+  if (appendRows.length) {
+    var nr = sh.getLastRow() + 1;
+    sh.getRange(nr, c0, appendRows.length, 9).setValues(appendRows);
+    sh.getRange(nr, c0 + 4, appendRows.length, 1).setNumberFormat('#,##0');
+    sh.getRange(nr, c0 + 5, appendRows.length, 2).setNumberFormat('yyyy/mm/dd');
   }
-  var nr = last + 1;   // 追記
-  sh.getRange(nr, c0, 1, 9).setValues([[ymSlash, store, media, plan, cost, now, now, memo, key]]);
-  sh.getRange(nr, c0 + 4).setNumberFormat('#,##0');
-  sh.getRange(nr, c0 + 5, 1, 2).setNumberFormat('yyyy/mm/dd');
-  return { ok: true, added: true };
+  return { ok: true, months: mlist.length, added: appendRows.length, updated: mlist.length - appendRows.length };
+}
+
+// PL経費の期間一括計上：開始月〜終了月の各月に 店舗×科目 の行を作成（既存の同科目行は差し替え）。
+// 金額が空/0なら期間内のその科目の行を削除。DB_PLとPL管理システム（✍販管費入力）の両方に反映。
+function savePlBulk(p, session) {
+  var ym1 = String(p.ym1 || '').trim(), ym2 = String(p.ym2 || '').trim();
+  if (!/^\d{4}-\d{2}$/.test(ym1) || !/^\d{4}-\d{2}$/.test(ym2)) return { ok: false, error: '開始月・終了月が不正です' };
+  var isCommon = String(p.store) === '__common__';
+  if (isCommon && !isAdmin(session)) return { ok: false, error: '全社共通経費は社長・本部のみ入力できます' };
+  var store = isCommon ? '' : String(p.store || '').trim();
+  if (!isCommon) {
+    if (!store) return { ok: false, error: '店舗が未指定です' };
+    if (!scopeAllows_(session, store)) return { ok: false, error: 'この店舗の経費を編集する権限がありません' };
+  }
+  var item = String(p.item || '').trim().slice(0, 60);
+  if (!item) return { ok: false, error: '勘定科目が未指定です' };
+  var cat = String(p.cat || 'O').trim().toUpperCase();
+  if (['S', 'F', 'L', 'A', 'R', 'O', 'X'].indexOf(cat) < 0) cat = 'O';
+  var amtRaw = String(p.amount == null ? '' : p.amount).trim();
+  var amount = amtRaw === '' ? 0 : (Number(amtRaw.replace(/[,¥\s]/g, '')) || 0);
+  var memo = String(p.memo || '').trim().slice(0, 100);
+  var y1 = +ym1.slice(0, 4), m1 = +ym1.slice(5, 7), y2 = +ym2.slice(0, 4), m2 = +ym2.slice(5, 7);
+  var n = (y2 - y1) * 12 + (m2 - m1) + 1;
+  if (n < 1) return { ok: false, error: '終了月が開始月より前です' };
+  if (n > 36) return { ok: false, error: '一括計上できるのは36ヶ月までです' };
+  var months = {}, list = [];
+  for (var i = 0; i < n; i++) { var yy = y1 + Math.floor((m1 - 1 + i) / 12), mm = (m1 - 1 + i) % 12 + 1; var ms = yy + '/' + ('0' + mm).slice(-2); months[ms] = 1; list.push([yy, mm, ms]); }
+  // ① DB_PL：期間内の 店舗×科目 行（AUTO以外）を除去 → 金額>0なら各月分を追加
+  var dp = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_PL');
+  if (!dp) return { ok: false, error: 'DB_PLシートがありません' };
+  var dlast = dp.getLastRow(), keep = [];
+  if (dlast >= 2) {
+    dp.getRange(2, 1, dlast - 1, 6).getValues().forEach(function (r) {
+      if (r[0] === '' && r[1] === '' && r[2] === '') return;
+      if (months[ymOf_(r[0])] && String(r[1]).trim() === store && String(r[2]).trim() === item && String(r[5]) !== PL_AUTO_MEMO) return;
+      keep.push(r);
+    });
+  }
+  var out = keep.slice();
+  if (amount > 0) list.forEach(function (mo) { out.push([new Date(mo[0], mo[1] - 1, 1), store, item, cat, amount, memo]); });
+  if (dlast >= 2) dp.getRange(2, 1, dlast - 1, 6).clearContent();
+  if (out.length) { dp.getRange(2, 1, out.length, 6).setValues(out); dp.getRange(2, 1, out.length, 1).setNumberFormat('yyyy/m/d'); }
+  // ② PL管理システム ✍販管費入力：同じ差し替え（D列の区分式は触らない）
+  var plsys = '';
+  try {
+    var psh = SpreadsheetApp.openById(PL_SYSTEM_ID).getSheetByName(PL_INPUT_SHEET);
+    if (psh) {
+      var plStore = isCommon ? '本社・共通' : store;
+      var lastR = psh.getLastRow(), nR = Math.max(lastR - 2, 0);
+      var A = nR > 0 ? psh.getRange(3, 1, nR, 3).getValues() : [];
+      var E = nR > 0 ? psh.getRange(3, 5, nR, 2).getValues() : [];
+      var keepP = [];
+      for (var i2 = 0; i2 < nR; i2++) {
+        if (String(A[i2][0]) === '' && String(A[i2][2]) === '') continue;
+        if (months[ymOf_(A[i2][0])] && String(A[i2][1]).trim() === plStore && String(A[i2][2]).trim() === item) continue;
+        keepP.push([A[i2][0], A[i2][1], A[i2][2], E[i2][0], E[i2][1]]);
+      }
+      if (amount > 0) list.forEach(function (mo) { keepP.push([mo[2], plStore, item, amount, memo || 'ダッシュボードから一括計上']); });
+      if (nR > 0) { psh.getRange(3, 1, nR, 3).clearContent(); psh.getRange(3, 5, nR, 2).clearContent(); }
+      if (keepP.length) {
+        psh.getRange(3, 1, keepP.length, 3).setValues(keepP.map(function (r) { return [r[0], r[1], r[2]]; }));
+        psh.getRange(3, 5, keepP.length, 2).setValues(keepP.map(function (r) { return [r[3], r[4]]; }));
+      }
+      plsys = 'PL管理システムにも反映しました';
+    } else plsys = 'PL管理システムに「' + PL_INPUT_SHEET + '」シートが見つかりません（DB_PLのみ反映）';
+  } catch (e) { plsys = 'PL管理システムへの反映に失敗（DB_PLのみ反映）: ' + String(e && e.message || e); }
+  return { ok: true, months: n, deleted: amount <= 0, plsys: plsys };
 }
 
 // 予約CSVの取込：管理シートの💾予約DBへ追記。rows=[[予約No,来店日,来店時間,人数,ステータス,受付窓口,作成日,作成時間],...]

@@ -467,6 +467,37 @@ function ingestPL(rows){
   if(!recs.length){ D.diag['PL']='0件'+(dateSkipped>0?'（'+dateSkipped+'行あるが年月を読めていません）':'（データ行がありません）'); return false; }
   D.pl=recs; D.diag['PL']='OK '+recs.length+'件'; return true;
 }
+// 広告費用対効果_管理シートの ⚙️媒体マスタ / ⚙️プランマスタ。
+// 広告費入力モーダルのプルダウン候補（マスタに行を足せばそのまま選択肢が増える）
+function ingestMediaMaster(rows){
+  let hi=-1;
+  for(let i=0;i<Math.min(rows.length,8);i++){ if(/媒体/.test(rows[i].join(','))){hi=i;break;} }
+  if(hi<0) return false;
+  const H=rows[hi].map(h=>String(h).trim());
+  const iN=colAny(H,['媒体名','媒体']), iO=colAny(H,['表示順','順']);
+  if(iN<0) return false;
+  const out=[];
+  for(let i=hi+1;i<rows.length;i++){ const nm=String(rows[i][iN]||'').trim(); if(!nm)continue; out.push({name:nm, order:iO>=0?num(rows[i][iO])||999:999}); }
+  out.sort((a,b)=>a.order-b.order);
+  D.adMediaMaster=[...new Set(out.map(x=>x.name))];
+  D.diag['媒体マスタ']='OK '+D.adMediaMaster.length+'件'; return true;
+}
+function ingestPlanMaster(rows){
+  let hi=-1;
+  for(let i=0;i<Math.min(rows.length,8);i++){ if(/プラン名/.test(rows[i].join(','))){hi=i;break;} }
+  if(hi<0) return false;
+  const H=rows[hi].map(h=>String(h).trim());
+  const iM=colAny(H,['媒体名','媒体']), iP=colAny(H,['プラン名','プラン']), iF=colAny(H,['標準料金','料金']), iO=colAny(H,['表示順','順']);
+  if(iM<0||iP<0) return false;
+  const map={};
+  for(let i=hi+1;i<rows.length;i++){
+    const md=String(rows[i][iM]||'').trim(), pl=String(rows[i][iP]||'').trim(); if(!md||!pl)continue;
+    (map[md]=map[md]||[]).push({plan:pl, fee:iF>=0?num(rows[i][iF])||0:0, order:iO>=0?num(rows[i][iO])||999:999});
+  }
+  for(const k in map) map[k].sort((a,b)=>a.order-b.order);
+  D.adPlanMaster=map;
+  D.diag['プランマスタ']='OK '+Object.keys(map).length+'媒体'; return true;
+}
 // 店舗名対応表シート（左＝広告等の店舗名 / 右＝売上側の正式な店舗名）を取り込む
 const isStoreMapKey=(k)=>/店舗名対応|店舗マッピング|店舗名変換|店舗対応|storemap|storealias/i.test(String(k));
 function ingestStoreMap(rows){
@@ -617,7 +648,7 @@ function ingestStoreParent(rows){
   return map;
 }
 function ingestSheets(sheets, partial){
-  if(!partial){ D.extra={}; D.diag={}; D.receivedKeys=Object.keys(sheets); D.ad=[]; D.adSrc=''; D.adfx=[]; D.tanka={}; D.rsv=[]; D.pl=[]; D.dinii=[]; D.targets=[]; D.targetsM=[]; D.events=[]; D.storeAlias={}; D.storeParent={}; }  // 広告・PL・ダイニー・目標・対応表・親子はフル受信のたびに入れ替え
+  if(!partial){ D.extra={}; D.diag={}; D.receivedKeys=Object.keys(sheets); D.ad=[]; D.adSrc=''; D.adfx=[]; D.tanka={}; D.rsv=[]; D.pl=[]; D.dinii=[]; D.targets=[]; D.targetsM=[]; D.events=[]; D.storeAlias={}; D.storeParent={}; D.adMediaMaster=[]; D.adPlanMaster={}; }  // 広告・PL・ダイニー・目標・対応表・親子はフル受信のたびに入れ替え
   else { D.receivedKeys=(D.receivedKeys||[]).concat(Object.keys(sheets)); }
   const known=['daily','media','deposit','review','ad','広告'];
   if(!partial){ known.forEach(k=>{ if(!(k in sheets)) D.diag[k]='シート未受信（接続設定のシート名を確認）'; }); }
@@ -639,6 +670,8 @@ function ingestSheets(sheets, partial){
     else if(isTargetKey(key)) ingestTargets(rows);
     else if(isEventKey(key)) ingestEvents(rows);
     else if(isHolidayKey(key)) ingestHoliday(rows);
+    else if(key==='媒体マスタ') ingestMediaMaster(rows);
+    else if(key==='プランマスタ') ingestPlanMaster(rows);
     else if(isStoreParentKey(key)){ D.storeParent=ingestStoreParent(rows); D.diag[key]='OK '+Object.keys(D.storeParent).length+'件の親子'; }
     else if(isStoreMapKey(key)){ D.storeAlias=ingestStoreMap(rows); D.diag[key]='OK '+Object.keys(D.storeAlias).length+'件の対応'; }
     else D.extra[key]=rows;
@@ -2833,7 +2866,7 @@ function viewPL(){
   const pushCatItems=(cat)=>{
     const keys=[...new Set([].concat(Object.keys(exCur.byCat[cat]),Object.keys(exPrv.byCat[cat]),Object.keys(exLyr.byCat[cat])))]
       .sort((a2,b2)=>(exCur.byCat[cat][b2]||0)-(exCur.byCat[cat][a2]||0));
-    keys.forEach(it=>rows.push({name:it, c:-(exCur.byCat[cat][it]||0), p:-(exPrv.byCat[cat][it]||0), l:-(exLyr.byCat[cat][it]||0), indent:true}));
+    keys.forEach(it=>rows.push({name:it, c:-(exCur.byCat[cat][it]||0), p:-(exPrv.byCat[cat][it]||0), l:-(exLyr.byCat[cat][it]||0), indent:true, editItem:it}));
     return keys.length;
   };
   rows.push({name:'売上高', c:cur.sales, p:prv.sales, l:lyr.sales, bold:true});
@@ -2873,7 +2906,7 @@ function viewPL(){
     const v=(n)=>n===0?'—':(n<0?'▲'+yen(-n).slice(1):yen(n));
     const yc=cmp(r2.c,yoyBase(r2));
     const color=r2.profit?(r2.c>=0?'color:#4c7d5c;font-weight:700':'color:#b5502f;font-weight:700'):'';
-    h+=`<tr class="${r2.line?'total':''}"><td style="${r2.indent?'padding-left:24px;':''}${r2.bold?'font-weight:700':''}">${esc(r2.name)}</td>
+    h+=`<tr class="${r2.line?'total':''}"><td style="${r2.indent?'padding-left:24px;':''}${r2.bold?'font-weight:700':''}">${esc(r2.name)}${r2.editItem&&P==='month'?` <button class="icon-btn no-print" style="padding:1px 7px;font-size:10px;margin-left:6px" data-i="${esc(r2.editItem)}" onclick="App.openPlItemEdit(this.dataset.i)">編集</button>`:''}</td>
       <td style="${color}">${v(r2.c)}</td><td class="mut">${pct(Math.abs(r2.c))}</td>
       <td class="mut">${v(r2.p)}</td>${showYoY?`<td class="mut">${v(r2.l)}</td>`:''}
       <td class="${yc.cls==='up'?'pos':yc.cls==='dn'?'neg':'mut'}">${yc.t}</td></tr>`;
@@ -3724,6 +3757,20 @@ function plInputModal(){
       <button class="icon-btn primary" onclick="App.savePlInput()">保存（この月×店舗を差し替え）</button>
       <button class="icon-btn" onclick="App.closeModal()">キャンセル</button>
     </div>
+    <div style="margin-top:14px;border-top:1px dashed var(--line2);padding-top:12px">
+      <div style="font-weight:700;font-size:13px">📅 期間一括計上（毎月同じ経費をまとめて入力）</div>
+      <div class="sub" style="margin:3px 0 8px">例：家賃 500,000円を 2026/01〜2026/12 に一括計上。期間内の各月に同じ科目の行を作成します（既にある同じ科目の行は上書き／<b>金額を空欄にして実行すると期間内のその科目を削除</b>）。店舗は上で選択中の「${isCommon?'全社共通':esc(st)}」に計上します。</div>
+      <div class="form-grid">
+        <div><label>開始月</label><input type="month" id="plb-ym1" value="${m.ym}"></div>
+        <div><label>終了月</label><input type="month" id="plb-ym2" value="${m.ym}"></div>
+        <div><label>勘定科目</label><input id="plb-item" list="pl-items" placeholder="例 家賃" onchange="const c=PL_ITEM_CAT[this.value.trim()];if(c)$('plb-cat').value=c;"></div>
+        <div><label>区分</label><select id="plb-cat">${[['F','F 仕入'],['L','L 人件費'],['A','A 広告'],['R','R 家賃'],['O','O 他'],['S','S 売上'],['X','X PL外']].map(c=>`<option value="${c[0]}" ${c[0]==='R'?'selected':''}>${c[1]}</option>`).join('')}</select></div>
+        <div><label>金額（円／月）</label><input type="number" id="plb-amt" placeholder="例 500000" style="text-align:right"></div>
+        <div><label>メモ（任意）</label><input id="plb-memo"></div>
+      </div>
+      <div id="plb-msg" style="font-size:12px;color:#b5502f;margin:6px 0"></div>
+      <button class="icon-btn primary" style="margin-top:4px" onclick="App.savePlBulk()">📅 期間一括で計上</button>
+    </div>
   </div></div>`;
 }
 /* ---- 広告費入力モーダル ----
@@ -3736,21 +3783,32 @@ function adInputModal(){
   const t0=new Date(y,mo-1,1).getTime(), t1=new Date(y,mo,1).getTime();
   const ex=D.ad.filter(r=>r.t>=t0&&r.t<t1&&normStore(r.store)===normStore(st));
   const byMedia={}; ex.forEach(r=>{ const k=r.media||'（媒体未設定）'; byMedia[k]=(byMedia[k]||0)+r.cost; });
-  const medias=[...new Set(['ホットペッパー','ぐるなび','食べログ','Google広告','Instagram','LINE','チラシ'].concat(D.ad.map(r=>r.media).filter(Boolean)))];
-  const plans=['SSPプラン','SSプラン','Aプラン','Bプラン','BPPプラン','ライトプラン','ベーシックプラン','月額費用','初期費用','オプション','一式'];
-  return `<div class="modal-bg" onclick="if(event.target===this)App.closeModal()"><div class="modal" style="max-width:520px">
+  // 媒体の選択肢＝⚙️媒体マスタ（無ければ既定＋実データから）。マスタに行を足せば自動で増える
+  const medias=D.adMediaMaster.length?D.adMediaMaster.slice()
+    :[...new Set(['ホットペッパー','ぐるなび','食べログ','Google広告','Instagram','LINE','チラシ'].concat(D.ad.map(r=>r.media).filter(Boolean)))];
+  const selMedia=m.media&&medias.includes(m.media)?m.media:medias[0];
+  // プランの選択肢＝⚙️プランマスタの該当媒体分（標準料金付き）。無ければ汎用
+  const planRows=(D.adPlanMaster[selMedia]||[]).slice();
+  const planNames=planRows.length?planRows.map(p=>p.plan):['SSPプラン','SSプラン','Aプラン','Bプラン','BPPプラン','ライトプラン','ベーシックプラン','月額費用','初期費用','オプション'];
+  return `<div class="modal-bg" onclick="if(event.target===this)App.closeModal()"><div class="modal" style="max-width:540px">
     <h3>広告費の入力・修正（${y}年${mo}月）</h3>
-    <div class="sub">広告費用対効果_管理シートの<b>💾広告費DB</b>に保存します（同じ 年月×店舗×媒体×プラン は上書き／金額を空欄にして保存すると削除）。ダッシュボードにも自動反映されます。</div>
+    <div class="sub">広告費用対効果_管理シートの<b>💾広告費DB</b>に保存します（同じ 年月×店舗×媒体×プラン は上書き／金額を空欄にして保存すると削除）。媒体・プランの選択肢は管理シートの<b>⚙️媒体マスタ／⚙️プランマスタ</b>から自動取得しています。</div>
     <div class="form-grid" style="margin-top:10px">
-      <div><label>対象月</label><input type="month" id="adi-ym" value="${m.ym}" onchange="App.adSwitch()"></div>
+      <div><label>対象月（開始）</label><input type="month" id="adi-ym" value="${m.ym}" onchange="App.adSwitch()"></div>
+      <div><label>終了月（任意・期間一括）</label><input type="month" id="adi-ym2" value="${m.ym2||''}" placeholder="空欄＝1ヶ月のみ"></div>
       <div><label>店舗</label><select id="adi-store" onchange="App.adSwitch()">${stores.map(s=>`<option ${st===s?'selected':''}>${esc(s)}</option>`).join('')}</select></div>
-      <div><label>媒体</label><input id="adi-media" list="ad-medias" placeholder="例 ホットペッパー"></div>
-      <div><label>プラン（空欄＝一式）</label><input id="adi-plan" list="ad-plans" placeholder="例 SSPプラン"></div>
-      <div><label>広告費（円）</label><input type="number" id="adi-cost" placeholder="例 90000" style="text-align:right"></div>
+      <div><label>媒体</label><select id="adi-media" onchange="App.adMediaChanged()">
+        ${medias.map(x=>`<option ${x===selMedia?'selected':''}>${esc(x)}</option>`).join('')}
+        <option value="__free__">その他（直接入力）</option></select>
+        <input id="adi-media-free" placeholder="媒体名を入力" style="display:none;margin-top:4px;width:100%"></div>
+      <div><label>プラン</label><select id="adi-plan" onchange="App.adPlanChanged()">
+        ${planNames.map(p2=>{ const pr=planRows.find(x=>x.plan===p2); return `<option value="${esc(p2)}" data-fee="${pr?pr.fee:0}">${esc(p2)}${pr&&pr.fee>0?'（標準 '+yen(pr.fee)+'）':''}</option>`; }).join('')}
+        <option value="一式">一式（プラン区分なし）</option>
+        <option value="__free__">その他（直接入力）</option></select>
+        <input id="adi-plan-free" placeholder="プラン名を入力" style="display:none;margin-top:4px;width:100%"></div>
+      <div><label>広告費（円／月あたり）</label><input type="number" id="adi-cost" placeholder="例 90000" style="text-align:right"></div>
       <div><label>備考（任意）</label><input id="adi-memo" placeholder="例 半額"></div>
     </div>
-    <datalist id="ad-medias">${medias.map(x=>`<option value="${esc(x)}">`).join('')}</datalist>
-    <datalist id="ad-plans">${plans.map(x=>`<option value="${esc(x)}">`).join('')}</datalist>
     ${Object.keys(byMedia).length?`<div style="margin-top:10px;font-size:12px;color:#5c5348"><b>この月の登録済み広告費（媒体別合計）</b><br>${Object.entries(byMedia).map(([k,v])=>esc(k)+'：'+yen(v)).join('　／　')}<br><span class="mut" style="font-size:11px">※プラン単位の内訳は管理シートの💾広告費DBで確認できます</span></div>`:''}
     <div id="adi-msg" style="font-size:12px;color:#b5502f;margin:8px 0"></div>
     <div class="modal-btns">
@@ -4097,6 +4155,37 @@ window.App = {
   },
   plSwitch(){ const ym=$('pli-ym')&&$('pli-ym').value, st=$('pli-store')&&$('pli-store').value;
     S.modal={type:'plInput', ym:ym||S.modal.ym, store:st||S.modal.store}; render(); },
+  // PL表の科目行の「編集」→ その科目が入っている店舗（or 全社共通）の月次編集モーダルを開く
+  openPlItemEdit(item){
+    const m0=plMonthDate();
+    const ym=m0.getFullYear()+'-'+String(m0.getMonth()+1).padStart(2,'0');
+    const t0=dayMs(new Date(m0.getFullYear(),m0.getMonth(),1));
+    const selN=selStoreName(); const scope=new Set((selN?[selN]:scopeStores()).map(normStore));
+    // この月×スコープ内でこの科目を持つ行を探し、その店舗のモーダルを開く（共通経費は__common__）
+    const hit=D.pl.find(r=>r.t===t0&&r.item===item&&(!String(r.store).trim()||scope.has(normStore(r.store))));
+    let store=selN||scopeStores()[0];
+    if(hit) store=String(hit.store).trim()?hit.store:'__common__';
+    if(store==='__common__'&&!(S.auth&&(S.auth.account.role==='社長'||S.auth.account.role==='本部'))) store=selN||scopeStores()[0];
+    S.modal={type:'plInput', ym, store}; render();
+  },
+  // 期間一括計上：開始月〜終了月の各月に同じ科目の経費を計上（金額空欄＝期間内のその科目を削除）
+  async savePlBulk(){
+    const msg=$('plb-msg');
+    if(!S.auth||!S.auth.token){ msg.textContent='スプレッドシート接続時のみ保存できます'; return; }
+    const ym1=$('plb-ym1').value, ym2=$('plb-ym2').value, store=$('pli-store').value;
+    const item=$('plb-item').value.trim(), cat=$('plb-cat').value, memo=$('plb-memo').value.trim();
+    const amtRaw=String($('plb-amt').value).trim();
+    if(!ym1||!ym2){ msg.textContent='開始月と終了月を指定してください'; return; }
+    if(!item){ msg.textContent='勘定科目を入力してください'; return; }
+    msg.style.color='#8c8375'; msg.textContent='一括計上中…（PL管理システムにも反映しています）';
+    try{
+      const d=await api({ action:'savePlBulk', token:S.auth.token, ym1, ym2, store, item, cat, amount:amtRaw, memo });
+      if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'一括計上に失敗しました'; return; }
+      S.modal=null;
+      toast(amtRaw===''?`「${item}」を${d.months}ヶ月分削除しました`:`「${item}」を${d.months}ヶ月分一括計上しました`+(d.plsys?'／'+d.plsys:''));
+      await fetchData(true,{ only:['pl','PL'], partial:true }); render();
+    }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
+  },
   plGuessCat(inp){ const c=PL_ITEM_CAT[String(inp.value).trim()]; if(c){ const sel=inp.closest('tr').querySelector('.pli-cat'); if(sel)sel.value=c; } },
   plAddRow(){ const tb=$('pli-rows'); if(tb) tb.insertAdjacentHTML('beforeend', plRowHtml('','O','','')); },
   async savePlInput(){
@@ -4126,21 +4215,41 @@ window.App = {
     S.modal={type:'adInput', ym, store:selStoreName()||scopeStores()[0]}; render();
   },
   adSwitch(){ const ym=$('adi-ym')&&$('adi-ym').value, st=$('adi-store')&&$('adi-store').value;
-    S.modal={type:'adInput', ym:ym||S.modal.ym, store:st||S.modal.store}; render(); },
+    const md=$('adi-media')&&$('adi-media').value;
+    S.modal={type:'adInput', ym:ym||S.modal.ym, store:st||S.modal.store, media:(md&&md!=='__free__')?md:S.modal.media, ym2:$('adi-ym2')&&$('adi-ym2').value||''}; render(); },
+  // 媒体を変えたらプランの選択肢を⚙️プランマスタから連動更新（「その他」は自由入力欄を表示）
+  adMediaChanged(){
+    const sel=$('adi-media'); const free=$('adi-media-free');
+    if(sel.value==='__free__'){ if(free)free.style.display='block'; return; }
+    if(free)free.style.display='none';
+    this.adSwitch();   // 再描画でプラン選択肢を選択媒体に合わせて作り直す
+  },
+  adPlanChanged(){
+    const sel=$('adi-plan'); const free=$('adi-plan-free');
+    if(sel.value==='__free__'){ if(free)free.style.display='block'; return; }
+    if(free)free.style.display='none';
+    const opt=sel.options[sel.selectedIndex]; const fee=Number(opt&&opt.dataset.fee)||0;
+    const cost=$('adi-cost'); if(fee>0&&cost&&String(cost.value).trim()==='') cost.value=fee;   // 標準料金をプリセット（空欄時のみ）
+  },
   async saveAdInput(){
     const msg=$('adi-msg');
     if(!S.auth||!S.auth.token){ msg.textContent='スプレッドシート接続時のみ保存できます'; return; }
-    const ym=$('adi-ym').value, store=$('adi-store').value;
-    const media=$('adi-media').value.trim(), plan=$('adi-plan').value.trim(), memo=$('adi-memo').value.trim();
+    const ym=$('adi-ym').value, ymTo=$('adi-ym2')&&$('adi-ym2').value||'', store=$('adi-store').value;
+    let media=$('adi-media').value; if(media==='__free__') media=$('adi-media-free').value.trim();
+    let plan=$('adi-plan').value; if(plan==='__free__') plan=$('adi-plan-free').value.trim();
+    const memo=$('adi-memo').value.trim();
     const costRaw=String($('adi-cost').value).trim();
     if(!media){ msg.textContent='媒体を入力してください'; return; }
     const btn=$('adi-run'); if(btn)btn.disabled=true;
     msg.style.color='#8c8375'; msg.textContent='保存中…（管理シートの💾広告費DBに反映しています）';
     try{
-      const d=await api({ action:'saveAdFee', token:S.auth.token, ym, store, media, plan, cost:costRaw, memo });
+      const d=await api({ action:'saveAdFee', token:S.auth.token, ym, ymTo, store, media, plan, cost:costRaw, memo });
       if(btn)btn.disabled=false;
       if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'保存に失敗しました'; return; }
-      msg.style.color='#4c7d5c'; msg.textContent=d.deleted?'✓ 削除しました（'+media+(plan?'・'+plan:'')+'）':'✓ 保存しました（'+media+(plan?'・'+plan:'')+' '+yen(Number(costRaw)||0)+'）。続けて入力できます';
+      const period=d.months>1?(`${ym.replace('-','/')}〜${ymTo.replace('-','/')}・${d.months}ヶ月分`):'';
+      msg.style.color='#4c7d5c';
+      msg.textContent=d.deleted?('✓ 削除しました（'+media+(plan?'・'+plan:'')+(period?'・'+period:'')+'）')
+        :('✓ 保存しました（'+media+(plan?'・'+plan:'')+' '+yen(Number(costRaw)||0)+(period?' × '+period:'')+'）。続けて入力できます');
       $('adi-cost').value=''; $('adi-memo').value='';
       fetchData(true,{ only:['広告'], partial:true }).then(()=>{ if(S.modal&&S.modal.type!=='adInput') render(); });
     }catch(e){ if(btn)btn.disabled=false; msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
