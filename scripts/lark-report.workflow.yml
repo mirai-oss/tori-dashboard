@@ -133,3 +133,104 @@ jobs:
           path: report.png
           if-no-files-found: ignore
           retention-days: 14
+
+  # ================= 店舗別レポート（店舗ごとの専用Larkグループへ） =================
+  # 店舗を1つだけ渡すと、店舗比較表ではなく「直近推移＋ランチ/ディナー内訳＋媒体別売上」の
+  # 単店舗フォーマットで届く（app.js の viewReport が自動で切り替える）。
+  #
+  # ▼ 店舗を追加する手順
+  #   1. その店舗のLarkグループで「設定 → ボット → ボットを追加 → カスタムボット」を作りWebhook URLを取得
+  #      （カスタムキーワードを設定する場合は「日報」にすること。全メッセージのnote行に必ず含まれる）
+  #   2. GitHub → Settings → Secrets and variables → Actions で
+  #      名前 LARK_WEBHOOK_<英字> ／ 値 そのWebhook URL を登録
+  #   3. 下の matrix に1ブロック追記（store=正式店舗名 / group=画像ファイル名の識別子 / secret=2で決めた名前）
+  # Secret が未登録の店舗は自動でスキップされるので、先に matrix だけ書いても安全。
+  store-report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false      # 1店舗失敗しても他店舗の配信は続行する
+      max-parallel: 4       # ダッシュボードAPIへの同時ログインを抑える
+      matrix:
+        include:
+          - store: '鳥一代 本店'
+            group: honten
+            secret: LARK_WEBHOOK_HONTEN
+          # - store: '芝の鳥一代'
+          #   group: shiba
+          #   secret: LARK_WEBHOOK_SHIBA
+          # - store: '鳥一代 はなれ'
+          #   group: hanare
+          #   secret: LARK_WEBHOOK_HANARE
+          # - store: '鳥一代 恵比寿'
+          #   group: ebisu
+          #   secret: LARK_WEBHOOK_EBISU
+          # - store: '鳥一代 新橋'
+          #   group: shinbashi
+          #   secret: LARK_WEBHOOK_SHINBASHI
+          # - store: '鶏武者 新横浜'
+          #   group: torimusha-shinyoko
+          #   secret: LARK_WEBHOOK_TORIMUSHA_SHINYOKO
+          # - store: '鶏武者 川崎店'
+          #   group: torimusha-kawasaki
+          #   secret: LARK_WEBHOOK_TORIMUSHA_KAWASAKI
+          # - store: '黒霧屋 新横浜'
+          #   group: kurokiriya-shinyoko
+          #   secret: LARK_WEBHOOK_KUROKIRIYA_SHINYOKO
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 設定チェック（Secret未登録ならスキップ）
+        env:
+          HOOK: ${{ secrets[matrix.secret] }}
+        run: |
+          if [ -z "$HOOK" ]; then
+            echo "::notice::${{ matrix.secret }} が未登録のため ${{ matrix.store }} はスキップ"
+            echo "SKIP=1" >> "$GITHUB_ENV"
+          elif [ -z "${{ secrets.DASH_ID }}" ]; then
+            echo "::notice::DASH_ID が未設定のためスキップ"
+            echo "SKIP=1" >> "$GITHUB_ENV"
+          fi
+
+      - name: レポート種別を決定
+        if: env.SKIP != '1'
+        run: |
+          K="${{ github.event.inputs.kind }}"
+          [ -z "$K" ] && K=daily
+          echo "REPORT_KIND=$K" >> "$GITHUB_ENV"
+
+      - name: puppeteer をインストール
+        if: env.SKIP != '1'
+        run: npm install puppeteer --no-save
+
+      - name: 店舗レポート画像を生成
+        if: env.SKIP != '1'
+        env:
+          REPORT_KIND: ${{ env.REPORT_KIND }}
+          DASH_ID: ${{ secrets.DASH_ID }}
+          DASH_PW: ${{ secrets.DASH_PW }}
+          REPORT_STORES: ${{ matrix.store }}
+          REPORT_GROUP: ${{ matrix.group }}
+        run: node scripts/lark-report.mjs capture
+
+      - name: 画像を GitHub Release にアップロード（公開URL化）
+        if: env.SKIP != '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          KEY=$(node -e "console.log(require('./report-meta.json').fileKey)")
+          cp report.png "$KEY.png"
+          gh release view reports >/dev/null 2>&1 || gh release create reports --title "自動レポート画像" --notes "日報/週報/月報の画像置き場（自動更新）"
+          gh release upload reports "$KEY.png" --clobber
+          echo "IMAGE_URL=https://github.com/${{ github.repository }}/releases/download/reports/$KEY.png" >> "$GITHUB_ENV"
+
+      - name: Lark に送信（店舗グループ）
+        if: env.SKIP != '1'
+        env:
+          REPORT_KIND: ${{ env.REPORT_KIND }}
+          LARK_WEBHOOK: ${{ secrets[matrix.secret] }}
+          IMAGE_URL: ${{ env.IMAGE_URL }}
+        run: node scripts/lark-report.mjs send
