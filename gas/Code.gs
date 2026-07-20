@@ -43,7 +43,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v35', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v36', time: new Date().toISOString() });
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     if (action === 'perf') return out(perfDiag(p)); // パフォーマンス計測（専用トークン認証・ログイン不要・数字は返さず時間だけ）
     setupIfNeeded();
@@ -69,6 +69,9 @@ function handle(p) {
     if (action === 'saveEvent')   return out(saveEvent(p, session));   // イベント保存
     if (action === 'deleteEvent') return out(deleteEvent(p, session)); // イベント削除
     if (action === 'importDeposits') return out(importDeposits(p, session)); // 口座CSVの入金取込（入金管理タブ）
+    if (action === 'savePlEntries') return out(savePlEntries(p, session)); // PL経費の手入力（PL管理システム＋DB_PL両反映）
+    if (action === 'saveAdFee') return out(saveAdFee(p, session)); // 広告費の手入力（管理シート💾広告費DBへupsert）
+    if (action === 'importReservations') return out(importReservations(p, session)); // 予約CSV取込（管理シート💾予約DBへ追記）
     return out({ ok: false, error: 'unknown action: ' + action });
   } catch (err) {
     return out({ ok: false, error: String(err && err.message || err) });
@@ -1149,6 +1152,229 @@ function importDeposits(p, session) {
     if (ti === 0) { added = out.length; dup = skipped; }
   });
   return { ok: true, added: added, dup: dup, detail: detail };
+}
+
+// ================== 手入力の反映（PL経費・広告費・予約CSV） ==================
+// PL管理システム（✍販管費入力＝手入力経費の本体）。ダッシュボードからの経費入力はここにも書いて、
+// PL側の「DB_PLへ転記」を後で実行しても消えない状態を保つ。
+var PL_SYSTEM_ID = '1ZJ5a3ZgsRGfJHVhIXo2b-OK-2gZMvUAHl7J9WFms7dQ';
+var PL_INPUT_SHEET = '✍ 販管費入力';
+var PL_AUTO_MEMO = '媒体販促費（自動計上）';   // PL側トリガーが管理する自動行のマーカー（触らない）
+// 年月の正規化（Date/『2026/7』/『2026-07』→ 'YYYY/MM'）
+function ymOf_(v) {
+  if (v instanceof Date) return Utilities.formatDate(v, Session.getScriptTimeZone() || 'Asia/Tokyo', 'yyyy/MM');
+  var m = String(v).match(/(\d{4})[\/\-年\.]\s*(\d{1,2})/);
+  return m ? m[1] + '/' + ('0' + m[2]).slice(-2) : String(v);
+}
+// 店舗名の照合キー（スペース・括弧などの記号を全部除去）。管理シートの「黒霧屋（新横浜）」と
+// ダッシュボードの「黒霧屋 新横浜」のような表記違いを吸収する。
+function storeKey_(s) {
+  return String(s == null ? '' : s).normalize('NFKC').replace(/[^0-9A-Za-z぀-ヿ㐀-鿿豈-﫿]/g, '').toLowerCase();
+}
+// ダッシュボードの店舗名 → 管理シート（⚙️店舗マスタ）の表記へ変換。一致が無ければそのまま返す。
+function mgmtStoreName_(mss, dashName) {
+  try {
+    var sh = mgmtFindTab(mss, /店舗マスタ/);
+    if (sh && sh.getLastRow() > 1) {
+      var v = sh.getRange(2, 2, sh.getLastRow() - 1, 1).getValues(); // B列=店舗名
+      var key = storeKey_(dashName);
+      for (var i = 0; i < v.length; i++) { var nm = String(v[i][0]).trim(); if (nm && storeKey_(nm) === key) return nm; }
+    }
+  } catch (e) {}
+  return dashName;
+}
+
+// PL経費の保存：対象月×店舗の手入力行を丸ごと差し替え。entries=[[科目,区分,金額,メモ],...]
+// 反映先: ①このスプレッドシートのDB_PL（ダッシュボード表示用・AUTO行は保持）
+//        ②PL管理システムの「✍ 販管費入力」（手入力の本体。D列の区分式は触らない）
+// store='__common__' は全社共通（DB_PLでは店舗空欄／PL側では『本社・共通』）。社長・本部のみ。
+function savePlEntries(p, session) {
+  var ym = String(p.ym || '').trim();
+  if (!/^\d{4}-\d{2}$/.test(ym)) return { ok: false, error: '対象月が不正です' };
+  var isCommon = String(p.store) === '__common__';
+  if (isCommon && !isAdmin(session)) return { ok: false, error: '全社共通経費は社長・本部のみ入力できます' };
+  var store = isCommon ? '' : String(p.store || '').trim();
+  if (!isCommon) {
+    if (!store) return { ok: false, error: '店舗が未指定です' };
+    if (!scopeAllows_(session, store)) return { ok: false, error: 'この店舗の経費を編集する権限がありません' };
+  }
+  var entries; try { entries = JSON.parse(p.entries || '[]'); } catch (e) { entries = []; }
+  var clean = [];
+  entries.forEach(function (a) {
+    var item = String(a[0] || '').trim().slice(0, 60);
+    var cat = String(a[1] || 'O').trim().toUpperCase();
+    if (['S', 'F', 'L', 'A', 'R', 'O', 'X'].indexOf(cat) < 0) cat = 'O';
+    var amt = Number(a[2]) || 0;
+    var memo = String(a[3] || '').trim().slice(0, 100);
+    if (item && amt > 0) clean.push([item, cat, amt, memo]);
+  });
+  if (clean.length > 300) return { ok: false, error: '一度に保存できるのは300行までです' };
+  var y = Number(ym.slice(0, 4)), mo = Number(ym.slice(5, 7));
+  var ymSlash = ym.slice(0, 4) + '/' + ym.slice(5, 7);
+  // ① DB_PL（対象月×店舗の行を差し替え。媒体販促費（自動計上）は保持）
+  var dp = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_PL');
+  if (!dp) return { ok: false, error: 'DB_PLシートがありません' };
+  var dlast = dp.getLastRow(), keep = [];
+  if (dlast >= 2) {
+    dp.getRange(2, 1, dlast - 1, 6).getValues().forEach(function (r) {
+      if (r[0] === '' && r[1] === '' && r[2] === '') return;
+      var same = ymOf_(r[0]) === ymSlash && String(r[1]).trim() === store;
+      if (same && String(r[5]) !== PL_AUTO_MEMO) return;   // 差し替え対象は捨てる
+      keep.push(r);
+    });
+  }
+  var out = keep.concat(clean.map(function (a) { return [new Date(y, mo - 1, 1), store, a[0], a[1], a[2], a[3]]; }));
+  if (dlast >= 2) dp.getRange(2, 1, dlast - 1, 6).clearContent();
+  if (out.length) { dp.getRange(2, 1, out.length, 6).setValues(out); dp.getRange(2, 1, out.length, 1).setNumberFormat('yyyy/m/d'); }
+  // ② PL管理システム ✍販管費入力（A年月/B店舗/C科目/E金額/Fメモ。D列の式は触らない）
+  var plsys = '';
+  try {
+    var psh = SpreadsheetApp.openById(PL_SYSTEM_ID).getSheetByName(PL_INPUT_SHEET);
+    if (psh) {
+      var plStore = isCommon ? '本社・共通' : store;
+      var lastR = psh.getLastRow(), n = Math.max(lastR - 2, 0);   // データは3行目から（D列の式で行数は伸びている）
+      var A = n > 0 ? psh.getRange(3, 1, n, 3).getValues() : [];
+      var E = n > 0 ? psh.getRange(3, 5, n, 2).getValues() : [];
+      var keepP = [];
+      for (var i = 0; i < n; i++) {
+        if (String(A[i][0]) === '' && String(A[i][2]) === '') continue;                 // 空行
+        if (ymOf_(A[i][0]) === ymSlash && String(A[i][1]).trim() === plStore) continue; // 差し替え対象
+        keepP.push([A[i][0], A[i][1], A[i][2], E[i][0], E[i][1]]);
+      }
+      clean.forEach(function (a) { keepP.push([ymSlash, plStore, a[0], a[2], a[3] || 'ダッシュボードから入力']); });
+      if (n > 0) { psh.getRange(3, 1, n, 3).clearContent(); psh.getRange(3, 5, n, 2).clearContent(); }
+      if (keepP.length) {
+        psh.getRange(3, 1, keepP.length, 3).setValues(keepP.map(function (r) { return [r[0], r[1], r[2]]; }));
+        psh.getRange(3, 5, keepP.length, 2).setValues(keepP.map(function (r) { return [r[3], r[4]]; }));
+      }
+      plsys = 'PL管理システムにも反映しました';
+    } else plsys = 'PL管理システムに「' + PL_INPUT_SHEET + '」シートが見つかりません（DB_PLのみ反映）';
+  } catch (e) { plsys = 'PL管理システムへの反映に失敗（DB_PLのみ反映）: ' + String(e && e.message || e); }
+  return { ok: true, saved: clean.length, plsys: plsys };
+}
+
+// 広告費の保存：管理シートの💾広告費DBへ upsert（キー=年月×店舗×媒体×プラン・同一キー上書き）。
+// 金額が空/0なら該当行を削除。列構成は既存のまま（年月|店舗|媒体|プラン|広告費|入力日|更新日|備考|キー）。
+// ダッシュボードの広告データは💾広告費DB由来（getDataで管理シート優先）なので、これだけで両方に反映される。
+function saveAdFee(p, session) {
+  var ym = String(p.ym || '').trim();
+  if (!/^\d{4}-\d{2}$/.test(ym)) return { ok: false, error: '対象月が不正です' };
+  var dashStore = String(p.store || '').trim();
+  if (!dashStore) return { ok: false, error: '店舗が未指定です' };
+  if (!scopeAllows_(session, dashStore)) return { ok: false, error: 'この店舗の広告費を編集する権限がありません' };
+  var media = String(p.media || '').trim().slice(0, 40);
+  if (!media) return { ok: false, error: '媒体を入力してください' };
+  var plan = String(p.plan || '').trim().slice(0, 40) || '一式';
+  var costRaw = String(p.cost == null ? '' : p.cost).trim();
+  var cost = costRaw === '' ? 0 : (Number(costRaw.replace(/[,¥\s]/g, '')) || 0);
+  var memo = String(p.memo || '').trim().slice(0, 100);
+  var mss = mgmtOpen();
+  if (!mss) return { ok: false, error: '管理シートを開けません（MGMT_SHEET_ID）' };
+  var sh = mgmtFindTab(mss, /広告費DB/);
+  if (!sh) return { ok: false, error: '管理シートに💾広告費DBタブが見つかりません' };
+  // ヘッダー行と「年月」列の位置を検出（A列が空でB列始まりのレイアウトに対応）
+  var scan = sh.getRange(1, 1, Math.min(sh.getLastRow(), 6), Math.min(sh.getLastColumn(), 12)).getValues();
+  var hr = -1, c0 = -1;
+  for (var r = 0; r < scan.length && hr < 0; r++) {
+    for (var c = 0; c < scan[r].length; c++) {
+      if (String(scan[r][c]).trim() === '年月') { hr = r + 1; c0 = c + 1; break; }
+    }
+  }
+  if (hr < 0) return { ok: false, error: '💾広告費DBの見出し行（年月）が見つかりません' };
+  var ymSlash = ym.slice(0, 4) + '/' + ym.slice(5, 7);
+  var store = mgmtStoreName_(mss, dashStore);   // 管理シートの店舗マスタ表記へ変換
+  var last = sh.getLastRow(), found = -1;
+  if (last > hr) {
+    var v = sh.getRange(hr + 1, c0, last - hr, 4).getValues();  // 年月|店舗|媒体|プラン
+    for (var i = 0; i < v.length; i++) {
+      if (String(v[i][0]) === '' && String(v[i][1]) === '') continue;
+      if (ymOf_(v[i][0]) === ymSlash && storeKey_(v[i][1]) === storeKey_(store) &&
+          String(v[i][2]).trim() === media && String(v[i][3]).trim() === plan) { found = hr + 1 + i; break; }
+    }
+  }
+  var now = new Date();
+  var key = ymSlash + '_' + store + '_' + media + '_' + plan;
+  if (cost <= 0) {   // 削除
+    if (found < 0) return { ok: false, error: '削除対象（' + ymSlash + '×' + store + '×' + media + '×' + plan + '）が見つかりません' };
+    sh.deleteRow(found);
+    return { ok: true, deleted: true };
+  }
+  if (found > 0) {   // 上書き（広告費・更新日・備考・キー）
+    sh.getRange(found, c0 + 4).setValue(cost).setNumberFormat('#,##0');
+    sh.getRange(found, c0 + 6).setValue(now).setNumberFormat('yyyy/mm/dd');
+    sh.getRange(found, c0 + 7).setValue(memo);
+    sh.getRange(found, c0 + 8).setValue(key);
+    return { ok: true, updated: true };
+  }
+  var nr = last + 1;   // 追記
+  sh.getRange(nr, c0, 1, 9).setValues([[ymSlash, store, media, plan, cost, now, now, memo, key]]);
+  sh.getRange(nr, c0 + 4).setNumberFormat('#,##0');
+  sh.getRange(nr, c0 + 5, 1, 2).setNumberFormat('yyyy/mm/dd');
+  return { ok: true, added: true };
+}
+
+// 予約CSVの取込：管理シートの💾予約DBへ追記。rows=[[予約No,来店日,来店時間,人数,ステータス,受付窓口,作成日,作成時間],...]
+// 重複判定＝店舗＋来店日＋来店時間＋人数＋受付窓口＋作成日＋作成時間の全一致（同じCSVを2回取り込んでも安全）。
+function importReservations(p, session) {
+  var dashStore = String(p.store || '').trim();
+  if (!dashStore) return { ok: false, error: '店舗が未指定です' };
+  if (!scopeAllows_(session, dashStore)) return { ok: false, error: 'この店舗の予約を取り込む権限がありません' };
+  var rows; try { rows = JSON.parse(p.rows || '[]'); } catch (e) { rows = []; }
+  if (!rows.length) return { ok: false, error: '取込対象の行がありません' };
+  if (rows.length > 5000) return { ok: false, error: '一度に取り込めるのは5000行までです' };
+  var mss = mgmtOpen();
+  if (!mss) return { ok: false, error: '管理シートを開けません（MGMT_SHEET_ID）' };
+  if (mss) mgmtEnsure(mss);   // 💾予約DBが無ければ雛形を自動作成
+  var sh = mgmtFindTab(mss, /予約DB|予約明細|予約一覧/);
+  if (!sh) return { ok: false, error: '管理シートに💾予約DBタブが見つかりません' };
+  // ヘッダー行と列位置を名前で解決
+  var scan = sh.getRange(1, 1, Math.min(sh.getLastRow(), 6), Math.max(sh.getLastColumn(), 9)).getValues();
+  var hr = -1;
+  for (var r = 0; r < scan.length; r++) { if (scan[r].join(',').indexOf('来店日') >= 0) { hr = r + 1; break; } }
+  if (hr < 0) return { ok: false, error: '💾予約DBの見出し行（来店日）が見つかりません' };
+  var H = sh.getRange(hr, 1, 1, sh.getLastColumn()).getValues()[0].map(function (h) { return String(h).trim(); });
+  function ci(kws) { for (var k = 0; k < kws.length; k++) { var i2 = H.indexOf(kws[k]); if (i2 >= 0) return i2 + 1; } for (var k2 = 0; k2 < kws.length; k2++) { for (var c = 0; c < H.length; c++) { if (H[c].indexOf(kws[k2]) >= 0) return c + 1; } } return -1; }
+  var col = { st: ci(['店舗名', '店舗']), no: ci(['予約No', '予約番号']), d: ci(['来店日']), tm: ci(['来店時間']), n: ci(['人数']), stat: ci(['ステータス']), win: ci(['受付窓口', '経路', '媒体']), cd: ci(['作成日']), ct: ci(['作成時間', '作成時刻']) };
+  if (col.st < 0 || col.d < 0) return { ok: false, error: '💾予約DBの列（店舗名・来店日）が見つかりません' };
+  var store = mgmtStoreName_(mss, dashStore);
+  var tz = Session.getScriptTimeZone() || 'Asia/Tokyo';
+  function dstr(v) {
+    if (v instanceof Date) return Utilities.formatDate(v, tz, 'yyyy-MM-dd');
+    var m = String(v).match(/(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+    return m ? m[1] + '-' + ('0' + m[2]).slice(-2) + '-' + ('0' + m[3]).slice(-2) : String(v).trim();
+  }
+  function tstr(v) { if (v instanceof Date) return Utilities.formatDate(v, tz, 'H:mm'); var m = String(v).match(/(\d{1,2}):(\d{2})/); return m ? (+m[1]) + ':' + m[2] : String(v).trim(); }
+  // 既存キー（店舗＋来店日＋来店時間＋人数＋受付窓口＋作成日＋作成時間）
+  var last = sh.getLastRow(), exist = {};
+  if (last > hr) {
+    var vAll = sh.getRange(hr + 1, 1, last - hr, sh.getLastColumn()).getValues();
+    for (var i = 0; i < vAll.length; i++) {
+      var rr = vAll[i]; if (String(rr[col.st - 1]) === '' && String(rr[col.d - 1]) === '') continue;
+      exist[storeKey_(rr[col.st - 1]) + '|' + dstr(rr[col.d - 1]) + '|' + tstr(rr[col.tm - 1]) + '|' + (Number(rr[col.n - 1]) || 0) + '|' + String(rr[col.win - 1] || '').trim() + '|' + dstr(rr[col.cd - 1]) + '|' + tstr(rr[col.ct - 1])] = 1;
+    }
+  }
+  var width = sh.getLastColumn(), outRows = [], dup = 0;
+  rows.forEach(function (a) {
+    var d = String(a[1] || '').trim(); if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return;
+    var tm = String(a[2] || '').trim(), n = Number(a[3]) || 0, stat = String(a[4] || '').trim();
+    var win = String(a[5] || '').trim(), cd = String(a[6] || '').trim(), ct = String(a[7] || '').trim();
+    var key = storeKey_(store) + '|' + d + '|' + tstr(tm) + '|' + n + '|' + win + '|' + dstr(cd) + '|' + tstr(ct);
+    if (exist[key]) { dup++; return; }
+    exist[key] = 1;
+    var row = []; for (var c = 0; c < width; c++) row.push('');
+    row[col.st - 1] = store;
+    if (col.no > 0) row[col.no - 1] = String(a[0] || '').trim();
+    row[col.d - 1] = d;
+    if (col.tm > 0) row[col.tm - 1] = tm;
+    if (col.n > 0) row[col.n - 1] = n;
+    if (col.stat > 0) row[col.stat - 1] = stat;
+    if (col.win > 0) row[col.win - 1] = win;
+    if (col.cd > 0) row[col.cd - 1] = cd;
+    if (col.ct > 0) row[col.ct - 1] = ct;
+    outRows.push(row);
+  });
+  if (outRows.length) sh.getRange(sh.getLastRow() + 1, 1, outRows.length, width).setValues(outRows);
+  return { ok: true, added: outRows.length, dup: dup, store: store };
 }
 
 // ================== イベント自動取得（横浜アリーナ等） ==================

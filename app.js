@@ -453,6 +453,7 @@ function ingestPL(rows){
   const iD=colAny(H,['年月','日付','年月日']), iS=colAny(H,['店舗名','店舗']), iI=colAny(H,['勘定科目','費目','科目','項目']);
   const iA=colAny(H,['金額','費用','経費']);
   const iK=colAny(H,['区分','分類','カテゴリ']);   // F/L/A/R/O（無ければ全てO=その他扱い）
+  const iMemo=colAny(H,['メモ','備考']);           // 経費入力モーダルでの編集時に保持する
   if(iD<0||iI<0||iA<0){ D.diag['PL']='列が見つかりません（必要: 年月・勘定科目・金額）／見出し行: '+H.filter(Boolean).join('|'); return false; }
   const recs=[]; let dateSkipped=0;
   for(let i=hi+1;i<rows.length;i++){
@@ -461,7 +462,7 @@ function ingestPL(rows){
     const t0=parseYm(c[iD])||parseDateStr(c[iD]);
     if(!t0){ dateSkipped++; continue; }
     const d=new Date(t0);
-    recs.push({ store:String(iS>=0?c[iS]||'':'').trim(), t:new Date(d.getFullYear(),d.getMonth(),1).getTime(), item, cat:iK>=0?plCatOf(c[iK]):'O', amount:num(c[iA]) });
+    recs.push({ store:String(iS>=0?c[iS]||'':'').trim(), t:new Date(d.getFullYear(),d.getMonth(),1).getTime(), item, cat:iK>=0?plCatOf(c[iK]):'O', amount:num(c[iA]), memo:iMemo>=0?String(c[iMemo]||'').trim():'' });
   }
   if(!recs.length){ D.diag['PL']='0件'+(dateSkipped>0?'（'+dateSkipped+'行あるが年月を読めていません）':'（データ行がありません）'); return false; }
   D.pl=recs; D.diag['PL']='OK '+recs.length+'件'; return true;
@@ -2218,7 +2219,10 @@ function viewAd(){
           受信済みキー：${esc((D.receivedKeys||[]).join(' , ')||'なし')}</div>`;
       }
     }
-    return storeSegHtml()+`<div class="panel"><div class="panel-head"><div><h3>広告管理</h3><div class="sub">実データ（DB_広告シート）のみ表示・サンプルは入っていません</div></div></div>
+    return storeSegHtml()+`<div class="ctrl-bar no-print">
+      <button class="icon-btn primary" onclick="App.openAdInput()">✎ 広告費を入力</button>
+      <button class="icon-btn" onclick="App.openRsvImport()">⬆ 予約CSVを取込</button>
+    </div><div class="panel"><div class="panel-head"><div><h3>広告管理</h3><div class="sub">実データ（DB_広告シート）のみ表示・サンプルは入っていません</div></div></div>
     ${diagBox||`<div class="note-box">
       広告データはまだ接続されていません。スプレッドシートに <code>DB_広告</code> という名前のシートを作り、
       <code>日付</code>（例 2026/07/01）／ <code>店舗名</code> ／ <code>媒体</code> ／ <code>広告費</code> を入力すると、このタブに自動表示されます。<br>
@@ -2270,6 +2274,8 @@ function viewAd(){
   h+=`<div class="ctrl-bar no-print">
     <div class="seg">${[['month','月'],['year','年'],['custom','期間指定']].map(([k,l])=>`<button class="${P===k?'on':''}" onclick="App.set('adPeriod','${k}')">${l}</button>`).join('')}</div>
     ${ctrlHtml}
+    <button class="icon-btn primary" onclick="App.openAdInput()">✎ 広告費を入力</button>
+    <button class="icon-btn" onclick="App.openRsvImport()">⬆ 予約CSVを取込</button>
     <span class="period-label">広告費用対効果（${mLabel}${selN?' ／ '+esc(selN):''}）</span></div>`;
   // データの出どころを見える化：この画面の数字がどこから来ているかを表示
   let a0=0,a1=0; for(const r of D.ad){ if(!a0||r.t<a0)a0=r.t; if(r.t>a1)a1=r.t; }
@@ -2751,6 +2757,7 @@ function viewPL(){
   let h=`<div class="ctrl-bar no-print">
     <div class="seg">${[['month','月次'],['year','年間'],['custom','期間指定']].map(([k,l])=>`<button class="${P===k?'on':''}" onclick="App.set('plPeriod','${k}')">${l}</button>`).join('')}</div>
     ${ctrlHtml}
+    <button class="icon-btn primary" onclick="App.openPlInput()">✎ 経費を入力</button>
     <span class="period-label">損益（${mLabel} ／ ${esc(scopeLabel)}）</span></div>`+storeSegHtml();
 
   // KPIカード
@@ -3453,6 +3460,9 @@ function viewModal(){
   if(S.modal&&S.modal.type==='target') return targetModal();
   if(S.modal&&S.modal.type==='targetDay') return targetDayModal();
   if(S.modal&&S.modal.type==='depImport') return depImportModal();
+  if(S.modal&&S.modal.type==='plInput') return plInputModal();
+  if(S.modal&&S.modal.type==='adInput') return adInputModal();
+  if(S.modal&&S.modal.type==='rsvImport') return rsvImportModal();
   if(S.modal&&S.modal.type==='event') return eventModal();
   return '';
 }
@@ -3662,6 +3672,140 @@ function depTokenize(rows){
     else { const dt=new Date(r.t); const k=dt.getFullYear()+'/'+(dt.getMonth()+1)+'/'+dt.getDate()+'_'+r.amt; occ[k]=(occ[k]||0)+1; token='#'+occ[k]; }
     return Object.assign({}, r, { token });
   });
+}
+/* ---- PL経費入力モーダル ----
+ * 年月×店舗の手入力経費を丸ごと編集（差し替え保存）。保存先は
+ * ①PL管理システムの「✍ 販管費入力」（手入力の本体） ②ダッシュボードのDB_PL（即時反映用）の両方。
+ * 媒体販促費（自動計上）はPL側トリガーが管理するためここでは触らない。 */
+const PL_ITEM_CAT={
+  '役員報酬':'L','法定福利費':'L','通勤手当':'L','旅費交通費':'L','賞与積立':'L','退職金等':'L',
+  '家賃':'R','リース料':'R','家賃更新按分':'R','広告宣伝費':'A','販売促進費':'A',
+  '水道光熱費':'O','通信費':'O','消耗品・備品費':'O','修繕費':'O','衛生管理費':'O','カード手数料':'O','支払手数料':'O','支払報酬料':'O','採用教育費':'O','接待交際費':'O','会議費':'O','慶弔見舞費':'O','保険料':'O','租税公課':'O','減価償却費':'O','福利厚生費':'O','諸会費':'O','雑費':'O','本部経費（按分）':'O',
+  'その他売上':'S','銀行返済':'X','仕入（食材・飲料）':'F'
+};
+function plRowHtml(item,cat,amt,memo){
+  const cats=[['F','F 仕入'],['L','L 人件費'],['A','A 広告'],['R','R 家賃'],['O','O 他'],['S','S 売上'],['X','X PL外']];
+  return `<tr>
+    <td><input class="pli-item" list="pl-items" value="${esc(item||'')}" placeholder="勘定科目" style="width:150px;padding:5px 7px" onchange="App.plGuessCat(this)"></td>
+    <td><select class="pli-cat" style="padding:5px 4px">${cats.map(c=>`<option value="${c[0]}" ${cat===c[0]?'selected':''}>${c[1]}</option>`).join('')}</select></td>
+    <td><input type="number" class="pli-amt" value="${amt>0?Math.round(amt):''}" placeholder="金額" style="width:100px;text-align:right;padding:5px 7px"></td>
+    <td><input class="pli-memo" value="${esc(memo||'')}" placeholder="メモ" style="width:120px;padding:5px 7px"></td>
+  </tr>`;
+}
+function plInputModal(){
+  const m=S.modal;
+  const stores=scopeStores();
+  const canCommon=S.auth&&(S.auth.account.role==='社長'||S.auth.account.role==='本部');
+  const isCommon=m.store==='__common__';
+  const st=isCommon?'__common__':(m.store&&stores.includes(m.store)?m.store:stores[0]);
+  const [y,mo]=(m.ym||'').split('-').map(Number);
+  const t0=new Date(y,mo-1,1).getTime();
+  // この月×店舗の既存手入力行（媒体販促費（自動）はPL側トリガー管理のため除外）
+  const rows=D.pl.filter(r=>r.t===t0 && (isCommon? !String(r.store).trim() : normStore(r.store)===normStore(st)) && r.memo!=='媒体販促費（自動計上）' && r.item!=='媒体販促費（自動）');
+  const items=[...new Set(Object.keys(PL_ITEM_CAT).concat(D.pl.map(r=>r.item)))];
+  return `<div class="modal-bg" onclick="if(event.target===this)App.closeModal()"><div class="modal" style="max-width:640px">
+    <h3>経費の入力・修正（${y}年${mo}月）</h3>
+    <div class="sub">保存すると<b>この月×この店舗の手入力経費を丸ごと差し替え</b>ます（行を消す＝金額を空欄に）。PL管理システム（✍販管費入力）とダッシュボードのDB_PLの両方に反映されます。媒体販促費（自動）はここでは編集できません。</div>
+    <div class="form-grid" style="margin-top:10px">
+      <div><label>対象月</label><input type="month" id="pli-ym" value="${m.ym}" onchange="App.plSwitch()"></div>
+      <div><label>店舗</label><select id="pli-store" onchange="App.plSwitch()">
+        ${stores.map(s=>`<option value="${esc(s)}" ${st===s?'selected':''}>${esc(s)}</option>`).join('')}
+        ${canCommon?`<option value="__common__" ${isCommon?'selected':''}>全社共通（店舗に紐付けない経費）</option>`:''}
+      </select></div>
+    </div>
+    <div class="scroll-x" style="max-height:300px;overflow-y:auto;border:1px solid var(--line2);border-radius:10px;margin-top:8px">
+      <table class="tbl"><thead><tr><th>勘定科目</th><th>区分</th><th>金額(円)</th><th>メモ</th></tr></thead>
+      <tbody id="pli-rows">${rows.map(r=>plRowHtml(r.item,r.cat,r.amount,r.memo)).join('')||plRowHtml('','O','','')}</tbody></table>
+    </div>
+    <button class="icon-btn" style="margin-top:6px" onclick="App.plAddRow()">＋ 行を追加</button>
+    <datalist id="pl-items">${items.map(i2=>`<option value="${esc(i2)}">`).join('')}</datalist>
+    <div id="pli-msg" style="font-size:12px;color:#b5502f;margin:8px 0"></div>
+    <div class="modal-btns">
+      <button class="icon-btn primary" onclick="App.savePlInput()">保存（この月×店舗を差し替え）</button>
+      <button class="icon-btn" onclick="App.closeModal()">キャンセル</button>
+    </div>
+  </div></div>`;
+}
+/* ---- 広告費入力モーダル ----
+ * 管理シートの💾広告費DB（キー=年月_店舗_媒体_プラン・同一キー上書き）へ1件ずつupsert。
+ * ダッシュボードの広告データは💾広告費DB由来なので、保存後の再取得で自動反映される。 */
+function adInputModal(){
+  const m=S.modal; const stores=scopeStores();
+  const st=m.store&&stores.includes(m.store)?m.store:stores[0];
+  const [y,mo]=(m.ym||'').split('-').map(Number);
+  const t0=new Date(y,mo-1,1).getTime(), t1=new Date(y,mo,1).getTime();
+  const ex=D.ad.filter(r=>r.t>=t0&&r.t<t1&&normStore(r.store)===normStore(st));
+  const byMedia={}; ex.forEach(r=>{ const k=r.media||'（媒体未設定）'; byMedia[k]=(byMedia[k]||0)+r.cost; });
+  const medias=[...new Set(['ホットペッパー','ぐるなび','食べログ','Google広告','Instagram','LINE','チラシ'].concat(D.ad.map(r=>r.media).filter(Boolean)))];
+  const plans=['SSPプラン','SSプラン','Aプラン','Bプラン','BPPプラン','ライトプラン','ベーシックプラン','月額費用','初期費用','オプション','一式'];
+  return `<div class="modal-bg" onclick="if(event.target===this)App.closeModal()"><div class="modal" style="max-width:520px">
+    <h3>広告費の入力・修正（${y}年${mo}月）</h3>
+    <div class="sub">広告費用対効果_管理シートの<b>💾広告費DB</b>に保存します（同じ 年月×店舗×媒体×プラン は上書き／金額を空欄にして保存すると削除）。ダッシュボードにも自動反映されます。</div>
+    <div class="form-grid" style="margin-top:10px">
+      <div><label>対象月</label><input type="month" id="adi-ym" value="${m.ym}" onchange="App.adSwitch()"></div>
+      <div><label>店舗</label><select id="adi-store" onchange="App.adSwitch()">${stores.map(s=>`<option ${st===s?'selected':''}>${esc(s)}</option>`).join('')}</select></div>
+      <div><label>媒体</label><input id="adi-media" list="ad-medias" placeholder="例 ホットペッパー"></div>
+      <div><label>プラン（空欄＝一式）</label><input id="adi-plan" list="ad-plans" placeholder="例 SSPプラン"></div>
+      <div><label>広告費（円）</label><input type="number" id="adi-cost" placeholder="例 90000" style="text-align:right"></div>
+      <div><label>備考（任意）</label><input id="adi-memo" placeholder="例 半額"></div>
+    </div>
+    <datalist id="ad-medias">${medias.map(x=>`<option value="${esc(x)}">`).join('')}</datalist>
+    <datalist id="ad-plans">${plans.map(x=>`<option value="${esc(x)}">`).join('')}</datalist>
+    ${Object.keys(byMedia).length?`<div style="margin-top:10px;font-size:12px;color:#5c5348"><b>この月の登録済み広告費（媒体別合計）</b><br>${Object.entries(byMedia).map(([k,v])=>esc(k)+'：'+yen(v)).join('　／　')}<br><span class="mut" style="font-size:11px">※プラン単位の内訳は管理シートの💾広告費DBで確認できます</span></div>`:''}
+    <div id="adi-msg" style="font-size:12px;color:#b5502f;margin:8px 0"></div>
+    <div class="modal-btns">
+      <button class="icon-btn primary" id="adi-run" onclick="App.saveAdInput()">保存</button>
+      <button class="icon-btn" onclick="App.closeModal()">閉じる</button>
+    </div>
+  </div></div>`;
+}
+/* ---- 予約CSV取込モーダル ----
+ * 食べログ等の予約一覧CSVを選び、管理シートの💾予約DBへ追記（全項目一致の行はスキップ）。
+ * 店舗はプルダウンで選択（CSVに店舗名列が無いため）。経路（受付窓口）ごとに取込対象を選べる。 */
+let RSV_IMPORT={rows:[],file:''};
+function rsvParseCsv(text){
+  const rows=csvToRows(text);
+  let hi=-1;
+  for(let i=0;i<Math.min(rows.length,10);i++){ if(/来店日/.test(rows[i].join(','))){hi=i;break;} }
+  if(hi<0) return { error:'見出し行（来店日）が見つかりません。予約一覧CSV（食べログ等）を選んでください' };
+  const H=rows[hi].map(h2=>String(h2).trim());
+  const iNo=colAny(H,['予約No','予約番号','予約ID']);
+  const iD=colOf(H,'来店日'), iT=colOf(H,'来店時間');
+  let iP=H.findIndex(h2=>h2==='人数'); if(iP<0)iP=H.findIndex(h2=>/人数/.test(h2)&&!/子/.test(h2));
+  const iSt=colOf(H,'ステータス'), iW=colAny(H,['受付窓口','経路','媒体']);
+  const iC=colOf(H,'作成日'), iCT=colAny(H,['作成時間','作成時刻']);
+  if(iD<0) return { error:'来店日列がありません。見出し: '+H.filter(Boolean).join(' / ') };
+  const ymd=(v)=>{ const t=parseDateStr(v); if(!t)return ''; const d=new Date(t); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); };
+  const out=[];
+  for(let i=hi+1;i<rows.length;i++){
+    const c=rows[i]; if(!c) continue;
+    const d=ymd(c[iD]); if(!d) continue;
+    out.push({ no:iNo>=0?String(c[iNo]||'').trim():'', d, tm:iT>=0?String(c[iT]||'').trim():'', n:iP>=0?num(c[iP])||0:0,
+      st:iSt>=0?String(c[iSt]||'').trim():'', win:iW>=0?String(c[iW]||'').trim():'', cd:iC>=0?ymd(c[iC]):'', ct:iCT>=0?String(c[iCT]||'').trim():'' });
+  }
+  if(!out.length) return { error:'予約行が見つかりませんでした' };
+  return { rows:out };
+}
+function rsvImportModal(){
+  const stores=scopeStores();
+  const cur=selStoreName()&&stores.includes(selStoreName())?selStoreName():stores[0];
+  return `<div class="modal-bg" onclick="if(event.target===this)App.closeModal()"><div class="modal" style="max-width:560px">
+    <h3>予約CSVの取込</h3>
+    <div class="sub">食べログ等の管理画面からエクスポートした<b>予約一覧CSV</b>を選ぶと、広告費用対効果_管理シートの<b>💾予約DB</b>に追記します（同じ予約はスキップ）。曜日別・当日予約の分析に自動反映されます。</div>
+    <div class="form-grid" style="margin-top:12px">
+      <div><label>このCSVの店舗</label>
+        <select id="rv-store">${stores.map(s=>`<option ${s===cur?'selected':''}>${esc(s)}</option>`).join('')}</select></div>
+      <div><label>CSVファイル</label>
+        <input type="file" id="rv-file" accept=".csv,text/csv" onchange="App.rsvFileChosen(this)" style="width:100%;font-size:12px;padding:6px 0"></div>
+    </div>
+    <div id="rv-wins" style="margin:8px 0 2px"></div>
+    <div id="rv-preview" style="margin-top:6px"><div class="empty" style="padding:14px;font-size:12.5px">CSVファイルを選択してください</div></div>
+    <div id="rv-msg" style="font-size:12px;color:#b5502f;margin:8px 0"></div>
+    <div class="modal-btns">
+      <button class="icon-btn primary" id="rv-run" onclick="App.runRsvImport()" disabled>取込実行</button>
+      <button class="icon-btn" onclick="App.closeModal()">キャンセル</button>
+    </div>
+  </div></div>`;
 }
 /* ---- イベント入力モーダル：会場・イベント名・対象店舗チェックリスト ---- */
 function eventModal(){
@@ -3944,6 +4088,117 @@ window.App = {
       toast(`入金 ${d.added}件を取り込みました`+(d.dup>0?`（重複スキップ ${d.dup}件）`:''));
       await fetchData(true,{ only:['deposit'], partial:true }); render();
     }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; if(runBtn)runBtn.disabled=false; }
+  },
+  /* ---- PL経費入力 ---- */
+  openPlInput(){
+    const m0=plMonthDate();
+    const ym=m0.getFullYear()+'-'+String(m0.getMonth()+1).padStart(2,'0');
+    S.modal={type:'plInput', ym, store:selStoreName()||scopeStores()[0]}; render();
+  },
+  plSwitch(){ const ym=$('pli-ym')&&$('pli-ym').value, st=$('pli-store')&&$('pli-store').value;
+    S.modal={type:'plInput', ym:ym||S.modal.ym, store:st||S.modal.store}; render(); },
+  plGuessCat(inp){ const c=PL_ITEM_CAT[String(inp.value).trim()]; if(c){ const sel=inp.closest('tr').querySelector('.pli-cat'); if(sel)sel.value=c; } },
+  plAddRow(){ const tb=$('pli-rows'); if(tb) tb.insertAdjacentHTML('beforeend', plRowHtml('','O','','')); },
+  async savePlInput(){
+    const msg=$('pli-msg'); const m=S.modal;
+    if(!S.auth||!S.auth.token){ msg.textContent='スプレッドシート接続時のみ保存できます'; return; }
+    const entries=[];
+    document.querySelectorAll('#pli-rows tr').forEach(tr=>{
+      const item=tr.querySelector('.pli-item').value.trim();
+      const cat=tr.querySelector('.pli-cat').value;
+      const amt=Number(tr.querySelector('.pli-amt').value)||0;
+      const memo=tr.querySelector('.pli-memo').value.trim();
+      if(item&&amt>0) entries.push([item,cat,amt,memo]);
+    });
+    msg.style.color='#8c8375'; msg.textContent='保存中…（PL管理システムにも反映しています）';
+    try{
+      const d=await api({ action:'savePlEntries', token:S.auth.token, ym:$('pli-ym').value||m.ym, store:$('pli-store').value||m.store, entries:JSON.stringify(entries) });
+      if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'保存に失敗しました'; return; }
+      S.modal=null; toast('経費を保存しました（'+d.saved+'件）'+(d.plsys?'／'+d.plsys:''));
+      await fetchData(true,{ only:['pl','PL'], partial:true }); render();
+    }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
+  },
+  /* ---- 広告費入力 ---- */
+  openAdInput(){
+    const ref=D.refDate||new Date();
+    const m0=S.adMonth?new Date(+S.adMonth.split('-')[0],+S.adMonth.split('-')[1]-1,1):new Date(ref.getFullYear(),ref.getMonth(),1);
+    const ym=m0.getFullYear()+'-'+String(m0.getMonth()+1).padStart(2,'0');
+    S.modal={type:'adInput', ym, store:selStoreName()||scopeStores()[0]}; render();
+  },
+  adSwitch(){ const ym=$('adi-ym')&&$('adi-ym').value, st=$('adi-store')&&$('adi-store').value;
+    S.modal={type:'adInput', ym:ym||S.modal.ym, store:st||S.modal.store}; render(); },
+  async saveAdInput(){
+    const msg=$('adi-msg');
+    if(!S.auth||!S.auth.token){ msg.textContent='スプレッドシート接続時のみ保存できます'; return; }
+    const ym=$('adi-ym').value, store=$('adi-store').value;
+    const media=$('adi-media').value.trim(), plan=$('adi-plan').value.trim(), memo=$('adi-memo').value.trim();
+    const costRaw=String($('adi-cost').value).trim();
+    if(!media){ msg.textContent='媒体を入力してください'; return; }
+    const btn=$('adi-run'); if(btn)btn.disabled=true;
+    msg.style.color='#8c8375'; msg.textContent='保存中…（管理シートの💾広告費DBに反映しています）';
+    try{
+      const d=await api({ action:'saveAdFee', token:S.auth.token, ym, store, media, plan, cost:costRaw, memo });
+      if(btn)btn.disabled=false;
+      if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'保存に失敗しました'; return; }
+      msg.style.color='#4c7d5c'; msg.textContent=d.deleted?'✓ 削除しました（'+media+(plan?'・'+plan:'')+'）':'✓ 保存しました（'+media+(plan?'・'+plan:'')+' '+yen(Number(costRaw)||0)+'）。続けて入力できます';
+      $('adi-cost').value=''; $('adi-memo').value='';
+      fetchData(true,{ only:['広告'], partial:true }).then(()=>{ if(S.modal&&S.modal.type!=='adInput') render(); });
+    }catch(e){ if(btn)btn.disabled=false; msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
+  },
+  /* ---- 予約CSV取込 ---- */
+  openRsvImport(){ RSV_IMPORT={rows:[],file:''}; S.modal={type:'rsvImport'}; render(); },
+  async rsvFileChosen(inp){
+    const msg=$('rv-msg'); msg.textContent='';
+    const f=inp.files&&inp.files[0]; if(!f) return;
+    try{
+      const buf=await f.arrayBuffer();
+      let text=new TextDecoder('utf-8',{fatal:false}).decode(buf);
+      if(text.indexOf('�')>=0) text=new TextDecoder('shift-jis').decode(buf);
+      const r=rsvParseCsv(text);
+      if(r.error){ RSV_IMPORT={rows:[],file:''}; msg.textContent=r.error; this.rsvPreview(); return; }
+      RSV_IMPORT={rows:r.rows, file:f.name};
+      // 経路（受付窓口）ごとのチェックボックスを生成（既定は全て取込）
+      const wins={}; r.rows.forEach(x=>{ const k=x.win||'（経路なし）'; wins[k]=(wins[k]||0)+1; });
+      $('rv-wins').innerHTML='<div style="font-size:11.5px;color:#8c8375;margin-bottom:3px">取り込む経路（受付窓口）：</div>'+
+        Object.entries(wins).map(([k,n])=>`<label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;margin:0 10px 4px 0;cursor:pointer"><input type="checkbox" class="rv-win" value="${esc(k)}" checked onchange="App.rsvPreview()">${esc(k)}（${n}件）</label>`).join('');
+      this.rsvPreview();
+    }catch(e){ msg.textContent='ファイルを読み込めませんでした: '+e.message; }
+  },
+  rsvSelectedRows(){
+    const on=new Set([...document.querySelectorAll('.rv-win')].filter(c=>c.checked).map(c=>c.value));
+    return RSV_IMPORT.rows.filter(r=>on.size===0||on.has(r.win||'（経路なし）'));
+  },
+  rsvPreview(){
+    const box=$('rv-preview'), btn=$('rv-run'); if(!box) return;
+    if(!RSV_IMPORT.rows.length){ box.innerHTML='<div class="empty" style="padding:14px;font-size:12.5px">CSVファイルを選択してください</div>'; if(btn)btn.disabled=true; return; }
+    const rows=this.rsvSelectedRows();
+    if(!rows.length){ box.innerHTML='<div class="empty" style="padding:14px;font-size:12.5px">取込対象の経路が選ばれていません</div>'; if(btn)btn.disabled=true; return; }
+    const ppl=rows.reduce((s,r)=>s+r.n,0);
+    let h2=`<div style="font-size:12.5px;font-weight:700;color:#3d5163;margin-bottom:4px">取込対象 ${rows.length}件 ／ ${cnt(ppl)}人 <span class="mut" style="font-weight:400">（${esc(RSV_IMPORT.file)}）</span></div>
+      <div class="scroll-x" style="max-height:200px;overflow-y:auto;border:1px solid var(--line2);border-radius:8px">
+      <table class="tbl"><thead><tr><th>来店日</th><th>時間</th><th>人数</th><th>経路</th><th>ステータス</th><th>作成日</th></tr></thead><tbody>`;
+    rows.slice(0,300).forEach(r=>{ h2+=`<tr><td style="white-space:nowrap">${esc(r.d)}</td><td>${esc(r.tm)}</td><td style="text-align:right">${r.n||''}</td><td style="font-size:11px">${esc(r.win)}</td><td style="font-size:11px">${esc(r.st)}</td><td class="mut" style="font-size:11px">${esc(r.cd)}</td></tr>`; });
+    h2+=`</tbody></table></div>`;
+    if(rows.length>300) h2+=`<div class="mut" style="font-size:11px;margin-top:3px">※プレビューは300件まで表示（取込は全${rows.length}件）</div>`;
+    box.innerHTML=h2; if(btn)btn.disabled=false;
+  },
+  async runRsvImport(){
+    const msg=$('rv-msg');
+    if(!S.auth||!S.auth.token){ msg.textContent='スプレッドシート接続時のみ取込できます'; return; }
+    const store=$('rv-store')&&$('rv-store').value;
+    if(!store){ msg.textContent='店舗を選択してください'; return; }
+    const rows=this.rsvSelectedRows();
+    if(!rows.length){ msg.textContent='取込対象の行がありません'; return; }
+    const payload=rows.map(r=>[r.no,r.d,r.tm,r.n,r.st,r.win,r.cd,r.ct]);
+    const btn=$('rv-run'); if(btn)btn.disabled=true;
+    msg.style.color='#8c8375'; msg.textContent='取込中…（'+rows.length+'件）';
+    try{
+      const d=await api({ action:'importReservations', token:S.auth.token, store, rows:JSON.stringify(payload) });
+      if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'取込に失敗しました'; if(btn)btn.disabled=false; return; }
+      S.modal=null;
+      toast(`予約 ${d.added}件を取り込みました`+(d.dup>0?`（重複スキップ ${d.dup}件）`:''));
+      await fetchData(true,{ only:['予約'], partial:true }); render();
+    }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; if(btn)btn.disabled=false; }
   },
   openEventInput(id){ S.modal={type:'event', id:id||''}; render(); },
   async saveEventInput(){
