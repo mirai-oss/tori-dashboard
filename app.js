@@ -266,15 +266,13 @@ function wxCell(w){
   }
   return `<span style="white-space:nowrap">${c.i} <span style="font-size:11px">${esc(c.t)}</span> <span class="mut" style="font-size:10.5px">${temp}</span></span>`;
 }
-// 日付セルの後ろに付ける最小表示（アイコンのみ・警報時は色付き）
-function wxMini(w){
+// CSV書き出し用のテキスト（例: 小雨 24°/21° ／ 大雨）
+function wxText(w){
   if(!w) return '';
-  const c=WX_CODES[w.code]||{i:'',t:''};
+  const c=WX_CODES[w.code]||{t:''};
   const al=wxAlertOf(w);
-  if(al){ const a=WX_ALERT[al];
-    return ` <span title="${esc(a.t)}" style="color:${a.fg};font-weight:700;font-size:11px">${a.i}</span>`;
-  }
-  return ` <span title="${esc(c.t)}" style="font-size:11px">${c.i}</span>`;
+  const temp=(w.tmax!=null?Math.round(w.tmax)+'°':'')+(w.tmin!=null?'/'+Math.round(w.tmin)+'°':'');
+  return [c.t,temp].filter(Boolean).join(' ')+(al?' ／'+WX_ALERT[al].t:'');
 }
 
 // CSVテキスト → 行列
@@ -1626,7 +1624,7 @@ function dailyStorePanel(r,selName){
   const ap=(amt,sales)=>sales>0?`${yen(amt)} <span class="mut" style="font-size:11px">(${(amt/sales*100).toFixed(1)}%)</span>`:'<span class="mut">—</span>';
   let h=`<div class="panel"><div class="panel-head"><div><h3>日別 明細（${esc(selName)} ／ ${esc(r.label)}）</h3>
     <div class="sub">1日ごとの売上・客数・客単価・PA/社員/原価（金額と比率）・前年比・累計差異（${(r.s.getMonth()+1)}/${r.s.getDate()}〜${(r.e.getMonth()+1)}/${r.e.getDate()}）</div></div></div>
-  <div class="scroll-x"><table class="tbl"><thead><tr><th>日付</th><th>売上</th><th>客数</th><th>客単価</th><th>PA（比率）</th><th>社員（比率）</th><th>原価（比率）</th><th>前年比</th><th>累計差異(対前年)</th></tr></thead><tbody>`;
+  <div class="scroll-x"><table class="tbl"><thead><tr><th>日付</th><th>天気</th><th>売上</th><th>客数</th><th>客単価</th><th>PA（比率）</th><th>社員（比率）</th><th>原価（比率）</th><th>前年比</th><th>累計差異(対前年)</th></tr></thead><tbody>`;
   const exp=[];
   if(days.length) ensureWeather([selName], dayMs(days[0]), dayMs(days[days.length-1]));
   days.forEach(d=>{
@@ -1635,28 +1633,28 @@ function dailyStorePanel(r,selName){
     const pv=stat(null,dayMs(addD(d,-364)),dayMs(addD(d,-364)),selName);
     const future=t>maxT;
     if(future){
-      h+=`<tr><td class="mut">${mdwH(d)}</td>${'<td class="mut">—</td>'.repeat(8)}</tr>`;
+      h+=`<tr><td class="mut">${mdwH(d)}</td><td style="white-space:nowrap">${wxCell(wxGet(selName,t))}</td>${'<td class="mut">—</td>'.repeat(8)}</tr>`;
       return;
     }
     cumCur+=c.sales; cumPrev+=pv.sales; tS+=c.sales; tG+=c.guests; tCost+=c.cost; tPa+=c.pa; tEmp+=c.emp;
     const sp=c.guests>0?c.sales/c.guests:0;
     const yy=yoyStr(c.sales,pv.sales,'');
     const cumDiff=cumCur-cumPrev;
-    h+=`<tr><td style="white-space:nowrap">${mdwH(d)}${wxMini(wxGet(selName,dayMs(d)))}</td><td>${yen(c.sales)}</td><td>${cnt(c.guests)}人</td><td>${yen(sp)}</td>
+    h+=`<tr><td style="white-space:nowrap">${mdwH(d)}</td><td style="white-space:nowrap">${wxCell(wxGet(selName,t))}</td><td>${yen(c.sales)}</td><td>${cnt(c.guests)}人</td><td>${yen(sp)}</td>
       <td>${ap(c.pa,c.sales)}</td><td>${ap(c.emp,c.sales)}</td><td>${ap(c.cost,c.sales)}</td>
       <td class="${yy.cls==='up'?'pos':yy.cls==='dn'?'neg':'mut'}">${yy.t||'—'}</td>
       <td class="${cumDiff>=0?'pos':'neg'}">${(cumDiff>=0?'+':'▲')+yen(Math.abs(cumDiff)).slice(1)}</td></tr>`;
     const pct=(a2)=>c.sales>0?(a2/c.sales*100).toFixed(1)+'%':'';
-    exp.push([mdw(d),Math.round(c.sales),Math.round(c.guests),Math.round(sp),Math.round(c.pa),pct(c.pa),Math.round(c.emp),pct(c.emp),Math.round(c.cost),pct(c.cost),yy.t||'',Math.round(cumDiff)]);
+    exp.push([mdw(d),wxText(wxGet(selName,t)),Math.round(c.sales),Math.round(c.guests),Math.round(sp),Math.round(c.pa),pct(c.pa),Math.round(c.emp),pct(c.emp),Math.round(c.cost),pct(c.cost),yy.t||'',Math.round(cumDiff)]);
   });
   const tSp=tG>0?tS/tG:0, tDiff=cumCur-cumPrev;
-  h+=`<tr class="total"><td>合計</td><td>${yen(tS)}</td><td>${cnt(tG)}人</td><td>${yen(tSp)}</td>
+  h+=`<tr class="total"><td>合計</td><td></td><td>${yen(tS)}</td><td>${cnt(tG)}人</td><td>${yen(tSp)}</td>
     <td>${ap(tPa,tS)}</td><td>${ap(tEmp,tS)}</td><td>${ap(tCost,tS)}</td><td></td>
     <td class="${tDiff>=0?'pos':'neg'}">${(tDiff>=0?'+':'▲')+yen(Math.abs(tDiff)).slice(1)}</td></tr>`;
   h+=`</tbody></table></div></div>`;
   const tp=(a2)=>tS>0?(a2/tS*100).toFixed(1)+'%':'';
-  exp.push(['合計',Math.round(tS),Math.round(tG),Math.round(tSp),Math.round(tPa),tp(tPa),Math.round(tEmp),tp(tEmp),Math.round(tCost),tp(tCost),'',Math.round(tDiff)]);
-  EXPORT.push({ title:'日別明細（'+selName+'／'+r.label+'）', headers:['日付','売上','客数','客単価','PA額','PA率','社員額','社員率','原価額','原価率','前年比','累計差異(対前年)'], rows:exp });
+  exp.push(['合計','',Math.round(tS),Math.round(tG),Math.round(tSp),Math.round(tPa),tp(tPa),Math.round(tEmp),tp(tEmp),Math.round(tCost),tp(tCost),'',Math.round(tDiff)]);
+  EXPORT.push({ title:'日別明細（'+selName+'／'+r.label+'）', headers:['日付','天気','売上','客数','客単価','PA額','PA率','社員額','社員率','原価額','原価率','前年比','累計差異(対前年)'], rows:exp });
   return h;
 }
 
@@ -1880,31 +1878,32 @@ function viewAnalysis(){
   // 明細：前年重ね時は差異列＋最下段に合計差異
   const hasYoY=B==='total'&&S.aYoY&&series.length>=2;
   const diffTxt=(d2)=>`<span class="${d2>0?'pos':d2<0?'neg':'mut'}">${d2===0?'—':(d2>0?'+':'▲')+(M==='guests'?cnt(Math.abs(d2))+'人':yen(Math.abs(d2)))}</span>`;
-  h+=`<div class="panel"><div class="panel-head"><h3>明細</h3></div><div class="scroll-x"><table class="tbl"><thead><tr><th>期間</th>${series.map(x=>`<th>${esc(x.name)}</th>`).join('')}${hasYoY?'<th>差異（対前年）</th>':''}</tr></thead><tbody>`;
-  {   // 日別表示のときは、表示範囲ぶんの天気をまとめて取得（取得後に自動で再描画される）
-    const ds=buckets.filter(b2=>b2.dt).map(b2=>dayMs(b2.dt));
-    if(ds.length) ensureWeather(names, Math.min(...ds), Math.max(...ds));
-  }
+  // 日別表示のときは、表示範囲ぶんの天気をまとめて取得（取得後に自動で再描画される）＋独立した天気列を出す
+  const wxDays=buckets.filter(b2=>b2.dt).map(b2=>dayMs(b2.dt));
+  const hasWx=wxDays.length>0;
+  if(hasWx) ensureWeather(names, Math.min(...wxDays), Math.max(...wxDays));
+  h+=`<div class="panel"><div class="panel-head"><h3>明細</h3></div><div class="scroll-x"><table class="tbl"><thead><tr><th>期間</th>${hasWx?'<th>天気</th>':''}${series.map(x=>`<th>${esc(x.name)}</th>`).join('')}${hasYoY?'<th>差異（対前年）</th>':''}</tr></thead><tbody>`;
   buckets.forEach((bk,i)=>{
     // 日別表示のときは、その日にイベントがあれば日付セルの下に小さく表示（🎪 会場：イベント名）
     let evTxt='';
     if(bk.dt){ const evs=eventsFor(dayMs(bk.dt),names); if(evs.length) evTxt=`<div style="font-size:10px;color:#7a6f9a;margin-top:2px;white-space:normal">🎪 ${esc(eventLineText(evs))}</div>`; }
-    const wxm=bk.dt?wxMini(wxGet(names[0],dayMs(bk.dt))):'';   // 日別表示のときは天気アイコンを日付の右に
-    const dateCell=(bk.dt?mdwH(bk.dt)+wxm:esc(bk.label))+evTxt;
-    h+=`<tr><td>${dateCell}</td>${series.map(x=>`<td>${fmtV(x.data[i])}</td>`).join('')}${hasYoY?`<td>${diffTxt(series[0].data[i]-series[1].data[i])}</td>`:''}</tr>`;
+    const dateCell=(bk.dt?mdwH(bk.dt):esc(bk.label))+evTxt;
+    const wxTd=hasWx?`<td style="white-space:nowrap">${bk.dt?wxCell(wxGet(names[0],dayMs(bk.dt))):''}</td>`:'';
+    h+=`<tr><td>${dateCell}</td>${wxTd}${series.map(x=>`<td>${fmtV(x.data[i])}</td>`).join('')}${hasYoY?`<td>${diffTxt(series[0].data[i]-series[1].data[i])}</td>`:''}</tr>`;
   });
   // 合計行（客単価は加重平均で算出）
   const totOf=(gp)=>val(gp.recs,dayMs(s),dayMs(e));
   const totals=groups.map(gp=>totOf(gp));
+  const wxTotTd=hasWx?'<td></td>':'';
   if(hasYoY){
     const prevTot=val(dailyIn,dayMs(sub1y(s)),dayMs(sub1y(e)));
-    h+=`<tr class="total"><td>合計</td><td>${fmtV(totals[0])}</td><td>${fmtV(prevTot)}</td><td>${diffTxt(totals[0]-prevTot)}</td></tr>`;
+    h+=`<tr class="total"><td>合計</td>${wxTotTd}<td>${fmtV(totals[0])}</td><td>${fmtV(prevTot)}</td><td>${diffTxt(totals[0]-prevTot)}</td></tr>`;
   } else {
-    h+=`<tr class="total"><td>合計</td>${totals.map(v=>`<td>${fmtV(v)}</td>`).join('')}</tr>`;
+    h+=`<tr class="total"><td>合計</td>${wxTotTd}${totals.map(v=>`<td>${fmtV(v)}</td>`).join('')}</tr>`;
   }
   h+=`</tbody></table></div></div>`;
-  EXPORT.push({ title:ml+'の推移', headers:['期間'].concat(series.map(x=>x.name)).concat(hasYoY?['差異(対前年)']:[]),
-    rows:buckets.map((bk,i)=>[bk.label].concat(series.map(x=>Math.round(x.data[i]))).concat(hasYoY?[Math.round(series[0].data[i]-series[1].data[i])]:[])) });
+  EXPORT.push({ title:ml+'の推移', headers:['期間'].concat(hasWx?['天気']:[]).concat(series.map(x=>x.name)).concat(hasYoY?['差異(対前年)']:[]),
+    rows:buckets.map((bk,i)=>[bk.label].concat(hasWx?[bk.dt?wxText(wxGet(names[0],dayMs(bk.dt))):'']:[]).concat(series.map(x=>Math.round(x.data[i]))).concat(hasYoY?[Math.round(series[0].data[i]-series[1].data[i])]:[])) });
   return h;
 }
 
@@ -2888,7 +2887,7 @@ function viewTarget(){
       <td class="${r2==null?'mut':r2>=100?'pos':'neg'}">${r2==null?'—':r2.toFixed(0)+'%'}</td>
       <td class="mut">${ly>0?yen(ly):'—'}</td>
       <td class="${yoy==null?'mut':yoy>=0?'pos':'neg'}">${yoy==null?'—':(yoy>=0?'+':'▲')+Math.abs(yoy).toFixed(1)+'%'}</td></tr>`;
-    const wxTxt=wx?((WX_CODES[wx.code]||{t:''}).t+(wxAlertOf(wx)?'／'+WX_ALERT[wxAlertOf(wx)].t:'')):'';
+    const wxTxt=wxText(wx);
     expD.push([(m+1)+'/'+d2+'('+WD[dt.getDay()]+')',wxTxt,evTxt,Math.round(g),act!=null?Math.round(act):'',r2!=null?r2.toFixed(0)+'%':'',Math.round(ly)]);
   }
   h+=`<tr class="total"><td>合計</td><td></td><td></td><td>${yen(tG)}</td><td>${yen(tA)}</td>
