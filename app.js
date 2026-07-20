@@ -168,6 +168,115 @@ const parseYm = (ds)=>{ const s=String(ds==null?'':ds).trim(); let m=s.match(/^(
 
 function toast(msg){ const t=$('toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(t._tm); t._tm=setTimeout(()=>t.classList.remove('show'),2600); }
 
+/* =====================================================================
+ * 天気（Open-Meteo：APIキー不要・CORS対応・無料）
+ * 売上と天気の関係を見るため、日別の実績天気と16日先までの予報を表示する。
+ * 台風級の暴風・雷雨・大雨・大雪は目立つバッジで警告する。
+ * ===================================================================== */
+// 店舗名のキーワード → 観測地点。該当しなければ東京。
+const WX_LOCS=[
+  { key:'yokohama', re:/新横浜|横浜|川崎|うお蔵|黒霧屋|鶏武者|匠味|彩/, lat:35.4437, lon:139.6380, name:'横浜' },
+  { key:'atsugi',   re:/本厚木|厚木|エース/,                            lat:35.4408, lon:139.3648, name:'本厚木' },
+  { key:'tokyo',    re:/.*/,                                            lat:35.6895, lon:139.6917, name:'東京' }
+];
+function wxLocOf(store){ const s=String(store||''); return WX_LOCS.find(l=>l.re.test(s))||WX_LOCS[WX_LOCS.length-1]; }
+// WMO天気コード → 表示。alert: typhoon/thunder/rain/snow は強調表示する
+const WX_CODES={
+  0:{i:'☀️',t:'快晴'}, 1:{i:'🌤️',t:'晴れ'}, 2:{i:'⛅',t:'晴れ時々くもり'}, 3:{i:'☁️',t:'くもり'},
+  45:{i:'🌫️',t:'霧'}, 48:{i:'🌫️',t:'霧（着氷）'},
+  51:{i:'🌦️',t:'霧雨'}, 53:{i:'🌦️',t:'霧雨'}, 55:{i:'🌧️',t:'強い霧雨'},
+  56:{i:'🌧️',t:'着氷性の霧雨'}, 57:{i:'🌧️',t:'着氷性の霧雨'},
+  61:{i:'🌦️',t:'小雨'}, 63:{i:'🌧️',t:'雨'}, 65:{i:'🌧️',t:'大雨',alert:'rain'},
+  66:{i:'🌧️',t:'着氷性の雨'}, 67:{i:'🌧️',t:'着氷性の雨',alert:'rain'},
+  71:{i:'🌨️',t:'小雪'}, 73:{i:'🌨️',t:'雪'}, 75:{i:'❄️',t:'大雪',alert:'snow'}, 77:{i:'🌨️',t:'霧雪'},
+  80:{i:'🌦️',t:'にわか雨'}, 81:{i:'🌧️',t:'強いにわか雨'}, 82:{i:'⛈️',t:'激しいにわか雨',alert:'rain'},
+  85:{i:'🌨️',t:'にわか雪'}, 86:{i:'❄️',t:'強いにわか雪',alert:'snow'},
+  95:{i:'⛈️',t:'雷雨',alert:'thunder'}, 96:{i:'🌩️',t:'雷雨（ひょう）',alert:'thunder'}, 99:{i:'🌩️',t:'激しい雷雨（ひょう）',alert:'thunder'}
+};
+const WX_ALERT={
+  typhoon:{ i:'🌀', t:'台風級の暴風', bg:'#f7e6e2', bd:'#d9a294', fg:'#b5502f' },
+  thunder:{ i:'⛈️', t:'雷雨',        bg:'#efeaf7', bd:'#b9a8d6', fg:'#6b4fa0' },
+  rain:   { i:'🌧️', t:'大雨',        bg:'#e6eff7', bd:'#9dbcd6', fg:'#3d6b93' },
+  snow:   { i:'❄️', t:'大雪',        bg:'#eaf2f7', bd:'#a8c4d6', fg:'#3d6b93' }
+};
+const ymdStr=(t)=>{ const d=new Date(t); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); };
+// 1日ぶんの天気からアラート種別を決める（台風＞雷＞大雨＞大雪）
+function wxAlertOf(w){
+  if(!w) return null;
+  if((w.gust>=25)||(w.wind>=17.2)) return 'typhoon';   // 気象庁の台風基準＝最大風速17.2m/s以上
+  const c=WX_CODES[w.code];
+  if(c&&c.alert) return c.alert;
+  if(w.prec>=50) return 'rain';
+  return null;
+}
+D.wx={}; D.wxLoading={}; D.wxErr='';
+const wxKey=(loc,ds)=>loc+'|'+ds;
+function wxGet(store,t){ return D.wx[wxKey(wxLocOf(store).key, ymdStr(t))]||null; }
+// 指定の地点・期間の天気を取得（未取得ぶんだけ）。取得できたら再描画する。
+// 直近92日〜16日先は予報API、それ以前は過去実績API（archive）を使う。
+function ensureWeather(stores, fromT, toT){
+  if(!(fromT>0)||!(toT>0)) return;
+  const today=dayMs(new Date());
+  const locs=[...new Set((stores&&stores.length?stores:['']).map(s=>wxLocOf(s).key))];
+  locs.forEach(lk=>{
+    const loc=WX_LOCS.find(l=>l.key===lk);
+    // 未取得の日付があるか
+    let need=false;
+    for(let t=fromT;t<=toT;t+=86400000){ if(!(wxKey(lk,ymdStr(t)) in D.wx)){ need=true; break; } }
+    if(!need) return;
+    const recent=fromT>=today-91*86400000;   // 予報APIの past_days は最大92日
+    const tag=lk+(recent?'|f':'|a')+'|'+ymdStr(fromT)+'|'+ymdStr(toT);
+    if(D.wxLoading[tag]) return;
+    D.wxLoading[tag]=1;
+    const daily='weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,wind_speed_10m_max,wind_gusts_10m_max';
+    const base=`latitude=${loc.lat}&longitude=${loc.lon}&daily=${daily}&timezone=Asia%2FTokyo&wind_speed_unit=ms`;
+    const url=recent
+      ? `https://api.open-meteo.com/v1/forecast?${base}&past_days=92&forecast_days=16`
+      : `https://archive-api.open-meteo.com/v1/archive?${base}&start_date=${ymdStr(fromT)}&end_date=${ymdStr(Math.min(toT,today-5*86400000))}`;
+    fetch(url).then(r=>r.json()).then(j=>{
+      const d=j&&j.daily;
+      if(d&&d.time){
+        for(let i=0;i<d.time.length;i++){
+          D.wx[wxKey(lk,d.time[i])]={
+            code:Number(d.weather_code[i]), tmax:d.temperature_2m_max[i], tmin:d.temperature_2m_min[i],
+            prec:Number(d.precipitation_sum[i])||0, wind:Number(d.wind_speed_10m_max[i])||0, gust:Number(d.wind_gusts_10m_max[i])||0,
+            future:d.time[i]>ymdStr(today)
+          };
+        }
+      }
+      // 取得できなかった日も「無し」として記録し、同じ範囲を何度も叩かない
+      for(let t=fromT;t<=toT;t+=86400000){ const k=wxKey(lk,ymdStr(t)); if(!(k in D.wx)) D.wx[k]=null; }
+      D.wxErr=''; render();
+    }).catch(e=>{
+      D.wxErr='天気を取得できませんでした（'+e.message+'）';
+      for(let t=fromT;t<=toT;t+=86400000){ const k=wxKey(lk,ymdStr(t)); if(!(k in D.wx)) D.wx[k]=null; }
+      render();
+    });
+  });
+}
+// 表形式の小さい天気セル（アイコン＋気温、警報時は色付きバッジ）
+function wxCell(w){
+  if(!w) return '<span class="mut">—</span>';
+  const c=WX_CODES[w.code]||{i:'･',t:''};
+  const al=wxAlertOf(w);
+  const temp=(w.tmax!=null?Math.round(w.tmax)+'°':'')+(w.tmin!=null?'/'+Math.round(w.tmin)+'°':'');
+  if(al){ const a=WX_ALERT[al];
+    return `<span style="display:inline-block;background:${a.bg};border:1px solid ${a.bd};color:${a.fg};border-radius:6px;padding:1px 6px;font-size:11px;font-weight:700;white-space:nowrap">${a.i} ${esc(a.t)}</span>`
+      +`<span class="mut" style="font-size:10.5px;margin-left:4px">${temp}</span>`;
+  }
+  return `<span style="white-space:nowrap">${c.i} <span style="font-size:11px">${esc(c.t)}</span> <span class="mut" style="font-size:10.5px">${temp}</span></span>`;
+}
+// 日付セルの後ろに付ける最小表示（アイコンのみ・警報時は色付き）
+function wxMini(w){
+  if(!w) return '';
+  const c=WX_CODES[w.code]||{i:'',t:''};
+  const al=wxAlertOf(w);
+  if(al){ const a=WX_ALERT[al];
+    return ` <span title="${esc(a.t)}" style="color:${a.fg};font-weight:700;font-size:11px">${a.i}</span>`;
+  }
+  return ` <span title="${esc(c.t)}" style="font-size:11px">${c.i}</span>`;
+}
+
 // CSVテキスト → 行列
 function csvToRows(text){
   const rows=[]; let cur='', row=[], q=false;
@@ -1519,6 +1628,7 @@ function dailyStorePanel(r,selName){
     <div class="sub">1日ごとの売上・客数・客単価・PA/社員/原価（金額と比率）・前年比・累計差異（${(r.s.getMonth()+1)}/${r.s.getDate()}〜${(r.e.getMonth()+1)}/${r.e.getDate()}）</div></div></div>
   <div class="scroll-x"><table class="tbl"><thead><tr><th>日付</th><th>売上</th><th>客数</th><th>客単価</th><th>PA（比率）</th><th>社員（比率）</th><th>原価（比率）</th><th>前年比</th><th>累計差異(対前年)</th></tr></thead><tbody>`;
   const exp=[];
+  if(days.length) ensureWeather([selName], dayMs(days[0]), dayMs(days[days.length-1]));
   days.forEach(d=>{
     const t=dayMs(d);
     const c=stat(null,t,t,selName);
@@ -1532,7 +1642,7 @@ function dailyStorePanel(r,selName){
     const sp=c.guests>0?c.sales/c.guests:0;
     const yy=yoyStr(c.sales,pv.sales,'');
     const cumDiff=cumCur-cumPrev;
-    h+=`<tr><td>${mdwH(d)}</td><td>${yen(c.sales)}</td><td>${cnt(c.guests)}人</td><td>${yen(sp)}</td>
+    h+=`<tr><td style="white-space:nowrap">${mdwH(d)}${wxMini(wxGet(selName,dayMs(d)))}</td><td>${yen(c.sales)}</td><td>${cnt(c.guests)}人</td><td>${yen(sp)}</td>
       <td>${ap(c.pa,c.sales)}</td><td>${ap(c.emp,c.sales)}</td><td>${ap(c.cost,c.sales)}</td>
       <td class="${yy.cls==='up'?'pos':yy.cls==='dn'?'neg':'mut'}">${yy.t||'—'}</td>
       <td class="${cumDiff>=0?'pos':'neg'}">${(cumDiff>=0?'+':'▲')+yen(Math.abs(cumDiff)).slice(1)}</td></tr>`;
@@ -1771,11 +1881,16 @@ function viewAnalysis(){
   const hasYoY=B==='total'&&S.aYoY&&series.length>=2;
   const diffTxt=(d2)=>`<span class="${d2>0?'pos':d2<0?'neg':'mut'}">${d2===0?'—':(d2>0?'+':'▲')+(M==='guests'?cnt(Math.abs(d2))+'人':yen(Math.abs(d2)))}</span>`;
   h+=`<div class="panel"><div class="panel-head"><h3>明細</h3></div><div class="scroll-x"><table class="tbl"><thead><tr><th>期間</th>${series.map(x=>`<th>${esc(x.name)}</th>`).join('')}${hasYoY?'<th>差異（対前年）</th>':''}</tr></thead><tbody>`;
+  {   // 日別表示のときは、表示範囲ぶんの天気をまとめて取得（取得後に自動で再描画される）
+    const ds=buckets.filter(b2=>b2.dt).map(b2=>dayMs(b2.dt));
+    if(ds.length) ensureWeather(names, Math.min(...ds), Math.max(...ds));
+  }
   buckets.forEach((bk,i)=>{
     // 日別表示のときは、その日にイベントがあれば日付セルの下に小さく表示（🎪 会場：イベント名）
     let evTxt='';
     if(bk.dt){ const evs=eventsFor(dayMs(bk.dt),names); if(evs.length) evTxt=`<div style="font-size:10px;color:#7a6f9a;margin-top:2px;white-space:normal">🎪 ${esc(eventLineText(evs))}</div>`; }
-    const dateCell=(bk.dt?mdwH(bk.dt):esc(bk.label))+evTxt;
+    const wxm=bk.dt?wxMini(wxGet(names[0],dayMs(bk.dt))):'';   // 日別表示のときは天気アイコンを日付の右に
+    const dateCell=(bk.dt?mdwH(bk.dt)+wxm:esc(bk.label))+evTxt;
     h+=`<tr><td>${dateCell}</td>${series.map(x=>`<td>${fmtV(x.data[i])}</td>`).join('')}${hasYoY?`<td>${diffTxt(series[0].data[i]-series[1].data[i])}</td>`:''}</tr>`;
   });
   // 合計行（客単価は加重平均で算出）
@@ -1983,6 +2098,15 @@ function viewDetail(){
   // その日のイベント（「日」表示かつ特定店舗を選んでいるときだけ・その店舗対象のイベントのみ）。
   // 月/年/全店では出さない（多すぎ・対象外店舗のイベントが混じるため）。
   if(S.dPeriod==='day' && S.dStore && S.dStore!=='all'){
+    const wt=dayMs(new Date(r.from));
+    ensureWeather([S.dStore],wt,wt);
+    const wx=wxGet(S.dStore,wt);
+    if(wx){ const al=wxAlertOf(wx), a=al?WX_ALERT[al]:null, c=WX_CODES[wx.code]||{i:'',t:''};
+      h+=`<div class="panel" style="border-left:3px solid ${a?a.bd:'#9dbcd6'};padding:12px 16px;margin:4px 0">
+        <div style="font-size:12px;font-weight:700;color:#5c5348;margin-bottom:4px">${a?a.i:c.i} この日の天気${wx.future?'（予報）':''}</div>
+        <div style="font-size:12.5px;color:#5c5348">${a?`<b style="color:${a.fg}">${esc(a.t)}</b> ／ `:''}${c.i} ${esc(c.t)}
+          ${wx.tmax!=null?` ／ 最高 ${Math.round(wx.tmax)}℃`:''}${wx.tmin!=null?` ・最低 ${Math.round(wx.tmin)}℃`:''}
+          ${wx.prec>0?` ／ 降水 ${wx.prec.toFixed(1)}mm`:''}${wx.wind>0?` ／ 最大風速 ${wx.wind.toFixed(1)}m/s`:''}${wx.gust>0?`（瞬間 ${wx.gust.toFixed(1)}m/s）`:''}</div></div>`; }
     const evs=eventsFor(dayMs(new Date(r.from)),[S.dStore]);
     if(evs.length){ h+=`<div class="panel" style="border-left:3px solid #7a6f9a;padding:12px 16px;margin:4px 0"><div style="font-size:12px;font-weight:700;color:#5c5348;margin-bottom:4px">🎪 この日のイベント</div>`+
       evs.map(e=>`<div style="font-size:12.5px;color:#5c5348;padding:2px 0">${e.venue?esc(e.venue)+'：':''}${esc(e.name)}${e.memo?' <span class="mut" style="font-size:11px">'+esc(e.memo)+'</span>':''}</div>`).join('')+`</div>`; } }
@@ -2742,7 +2866,8 @@ function viewTarget(){
   const dayEdit=canEdit&&!!selN;   // 単一店舗を選んでいるときだけ、日別の目標を直接編集できる
   h+=`<div class="panel"><div class="panel-head"><div><h3>日別 予実（${mLabel} ／ ${selN?esc(selN):'合算'}）</h3><div class="sub">昨年同週同曜日＝364日前（52週前の同じ曜日）の売上実績${dayEdit?'／「編集」で各日の目標を修正できます':'（店舗を1つ選ぶと各日の目標を編集できます）'}</div></div>
       <button class="icon-btn no-print" onclick="App.csvSection('日別予実')">⬇ CSV</button></div>
-    <div class="scroll-x"><table class="tbl"><thead><tr><th>日付</th><th>イベント</th><th>目標</th><th>実績</th><th>差異</th><th>達成率</th><th>昨年同週同曜日</th><th>昨年比</th></tr></thead><tbody>`;
+    <div class="scroll-x"><table class="tbl"><thead><tr><th>日付</th><th>天気</th><th>イベント</th><th>目標</th><th>実績</th><th>差異</th><th>達成率</th><th>昨年同週同曜日</th><th>昨年比</th></tr></thead><tbody>`;
+  ensureWeather(scopeNames, dayMs(new Date(y,m,1)), dayMs(new Date(y,m,lastDay)));
   const expD=[]; let tG=0,tA=0,tL=0;
   for(let d2=1;d2<=lastDay;d2++){
     const t=dayMs(new Date(y,m,d2)); const dt=new Date(y,m,d2);
@@ -2754,20 +2879,23 @@ function viewTarget(){
     tG+=g; if(act!=null)tA+=act; tL+=ly;
     const diff=act!=null&&g>0?act-g:null; const r2=act!=null&&g>0?act/g*100:null;
     const yoy=act!=null&&ly>0?((act/ly-1)*100):null;
+    const wx=wxGet(scopeNames[0]||selN,t);
     h+=`<tr${isHolidayOrSunday(dt)?' style="background:#fbf6f3"':''}><td style="white-space:nowrap">${mdw(dt)}</td>
+      <td style="white-space:nowrap">${wxCell(wx)}</td>
       <td style="max-width:200px;white-space:normal;font-size:11px;color:#7a6f9a">${evTxt?('🎪 '+esc(evTxt)):''}</td>
       <td style="white-space:nowrap">${g>0?yen(g):'<span class="mut">—</span>'}${dayEdit?` <button class="icon-btn no-print" style="padding:1px 7px;font-size:10px;margin-left:3px" data-st="${esc(selN)}" data-dt="${y}-${String(m+1).padStart(2,'0')}-${String(d2).padStart(2,'0')}" onclick="App.openTargetDay(this.dataset.st,this.dataset.dt)">編集</button>`:''}</td><td>${act!=null?yen(act):'<span class="mut">—</span>'}</td>
       <td class="${diff==null?'mut':diff>=0?'pos':'neg'}">${diff==null?'—':(diff>=0?'+':'▲')+yen(Math.abs(diff)).slice(1)}</td>
       <td class="${r2==null?'mut':r2>=100?'pos':'neg'}">${r2==null?'—':r2.toFixed(0)+'%'}</td>
       <td class="mut">${ly>0?yen(ly):'—'}</td>
       <td class="${yoy==null?'mut':yoy>=0?'pos':'neg'}">${yoy==null?'—':(yoy>=0?'+':'▲')+Math.abs(yoy).toFixed(1)+'%'}</td></tr>`;
-    expD.push([(m+1)+'/'+d2+'('+WD[dt.getDay()]+')',evTxt,Math.round(g),act!=null?Math.round(act):'',r2!=null?r2.toFixed(0)+'%':'',Math.round(ly)]);
+    const wxTxt=wx?((WX_CODES[wx.code]||{t:''}).t+(wxAlertOf(wx)?'／'+WX_ALERT[wxAlertOf(wx)].t:'')):'';
+    expD.push([(m+1)+'/'+d2+'('+WD[dt.getDay()]+')',wxTxt,evTxt,Math.round(g),act!=null?Math.round(act):'',r2!=null?r2.toFixed(0)+'%':'',Math.round(ly)]);
   }
-  h+=`<tr class="total"><td>合計</td><td></td><td>${yen(tG)}</td><td>${yen(tA)}</td>
+  h+=`<tr class="total"><td>合計</td><td></td><td></td><td>${yen(tG)}</td><td>${yen(tA)}</td>
     <td class="${tA-tG>=0?'pos':'neg'}">${tG>0?((tA-tG>=0?'+':'▲')+yen(Math.abs(tA-tG)).slice(1)):'—'}</td>
     <td>${tG>0?(tA/tG*100).toFixed(1)+'%':'—'}</td><td>${yen(tL)}</td><td></td></tr>`;
   h+=`</tbody></table></div></div>`;
-  EXPORT.push({ title:'日別予実（'+mLabel+'）', headers:['日付','イベント','目標','実績','達成率','昨年同週同曜日'], rows:expD });
+  EXPORT.push({ title:'日別予実（'+mLabel+'）', headers:['日付','天気','イベント','目標','実績','達成率','昨年同週同曜日'], rows:expD });
   return h;
 }
 function isHolidayOrSunday(dt){ try{ const key=dt.getFullYear()+'-'+(dt.getMonth()+1)+'/'+dt.getDate(); return dt.getDay()===0||dt.getDay()===6||(D.holidays&&D.holidays.has(key))||JP_HOLIDAYS.has(key); }catch(e){ return dt.getDay()===0; } }
