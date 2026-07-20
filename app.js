@@ -2261,7 +2261,7 @@ function viewDeposit(){
   let h=`
   <div class="ctrl-bar no-print">
     ${ymSelect('depMonth', y, m)}
-    <button class="icon-btn primary" onclick="App.openDepositImport()">⬆ 口座CSVを取込</button>
+    ${isAdminRole()?`<button class="icon-btn primary" onclick="App.openDepositImport()">⬆ 口座CSVを取込</button>`:''}
     <span class="period-label">現金売上（入金予定）と ATM入金の照合 ／ ${esc(scopeLabel)}</span>
   </div>`+storeSegHtml();
 
