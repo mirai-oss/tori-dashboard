@@ -469,34 +469,58 @@ function ingestPL(rows){
 }
 // 広告費用対効果_管理シートの ⚙️媒体マスタ / ⚙️プランマスタ。
 // 広告費入力モーダルのプルダウン候補（マスタに行を足せばそのまま選択肢が増える）
+// 見出し行の検出：指定した列名が「セル単体で」存在する行を探す。
+// ※タイトル行（例「■ ⚙️ 媒体マスタ」）にも"媒体"が含まれるため、部分一致で探すと
+//   タイトル行を誤検出して隣の媒体ID列を拾ってしまう。完全一致を優先する。
+function findHeaderExact(rows, names, maxScan){
+  const max=Math.min(rows.length, maxScan||15);
+  for(let i=0;i<max;i++){
+    const cells=(rows[i]||[]).map(c=>String(c==null?'':c).trim());
+    if(names.every(n=>cells.some(c=>c===n))) return i;
+  }
+  for(let i=0;i<max;i++){   // 完全一致が無ければ部分一致（ただし2セル以上埋まっている行＝タイトル行を除外）
+    const cells=(rows[i]||[]).map(c=>String(c==null?'':c).trim());
+    if(cells.filter(Boolean).length<2) continue;
+    if(names.every(n=>cells.some(c=>c.indexOf(n)>=0))) return i;
+  }
+  return -1;
+}
+const colExact=(H,name)=>H.findIndex(h=>String(h).trim()===name);
+// 完全一致 → 部分一致 → 既定列(fallbackIdx) の順で列を決める
+const colPick=(H,name,fallbackIdx)=>{ let i=colExact(H,name); if(i<0)i=colOf(H,name); return i>=0?i:(fallbackIdx==null?-1:fallbackIdx); };
+// ⚙️媒体マスタ：B=媒体ID / C=媒体名 / D=表示順。媒体名（C列）をプルダウン候補にする
 function ingestMediaMaster(rows){
-  let hi=-1;
-  for(let i=0;i<Math.min(rows.length,8);i++){ if(/媒体/.test(rows[i].join(','))){hi=i;break;} }
-  if(hi<0) return false;
+  const hi=findHeaderExact(rows,['媒体名']);
+  if(hi<0){ D.diag['媒体マスタ']='見出し行（媒体名）が見つかりません'; return false; }
   const H=rows[hi].map(h=>String(h).trim());
-  const iN=colAny(H,['媒体名','媒体']), iO=colAny(H,['表示順','順']);
-  if(iN<0) return false;
+  const iN=colPick(H,'媒体名',2);   // 既定はC列（0始まりで2）
+  const iO=colPick(H,'表示順',null);
   const out=[];
-  for(let i=hi+1;i<rows.length;i++){ const nm=String(rows[i][iN]||'').trim(); if(!nm)continue; out.push({name:nm, order:iO>=0?num(rows[i][iO])||999:999}); }
+  for(let i=hi+1;i<rows.length;i++){
+    const nm=String((rows[i]||[])[iN]||'').trim(); if(!nm)continue;
+    out.push({name:nm, order:iO>=0?num(rows[i][iO])||999:999});
+  }
   out.sort((a,b)=>a.order-b.order);
   D.adMediaMaster=[...new Set(out.map(x=>x.name))];
-  D.diag['媒体マスタ']='OK '+D.adMediaMaster.length+'件'; return true;
+  D.diag['媒体マスタ']='OK '+D.adMediaMaster.length+'件（'+String.fromCharCode(65+iN)+'列＝媒体名）'; return true;
 }
+// ⚙️プランマスタ：B=媒体名 / C=プラン名 / D=種別 / E=標準料金 / F=表示順。媒体名ごとにプラン名（C列）を持つ
 function ingestPlanMaster(rows){
-  let hi=-1;
-  for(let i=0;i<Math.min(rows.length,8);i++){ if(/プラン名/.test(rows[i].join(','))){hi=i;break;} }
-  if(hi<0) return false;
+  const hi=findHeaderExact(rows,['媒体名','プラン名']);
+  if(hi<0){ D.diag['プランマスタ']='見出し行（媒体名・プラン名）が見つかりません'; return false; }
   const H=rows[hi].map(h=>String(h).trim());
-  const iM=colAny(H,['媒体名','媒体']), iP=colAny(H,['プラン名','プラン']), iF=colAny(H,['標準料金','料金']), iO=colAny(H,['表示順','順']);
-  if(iM<0||iP<0) return false;
+  const iM=colPick(H,'媒体名',1);    // 既定はB列
+  const iP=colPick(H,'プラン名',2);  // 既定はC列
+  const iF=colPick(H,'標準料金',null), iO=colPick(H,'表示順',null);
   const map={};
   for(let i=hi+1;i<rows.length;i++){
-    const md=String(rows[i][iM]||'').trim(), pl=String(rows[i][iP]||'').trim(); if(!md||!pl)continue;
-    (map[md]=map[md]||[]).push({plan:pl, fee:iF>=0?num(rows[i][iF])||0:0, order:iO>=0?num(rows[i][iO])||999:999});
+    const r=rows[i]||[];
+    const md=String(r[iM]||'').trim(), pl=String(r[iP]||'').trim(); if(!md||!pl)continue;
+    (map[md]=map[md]||[]).push({plan:pl, fee:iF>=0?num(r[iF])||0:0, order:iO>=0?num(r[iO])||999:999});
   }
   for(const k in map) map[k].sort((a,b)=>a.order-b.order);
   D.adPlanMaster=map;
-  D.diag['プランマスタ']='OK '+Object.keys(map).length+'媒体'; return true;
+  D.diag['プランマスタ']='OK '+Object.keys(map).length+'媒体 / '+Object.values(map).reduce((s,v)=>s+v.length,0)+'プラン（'+String.fromCharCode(65+iP)+'列＝プラン名）'; return true;
 }
 // 店舗名対応表シート（左＝広告等の店舗名 / 右＝売上側の正式な店舗名）を取り込む
 const isStoreMapKey=(k)=>/店舗名対応|店舗マッピング|店舗名変換|店舗対応|storemap|storealias/i.test(String(k));
@@ -3787,12 +3811,16 @@ function adInputModal(){
   const medias=D.adMediaMaster.length?D.adMediaMaster.slice()
     :[...new Set(['ホットペッパー','ぐるなび','食べログ','Google広告','Instagram','LINE','チラシ'].concat(D.ad.map(r=>r.media).filter(Boolean)))];
   const selMedia=m.media&&medias.includes(m.media)?m.media:medias[0];
-  // プランの選択肢＝⚙️プランマスタの該当媒体分（標準料金付き）。無ければ汎用
+  // プランの選択肢＝⚙️プランマスタ（C列＝プラン名）の該当媒体分だけ（標準料金付き）。
+  // マスタに無い媒体は「一式」と直接入力のみ（マスタ由来でない候補は出さない）
   const planRows=(D.adPlanMaster[selMedia]||[]).slice();
-  const planNames=planRows.length?planRows.map(p=>p.plan):['SSPプラン','SSプラン','Aプラン','Bプラン','BPPプラン','ライトプラン','ベーシックプラン','月額費用','初期費用','オプション'];
+  const planNames=planRows.map(p=>p.plan);
+  const masterOk=D.adMediaMaster.length>0;
   return `<div class="modal-bg" onclick="if(event.target===this)App.closeModal()"><div class="modal" style="max-width:540px">
     <h3>広告費の入力・修正（${y}年${mo}月）</h3>
-    <div class="sub">広告費用対効果_管理シートの<b>💾広告費DB</b>に保存します（同じ 年月×店舗×媒体×プラン は上書き／金額を空欄にして保存すると削除）。媒体・プランの選択肢は管理シートの<b>⚙️媒体マスタ／⚙️プランマスタ</b>から自動取得しています。</div>
+    <div class="sub">広告費用対効果_管理シートの<b>💾広告費DB</b>に保存します（同じ 年月×店舗×媒体×プラン は上書き／金額を空欄にして保存すると削除）。<br>
+      ${masterOk?`媒体・プランの選択肢は管理シートの<b>⚙️媒体マスタ（C列＝媒体名）／⚙️プランマスタ（C列＝プラン名）</b>から取得しています（${esc(D.diag['媒体マスタ']||'')} ／ ${esc(D.diag['プランマスタ']||'')}）。マスタに行を足せば選択肢が自動で増えます。`
+        :`<b style="color:#b5502f">⚠ ⚙️媒体マスタを受信できていません</b>（GASを最新に再デプロイし「↻更新」してください）。いまは実データと既定値から候補を作っています。`}</div>
     <div class="form-grid" style="margin-top:10px">
       <div><label>対象月（開始）</label><input type="month" id="adi-ym" value="${m.ym}" onchange="App.adSwitch()"></div>
       <div><label>終了月（任意・期間一括）</label><input type="month" id="adi-ym2" value="${m.ym2||''}" placeholder="空欄＝1ヶ月のみ"></div>
@@ -3801,7 +3829,7 @@ function adInputModal(){
         ${medias.map(x=>`<option ${x===selMedia?'selected':''}>${esc(x)}</option>`).join('')}
         <option value="__free__">その他（直接入力）</option></select>
         <input id="adi-media-free" placeholder="媒体名を入力" style="display:none;margin-top:4px;width:100%"></div>
-      <div><label>プラン</label><select id="adi-plan" onchange="App.adPlanChanged()">
+      <div><label>プラン${planRows.length?'':'（この媒体はプランマスタ未登録）'}</label><select id="adi-plan" onchange="App.adPlanChanged()">
         ${planNames.map(p2=>{ const pr=planRows.find(x=>x.plan===p2); return `<option value="${esc(p2)}" data-fee="${pr?pr.fee:0}">${esc(p2)}${pr&&pr.fee>0?'（標準 '+yen(pr.fee)+'）':''}</option>`; }).join('')}
         <option value="一式">一式（プラン区分なし）</option>
         <option value="__free__">その他（直接入力）</option></select>
