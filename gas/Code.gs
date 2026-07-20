@@ -43,7 +43,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v37', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-v38', time: new Date().toISOString() });
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     if (action === 'perf') return out(perfDiag(p)); // パフォーマンス計測（専用トークン認証・ログイン不要・数字は返さず時間だけ）
     setupIfNeeded();
@@ -72,6 +72,7 @@ function handle(p) {
     if (action === 'savePlEntries') return out(savePlEntries(p, session)); // PL経費の手入力（PL管理システム＋DB_PL両反映）
     if (action === 'savePlBulk') return out(savePlBulk(p, session)); // PL経費の期間一括計上（例: 家賃を12ヶ月分）
     if (action === 'saveAdFee') return out(saveAdFee(p, session)); // 広告費の手入力（管理シート💾広告費DBへupsert）
+    if (action === 'saveAdSales') return out(saveAdSales(p, session)); // 売上・反響の手入力（管理シート💾売上DBへupsert）
     if (action === 'importReservations') return out(importReservations(p, session)); // 予約CSV取込（管理シート💾予約DBへ追記）
     return out({ ok: false, error: 'unknown action: ' + action });
   } catch (err) {
@@ -1403,6 +1404,83 @@ function savePlBulk(p, session) {
     } else plsys = 'PL管理システムに「' + PL_INPUT_SHEET + '」シートが見つかりません（DB_PLのみ反映）';
   } catch (e) { plsys = 'PL管理システムへの反映に失敗（DB_PLのみ反映）: ' + String(e && e.message || e); }
   return { ok: true, months: n, deleted: amount <= 0, plsys: plsys };
+}
+
+// 売上・反響の保存：管理シートの💾売上DBへ upsert（キー＝年月×店舗×媒体・同一キーは上書き）。
+// 列は既存のまま（年月|店舗|媒体|集客手数料|アクセス数|NET件数|NET人数|TEL件数|TEL人数|総組数|総人数|総売上（円）|入力日|更新日|備考|キー|電話数）。
+// ダッシュボードは「電話数」列を電話件数として読むため、TEL件数と同じ値を電話数列にも書いて整合させる。
+// ※ダッシュボードの表示項目・予想売上の計算式は変更しない（この関数はシートに値を書くだけ）。
+function saveAdSales(p, session) {
+  var ym = String(p.ym || '').trim();
+  if (!/^\d{4}-\d{2}$/.test(ym)) return { ok: false, error: '対象月が不正です' };
+  var dashStore = String(p.store || '').trim();
+  if (!dashStore) return { ok: false, error: '店舗が未指定です' };
+  if (!scopeAllows_(session, dashStore)) return { ok: false, error: 'この店舗の売上を編集する権限がありません' };
+  var media = String(p.media || '').trim().slice(0, 40);
+  if (!media) return { ok: false, error: '媒体を選択してください' };
+  var vals; try { vals = JSON.parse(p.values || '{}'); } catch (e) { vals = {}; }
+  function n_(k) { var s = String(vals[k] == null ? '' : vals[k]).replace(/[,¥\s]/g, '').trim(); return s === '' ? 0 : (Number(s) || 0); }
+  var mss = mgmtOpen();
+  if (!mss) return { ok: false, error: '管理シートを開けません（MGMT_SHEET_ID）' };
+  mgmtEnsure(mss);   // 電話数列などが無ければ整える
+  var sh = mgmtFindTab(mss, /売上DB/);
+  if (!sh) return { ok: false, error: '管理シートに💾売上DBタブが見つかりません' };
+  // 見出し行を検出し、列位置を名前で解決（A列が空でB列始まりのレイアウトに対応）
+  var scanR = Math.min(sh.getLastRow(), 8), scanC = Math.max(sh.getLastColumn(), 18);
+  var grid = sh.getRange(1, 1, scanR, scanC).getValues();
+  var hr = -1;
+  for (var r = 0; r < grid.length; r++) { if (grid[r].join(',').indexOf('アクセス') >= 0) { hr = r + 1; break; } }
+  if (hr < 0) return { ok: false, error: '💾売上DBの見出し行（アクセス数）が見つかりません' };
+  var H = grid[hr - 1].map(function (h) { return String(h).trim(); });
+  function ci(names) {
+    for (var i = 0; i < names.length; i++) { var e = H.indexOf(names[i]); if (e >= 0) return e + 1; }
+    for (var j = 0; j < names.length; j++) { for (var c = 0; c < H.length; c++) { if (H[c].indexOf(names[j]) >= 0) return c + 1; } }
+    return -1;
+  }
+  var col = {
+    ym: ci(['年月']), store: ci(['店舗']), media: ci(['媒体']), fee: ci(['集客手数料']),
+    access: ci(['アクセス数', 'アクセス']), netGrp: ci(['NET件数']), netPpl: ci(['NET人数']),
+    telCnt: ci(['TEL件数']), telPpl: ci(['TEL人数']), totGrp: ci(['総組数']), totPpl: ci(['総人数']),
+    totSales: ci(['総売上（円）', '総売上']), inDate: ci(['入力日']), upDate: ci(['更新日']),
+    memo: ci(['備考']), key: ci(['キー']), tel2: ci(['電話数'])
+  };
+  if (col.ym < 0 || col.store < 0 || col.media < 0) return { ok: false, error: '💾売上DBの列（年月・店舗・媒体）が見つかりません' };
+  var ymSlash = ym.slice(0, 4) + '/' + ym.slice(5, 7);
+  var store = mgmtStoreName_(mss, dashStore);
+  var last = sh.getLastRow(), found = -1;
+  if (last > hr) {
+    var v = sh.getRange(hr + 1, 1, last - hr, sh.getLastColumn()).getValues();
+    for (var i = 0; i < v.length; i++) {
+      var rr = v[i];
+      if (String(rr[col.ym - 1]) === '' && String(rr[col.store - 1]) === '') continue;
+      if (ymOf_(rr[col.ym - 1]) === ymSlash && storeKey_(rr[col.store - 1]) === storeKey_(store) &&
+          String(rr[col.media - 1]).trim() === media) { found = hr + 1 + i; break; }
+    }
+  }
+  var now = new Date();
+  var key = ymSlash + '_' + store + '_' + media;
+  var telCnt = n_('telCnt');
+  // 書き込む値（列が存在するものだけ）
+  var put = [
+    [col.fee, n_('fee'), '#,##0'], [col.access, n_('access'), '#,##0'],
+    [col.netGrp, n_('netGrp'), '#,##0'], [col.netPpl, n_('netPpl'), '#,##0'],
+    [col.telCnt, telCnt, '#,##0'], [col.telPpl, n_('telPpl'), '#,##0'],
+    [col.totGrp, n_('totGrp'), '#,##0'], [col.totPpl, n_('totPpl'), '#,##0'],
+    [col.totSales, n_('totSales'), '#,##0'], [col.tel2, telCnt, '#,##0'],
+    [col.upDate, now, 'yyyy/mm/dd'], [col.key, key, null]
+  ];
+  var row = found;
+  if (row < 0) {   // 新規追加：まずキー列を書いてから各値
+    row = sh.getLastRow() + 1;
+    sh.getRange(row, col.ym).setValue(ymSlash);
+    sh.getRange(row, col.store).setValue(store);
+    sh.getRange(row, col.media).setValue(media);
+    if (col.inDate > 0) sh.getRange(row, col.inDate).setValue(now).setNumberFormat('yyyy/mm/dd');
+  }
+  put.forEach(function (a) {
+    if (a[0] > 0) { var rg = sh.getRange(row, a[0]); rg.setValue(a[1]); if (a[2]) rg.setNumberFormat(a[2]); }
+  });
+  return { ok: true, updated: found > 0, row: row, store: store, media: media };
 }
 
 // 予約CSVの取込：管理シートの💾予約DBへ追記。rows=[[予約No,来店日,来店時間,人数,ステータス,受付窓口,作成日,作成時間],...]

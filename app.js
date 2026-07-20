@@ -308,14 +308,20 @@ function ingestAdFx(rows){
   const iG=colAny(H,['ネット予約組数','予約組数','NET件数','NET組数','ネット予約件数','予約件数','組数']);
   let iP=colAny(H,['ネット予約人数','予約人数','NET人数']); if(iP<0){const x=colOf(H,'人数'); if(x>=0&&x!==iG)iP=x;}
   const iT=colAny(H,['電話数','電話']);
+  // 以下はダッシュボードの集計には使わないが、売上入力モーダルで既存値を出すために保持する
+  const iTel2=colAny(H,['TEL件数']), iTelP=colAny(H,['TEL人数']);
+  const iTG=colAny(H,['総組数']), iTP=colAny(H,['総人数']), iTS=colAny(H,['総売上']), iFee=colAny(H,['集客手数料']);
   if(iD<0||(iA<0&&iG<0)){ D.diag['広告効果']='列が見つかりません（必要: 年月・アクセス数または予約組数）／見出し行: '+H.filter(Boolean).join('|'); return false; }
   const recs=[];
   for(let i=hi+1;i<rows.length;i++){
     const c=rows[i];
     const t=parseDateStr(c[iD])||parseYm(c[iD]); if(!t)continue;
     const access=iA>=0?num(c[iA]):0, grp=iG>=0?num(c[iG]):0, ppl=iP>=0?num(c[iP]):0, tel=iT>=0?num(c[iT]):0;
-    if(!(access||grp||ppl||tel))continue;
-    recs.push({ store:String(iS>=0?c[iS]||'':'').trim(), t, media:String(iM>=0?c[iM]||'':'').trim(), access, grp, ppl, tel });
+    const telCnt=iTel2>=0?num(c[iTel2]):0, telPpl=iTelP>=0?num(c[iTelP]):0;
+    const tGrp=iTG>=0?num(c[iTG]):0, tPpl=iTP>=0?num(c[iTP]):0, tSales=iTS>=0?num(c[iTS]):0, fee=iFee>=0?num(c[iFee]):0;
+    if(!(access||grp||ppl||tel||telCnt||tGrp||tPpl||tSales||fee))continue;
+    recs.push({ store:String(iS>=0?c[iS]||'':'').trim(), t, media:String(iM>=0?c[iM]||'':'').trim(), access, grp, ppl, tel,
+      telCnt, telPpl, tGrp, tPpl, tSales, fee });
   }
   if(!recs.length){ D.diag['広告効果']='0件'; return false; }
   D.adfx=recs; D.diag['広告効果']='OK '+recs.length+'件'; return true;
@@ -2332,6 +2338,7 @@ function viewAd(){
     <div class="seg">${[['month','月'],['year','年'],['custom','期間指定']].map(([k,l])=>`<button class="${P===k?'on':''}" onclick="App.set('adPeriod','${k}')">${l}</button>`).join('')}</div>
     ${ctrlHtml}
     <button class="icon-btn primary" onclick="App.openAdInput()">✎ 広告費を入力</button>
+    <button class="icon-btn primary" onclick="App.openAdSales()">✎ 売上を入力</button>
     <button class="icon-btn" onclick="App.openRsvImport()">⬆ 予約CSVを取込</button>
     <span class="period-label">広告費用対効果（${mLabel}${selN?' ／ '+esc(selN):''}）</span></div>`;
   // データの出どころを見える化：この画面の数字がどこから来ているかを表示
@@ -3519,6 +3526,7 @@ function viewModal(){
   if(S.modal&&S.modal.type==='depImport') return depImportModal();
   if(S.modal&&S.modal.type==='plInput') return plInputModal();
   if(S.modal&&S.modal.type==='adInput') return adInputModal();
+  if(S.modal&&S.modal.type==='adSales') return adSalesModal();
   if(S.modal&&S.modal.type==='rsvImport') return rsvImportModal();
   if(S.modal&&S.modal.type==='event') return eventModal();
   return '';
@@ -3841,6 +3849,61 @@ function adInputModal(){
     <div id="adi-msg" style="font-size:12px;color:#b5502f;margin:8px 0"></div>
     <div class="modal-btns">
       <button class="icon-btn primary" id="adi-run" onclick="App.saveAdInput()">保存</button>
+      <button class="icon-btn" onclick="App.closeModal()">閉じる</button>
+    </div>
+  </div></div>`;
+}
+/* ---- 売上入力モーダル（広告管理）----
+ * 管理シートの💾売上DB（年月×店舗×媒体）へupsert。既存の「📝売上入力→③売上DBへ反映」と同じ置き場所。
+ * ダッシュボードで使う項目（アクセス数・NET件数・NET人数・電話数）は変更せず、
+ * 予想売上の計算ロジック（(ネット予約人数＋電話数×電話CV×平均1組人数)×設定単価）もそのまま。 */
+const AD_SALES_FIELDS=[
+  {k:'access', lb:'アクセス数'},
+  {k:'netGrp', lb:'NET件数'},
+  {k:'netPpl', lb:'NET人数'},
+  {k:'telCnt', lb:'TEL件数'},
+  {k:'telPpl', lb:'TEL人数'},
+  {k:'totGrp', lb:'総組数'},
+  {k:'totPpl', lb:'総人数'},
+  {k:'totSales', lb:'総売上（円）'}
+];
+function adSalesModal(){
+  const m=S.modal; const stores=scopeStores();
+  const st=m.store&&stores.includes(m.store)?m.store:stores[0];
+  const [y,mo]=(m.ym||'').split('-').map(Number);
+  const t0=new Date(y,mo-1,1).getTime(), t1=new Date(y,mo,1).getTime();
+  const medias=D.adMediaMaster.length?D.adMediaMaster.slice()
+    :[...new Set(D.adfx.map(r=>r.media).filter(Boolean).concat(D.ad.map(r=>r.media).filter(Boolean)))];
+  const selMedia=m.media&&medias.includes(m.media)?m.media:(medias[0]||'');
+  // 既存値（この年月×店舗×媒体）があればプリセット
+  const ex=D.adfx.find(r=>r.t>=t0&&r.t<t1&&normStore(r.store)===normStore(st)&&String(r.media).trim()===selMedia);
+  const v=(k)=>{ if(!ex) return '';
+    const map={access:ex.access, netGrp:ex.grp, netPpl:ex.ppl, telCnt:ex.telCnt||ex.tel, telPpl:ex.telPpl, totGrp:ex.tGrp, totPpl:ex.tPpl, totSales:ex.tSales};
+    return map[k]>0?Math.round(map[k]):''; };
+  // この月×店舗の登録済み媒体（参考表示）
+  const done=D.adfx.filter(r=>r.t>=t0&&r.t<t1&&normStore(r.store)===normStore(st)).map(r=>r.media).filter(Boolean);
+  return `<div class="modal-bg" onclick="if(event.target===this)App.closeModal()"><div class="modal" style="max-width:560px">
+    <h3>売上・反響の入力（${y}年${mo}月）</h3>
+    <div class="sub">広告費用対効果_管理シートの<b>💾売上DB</b>に保存します（同じ 年月×店舗×媒体 は上書き）。既存の「📝売上入力 →③売上DBへ反映」と同じ場所に入ります。<br>
+      ダッシュボードの表示項目・予想売上の計算式（ネット予約人数と電話数から算出）は<b>変更していません</b>。</div>
+    <div class="form-grid" style="margin-top:10px">
+      <div><label>対象月</label><input type="month" id="as-ym" value="${m.ym}" onchange="App.adSalesSwitch()"></div>
+      <div><label>店舗</label><select id="as-store" onchange="App.adSalesSwitch()">${stores.map(s=>`<option ${st===s?'selected':''}>${esc(s)}</option>`).join('')}</select></div>
+      <div><label>媒体</label><select id="as-media" onchange="App.adSalesSwitch()">
+        ${medias.map(x=>`<option ${x===selMedia?'selected':''}>${esc(x)}</option>`).join('')}
+        ${medias.length?'':'<option value="">（媒体マスタ未受信）</option>'}</select></div>
+      <div><label>集客手数料（円・任意）</label><input type="number" id="as-fee" value="${ex&&ex.fee>0?Math.round(ex.fee):''}" style="text-align:right"></div>
+    </div>
+    <div class="scroll-x" style="margin-top:10px;border:1px solid var(--line2);border-radius:10px">
+      <table class="tbl"><thead><tr><th>項目</th><th style="width:150px">数値</th></tr></thead><tbody>
+      ${AD_SALES_FIELDS.map(f=>`<tr><td>${f.lb}</td><td><input type="number" id="as-${f.k}" value="${v(f.k)}" placeholder="0" style="width:130px;text-align:right;padding:5px 8px"></td></tr>`).join('')}
+      </tbody></table>
+    </div>
+    ${ex?`<div class="mut" style="font-size:11px;margin-top:4px">※この 年月×店舗×媒体 は登録済みのため、保存すると上書きされます</div>`:''}
+    ${done.length?`<div style="margin-top:8px;font-size:11.5px;color:#5c5348"><b>この月の登録済み媒体：</b>${esc([...new Set(done)].join('・'))}</div>`:''}
+    <div id="as-msg" style="font-size:12px;color:#b5502f;margin:8px 0"></div>
+    <div class="modal-btns">
+      <button class="icon-btn primary" id="as-run" onclick="App.saveAdSales()">保存</button>
       <button class="icon-btn" onclick="App.closeModal()">閉じる</button>
     </div>
   </div></div>`;
@@ -4280,6 +4343,34 @@ window.App = {
         :('✓ 保存しました（'+media+(plan?'・'+plan:'')+' '+yen(Number(costRaw)||0)+(period?' × '+period:'')+'）。続けて入力できます');
       $('adi-cost').value=''; $('adi-memo').value='';
       fetchData(true,{ only:['広告'], partial:true }).then(()=>{ if(S.modal&&S.modal.type!=='adInput') render(); });
+    }catch(e){ if(btn)btn.disabled=false; msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
+  },
+  /* ---- 売上入力（広告管理・💾売上DB） ---- */
+  openAdSales(){
+    const ref=D.refDate||new Date();
+    const m0=S.adMonth?new Date(+S.adMonth.split('-')[0],+S.adMonth.split('-')[1]-1,1):new Date(ref.getFullYear(),ref.getMonth(),1);
+    const ym=m0.getFullYear()+'-'+String(m0.getMonth()+1).padStart(2,'0');
+    S.modal={type:'adSales', ym, store:selStoreName()||scopeStores()[0]}; render();
+  },
+  adSalesSwitch(){
+    S.modal={type:'adSales', ym:$('as-ym')&&$('as-ym').value||S.modal.ym,
+      store:$('as-store')&&$('as-store').value||S.modal.store, media:$('as-media')&&$('as-media').value||S.modal.media}; render();
+  },
+  async saveAdSales(){
+    const msg=$('as-msg');
+    if(!S.auth||!S.auth.token){ msg.textContent='スプレッドシート接続時のみ保存できます'; return; }
+    const ym=$('as-ym').value, store=$('as-store').value, media=$('as-media').value;
+    if(!media){ msg.textContent='媒体を選択してください（⚙️媒体マスタが未受信の可能性があります）'; return; }
+    const vals={}; AD_SALES_FIELDS.forEach(f=>{ vals[f.k]=String($('as-'+f.k).value).trim(); });
+    vals.fee=String($('as-fee').value).trim();
+    const btn=$('as-run'); if(btn)btn.disabled=true;
+    msg.style.color='#8c8375'; msg.textContent='保存中…（管理シートの💾売上DBに反映しています）';
+    try{
+      const d=await api({ action:'saveAdSales', token:S.auth.token, ym, store, media, values:JSON.stringify(vals) });
+      if(btn)btn.disabled=false;
+      if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'保存に失敗しました'; return; }
+      msg.style.color='#4c7d5c'; msg.textContent='✓ '+(d.updated?'上書き保存':'追加')+'しました（'+esc(media)+'）。続けて別の媒体も入力できます';
+      fetchData(true,{ only:['広告効果'], partial:true }).then(()=>{ if(S.modal&&S.modal.type==='adSales') render(); });
     }catch(e){ if(btn)btn.disabled=false; msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
   },
   /* ---- 予約CSV取込 ---- */
