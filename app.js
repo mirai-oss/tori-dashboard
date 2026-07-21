@@ -2416,12 +2416,34 @@ function viewDeposit(){
   const scopeLabel=selName||(isAll?'全店合算':'担当店舗合算');
   const mLabel=y+'年 '+(m+1)+'月';
 
+  // 取得期間が絞られていて、繰越（開始残高）の元データが切れている恐れがあるか判定
+  const mw=monthsWindow();
+  let truncated=false;
+  if(mw>0){
+    const co=new Date(); co.setMonth(co.getMonth()-mw);
+    const winCut=dayMs(new Date(co.getFullYear(),co.getMonth(),co.getDate()));
+    let dataStart=Infinity;
+    for(const r of D.daily){ if(tKey.has(normStore(r.store))&&r.t<dataStart) dataStart=r.t; }
+    for(const r of D.deposit){ if(tKey.has(normStore(r.store))&&r.t<dataStart) dataStart=r.t; }
+    if(isFinite(dataStart) && dataStart-winCut < 40*86400000) truncated=true;
+  }
+
   let h=`
   <div class="ctrl-bar no-print">
     ${ymSelect('depMonth', y, m)}
     ${canUse('depositImport')?`<button class="icon-btn primary" onclick="App.openDepositImport()">⬆ 口座CSVを取込</button>`:''}
     <span class="period-label">現金売上（入金予定）と ATM入金の照合 ／ ${esc(scopeLabel)}</span>
   </div>`+storeSegHtml();
+
+  // 取得期間が絞られていて累計残が不完全な場合の警告
+  if(truncated){
+    h+=`<div class="panel no-print" style="border-color:#e0b34c;background:#fff8e8">
+      <div style="padding:12px 14px">
+        <strong style="color:#b5502f">⚠ 累計残は「直近${mw}ヶ月」の範囲だけで計算しています</strong>
+        <div class="sub" style="margin-top:4px">これより前の現金売上・入金は読み込まれていないため、繰越（開始残高）に含まれていません。そのため累計残が実際とズレることがあります。正確に表示するには全期間で取り込んでください。</div>
+        <button class="icon-btn primary" style="margin-top:8px" onclick="App.depositAllPeriod()">全期間で再取得して正確に表示</button>
+      </div></div>`;
+  }
 
   // 🔧 診断モード（URLに ?debug=1 を付けた時だけ表示）
   if(typeof location!=='undefined' && new URLSearchParams(location.search).has('debug')){
@@ -5422,6 +5444,13 @@ window.App = {
     S.modal=null;
     toast(url?'接続設定を保存しました。ログインし直すとシートのアカウントで認証されます':'接続を解除しました');
     if(S.auth&&S.auth.token){ S.dataVersion=''; fetchDataFast(); startPolling(); }
+    render();
+  },
+  depositAllPeriod(){
+    try{ localStorage.setItem(LS.months,'0'); }catch(e){}
+    S.dataVersion='';
+    toast('全期間で取り込み中…（少し時間がかかります）');
+    if(S.auth&&S.auth.token){ fetchDataFast(); }
     render();
   },
   disconnect(){
