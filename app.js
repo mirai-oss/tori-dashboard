@@ -115,6 +115,8 @@ const S = {
   tab:'dash', period:'month', store:'all',
   pDay:'', pMonth:'', pYear:'', pWeekIdx:null, cStart:'', cEnd:'',
   depMonth:'', adMonth:'', plMonth:'', plPeriod:'month', plYear:'', plStart:'', plEnd:'',
+  depCarry:{ key:'', rows:null, loading:false, err:'' },   // 入金の繰越（開始残高）をサーバー全期間計算でキャッシュ
+
   revPeriod:'month', revMonth:'', revWeekIdx:null, revYear:'', revStart:'', revEnd:'',
   aMetric:'sales', aGran:'day', aBreak:'total', aRange:'30', aYoY:true, mediaMode:'media', detailTax:'excl',
   dPeriod:'month', dStore:'all', dRankMode:'sales', dBasis:'checkout', dDay:'', dMonth:'', dYear:'', dWeekIdx:null, dStart:'', dEnd:'',
@@ -1202,6 +1204,21 @@ function stampNow(){ const n=new Date(); return (n.getMonth()+1)+'/'+n.getDate()
 // タイムスタンプ(ms)を「M/D HH:mm」に整形（週報の提出・編集日時表示用）
 function fmtDT(t){ if(!t) return ''; const d=new Date(t); return (d.getMonth()+1)+'/'+d.getDate()+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); }
 function monthsWindow(){ const v=localStorage.getItem(LS.months); return v==null?13:Number(v); } // 0=全期間, 既定13ヶ月(前年比の最小)
+// 入金の繰越（開始残高）を「サーバー側で全期間から」計算して取り込む。
+// 取得期間を13/24ヶ月に絞っても累計残が正しくなるよう、指定月より前の店舗別合計だけ軽く受け取る。
+async function fetchDepCarry(beforeStr){
+  if(!S.auth||!S.auth.token) return;               // デモ・未ログインは対象外（ローカル計算のまま）
+  if(S.depCarry.key===beforeStr && (S.depCarry.rows||S.depCarry.loading)) return; // 取得済み or 取得中
+  S.depCarry={ key:beforeStr, rows:S.depCarry.key===beforeStr?S.depCarry.rows:null, loading:true, err:'' };
+  try{
+    const d=await api({ action:'depositCarry', token:S.auth.token, before:beforeStr });
+    if(!d.ok) throw new Error(d.error||'計算に失敗しました');
+    S.depCarry={ key:beforeStr, rows:d.carry||[], loading:false, err:'' };
+  }catch(e){
+    S.depCarry={ key:beforeStr, rows:null, loading:false, err:e.message||'エラー' };
+  }
+  render();
+}
 async function fetchData(silent, opts){
   if(!S.auth||!S.auth.token) return;
   opts=opts||{};
@@ -2395,10 +2412,26 @@ function viewDeposit(){
   for(const r of D.deposit){ if(r.t<depStart) depStart=r.t; }
   if(!isFinite(depStart)) depStart=mS;
 
-  // 繰越（入金記録開始日〜月初前日の 現金売上−入金）
+  // 繰越（開始残高）＝入金記録開始日〜月初前日の「現金売上−入金」。
+  // まずローカル（取得済み期間）で計算するが、取得期間を13/24ヶ月に絞ると過去が欠けてズレる。
+  // そのためログイン時は、サーバーが全期間から計算した値（S.depCarry）で上書きして常に正しくする。
+  const beforeStr=y+'-'+String(m+1).padStart(2,'0')+'-01';
   let carry=0;
   for(const r of D.daily){ if(tKey.has(normStore(r.store))&&r.t>=depStart&&r.t<mS) carry+=r.cash||0; }
   for(const r of D.deposit){ if(tKey.has(normStore(r.store))&&r.t<mS) carry-=r.amount||0; }
+  const mw=monthsWindow();
+  const liveConn=!!(S.auth&&S.auth.token);
+  let carrySrc='local';                        // local=全期間 / server=サーバー計算 / loading=計算中 / error=失敗
+  if(liveConn && mw>0){
+    fetchDepCarry(beforeStr);                  // 未取得なら裏で取得→完了時に再描画（取得済みなら何もしない）
+    if(S.depCarry.key===beforeStr && S.depCarry.rows){
+      let cSrv=0; for(const row of S.depCarry.rows){ if(tKey.has(normStore(row[0]))) cSrv+=(row[1]||0)-(row[2]||0); }
+      carry=cSrv; carrySrc='server';
+    } else if(S.depCarry.key===beforeStr && S.depCarry.err){ carrySrc='error'; }
+    else { carrySrc='loading'; }
+  }
+  // 店舗別の「累計未入金」も同じ繰越で正しくするため、店舗ごとの開始残高マップを作る
+  const srvCarryByStore = carrySrc==='server' ? (()=>{ const m2={}; for(const row of S.depCarry.rows){ const k=normStore(row[0]); m2[k]=(m2[k]||0)+((row[1]||0)-(row[2]||0)); } return m2; })() : null;
 
   // 日別集計
   const days=[]; let cum=carry, tC=0,tD=0;
@@ -2416,18 +2449,6 @@ function viewDeposit(){
   const scopeLabel=selName||(isAll?'全店合算':'担当店舗合算');
   const mLabel=y+'年 '+(m+1)+'月';
 
-  // 取得期間が絞られていて、繰越（開始残高）の元データが切れている恐れがあるか判定
-  const mw=monthsWindow();
-  let truncated=false;
-  if(mw>0){
-    const co=new Date(); co.setMonth(co.getMonth()-mw);
-    const winCut=dayMs(new Date(co.getFullYear(),co.getMonth(),co.getDate()));
-    let dataStart=Infinity;
-    for(const r of D.daily){ if(tKey.has(normStore(r.store))&&r.t<dataStart) dataStart=r.t; }
-    for(const r of D.deposit){ if(tKey.has(normStore(r.store))&&r.t<dataStart) dataStart=r.t; }
-    if(isFinite(dataStart) && dataStart-winCut < 40*86400000) truncated=true;
-  }
-
   let h=`
   <div class="ctrl-bar no-print">
     ${ymSelect('depMonth', y, m)}
@@ -2435,14 +2456,18 @@ function viewDeposit(){
     <span class="period-label">現金売上（入金予定）と ATM入金の照合 ／ ${esc(scopeLabel)}</span>
   </div>`+storeSegHtml();
 
-  // 取得期間が絞られていて累計残が不完全な場合の警告
-  if(truncated){
-    h+=`<div class="panel no-print" style="border-color:#e0b34c;background:#fff8e8">
-      <div style="padding:12px 14px">
-        <strong style="color:#b5502f">⚠ 累計残は「直近${mw}ヶ月」の範囲だけで計算しています</strong>
-        <div class="sub" style="margin-top:4px">これより前の現金売上・入金は読み込まれていないため、繰越（開始残高）に含まれていません。そのため累計残が実際とズレることがあります。正確に表示するには全期間で取り込んでください。</div>
-        <button class="icon-btn primary" style="margin-top:8px" onclick="App.depositAllPeriod()">全期間で再取得して正確に表示</button>
-      </div></div>`;
+  // 繰越（開始残高）の計算元の状態を表示。サーバー全期間計算なら期間設定に関係なく正確。
+  if(carrySrc==='loading'){
+    h+=`<div class="panel no-print" style="border-color:#cfd8e3;background:#f2f6fb"><div style="padding:10px 14px">
+      <span class="mut">⏳ 繰越（開始残高）を全期間から計算中… 累計残は数秒後に確定します。</span></div></div>`;
+  } else if(carrySrc==='error'){
+    h+=`<div class="panel no-print" style="border-color:#e0b34c;background:#fff8e8"><div style="padding:12px 14px">
+      <strong style="color:#b5502f">⚠ 繰越の全期間計算に失敗しました（直近${mw}ヶ月ぶんだけで暫定表示中）</strong>
+      <div class="sub" style="margin-top:4px">累計残が実際とズレることがあります。もう一度開き直すか、全期間で取り込んでください。</div>
+      <button class="icon-btn primary" style="margin-top:8px" onclick="App.depositAllPeriod()">全期間で再取得して正確に表示</button>
+    </div></div>`;
+  } else if(carrySrc==='server'){
+    h+=`<div class="sub no-print" style="margin:2px 2px 8px;color:#4c7d5c">✔ 繰越（開始残高）は全期間から計算済み。取得期間の設定に関わらず累計残は正確です。</div>`;
   }
 
   // 🔧 診断モード（URLに ?debug=1 を付けた時だけ表示）
@@ -2472,7 +2497,7 @@ function viewDeposit(){
       let c=0,dp=0,cAll=0,dAll=0; const cashByDay={};
       for(const r of D.daily){ if(normStore(r.store)!==normStore(nm))continue; if(r.t>=mS&&r.t<=mE&&r.t<=maxT){ c+=r.cash||0; cashByDay[r.t]=(cashByDay[r.t]||0)+(r.cash||0); } if(r.t>=depStart&&r.t<=Math.min(mE,maxT))cAll+=r.cash||0; }
       for(const r of D.deposit){ if(normStore(r.store)!==normStore(nm))continue; if(r.t>=mS&&r.t<=mE)dp+=r.amount||0; if(r.t<=mE)dAll+=r.amount||0; }
-      const u=c-dp, cu=cAll-dAll;
+      const u=c-dp, cu=srvCarryByStore?((srvCarryByStore[normStore(nm)]||0)+(c-dp)):(cAll-dAll);
       // 完了判定：各日の入金予定を千円未満切捨てした合計以上が入っていれば「完了」（端数は許容）
       const cFloor=Object.values(cashByDay).reduce((s2,v)=>s2+Math.floor(v/1000)*1000,0);
       const okDone=dp>=cFloor;
