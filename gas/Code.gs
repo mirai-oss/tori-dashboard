@@ -43,7 +43,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'depcarry-v43', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'depcarry-v44', time: new Date().toISOString() });
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     if (action === 'perf') return out(perfDiag(p)); // パフォーマンス計測（専用トークン認証・ログイン不要・数字は返さず時間だけ）
     setupIfNeeded();
@@ -722,20 +722,19 @@ function depositCarry(p, session) {
     if (list[i].key === 'deposit') depName = list[i].name;
   }
 
-  // ① 入金（全期間）→ 店舗ごとの「before より前の入金合計」＋ 全体の記録開始日
-  var depStart = Infinity, depByStore = {};
+  // ① 入金（全期間）→ 店舗ごとの「before より前の入金合計」
+  var depByStore = {};
   var depSh = depName ? ss.getSheetByName(depName) : null;
   if (depSh) {
     var dr = readSheet(depSh, 0, 'deposit'), dH = dr[0] || [];
     var dS = depCarryCol_(dH, ['店舗名', '店舗']), dD = depCarryCol_(dH, ['日付', '営業日', '入金日']), dA = depCarryCol_(dH, ['入金額', '入金合計', '入金']);
     for (var r = 1; r < dr.length; r++) {
       var t = depCarryDay_(dr[r][dD]); if (isNaN(t)) continue;
-      if (t < depStart) depStart = t;
       if (t < before) { var st = String(dr[r][dS] || ''); depByStore[st] = (depByStore[st] || 0) + depCarryNum_(dr[r][dA]); }
     }
   }
 
-  // ② 現金売上（全期間）→ 店舗ごとの「記録開始日以降〜before より前」の現金合計
+  // ② 現金売上（全期間）→ 店舗ごとの「before より前」の現金合計（日別表と同じく全期間を未入金として累計）
   var cashByStore = {};
   var daySh = dailyName ? ss.getSheetByName(dailyName) : null;
   if (daySh) {
@@ -743,7 +742,7 @@ function depositCarry(p, session) {
     var yS = depCarryCol_(yH, ['店舗名', '店舗']), yD = depCarryCol_(yH, ['日付', '営業日', '勤務日', '年月日']), yC = depCarryCol_(yH, ['現金']);
     for (var r2 = 1; r2 < yr.length; r2++) {
       var t2 = depCarryDay_(yr[r2][yD]); if (isNaN(t2)) continue;
-      if (t2 >= depStart && t2 < before) { var st2 = String(yr[r2][yS] || ''); cashByStore[st2] = (cashByStore[st2] || 0) + depCarryNum_(yr[r2][yC]); }
+      if (t2 < before) { var st2 = String(yr[r2][yS] || ''); cashByStore[st2] = (cashByStore[st2] || 0) + depCarryNum_(yr[r2][yC]); }
     }
   }
 
@@ -752,7 +751,7 @@ function depositCarry(p, session) {
   for (var k in cashByStore) seen[k] = 1;
   for (var k2 in depByStore) seen[k2] = 1;
   for (var s in seen) rows.push([s, cashByStore[s] || 0, depByStore[s] || 0]);
-  return { ok: true, before: p.before, depStart: isFinite(depStart) ? depStart : null, carry: rows };
+  return { ok: true, before: p.before, carry: rows };
 }
 
 // ================== BigQuery（明細分析：Dinii出数） ==================

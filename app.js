@@ -2407,17 +2407,13 @@ function viewDeposit(){
   const targets=selName?[selName]:sc; const tSet=new Set(targets); const tKey=new Set(targets.map(normStore));
   const maxT=D.maxDate?dayMs(D.maxDate):Infinity;
 
-  // 入金記録が始まった日より前の現金売上は未入金の対象にしない
-  let depStart=Infinity;
-  for(const r of D.deposit){ if(r.t<depStart) depStart=r.t; }
-  if(!isFinite(depStart)) depStart=mS;
-
-  // 繰越（開始残高）＝入金記録開始日〜月初前日の「現金売上−入金」。
-  // まずローカル（取得済み期間）で計算するが、取得期間を13/24ヶ月に絞ると過去が欠けてズレる。
-  // そのためログイン時は、サーバーが全期間から計算した値（S.depCarry）で上書きして常に正しくする。
+  // 繰越（開始残高）＝月初より前の「現金売上−入金」の累計。
+  // 日別表は全期間の現金を未入金として扱うため、繰越も同じ基準（月初より前を全て累計）にして
+  // 前月末の累計残がそのまま翌月へ繰り越されるようにする（月境界での0リセットを防ぐ）。
+  // 取得期間を13/24ヶ月に絞ると過去が欠けるので、ログイン時はサーバー全期間計算で上書きする。
   const beforeStr=y+'-'+String(m+1).padStart(2,'0')+'-01';
   let carry=0;
-  for(const r of D.daily){ if(tKey.has(normStore(r.store))&&r.t>=depStart&&r.t<mS) carry+=r.cash||0; }
+  for(const r of D.daily){ if(tKey.has(normStore(r.store))&&r.t<mS) carry+=r.cash||0; }
   for(const r of D.deposit){ if(tKey.has(normStore(r.store))&&r.t<mS) carry-=r.amount||0; }
   const mw=monthsWindow();
   const liveConn=!!(S.auth&&S.auth.token);
@@ -2482,7 +2478,7 @@ function viewDeposit(){
   // サマリーカード
   const unpaid=tC-tD;
   h+=`<div class="kpi-grid">
-    <div class="kpi"><div class="lb">繰越未入金（前月まで）</div><div class="vl" style="color:${carry>0?'#b5502f':'#3d3a33'}">${yen(carry)}</div><div class="yy">入金記録開始以降の累計</div></div>
+    <div class="kpi"><div class="lb">繰越未入金（前月まで）</div><div class="vl" style="color:${carry>0?'#b5502f':'#3d3a33'}">${yen(carry)}</div><div class="yy">前月末までの累計残</div></div>
     <div class="kpi"><div class="lb">当月 入金予定（現金売上）</div><div class="vl">${yen(tC)}</div><div class="yy">${mLabel}実績分</div></div>
     <div class="kpi"><div class="lb">当月 入金済（ATM）</div><div class="vl">${yen(tD)}</div><div class="yy">${mLabel}実績分</div></div>
     <div class="kpi"><div class="lb">当月 未入金</div><div class="vl ${unpaid>0?'':''}" style="color:${unpaid>0?'#b5502f':'#4c7d5c'}">${yen(unpaid)}</div><div class="yy" style="font-weight:700;font-size:13px;color:${(days.length?(days[days.length-1].future?cum:days[days.length-1].cum):carry)>0?'#b5502f':'#4c7d5c'}">累計残 ${yen(days.length?days[days.length-1].future?cum:days[days.length-1].cum:carry)}</div></div>
@@ -2495,7 +2491,7 @@ function viewDeposit(){
     const expS=[];
     sc.forEach(nm=>{
       let c=0,dp=0,cAll=0,dAll=0; const cashByDay={};
-      for(const r of D.daily){ if(normStore(r.store)!==normStore(nm))continue; if(r.t>=mS&&r.t<=mE&&r.t<=maxT){ c+=r.cash||0; cashByDay[r.t]=(cashByDay[r.t]||0)+(r.cash||0); } if(r.t>=depStart&&r.t<=Math.min(mE,maxT))cAll+=r.cash||0; }
+      for(const r of D.daily){ if(normStore(r.store)!==normStore(nm))continue; if(r.t>=mS&&r.t<=mE&&r.t<=maxT){ c+=r.cash||0; cashByDay[r.t]=(cashByDay[r.t]||0)+(r.cash||0); } if(r.t<=Math.min(mE,maxT))cAll+=r.cash||0; }
       for(const r of D.deposit){ if(normStore(r.store)!==normStore(nm))continue; if(r.t>=mS&&r.t<=mE)dp+=r.amount||0; if(r.t<=mE)dAll+=r.amount||0; }
       const u=c-dp, cu=srvCarryByStore?((srvCarryByStore[normStore(nm)]||0)+(c-dp)):(cAll-dAll);
       // 完了判定：各日の入金予定を千円未満切捨てした合計以上が入っていれば「完了」（端数は許容）
