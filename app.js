@@ -126,7 +126,7 @@ const S = {
   accounts:null, accErr:'', modal:null, loginErr:'',
 };
 const D = { daily:[], media:[], deposit:[], review:[], ad:[], adfx:[], tanka:{}, pl:[], dinii:[], diniiCols:[], targets:[], targetsM:[], events:[], extra:{}, storeAlias:{}, storeParent:{}, mediaClass:{}, adMediaMaster:[], adPlanMaster:{}, adStoreMaster:[], holidays:null, detailData:null, detailKey:'', detailLoading:'', refDate:null, maxDate:null,
-  wkTpl:{}, wkRep:[], wkAns:{}, wkFb:{}, roleDef:{} };
+  wkTpl:{}, wkRep:[], wkAns:{}, wkFb:{}, roleDef:{}, depNote:{} };
 let EXPORT = [];      // 現在タブのCSVエクスポート対象 [{title,headers,rows}]
 let pollTimer = null;
 
@@ -509,6 +509,24 @@ function tankaOf(store,cm){
 function tkOf(m,store,cm){ m=m||{}; return m[store+'|'+cm]||m[store+'|']||m['|'+cm]||m['|']||0; }
 function tankaAvgOf(store,cm){ return tkOf(D.tankaAvg,store,cm); }
 function tankaCvOf(store,cm){ return tkOf(D.tankaCv,store,cm); }
+/* ---- 入金備考（DB_入金備考: 日付×店舗×備考） ---- */
+const isDepNoteKey=(k)=>/^入金備考$/.test(String(k).trim());
+const depNoteKey=(store,t)=>normStore(store)+'|'+ymdStr(t);
+function ingestDepNote(rows){
+  if(!rows||rows.length<2){ D.depNote={}; D.diag['入金備考']='0件'; return false; }
+  const H=rows[0].map(h=>String(h).trim());
+  const iD=colAny(H,['日付']), iS=colAny(H,['店舗']), iN=colAny(H,['備考']);
+  if(iD<0||iS<0||iN<0){ D.diag['入金備考']='列が見つかりません（必要: 日付・店舗・備考）'; return false; }
+  const map={}; let n=0;
+  for(let i=1;i<rows.length;i++){
+    const c=rows[i]; const t=parseDateStr(c[iD]); const st=String(c[iS]||'').trim(); const note=String(c[iN]||'');
+    if(!t||!st||!note) continue;
+    map[depNoteKey(st,t)]=note; n++;
+  }
+  D.depNote=map; D.diag['入金備考']='OK '+n+'件'; return true;
+}
+function depNoteOf(store,t){ return (D.depNote||{})[depNoteKey(store,t)]||''; }
+
 /* ---- 役職・権限ごとの既定（DB_権限定義） ----
  * 優先順位: アカウント個別の設定 → 役職の行 → 権限の行 → コード内の既定
  * シートを編集すればコード変更なしで全員に反映される。 */
@@ -970,6 +988,7 @@ function ingestSheets(sheets, partial){
     else if(isStoreParentKey(key)){ D.storeParent=ingestStoreParent(rows); D.diag[key]='OK '+Object.keys(D.storeParent).length+'件の親子'; }
     else if(isStoreMapKey(key)){ D.storeAlias=ingestStoreMap(rows); D.diag[key]='OK '+Object.keys(D.storeAlias).length+'件の対応'; }
     else if(isRoleDefKey(key)) ingestRoleDef(rows);
+    else if(isDepNoteKey(key)) ingestDepNote(rows);
     else if(isWkTplKey(key)) ingestWkTemplate(rows);
     else if(isWkAnsKey(key)) ingestWkAnswers(rows);   // 「回答」を先に判定（週報にも前方一致するため）
     else if(isWkFbKey(key)) ingestWkFb(rows);
@@ -2507,13 +2526,26 @@ function viewDeposit(){
   }
 
   // 日別明細
+  const canEditNote=isAdminRole()&&!!selName;   // 備考は社長・本部が、店舗を1つ選んでいるときに編集できる
+  // 備考セルを作る（特定店舗＝その店舗の備考／合算＝スコープ内店舗の備考をまとめて表示）
+  const noteCell=(x)=>{
+    if(selName){
+      const note=depNoteOf(selName,dayMs(x.dt));
+      const txt=note?`<span style="white-space:pre-wrap">${esc(note)}</span>`:(canEditNote?'<span class="mut" style="font-size:11px">＋メモ</span>':'');
+      const btn=canEditNote?` <button class="icon-btn no-print" style="padding:1px 7px;font-size:10px" data-s="${esc(selName)}" data-d="${ymdStr(dayMs(x.dt))}" onclick="App.openDepNote(this.dataset.s,this.dataset.d)">✎</button>`:'';
+      return `<td style="text-align:left;white-space:normal;min-width:150px;max-width:280px">${txt}${btn}</td>`;
+    }
+    // 合算表示：その日に備考がある店舗を「店舗名: メモ」でまとめる（編集は店舗選択時のみ）
+    const list=sc.map(nm=>{ const n=depNoteOf(nm,dayMs(x.dt)); return n?`<div style="font-size:11.5px"><b>${esc(shortStore(nm))}</b>：${esc(n)}</div>`:''; }).filter(Boolean).join('');
+    return `<td style="text-align:left;white-space:normal;min-width:150px;max-width:300px">${list}</td>`;
+  };
   h+=`<div class="panel"><div class="panel-head"><div><h3>日別 入金明細（${mLabel} ／ ${esc(scopeLabel)}）</h3>
-    <div class="sub">1日〜${lastDay}日の入金予定・入金・未入金</div></div></div>
-  <div class="scroll-x"><table class="tbl"><thead><tr><th>日付</th><th>入金予定(現金売上)</th><th>入金(ATM)</th><th>未入金(日)</th><th>累計未入金</th><th>状態</th></tr></thead><tbody>`;
+    <div class="sub">1日〜${lastDay}日の入金予定・入金・未入金${isAdminRole()&&!selName?'　※備考は店舗を1つ選ぶと編集できます':''}</div></div></div>
+  <div class="scroll-x"><table class="tbl"><thead><tr><th>日付</th><th>入金予定(現金売上)</th><th>入金(ATM)</th><th>未入金(日)</th><th>累計未入金</th><th>状態</th><th>備考</th></tr></thead><tbody>`;
   const expD=[];
   days.forEach(x=>{
     if(x.future){
-      h+=`<tr><td class="mut">${mdwH(x.dt)}</td><td class="mut">—</td><td class="mut">—</td><td class="mut">—</td><td class="mut">—</td><td><span class="badge zero">データ待ち</span></td></tr>`;
+      h+=`<tr><td class="mut">${mdwH(x.dt)}</td><td class="mut">—</td><td class="mut">—</td><td class="mut">—</td><td class="mut">—</td><td><span class="badge zero">データ待ち</span></td>${noteCell(x)}</tr>`;
       return;
     }
     // 完了判定：入金予定の千円未満切捨て額（例 81,500→81,000）以上が入っていれば「完了」
@@ -2521,13 +2553,14 @@ function viewDeposit(){
     const badge=(x.cash===0&&x.dep===0)?'<span class="badge zero">—</span>':(dayOk?'<span class="badge ok">完了</span>':'<span class="badge ng">未入金</span>');
     h+=`<tr><td>${mdwH(x.dt)}</td><td>${yen(x.cash)}</td><td>${yen(x.dep)}</td>
       <td class="${x.diff>0?'neg':x.diff<0?'pos':'mut'}">${yen(x.diff)}</td>
-      <td class="${x.cum>0?'neg':'mut'}">${yen(x.cum)}</td><td>${badge}</td></tr>`;
-    expD.push([(m+1)+'/'+x.d,Math.round(x.cash),Math.round(x.dep),Math.round(x.diff),Math.round(x.cum),(x.cash===0&&x.dep===0)?'':(x.diff<=0?'完了':'未入金')]);
+      <td class="${x.cum>0?'neg':'mut'}">${yen(x.cum)}</td><td>${badge}</td>${noteCell(x)}</tr>`;
+    const noteTxt=selName?depNoteOf(selName,dayMs(x.dt)):sc.map(nm=>{const n=depNoteOf(nm,dayMs(x.dt));return n?shortStore(nm)+':'+n:'';}).filter(Boolean).join(' / ');
+    expD.push([(m+1)+'/'+x.d,Math.round(x.cash),Math.round(x.dep),Math.round(x.diff),Math.round(x.cum),(x.cash===0&&x.dep===0)?'':(x.diff<=0?'完了':'未入金'),noteTxt]);
   });
-  h+=`<tr class="total"><td>合計</td><td>${yen(tC)}</td><td>${yen(tD)}</td><td class="${unpaid>0?'neg':'pos'}">${yen(unpaid)}</td><td class="${cum>0?'neg':''}">${yen(days.filter(x=>!x.future).length?days.filter(x=>!x.future).slice(-1)[0].cum:carry)}</td><td></td></tr>`;
+  h+=`<tr class="total"><td>合計</td><td>${yen(tC)}</td><td>${yen(tD)}</td><td class="${unpaid>0?'neg':'pos'}">${yen(unpaid)}</td><td class="${cum>0?'neg':''}">${yen(days.filter(x=>!x.future).length?days.filter(x=>!x.future).slice(-1)[0].cum:carry)}</td><td></td><td></td></tr>`;
   h+=`</tbody></table></div></div>`;
-  expD.push(['合計',Math.round(tC),Math.round(tD),Math.round(unpaid),'','']);
-  EXPORT.push({ title:'日別入金明細（'+mLabel+'／'+scopeLabel+'）※繰越 '+Math.round(carry)+'円', headers:['日付','入金予定(現金売上)','入金(ATM)','未入金(日)','累計未入金','状態'], rows:expD });
+  expD.push(['合計',Math.round(tC),Math.round(tD),Math.round(unpaid),'','','']);
+  EXPORT.push({ title:'日別入金明細（'+mLabel+'／'+scopeLabel+'）※繰越 '+Math.round(carry)+'円', headers:['日付','入金予定(現金売上)','入金(ATM)','未入金(日)','累計未入金','状態','備考'], rows:expD });
   return h;
 }
 
@@ -4331,6 +4364,7 @@ function viewModal(){
   if(S.modal&&S.modal.type==='target') return targetModal();
   if(S.modal&&S.modal.type==='targetDay') return targetDayModal();
   if(S.modal&&S.modal.type==='depImport') return depImportModal();
+  if(S.modal&&S.modal.type==='depNote') return depNoteModal();
   if(S.modal&&S.modal.type==='plInput') return plInputModal();
   if(S.modal&&S.modal.type==='adInput') return adInputModal();
   if(S.modal&&S.modal.type==='adSales') return adSalesModal();
@@ -4420,6 +4454,22 @@ function targetDayModal(){
       <button class="icon-btn" onclick="App.closeModal()">キャンセル</button>
     </div>
   </div></div>`;
+}
+// 入金の備考モーダル（社長・本部のみ・日付×店舗で1件）
+function depNoteModal(){
+  const m=S.modal;
+  const d=m.date.split('-');
+  const dtLabel=`${+d[1]}/${+d[2]}`;
+  return `<div class="modal-bg" onclick="if(event.target===this)App.closeModal()"><div class="modal">
+    <h3>入金の備考</h3>
+    <div class="sub">${esc(m.store)} ／ ${dtLabel} の入金についてのメモ（社長・本部のみ編集できます）</div>
+    <textarea id="dn-note" rows="4" style="width:100%;font-family:var(--sans);font-size:13px;color:var(--ink);background:#fff;border:1px solid var(--line2);border-radius:8px;padding:9px 11px;outline:none" placeholder="例: 現金分は翌週まとめて入金予定 / 釣銭準備金から補填">${esc(m.note||'')}</textarea>
+    <div id="dn-msg" style="font-size:12px;color:#b5502f;margin:8px 0 0"></div>
+    <div class="modal-btns">
+      ${m.note?'<button class="icon-btn" style="margin-right:auto;color:#b5502f" onclick="App.saveDepNote(true)">削除</button>':''}
+      <button class="icon-btn primary" onclick="App.saveDepNote(false)">保存</button>
+      <button class="icon-btn" onclick="App.closeModal()">キャンセル</button>
+    </div></div></div>`;
 }
 /* ---- 口座CSVインポートモーダル（入金管理）----
  * 銀行の入出金明細CSVを選ぶ→入金行(入金額>0)を抽出してプレビュー→取込実行で
@@ -5152,6 +5202,28 @@ window.App = {
       const d=await api({ action:'registerFromInvite', token:S.invite.token, id, pw, name });
       if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'登録に失敗しました'; return; }
       S.invite=null; S.inviteDone=true; render();
+    }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
+  },
+  /* ---- 入金の備考（社長・本部のみ） ---- */
+  openDepNote(store,date){
+    if(!isAdminRole()){ toast('入金の備考は社長・本部のみ編集できます'); return; }
+    S.modal={ type:'depNote', store, date, note:depNoteOf(store, (function(){ const p=date.split('-'); return dayMs(new Date(+p[0],+p[1]-1,+p[2])); })()) };
+    render();
+  },
+  async saveDepNote(del){
+    const msg=$('dn-msg'); const m=S.modal;
+    const note=del?'':($('dn-note')?$('dn-note').value:'');
+    if(!(S.auth&&S.auth.token)){
+      // デモモード（API未接続）：ローカルだけ更新
+      const p=m.date.split('-'); const t=dayMs(new Date(+p[0],+p[1]-1,+p[2]));
+      if(note) D.depNote[depNoteKey(m.store,t)]=note; else delete D.depNote[depNoteKey(m.store,t)];
+      S.modal=null; toast(note?'備考を保存しました（デモ）':'備考を削除しました（デモ）'); render(); return;
+    }
+    msg.style.color='#8c8375'; msg.textContent='保存中…';
+    try{
+      const d=await api({ action:'saveDepNote', token:S.auth.token, store:m.store, date:m.date, note });
+      if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'保存に失敗しました'; return; }
+      S.modal=null; toast(note?'備考を保存しました':'備考を削除しました'); fetchDataFast();
     }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
   },
   openDepositImport(){ if(!requireFeature('depositImport'))return; DEP_IMPORT={rows:[],file:''}; S.modal={type:'depImport'}; render(); },

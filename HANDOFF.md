@@ -99,7 +99,7 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 
 | 状態 | 内容 |
 |---|---|
-| ⏳ **要GAS再デプロイ** | `ping`が`roledef-v42`でなければ未反映。`DB_権限定義`が未作成なら確実に未反映 |
+| ⏳ **要GAS再デプロイ** | `ping`が`depnote-v43`でなければ未反映。`DB_権限定義`/`DB_入金備考`が未作成なら確実に未反映 |
 | ⏳ **要ワークフロー貼り替え** | `scripts/lark-report.workflow.yml` → `.github/workflows/lark-report.yml`（Web UIで） |
 | 💡 未着手 | 週報のフィードバック数ランキング（データは`DB_週報FB`に貯まるので**後から遡って集計可能**） |
 | 💡 未着手 | GBP分析（Google Business Profile Performance API）。**Googleの手動承認が必要**で、GBPの「オーナー」権限アカウントから申請しないと弾かれる。承認まで数日〜数週間 |
@@ -129,6 +129,13 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 ---
 
 ## 5. 作業ログ
+
+### 2026-07-20（続き）
+**入金管理に備考列**
+- 日別入金明細の「状態」の右に備考列を追加。日付×店舗で1件（`DB_入金備考`）
+- 編集は**社長・本部のみ**（`isAdminRole()`＋GAS側`isAdmin(session)`）。ユーザーは固定希望だったので「使える機能」には入れず固定にした
+- 特定店舗選択時のみ編集可（✎ボタン→モーダル）。合算表示時は「店舗名：メモ」でまとめて表示のみ
+- 🐛 **修正**: `days`配列の要素に`t`が無く`dt`だけなのに`x.t`を使っていて全て`undefined`だった → `dayMs(x.dt)`に修正
 
 ### 2026-07-20（大きく進んだ日）
 

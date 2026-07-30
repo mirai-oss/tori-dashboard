@@ -43,7 +43,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'depcarry-v44', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'depnote-v45', time: new Date().toISOString() });
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     if (action === 'perf') return out(perfDiag(p)); // パフォーマンス計測（専用トークン認証・ログイン不要・数字は返さず時間だけ）
     setupIfNeeded();
@@ -77,6 +77,7 @@ function handle(p) {
     if (action === 'saveAdFee') return out(saveAdFee(p, session)); // 広告費の手入力（管理シート💾広告費DBへupsert）
     if (action === 'saveAdSales') return out(saveAdSales(p, session)); // 売上・反響の手入力（管理シート💾売上DBへupsert）
     if (action === 'importReservations') return out(importReservations(p, session)); // 予約CSV取込（管理シート💾予約DBへ追記）
+    if (action === 'saveDepNote') return out(saveDepNote(p, session)); // 入金備考の保存（社長・本部のみ）
     if (action === 'saveWeekly')   return out(saveWeekly(p, session));   // 週報の提出・更新
     if (action === 'saveFeedback') return out(saveFeedback(p, session)); // 週報へのフィードバック
     if (action === 'createInvite') return out(createInvite(p, session)); // 招待リンク発行（社長・本部）
@@ -98,6 +99,7 @@ function setupIfNeeded() {
   weeklySheets_();          // 週報・回答・FB・招待
   weeklyTemplateSheet_();   // 週報フォーマット（社長が編集する場所）
   roleDefSheet_();          // 役職・権限ごとの既定（表示タブ・使える機能）
+  depNoteSheet_();          // 入金備考
 
   // アカウントシート
   var acc = ss.getSheetByName('アカウント');
@@ -2029,5 +2031,41 @@ function registerFromInvite(p) {
   for (var j = 0; j < vals.length; j++) {
     if (String(vals[j][0]).trim() === token) { ish.getRange(j + 2, 8).setValue('TRUE'); ish.getRange(j + 2, 9).setValue(id); break; }
   }
+  return { ok: true };
+}
+
+// ================== 入金備考（DB_入金備考） ==================
+// 日別入金明細の各行に付けるメモ。日付×店舗で1つ。社長・本部のみ編集できる。
+// 「DB_」始まりなので再デプロイ不要で配信される（雛形の自動生成のみ再デプロイ要）。
+function depNoteSheet_() {
+  return sheetOrCreate_('DB_入金備考', ['日付', '店舗', '備考', '更新者', '更新日時'],
+    '入金管理の日別明細に表示されるメモ。日付×店舗で1件。ダッシュボードの入金管理タブ（社長・本部のみ）から入力します。');
+}
+function saveDepNote(p, session) {
+  if (!isAdmin(session)) return { ok: false, error: '入金の備考は社長・本部のみ編集できます' };
+  var date = String(p.date || '').trim();
+  var store = String(p.store || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !store) return { ok: false, error: '日付と店舗が必要です' };
+  var note = String(p.note == null ? '' : p.note);
+  var sh = depNoteSheet_();
+  var d = date.split('-');
+  var dateVal = new Date(Number(d[0]), Number(d[1]) - 1, Number(d[2]));
+  var last = sh.getLastRow(), found = -1;
+  if (last >= 2) {
+    var vals = sh.getRange(2, 1, last - 1, 2).getValues();
+    for (var i = 0; i < vals.length; i++) {
+      var rd = vals[i][0] ? ymd_(new Date(vals[i][0])) : '';
+      if (rd === date && String(vals[i][1]).trim() === store) { found = i + 2; break; }
+    }
+  }
+  if (!note) {
+    // 空で保存＝削除
+    if (found > 0) sh.deleteRow(found);
+    return { ok: true, deleted: true };
+  }
+  var row = [dateVal, store, note, session.name || session.id, new Date()];
+  var target = found > 0 ? found : sh.getLastRow() + 1;
+  sh.getRange(target, 1, 1, 5).setValues([row]);
+  sh.getRange(target, 1).setNumberFormat('yyyy/m/d');
   return { ok: true };
 }
