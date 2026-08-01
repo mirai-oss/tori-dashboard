@@ -385,7 +385,9 @@ function ingestReview(rows){
   const recs=[];
   for(let i=hi+1;i<rows.length;i++){
     const c=rows[i]; const st=String(c[iS]||'').trim(); if(!st)continue;
-    recs.push({ store:st, t:parseDateStr(c[iD])||0, count:num(c[iC]), star:num(c[iSt]), delta:num(c[iDl]) });
+    // 取得日は「前日までの実績」なので1日前に寄せる（例: 8/1取得 → 7/31の週の増加として集計）
+    const t0=parseDateStr(c[iD]); const t=t0?dayMs(addD(new Date(t0),-1)):0;
+    recs.push({ store:st, t, count:num(c[iC]), star:num(c[iSt]), delta:num(c[iDl]) });
   }
   if(!recs.length){ D.diag.review='0件'; return false; }
   D.review=recs; D.diag.review='OK '+recs.length+'件'; return true;
