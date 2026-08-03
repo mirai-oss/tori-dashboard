@@ -1728,7 +1728,7 @@ function saveArenaEvents(p) {
   if (last >= 2) ev.getRange(2, 1, last - 1, 6).getValues().forEach(function (r) {
     if (r[0] === '') return;
     var id = String(r[0]);
-    if (id.indexOf(PFX) !== 0) { keep.push(r); return; }        // 手動イベントは常に保持
+    if (id.indexOf(PFX) !== 0 || String(r[3]).trim() !== venue) { keep.push(r); return; }   // 手動イベント＋他会場の自動行は常に保持（会場ごとに独立更新）
     var d = (r[1] instanceof Date) ? r[1] : new Date(r[1]);
     var ym = d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2);
     if (!monthSet[ym]) { keep.push(r); return; }                // 取得範囲外の自動行は歴史として保持
