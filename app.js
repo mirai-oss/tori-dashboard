@@ -1720,15 +1720,93 @@ function viewDash(){
   return h;
 }
 
+/* ---------------- 着地予測の補正係数（曜日・祝日／天気／イベント） ----------------
+ * 過去約400日の実績から「曜日タイプ別の水準」「天気カテゴリ係数」「イベント係数」を推定し、
+ * 月末着地の残り日数予測を日別に補正する。係数は中央値ベース＋サンプル数で1へ縮約するので、
+ * データが少ないカテゴリは自動的に無補正へ近づく。天気・イベント未取得時も安全に1になる。 */
+// 店舗×日の売上インデックス（係数推定用。D.dailyが差し替わったら作り直す）
+let _dsIdx=null,_dsIdxSrc=null;
+function daySalesIdx(){
+  if(_dsIdxSrc!==D.daily){ const mp={}; for(const r of D.daily){ const k=r.store+'|'+r.t; mp[k]=(mp[k]||0)+r.sales; } _dsIdx=mp; _dsIdxSrc=D.daily; }
+  return _dsIdx;
+}
+function scopeDaySales(stores,t){ const idx=daySalesIdx(); let s=0; for(const nm of stores) s+=idx[nm+'|'+t]||0; return s; }
+// 天気 → 予測用カテゴリ: fine(晴れ・くもり) / lrain(小雨・にわか) / rain(本降り・雪) / bad(大雨・雷・大雪・台風級)
+function wxCatOf(w){
+  if(!w) return null;
+  if(wxAlertOf(w)) return 'bad';
+  const c=w.code;
+  if(c===63||c===65||c===66||c===67||c===81||c===82||(c>=71&&c<=86)) return 'rain';
+  if(c===51||c===53||c===55||c===56||c===57||c===61||c===80) return 'lrain';
+  return 'fine';
+}
+// 曜日タイプ: '0'〜'6' ＋ 平日祝日は 'hol'（土日の祝日は元の曜日扱い）
+function dayTypeOf(dt){ const wd=dt.getDay(); return (isJpHoliday(dt)&&wd>=1&&wd<=5)?'hol':String(wd); }
+// スコープ（店舗の組）ごとの補正係数。天気の取得が進むたびに作り直す（wxN で検知）
+const _lfCache={src:null,wxN:-1,evSrc:null,map:{}};
+function landingFactors(stores){
+  const key=stores.slice().sort().join('|');
+  const wxN=Object.keys(D.wx).length;
+  if(_lfCache.src!==D.daily||_lfCache.wxN!==wxN||_lfCache.evSrc!==D.events){ _lfCache.map={}; _lfCache.src=D.daily; _lfCache.wxN=wxN; _lfCache.evSrc=D.events; }
+  if(_lfCache.map[key]) return _lfCache.map[key];
+  const end=dayMs(D.refDate||new Date()), start=end-400*86400000;
+  // 1) 曜日タイプ別の平均水準
+  const sum={},cnt={},days=[];
+  for(let t=start;t<=end;t+=86400000){
+    const s=scopeDaySales(stores,t); if(!(s>0)) continue;
+    const ty=dayTypeOf(new Date(t));
+    sum[ty]=(sum[ty]||0)+s; cnt[ty]=(cnt[ty]||0)+1;
+    days.push({t,s,ty});
+  }
+  const dow={}; for(const ty in sum) dow[ty]=sum[ty]/cnt[ty];
+  // 2) 曜日水準で割った残差比から天気・イベントの係数を推定（地点はスコープ先頭店舗で代表）
+  const res={fine:[],lrain:[],rain:[],bad:[]}, evRes=[], nevRes=[];
+  for(const d of days){
+    const base=dow[d.ty]; if(!(base>0)) continue;
+    const r=d.s/base;
+    const cat=wxCatOf(wxGet(stores[0],d.t)); if(cat) res[cat].push(r);
+    if(eventsFor(d.t,stores).length) evRes.push(r); else nevRes.push(r);
+  }
+  const med=(a)=>{ if(!a.length) return null; const b=a.slice().sort((x,y)=>x-y), n=b.length; return n%2?b[(n-1)/2]:(b[n/2-1]+b[n/2])/2; };
+  // 晴れ基準の係数。サンプルが少ないほど1へ寄せ、極端値はクランプ
+  const mkF=(arr,base,lo,hi)=>{ const mv=med(arr); if(mv==null||base==null||!(base>0)) return 1;
+    const sh=1+(mv/base-1)*(arr.length/(arr.length+8));
+    return Math.max(lo,Math.min(hi,sh)); };
+  const fineM=med(res.fine);
+  const out={ dow,
+    wx:{ fine:1, lrain:mkF(res.lrain,fineM,.7,1.15), rain:mkF(res.rain,fineM,.6,1.15), bad:mkF(res.bad,fineM,.5,1.1) },
+    ev:mkF(evRes,med(nevRes),.9,1.8),
+    n:{ fine:res.fine.length, lrain:res.lrain.length, rain:res.rain.length, bad:res.bad.length, ev:evRes.length } };
+  _lfCache.map[key]=out; return out;
+}
+
 // 月末着地見込み：残りは「前年同月の実績(週ごとの形)」に「今年の勢い(前年同期比)」を掛けて予測。
-// これにより、今年の第1週が良かった/悪かったを平坦に引き延ばさず、前年の週別の起伏を反映できる。
+// さらに日別に「今年その日の条件 ÷ 前年同日の条件」（曜日・祝日／天気予報16日先／イベント）の
+// 係数比で補正する。勢い(R)側も同じ補正で割り戻すので、MTDの天気ノイズが勢いに混ざらない。
 function monthLanding(scopeSet, selName, y, m){
   const ld=new Date(y,m+1,0).getDate();
   // 経過の境界は「実際にデータのある最終日(refDate=昨日)」。未来日の空行は実績扱いしない。
   const maxT=D.refDate?dayMs(D.refDate):dayMs(new Date());
   const setArg=selName?null:scopeSet;
+  const stores=selName?[selName]:(scopeSet?Array.from(scopeSet):allStores());
+  const F=landingFactors(stores);
   // 指定年の m月 d日（前年の月末が短い場合は末日にクランプ）の1日分
   const dv=(yr,d)=>{ const lm=new Date(yr,m+1,0).getDate(), dd=Math.min(d,lm); return stat(setArg,dayMs(new Date(yr,m,dd)),dayMs(new Date(yr,m,dd)),selName); };
+  // 今年m月d日 と 前年同日 の条件差 → 補正係数。f=前年比の補正、fT=今年側の条件のみ（フォールバック用）
+  const dayAdj=(d)=>{
+    const dt=new Date(y,m,d), lm=new Date(y-1,m+1,0).getDate(), dtL=new Date(y-1,m,Math.min(d,lm));
+    const t=dayMs(dt), tL=dayMs(dtL);
+    let f=1;
+    const a=F.dow[dayTypeOf(dt)], b=F.dow[dayTypeOf(dtL)];
+    if(a>0&&b>0) f*=Math.max(.5,Math.min(2,a/b));   // 曜日・祝日のズレ（前年同日は曜日が1つずれる）
+    const cT=wxCatOf(wxGet(stores[0],t)), cL=wxCatOf(wxGet(stores[0],tL));
+    if(cT) f*=F.wx[cT];                              // 今年側：予報（16日先まで。それ以降はnull→無補正）
+    if(cL) f/=F.wx[cL];                              // 前年側：実績天気を打ち消す
+    const eT=eventsFor(t,stores).length>0, eL=eventsFor(tL,stores).length>0;
+    if(eT!==eL) f*=eT?F.ev:1/F.ev;
+    const fT=Math.max(.5,Math.min(2,(cT?F.wx[cT]:1)*(eT?F.ev:1)));
+    return { f:Math.max(.4,Math.min(2.5,f)), fT, cT, eT };
+  };
   // 経過日数（この月で実データのある最終日）
   let cutoffDay=0; for(let d=1; d<=ld; d++){ if(dayMs(new Date(y,m,d))>maxT) break; cutoffDay=d; }
   // 今年 MTD（＋フォールバック用の同曜日集計）
@@ -1740,33 +1818,60 @@ function monthLanding(scopeSet, selName, y, m){
     wdSum[wd]+=c.sales; wdCnt[wd]++; wdSumG[wd]+=c.guests;
     if(wd===0||wd===6||isJpHoliday(dt)){ weSum+=c.sales; weCnt++; }
   }
-  // 前年 同月：経過分(1..cutoff)と残り分(cutoff+1..末)を、同じ日付範囲で集計
-  let lyMtd=0,lyMtdG=0,lyRem=0,lyRemG=0;
-  for(let d=1; d<=ld; d++){ const c=dv(y-1,d); if(d<=cutoffDay){ lyMtd+=c.sales; lyMtdG+=c.guests; } else { lyRem+=c.sales; lyRemG+=c.guests; } }
+  // 前年 同月：経過分は補正込みの分母(lyMtdAdj)も作り、残り分は日別の補正材料を保持
+  let lyMtd=0,lyMtdG=0,lyRem=0,lyRemG=0,lyMtdAdj=0,lyMtdAdjG=0;
+  const remInfo=[];
+  for(let d=1; d<=ld; d++){
+    const c=dv(y-1,d);
+    if(d<=cutoffDay){ const A=dayAdj(d); lyMtd+=c.sales; lyMtdG+=c.guests; lyMtdAdj+=c.sales*A.f; lyMtdAdjG+=c.guests*A.f; }
+    else { lyRem+=c.sales; lyRemG+=c.guests; remInfo.push({c,A:dayAdj(d)}); }
+  }
   const remDays=ld-cutoffDay;
-  let remSales=0, remGuests=0, method='done';
+  let remSales=0, remGuests=0, method='done', adj=null;
   if(remDays>0){
     if(lyMtd>0 && lyRem>0){
-      // ★前年実績ベース × 今年の勢い（前年同期比）。残りは前年の週別の形を今年の水準に補正して予測。
-      const R=mtdSales/lyMtd, Rg=lyMtdG>0?mtdGuests/lyMtdG:R;
-      remSales=lyRem*R; remGuests=lyRemG*Rg; method='yoy';
+      // ★前年実績ベース × 今年の勢い（補正済み前年同期比）。残りは前年の週別の形＋日別補正で予測。
+      const R=lyMtdAdj>0?mtdSales/lyMtdAdj:mtdSales/lyMtd;
+      const Rg=lyMtdAdjG>0?mtdGuests/lyMtdAdjG:(lyMtdG>0?mtdGuests/lyMtdG:R);
+      let plain=0,nRain=0,nBad=0,nEv=0;
+      for(const x of remInfo){
+        remSales+=x.c.sales*x.A.f*R; remGuests+=x.c.guests*x.A.f*Rg;
+        plain+=x.c.sales*(mtdSales/lyMtd);           // 従来方式（無補正）との比較用
+        if(x.A.cT==='bad') nBad++; else if(x.A.cT==='rain'||x.A.cT==='lrain') nRain++;
+        if(x.A.eT) nEv++;
+      }
+      method='yoy';
+      adj={ pct:plain>0?(remSales/plain-1)*100:0, nRain,nBad,nEv, wx:F.wx, ev:F.ev, n:F.n };
     } else {
-      // フォールバック：前年データが不足 → 同曜日平均で積み上げ
+      // フォールバック：前年データが不足 → 同曜日平均で積み上げ（今年側の天気予報・イベントのみ補正）
       const overall=cutoffDay>0?mtdSales/cutoffDay:0, overallG=cutoffDay>0?mtdGuests/cutoffDay:0;
       const wdAvg=(wd)=>wdCnt[wd]>0?wdSum[wd]/wdCnt[wd]:overall, wdAvgG=(wd)=>wdCnt[wd]>0?wdSumG[wd]/wdCnt[wd]:overallG;
       const weAvg=weCnt>0?weSum/weCnt:overall;
-      for(let d=cutoffDay+1; d<=ld; d++){ const dt=new Date(y,m,d), wd=dt.getDay(); remSales+=(isJpHoliday(dt)&&wd>=1&&wd<=5)?weAvg:wdAvg(wd); remGuests+=wdAvgG(wd); }
+      let nRain=0,nBad=0,nEv=0;
+      for(let d=cutoffDay+1; d<=ld; d++){
+        const dt=new Date(y,m,d), wd=dt.getDay(), A=dayAdj(d);
+        remSales+=((isJpHoliday(dt)&&wd>=1&&wd<=5)?weAvg:wdAvg(wd))*A.fT; remGuests+=wdAvgG(wd)*A.fT;
+        if(A.cT==='bad') nBad++; else if(A.cT==='rain'||A.cT==='lrain') nRain++;
+        if(A.eT) nEv++;
+      }
       method='wd';
+      adj={ pct:0, nRain,nBad,nEv, wx:F.wx, ev:F.ev, n:F.n };
     }
   }
   const fSales=mtdSales+remSales, fGuests=mtdGuests+remGuests;
   const flRate=mtdSales>0?(mtdCost+mtdLabor)/mtdSales:0;
   const lyFull=lyMtd+lyRem;                       // 前年満月
   const pmFull=stat(setArg,dayMs(new Date(y,m-1,1)),dayMs(new Date(y,m,0)),selName).sales;
-  return { ld,lastDay:cutoffDay,remDays, mtdSales,mtdGuests, remSales, fSales,fGuests, flRate, lyFull,pmFull, method, yoyR: lyMtd>0?mtdSales/lyMtd:null };
+  return { ld,lastDay:cutoffDay,remDays, mtdSales,mtdGuests, remSales, fSales,fGuests, flRate, lyFull,pmFull, method, adj, yoyR: lyMtd>0?mtdSales/lyMtd:null };
 }
 function landingPanel(r,scopeSet,selName,sc){
   const y=r.s.getFullYear(), m=r.s.getMonth();
+  // 補正に使う天気を先に要求（未取得ぶんだけ非同期取得→到着したら再描画で係数が効く）
+  const wxStores=selName?[selName]:sc;
+  const refT=dayMs(D.refDate||new Date());
+  ensureWeather(wxStores, dayMs(new Date(y,m,1)), dayMs(new Date(y,m+1,0)));      // 今月（実績＋16日先予報）
+  ensureWeather(wxStores, dayMs(new Date(y-1,m,1)), dayMs(new Date(y-1,m+1,0)));  // 前年同月（実績）
+  ensureWeather(wxStores, refT-400*86400000, refT-92*86400000);                   // 係数推定用の履歴
   const L=monthLanding(scopeSet,selName,y,m);
   if(L.mtdSales<=0) return '';                     // 今月まだデータ無し
   const done=L.remDays<=0;
@@ -1775,11 +1880,25 @@ function landingPanel(r,scopeSet,selName,sc){
   const fSpend=L.fGuests>0?L.fSales/L.fGuests:0;
   const prog=L.fSales>0?(L.mtdSales/L.fSales*100):0;
   const remNote = done ? '確定（月末まで実績）'
-    : (L.method==='yoy' ? '残'+L.remDays+'日を前年実績×今年の勢いで予測'
-                        : '残'+L.remDays+'日を同曜日平均で予測（前年データ不足）');
+    : (L.method==='yoy' ? '残'+L.remDays+'日を前年実績×勢い＋天気・イベント補正で予測'
+                        : '残'+L.remDays+'日を同曜日平均＋天気・イベント補正で予測（前年データ不足）');
   const methodLine = done ? '月末まで実績'
-    : (L.method==='yoy' ? `残りは前年同月の実績（週別の形）に今年の勢い（前年同期比 ${(L.yoyR*100).toFixed(0)}%）を掛けて予測`
-                        : '前年データが不足のため同曜日平均で予測');
+    : (L.method==='yoy' ? `残りは前年同月の実績（週別の形）×今年の勢い（前年同期比 ${(L.yoyR*100).toFixed(0)}%）を、曜日・天気予報・イベントで日別補正して予測`
+                        : '前年データが不足のため同曜日平均＋天気予報・イベント補正で予測');
+  // 補正の内訳行（係数は過去約400日の実績から推定）
+  let adjLine='';
+  if(!done&&L.adj){
+    const A=L.adj;
+    const parts=[];
+    if(A.nRain) parts.push('雨予報'+A.nRain+'日');
+    if(A.nBad) parts.push('荒天予報'+A.nBad+'日');
+    if(A.nEv) parts.push('イベント'+A.nEv+'日');
+    const net=(A.pct>=0?'+':'▲')+Math.abs(A.pct).toFixed(1)+'%';
+    adjLine=`<div class="sub" style="margin-top:2px">補正係数（過去実績から推定）: 小雨×${A.wx.lrain.toFixed(2)}・雨×${A.wx.rain.toFixed(2)}・荒天×${A.wx.bad.toFixed(2)}`
+      +(A.n.ev>0?`・イベント×${A.ev.toFixed(2)}`:'')
+      +` ／ 残り期間: ${parts.length?parts.join('・'):'平常見込み'}`
+      +(L.method==='yoy'?` → 従来方式比 ${net}`:'')+`</div>`;
+  }
   const cards=[
     ['着地見込み 売上', yen(L.fSales), remNote, ''],
     ['現在（実績）', yen(L.mtdSales), '経過 '+L.lastDay+'/'+L.ld+'日 ・ 進捗 '+prog.toFixed(0)+'%', ''],
@@ -1788,7 +1907,7 @@ function landingPanel(r,scopeSet,selName,sc){
   ];
   let h=`<div class="panel" style="border-color:#d8cdb5;background:linear-gradient(180deg,#fffdf8,#fff)">
     <div class="panel-head"><div><h3>📈 月末着地見込み（${y}年${m+1}月${done?'・確定':''}）</h3>
-    <div class="sub">${methodLine} ／ 見込み客単価 ${yen(fSpend)} ・ 見込みFL率 ${(L.flRate*100).toFixed(1)}%（MTD実績で横置き）</div></div></div>
+    <div class="sub">${methodLine} ／ 見込み客単価 ${yen(fSpend)} ・ 見込みFL率 ${(L.flRate*100).toFixed(1)}%（MTD実績で横置き）</div>${adjLine}</div></div>
   <div class="kpi-grid" style="margin:2px 0 0">`+cards.map(k=>`<div class="kpi"><div class="lb">${esc(k[0])}</div><div class="vl">${k[1]}</div><div class="yy ${k[3]}" style="${k[3]?'':'color:#8c8375'}">${esc(k[2])}</div></div>`).join('')+`</div>`;
   // 店舗別の着地見込み（全店/合算時）
   if(!selName && sc.length>1){
