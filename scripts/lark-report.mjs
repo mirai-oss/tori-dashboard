@@ -41,7 +41,19 @@ async function capture() {
     await page.goto(SITE_URL, { waitUntil: 'networkidle2', timeout: 90000 });
 
     const loginOnce = async () => {
-      await page.waitForSelector('#li-id', { timeout: 60000 });
+      // ログインフォームの表示待ち。混雑時は表示が遅れることがあるため90秒まで待つ。
+      // 出てこない場合は「ページが本当に読めているのか」を切り分けられるよう状態を残す。
+      try {
+        await page.waitForSelector('#li-id', { timeout: 90000 });
+      } catch (e) {
+        const st = await page.evaluate(() => ({
+          url: location.href, title: document.title, ready: document.readyState,
+          hasLoginBox: !!document.querySelector('#li-id, #li-pw, .login-err'),
+          bodyHead: (document.body ? document.body.innerText : '').replace(/\s+/g, ' ').slice(0, 200),
+        })).catch(() => ({ url: 'evaluate失敗' }));
+        log('ログインフォームが出ない。ページ状態:', JSON.stringify(st));
+        throw e;
+      }
       await page.$eval('#li-id', (el) => { el.value = ''; });
       await page.$eval('#li-pw', (el) => { el.value = ''; });
       await page.type('#li-id', DASH_ID);
@@ -56,12 +68,18 @@ async function capture() {
           .then(async (h) => { throw new Error('ログイン失敗: ' + (await h.jsonValue())); }),
       ]);
     };
+    // 混雑時の一時的な遅延に耐えるため4回まで試し、待ち時間を段階的に伸ばす（6s→15s→30s）
+    const MAX_LOGIN_TRY = 4;
+    const BACKOFF = [6000, 15000, 30000];
     let ok = false, lastErr;
-    for (let attempt = 1; attempt <= 3 && !ok; attempt++) {
+    for (let attempt = 1; attempt <= MAX_LOGIN_TRY && !ok; attempt++) {
       try {
-        if (attempt > 1) { log('再読み込みして再試行 (' + attempt + '/3)'); await page.goto(SITE_URL, { waitUntil: 'networkidle2', timeout: 90000 }); await new Promise((r) => setTimeout(r, 2500)); }
+        if (attempt > 1) { log('再読み込みして再試行 (' + attempt + '/' + MAX_LOGIN_TRY + ')'); await page.goto(SITE_URL, { waitUntil: 'networkidle2', timeout: 90000 }); await new Promise((r) => setTimeout(r, 2500)); }
         await loginOnce(); ok = true;
-      } catch (e) { lastErr = e; log('ログイン試行' + attempt + '失敗:', e.message); await new Promise((r) => setTimeout(r, 6000)); }
+      } catch (e) {
+        lastErr = e; log('ログイン試行' + attempt + '失敗:', e.message);
+        if (attempt < MAX_LOGIN_TRY) await new Promise((r) => setTimeout(r, BACKOFF[attempt - 1] || 30000));
+      }
     }
     if (!ok) throw lastErr;
 
