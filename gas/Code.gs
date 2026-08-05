@@ -1078,7 +1078,7 @@ function saveAccount(p, session) {
   var id = String(p.accountId || '').trim();
   if (!id) return { ok: false, error: 'ログインIDが未指定です' };
   var role = String(p.role || '店舗');
-  if (['社長', '本部', 'マネージャー', '店舗'].indexOf(role) < 0) return { ok: false, error: '権限は 社長/本部/マネージャー/店舗 のいずれかです' };
+  if (['社長', '本部', 'マネージャー', '店舗', '外販'].indexOf(role) < 0) return { ok: false, error: '権限は 社長/本部/マネージャー/店舗/外販 のいずれかです' };
 
   var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('アカウント');
   var rows = accountRows();
@@ -1945,7 +1945,7 @@ function roleDefSheet_() {
     ]);
     sh.getRange('A1').setNote(
       '役職・権限ごとの既定値。空欄の行は上の「権限」の既定に従います。\n' +
-      '・区分=権限（社長/本部/マネージャー/店舗）または 役職（店長/社員 など任意）\n' +
+      '・区分=権限（社長/本部/マネージャー/店舗/外販）または 役職（店長/社員 など任意）\n' +
       '・役職の行を書くと、その役職の人は権限より優先してこの設定になります\n' +
       '・使える機能に「なし」と書くと1つも使えません（空欄＝上位の既定に従う）\n' +
       '・アカウント個別に設定した内容は、このシートより優先されます');
@@ -2032,7 +2032,7 @@ function saveFeedback(p, session) {
 function createInvite(p, session) {
   if (!isAdmin(session)) return { ok: false, error: '招待リンクの発行権限がありません' };
   var role = String(p.role || '').trim();
-  if (['社長', '本部', 'マネージャー', '店舗'].indexOf(role) < 0) return { ok: false, error: '権限の指定が不正です' };
+  if (['社長', '本部', 'マネージャー', '店舗', '外販'].indexOf(role) < 0) return { ok: false, error: '権限の指定が不正です' };
   var days = Number(p.days || 7); if (!(days > 0 && days <= 60)) days = 7;
   // 1リンク＝1人しか登録できないため、同じ条件で複数人ぶん欲しい場合は count でまとめて発行する
   var count = Number(p.count || 1); if (!(count >= 1 && count <= 20)) count = 1;
