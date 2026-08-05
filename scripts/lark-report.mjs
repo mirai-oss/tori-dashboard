@@ -40,31 +40,43 @@ async function capture() {
     await page.setViewport({ width: 1240, height: 1800, deviceScaleFactor: 2 });
     await page.goto(SITE_URL, { waitUntil: 'networkidle2', timeout: 90000 });
 
+    const DATA_WAIT = 240000;   // データ読込待ち（GAS混雑時は3分を超えることがあるため4分まで許容）
+
     const loginOnce = async () => {
-      // ログインフォームの表示待ち。混雑時は表示が遅れることがあるため90秒まで待つ。
-      // 出てこない場合は「ページが本当に読めているのか」を切り分けられるよう状態を残す。
+      // 【重要】1回目のログイン後にセッションが残るため、再読み込みすると「ログイン済み」で開き
+      //   ログインフォーム(#li-id)は現れない。以前はここを待ち続けて全リトライが空振りしていた。
+      //   → 「フォームが出る」か「既にログイン済み」かを競争させ、済みならログイン手順を飛ばす。
+      let mode;
       try {
-        await page.waitForSelector('#li-id', { timeout: 90000 });
+        mode = await Promise.race([
+          page.waitForSelector('#li-id', { timeout: 90000 }).then(() => 'form'),
+          page.waitForFunction(() => typeof S !== 'undefined' && S.auth, { timeout: 90000, polling: 1000 }).then(() => 'already'),
+        ]);
       } catch (e) {
         const st = await page.evaluate(() => ({
           url: location.href, title: document.title, ready: document.readyState,
           hasLoginBox: !!document.querySelector('#li-id, #li-pw, .login-err'),
           bodyHead: (document.body ? document.body.innerText : '').replace(/\s+/g, ' ').slice(0, 200),
         })).catch(() => ({ url: 'evaluate失敗' }));
-        log('ログインフォームが出ない。ページ状態:', JSON.stringify(st));
+        log('ログインフォームも認証済み状態も検出できない。ページ状態:', JSON.stringify(st));
         throw e;
       }
-      await page.$eval('#li-id', (el) => { el.value = ''; });
-      await page.$eval('#li-pw', (el) => { el.value = ''; });
-      await page.type('#li-id', DASH_ID);
-      await page.type('#li-pw', DASH_PW);
-      await page.click('#li-btn');
-      log('ログイン送信、データ読込待ち…');
+
+      if (mode === 'form') {
+        await page.$eval('#li-id', (el) => { el.value = ''; });
+        await page.$eval('#li-pw', (el) => { el.value = ''; });
+        await page.type('#li-id', DASH_ID);
+        await page.type('#li-pw', DASH_PW);
+        await page.click('#li-btn');
+        log('ログイン送信、データ読込待ち…');
+      } else {
+        log('既にログイン済み（セッション復元）→ ログイン手順を飛ばしてデータ読込待ち…');
+      }
       // 媒体別(D.media)はフェーズ2の裏読みで後から届く。ランチ/ディナー内訳と媒体別売上が
       // 空のまま撮影されるのを防ぐため mediaPending===false まで待つ（読込失敗時もfalseになるので固まらない）。
       await Promise.race([
-        page.waitForFunction(() => typeof S !== 'undefined' && S.auth && S.connState === 'live' && typeof D !== 'undefined' && D.daily.length > 0 && D.mediaPending === false, { timeout: 180000, polling: 2000 }),
-        page.waitForFunction(() => { const el = document.querySelector('.login-err'); return el && el.textContent.length > 0 ? el.textContent : false; }, { timeout: 180000, polling: 2000 })
+        page.waitForFunction(() => typeof S !== 'undefined' && S.auth && S.connState === 'live' && typeof D !== 'undefined' && D.daily.length > 0 && D.mediaPending === false, { timeout: DATA_WAIT, polling: 2000 }),
+        page.waitForFunction(() => { const el = document.querySelector('.login-err'); return el && el.textContent.length > 0 ? el.textContent : false; }, { timeout: DATA_WAIT, polling: 2000 })
           .then(async (h) => { throw new Error('ログイン失敗: ' + (await h.jsonValue())); }),
       ]);
     };
