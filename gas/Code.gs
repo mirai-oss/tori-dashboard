@@ -1096,12 +1096,13 @@ function saveAccount(p, session) {
     String(p.tabs != null ? p.tabs : (target ? target.tabs : '')),  // 表示タブ（空欄＝権限の既定）
     String(p.perms != null ? p.perms : (target ? target.perms : '')),  // 使える機能（空欄＝権限の既定）
     String(p.position != null ? p.position : (target ? target.position : '')),  // 役職
-    String(p.email != null ? p.email : (target ? target.email : '')).trim().toLowerCase()  // 統合アカウントのメール
+    String(p.email != null ? p.email : (target ? target.email : '')).trim().toLowerCase(),  // 統合アカウントのメール
+    String(p.media != null ? p.media : (target ? target.media : ''))  // 担当媒体（権限「外販」で使う）
   ];
   if (!values[1]) return { ok: false, error: '新規アカウントにはパスワードが必要です' };
 
-  if (target) sh.getRange(target.row, 1, 1, 11).setValues([values]);
-  else sh.getRange(sh.getLastRow() + 1, 1, 1, 11).setValues([values]);
+  if (target) sh.getRange(target.row, 1, 1, 12).setValues([values]);
+  else sh.getRange(sh.getLastRow() + 1, 1, 1, 12).setValues([values]);
   return { ok: true };
 }
 

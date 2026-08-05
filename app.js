@@ -5255,8 +5255,9 @@ function accountModal(){
       <div><label>表示名</label><input type="text" id="ac-name" value="${esc(a.name)}"></div>
       <div><label>パスワード${isNew?'':'（空欄＝変更なし）'}</label><input type="text" id="ac-pw" value="" placeholder="${isNew?'必須':'変更する場合のみ入力'}"></div>
       <div><label>役職（週報フォーマットの出し分け）</label><input type="text" id="ac-position" value="${esc(a.position||'')}" placeholder="例: 店長 / 社員"></div>
+      <div><label>担当媒体（権限「外販」のとき）</label><input type="text" id="ac-media" value="${esc(a.media||'')}" placeholder="例: Ring-style（複数はカンマ区切り）"></div>
       <div><label>権限</label><select id="ac-role" onchange="App.roleHint(this.value)">
-        ${['社長','本部','マネージャー','店舗'].map(r2=>`<option ${a.role===r2?'selected':''}>${r2}</option>`).join('')}
+        ${['社長','本部','マネージャー','店舗','外販'].map(r2=>`<option ${a.role===r2?'selected':''}>${r2}</option>`).join('')}
       </select></div>
     </div>
     <div id="ac-role-hint" class="sub" style="margin:-4px 0 10px">${roleHintText(a.role)}</div>
@@ -5291,6 +5292,7 @@ function roleHintText(r){
     '社長':'全店舗の全データ・全機能＋アカウント発行が可能です。',
     '本部':'全店舗の全データ・全機能＋アカウント発行が可能です。',
     'マネージャー':'担当店舗のみ閲覧できます。PL・広告管理あり（担当店舗間の比較つき）。',
+    '外販':'外販先向け。「媒体売上」タブだけが表示され、下の「担当媒体」に入れた媒体の売上のみ見られます。他の数字は一切見えません。',
     '店舗':'自店のみ閲覧できます。PL・広告管理・他店比較・アカウント管理は既定で非表示（下の「表示するタブ」で変更できます）。',
   }[r]||'';
 }
@@ -5865,6 +5867,7 @@ window.App = {
     const memo=$('ac-memo').value;
     const position=($('ac-position')?$('ac-position').value:'').trim();
     const email=($('ac-email')?$('ac-email').value:'').trim().toLowerCase();
+    const media=($('ac-media')?$('ac-media').value:'').trim(); // 外販の担当媒体
     let stores;
     if(role==='社長'||role==='本部') stores='全店';
     else{
@@ -5888,7 +5891,7 @@ window.App = {
     if(live){
       msg.style.color='#8c8375'; msg.textContent='保存中…';
       try{
-        const d=await api({ action:'saveAccount', token:S.auth.token, accountId:id, pw, name, role, stores, active, memo, tabs, perms, position, email });
+        const d=await api({ action:'saveAccount', token:S.auth.token, accountId:id, pw, name, role, stores, active, memo, tabs, perms, position, email, media });
         if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'保存に失敗しました'; return; }
         S.accounts=null; S.modal=null; toast('アカウントを保存しました'); render();
       }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
