@@ -15,6 +15,19 @@ on:
         default: 'daily'
         type: choice
         options: [daily, weekly, monthly]
+      # ▼ 失敗した1店舗だけを再送したい時に使う（通常の定時配信では空のまま）。
+      #   only_group を指定すると「全体レポート(report job)」は送らず、そのグループだけを配信する。
+      #   例) only_group=group1 / only_stores=鳥一代 新橋|shinbashi
+      only_group:
+        description: '再送するグループのみ実行（例 group1／空=全グループ＋全体レポート）'
+        required: false
+        default: ''
+        type: string
+      only_stores:
+        description: '再送する店舗のみ（例 鳥一代 新橋|shinbashi／空=そのグループの全店舗）'
+        required: false
+        default: ''
+        type: string
   # schedule:
   #   - cron: '0 3 * * *'             # 日報 12:00 JST（予備・遅延あり）
   #   - cron: '10 3 1,8,15,22,29 * *' # 週報（予備）
@@ -27,6 +40,8 @@ jobs:
   report:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # only_group を指定した「1店舗だけ再送」の時は、全体レポートを二重送信しないようスキップ
+    if: ${{ github.event.inputs.only_group == '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -175,13 +190,23 @@ jobs:
         env:
           HOOK: ${{ secrets[matrix.secret] }}
           DID: ${{ secrets.DASH_ID }}
+          ONLY_GROUP: ${{ github.event.inputs.only_group }}
+          ONLY_STORES: ${{ github.event.inputs.only_stores }}
         run: |
-          if [ -z "$HOOK" ]; then
+          if [ -n "$ONLY_GROUP" ] && [ "$ONLY_GROUP" != "${{ matrix.group }}" ]; then
+            echo "::notice::only_group=$ONLY_GROUP のため ${{ matrix.group }} はスキップ"
+            echo "SKIP=1" >> "$GITHUB_ENV"
+          elif [ -z "$HOOK" ]; then
             echo "::notice::${{ matrix.secret }} が未登録のため ${{ matrix.group }} はスキップ"
             echo "SKIP=1" >> "$GITHUB_ENV"
           elif [ -z "$DID" ]; then
             echo "::notice::DASH_ID が未設定のためスキップ"
             echo "SKIP=1" >> "$GITHUB_ENV"
+          fi
+          # 店舗を絞る指定があればそれを使う（無ければmatrixの全店舗）
+          if [ -n "$ONLY_STORES" ]; then
+            echo "::notice::店舗を絞って実行: $ONLY_STORES"
+            echo "STORES_OVERRIDE=$ONLY_STORES" >> "$GITHUB_ENV"
           fi
 
       - name: レポート種別を決定
@@ -208,14 +233,28 @@ jobs:
         run: |
           set -u
           OK=0; FAIL=0; FAILED=""
+          # only_stores 指定があればそちらを優先（1店舗だけ再送する時に使う）
+          [ -n "${STORES_OVERRIDE:-}" ] && STORES="$STORES_OVERRIDE"
           IFS=',' read -ra ENTRIES <<< "$STORES"
           for entry in "${ENTRIES[@]}"; do
             STORE="${entry%%|*}"
             KEY="${entry##*|}"
             echo "::group::$STORE"
 
-            rm -f report.png report-meta.json
-            if ! REPORT_STORES="$STORE" REPORT_GROUP="$KEY" node scripts/lark-report.mjs capture; then
+            # 画像生成は一時的なログイン遅延で落ちることがあるため、プロセスごと作り直して最大2回試す
+            # （スクリプト内部でもログインを4回リトライするので、実質かなり粘る）
+            CAPTURED=0
+            for try in 1 2; do
+              rm -f report.png report-meta.json
+              if REPORT_STORES="$STORE" REPORT_GROUP="$KEY" node scripts/lark-report.mjs capture; then
+                CAPTURED=1; break
+              fi
+              if [ "$try" -lt 2 ]; then
+                echo "::notice::$STORE の画像生成に失敗（$try/2）。60秒待って再試行します"
+                sleep 60
+              fi
+            done
+            if [ "$CAPTURED" != "1" ]; then
               echo "::warning::$STORE の画像生成に失敗"
               FAIL=$((FAIL+1)); FAILED="$FAILED $STORE"; echo "::endgroup::"; continue
             fi
