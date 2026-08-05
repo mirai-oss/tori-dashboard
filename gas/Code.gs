@@ -131,6 +131,11 @@ function setupIfNeeded() {
     acc.getRange(1, 11).setValue('メール').setFontWeight('bold').setBackground('#efe9dd');
     acc.getRange(1, 11).setNote('統合アカウント（ポータル/日報）のメールアドレス。\nここに入れると「統合アカウントでログイン」でこの行の権限が使えます。\n空欄＝統合ログイン不可（従来のID/PWのみ）。');
   }
+  // L列「担当媒体」（権限「外販」のアカウントに、見せてよい媒体名を入れる）
+  if (acc && String(acc.getRange(1, 12).getValue()) === '') {
+    acc.getRange(1, 12).setValue('担当媒体').setFontWeight('bold').setBackground('#efe9dd');
+    acc.getRange(1, 12).setNote('権限が「外販」のアカウントで使います。\n分析_媒体別日次シートの媒体名をそのまま入れてください（例: Ring-style）。\n複数ある場合はカンマ区切り（例: Ring-style, いちご屋）。');
+  }
 
   // 接続設定シート（既定は実シート名に合わせてある）
   var conf = ss.getSheetByName('接続設定');
@@ -377,7 +382,8 @@ function accountRows() {
       tabs: String(v[7] || '').trim(),  // 表示タブ（空欄＝権限の既定）
       perms: String(v[8] || '').trim(), // 使える機能（空欄＝権限の既定 / 'なし'＝全部不可）
       position: String(v[9] || '').trim(), // 役職（店長/社員 等。週報テンプレートの出し分けに使う）
-      email: String(v[10] || '').trim().toLowerCase() // 統合アカウントのメール（SSO突き合わせ用）
+      email: String(v[10] || '').trim().toLowerCase(), // 統合アカウントのメール（SSO突き合わせ用）
+      media: String(v[11] || '').trim()                // 担当媒体（権限「外販」のときに使う。カンマ区切りで複数可）
     });
   }
   return rows;
@@ -462,7 +468,7 @@ function login(p) {
       if (!pwIsHashed_(a.pw)) pwUpgradeRow_(a.row, pw);   // 旧平文 → ハッシュへ自動移行
       sessionCleanup();
       var token = Utilities.getUuid();
-      var sess = { id: a.id, name: a.name, role: a.role, stores: a.stores, tabs: a.tabs, perms: a.perms, position: a.position };
+      var sess = { id: a.id, name: a.name, role: a.role, stores: a.stores, tabs: a.tabs, perms: a.perms, position: a.position, media: a.media };
       sessionPut(token, sess);
       cache.remove(failKey);
       return { ok: true, token: token, account: sess };
@@ -500,7 +506,7 @@ function supaLogin(p) {
       if (!a.active) return { ok: false, error: 'このアカウントは無効化されています' };
       sessionCleanup();
       var token = Utilities.getUuid();
-      var sess = { id: a.id, name: a.name, role: a.role, stores: a.stores, tabs: a.tabs, perms: a.perms, position: a.position };
+      var sess = { id: a.id, name: a.name, role: a.role, stores: a.stores, tabs: a.tabs, perms: a.perms, position: a.position, media: a.media };  // v2.6: 外販の担当媒体も持ち回る
       sessionPut(token, sess);
       return { ok: true, token: token, account: sess };
     }
@@ -1062,7 +1068,7 @@ function dataVersion() {
 function listAccounts(session) {
   if (!isAdmin(session)) return { ok: false, error: 'アカウント管理の権限がありません' };
   var rows = accountRows().map(function (a) {
-    return { id: a.id, name: a.name, role: a.role, stores: a.stores, active: a.active, memo: a.memo, tabs: a.tabs, perms: a.perms, position: a.position, email: a.email, hasPw: a.pw !== '' };
+    return { id: a.id, name: a.name, role: a.role, stores: a.stores, active: a.active, memo: a.memo, tabs: a.tabs, perms: a.perms, position: a.position, email: a.email, media: a.media, hasPw: a.pw !== '' };
   });
   return { ok: true, accounts: rows };
 }

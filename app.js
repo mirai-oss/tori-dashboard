@@ -31,8 +31,11 @@ const ROLE_TABS = {
   '本部':       ['dash','target','analysis','detail','pl','deposit','ad','review','weekly','weeklyAdmin','ai','accounts'],
   'マネージャー':['dash','target','analysis','detail','pl','deposit','ad','review','weekly','weeklyAdmin','ai'],
   '店舗':       ['dash','target','analysis','detail','deposit','review','weekly','ai'],   // PL・広告管理は既定で非表示（アカウントごとの「表示タブ」で変更可）
+  // 外販先（Ring-style・いちご屋など）に売上を確認してもらうためのアカウント。
+  // 自分の担当媒体の売上だけを見せ、他の数字は一切見せない。担当媒体はアカウントシートのK列。
+  '外販':       ['partner'],
 };
-const TAB_LABELS = { dash:'ダッシュボード', target:'目標管理', analysis:'推移分析', detail:'明細分析', pl:'PL（損益）', deposit:'入金管理', ad:'広告管理', review:'口コミ', weekly:'週報', weeklyAdmin:'週報管理', ai:'AI検索', accounts:'アカウント管理' };
+const TAB_LABELS = { partner:'媒体売上', dash:'ダッシュボード', target:'目標管理', analysis:'推移分析', detail:'明細分析', pl:'PL（損益）', deposit:'入金管理', ad:'広告管理', review:'口コミ', weekly:'週報', weeklyAdmin:'週報管理', ai:'AI検索', accounts:'アカウント管理' };
 // 入力・取込系の機能権限。閲覧は「表示タブ」で、データを書き込む操作はこちらで制御する。
 // 既定は権限ごとの ROLE_FEATURES、アカウントごとに上書きしたい場合は「アカウント」シートのI列に保存する。
 const FEATURE_LABELS = {
@@ -48,6 +51,7 @@ const ROLE_FEATURES = {
   '本部':       ALL_FEATURES.slice(),
   'マネージャー':[],   // 既定は閲覧のみ（アカウントごとに個別許可できる）
   '店舗':       [],
+  '外販':       [],   // 閲覧のみ
 };
 // 口コミ集約：同じ実店舗にぶら下がる別名店舗（Googleマイビジネスが分かれているケース）
 // 親店舗（=分析_日別店舗の店舗名）に、口コミ上の子店舗名をぶら下げる
@@ -110,6 +114,7 @@ const DEMO_ACCOUNTS = [
   { id:'shacho',   pw:'tori2026',  name:'社長',           role:'社長',        stores:'全店', active:true, memo:'全店舗・全機能' },
   { id:'honbu',    pw:'torihq',    name:'本部 経営管理部', role:'本部',        stores:'全店', active:true, memo:'全店舗・全機能' },
   { id:'yokohama', pw:'toriarea',  name:'横浜エリアMG',    role:'マネージャー', stores:'鶏武者 新横浜, 鶏武者 川崎店, 黒霧屋 新横浜', active:true, memo:'担当店舗のみ' },
+  { id:'ringstyle',pw:'toriring',  name:'Ring-style',     role:'外販',        stores:'全店', media:'Ring-style', active:true, memo:'外販先: 担当媒体の売上のみ' },
   { id:'shiba',    pw:'torishiba', name:'芝の鳥一代',      role:'店舗',        stores:'芝の鳥一代', active:true, memo:'自店のみ' },
 ];
 
@@ -118,7 +123,7 @@ const S = {
   auth:null, connState:'demo', lastSync:'', loading:false,
   tab:'dash', period:'month', store:'all',
   pDay:'', pMonth:'', pYear:'', pWeekIdx:null, cStart:'', cEnd:'',
-  depMonth:'', adMonth:'', plMonth:'', plPeriod:'month', plYear:'', plStart:'', plEnd:'',
+  depMonth:'', adMonth:'', plMonth:'', ptMonth:'', plPeriod:'month', plYear:'', plStart:'', plEnd:'',
   depCarry:{ key:'', rows:null, loading:false, err:'' },   // 入金の繰越（開始残高）をサーバー全期間計算でキャッシュ
 
   revPeriod:'month', revMonth:'', revWeekIdx:null, revYear:'', revStart:'', revEnd:'',
@@ -357,12 +362,13 @@ function ingestMedia(rows){
   const H=rows[hi].map(h=>String(h).trim());
   const iS=colAny(H,['店舗名','店舗']), iD=colAny(H,['営業日','日付']), iM=colAny(H,['媒体名','媒体']), iG=colAny(H,['人数','客数']);
   const iN=colAny(H,['純売上','総売上','売上']);
+  const iGrp=colAny(H,['組数','客組数','会計組数']); // 外販向けに組数も取り込む
   if(iD<0||iM<0||iN<0){ D.diag.media='列が見つかりません（必要: 営業日/日付・媒体・売上）'; return false; }
   const recs=[];
   for(let i=hi+1;i<rows.length;i++){
     const c=rows[i]; const st=String(c[iS]||'').trim(); const t=parseDateStr(c[iD]);
     if(!st||!t) continue;
-    recs.push({ store:st, t, media:String(c[iM]||'').trim(), guests:num(c[iG]), net:num(c[iN]) });
+    recs.push({ store:st, t, media:String(c[iM]||'').trim(), guests:num(c[iG]), groups:num(c[iGrp]), net:num(c[iN]) });
   }
   if(!recs.length){ D.diag.media='0件'; return false; }
   D.media=recs; D.diag.media='OK '+recs.length+'件'; return true;
@@ -1349,7 +1355,7 @@ async function doLogin(){
   const acc=demoAccounts().find(a=>a.id===id&&a.pw===pw);
   if(!acc){ S.loginErr='IDまたはパスワードが違います'; render(); return; }
   if(acc.active===false){ S.loginErr='このアカウントは無効化されています'; render(); return; }
-  S.auth={ token:null, account:{ id:acc.id, name:acc.name, role:acc.role, stores:acc.stores, tabs:acc.tabs||'' } };
+  S.auth={ token:null, account:{ id:acc.id, name:acc.name, role:acc.role, stores:acc.stores, tabs:acc.tabs||'', media:acc.media||'' } };
   try{ localStorage.setItem(LS.sess, JSON.stringify(S.auth)); }catch(e){}
   afterLogin();
   render();
@@ -1487,7 +1493,8 @@ function render(){
   const tabs=myTabs();
   if(!tabs.includes(S.tab)) S.tab=tabs[0];
   let body='';
-  if(S.tab==='dash') body=viewDash();
+  if(S.tab==='partner') body=viewPartner();
+  else if(S.tab==='dash') body=viewDash();
   else if(S.tab==='target') body=viewTarget();
   else if(S.tab==='detail') body=viewDetail();
   else if(S.tab==='analysis') body=viewAnalysis();
@@ -2626,6 +2633,82 @@ function depMonthDate(){
   if(S.depMonth){ const p=S.depMonth.split('-'); return new Date(+p[0],+p[1]-1,1); }
   const ref=D.refDate||new Date(); return new Date(ref.getFullYear(),ref.getMonth(),1);
 }
+/* ========== 外販先向け（権限「外販」）: 担当媒体の売上だけを見せる ==========
+   ・アカウントシートのK列「担当媒体」に書いた媒体だけが対象（カンマ区切りで複数可）
+   ・構成比は出さない（全体の売上が推測できてしまうため）
+   ・前年比は出す。売上は「純売上」（ダッシュボード本体と同じ基準）
+*/
+function ptMonthDate(){
+  if(S.ptMonth){ const p=S.ptMonth.split('-'); return new Date(+p[0],+p[1]-1,1); }
+  const ref=D.refDate||new Date(); return new Date(ref.getFullYear(),ref.getMonth(),1);
+}
+function ptMediaList(){
+  const a=S.auth&&S.auth.account;
+  return String((a&&a.media)||'').split(/[,、]/).map(x=>x.trim()).filter(Boolean);
+}
+const ptNorm=v=>String(v||'').trim().toLowerCase();
+function ptRows(mS,mE){
+  const set=new Set(ptMediaList().map(ptNorm));
+  if(!set.size) return [];
+  return (D.media||[]).filter(r=>set.has(ptNorm(r.media))&&r.t>=mS&&r.t<=mE);
+}
+function ptSum(rows){
+  return rows.reduce((o,r)=>{o.net+=r.net||0;o.guests+=r.guests||0;o.groups+=r.groups||0;return o},{net:0,guests:0,groups:0});
+}
+function viewPartner(){
+  const media=ptMediaList();
+  const m0=ptMonthDate(), y=m0.getFullYear(), m=m0.getMonth();
+  const lastDay=new Date(y,m+1,0).getDate();
+  const mS=dayMs(new Date(y,m,1)), mE=dayMs(new Date(y,m,lastDay));
+  const pS=dayMs(new Date(y-1,m,1)), pE=dayMs(new Date(y-1,m,new Date(y-1,m+1,0).getDate()));
+  const head=`<div class="panel-head"><div><h3>${esc(media.join('・')||'媒体未設定')} の売上</h3>
+    <div class="sub">${y}年 ${m+1}月・純売上ベース</div></div>${ymSelect('ptMonth',y,m)}</div>`;
+  if(!media.length) return `<div class="panel">${head}<div class="empty">担当媒体が設定されていません。本部までお問い合わせください。</div></div>`;
+  if(!(D.media||[]).length) return `<div class="panel">${head}<div class="empty">売上データがまだ読み込まれていません。しばらくしてから開き直してください。</div></div>`;
+
+  const cur=ptSum(ptRows(mS,mE)), prv=ptSum(ptRows(pS,pE));
+  const unit=cur.guests?Math.round(cur.net/cur.guests):0;
+  const yoy=prv.net>0?((cur.net/prv.net-1)*100):null;
+  const yoyTxt=yoy===null?'前年 —':(yoy>=0?'+':'▲')+Math.abs(yoy).toFixed(1)+'%';
+  const yoyCls=yoy===null?'':(yoy>=0?'up':'dn'); // CSSは .yy.up / .yy.dn
+  let h=`<div class="panel">${head}
+    <div class="kpi-grid">
+      <div class="kpi"><div class="lb">売上（純売上）</div><div class="vl">${yen(cur.net)}</div><div class="yy ${yoyCls}" style="${yoyCls?'':'color:#8c8375'}">${esc(yoyTxt)}</div></div>
+      <div class="kpi"><div class="lb">組数</div><div class="vl">${cur.groups.toLocaleString('ja-JP')}組</div></div>
+      <div class="kpi"><div class="lb">人数</div><div class="vl">${cur.guests.toLocaleString('ja-JP')}人</div></div>
+      <div class="kpi"><div class="lb">客単価</div><div class="vl">${yen(unit)}</div></div>
+    </div></div>`;
+
+  // 店舗別の内訳（照合しやすいように）
+  const byStore={};
+  ptRows(mS,mE).forEach(r=>{ const k=r.store||'（店舗不明）'; (byStore[k]=byStore[k]||{net:0,guests:0,groups:0});
+    byStore[k].net+=r.net||0; byStore[k].guests+=r.guests||0; byStore[k].groups+=r.groups||0; });
+  const stKeys=Object.keys(byStore).sort((a,b)=>byStore[b].net-byStore[a].net);
+  if(stKeys.length>1){
+    h+=`<div class="panel"><div class="panel-head"><div><h3>店舗別</h3></div></div>
+      <div class="scroll-x"><table class="tbl"><thead><tr><th>店舗</th><th>組数</th><th>人数</th><th>売上</th><th>客単価</th></tr></thead><tbody>
+      ${stKeys.map(k=>{const v=byStore[k];return `<tr><td>${esc(k)}</td><td>${v.groups.toLocaleString('ja-JP')}</td><td>${v.guests.toLocaleString('ja-JP')}人</td><td>${yen(v.net)}</td><td>${yen(v.guests?Math.round(v.net/v.guests):0)}</td></tr>`}).join('')}
+      </tbody></table></div></div>`;
+  }
+
+  // 日別明細（確認作業のため）
+  const byDay={};
+  ptRows(mS,mE).forEach(r=>{ const d=new Date(r.t);
+    const key=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+    (byDay[key]=byDay[key]||{net:0,guests:0,groups:0});
+    byDay[key].net+=r.net||0; byDay[key].guests+=r.guests||0; byDay[key].groups+=r.groups||0; });
+  const days=Object.keys(byDay).sort();
+  h+=`<div class="panel"><div class="panel-head"><div><h3>日別 明細</h3>
+    <div class="sub">この内容に相違がないかご確認ください</div></div></div>
+    <div class="scroll-x"><table class="tbl"><thead><tr><th>日付</th><th>組数</th><th>人数</th><th>売上</th><th>客単価</th></tr></thead><tbody>
+    ${days.length?days.map(k=>{const v=byDay[k];const d=new Date(k);
+      return `<tr><td>${d.getMonth()+1}/${d.getDate()}（${'日月火水木金土'[d.getDay()]}）</td><td>${v.groups.toLocaleString('ja-JP')}</td><td>${v.guests.toLocaleString('ja-JP')}人</td><td>${yen(v.net)}</td><td>${yen(v.guests?Math.round(v.net/v.guests):0)}</td></tr>`}).join('')
+      :`<tr><td colspan="5">この月のデータはありません</td></tr>`}
+    <tr class="total"><td>合計</td><td>${cur.groups.toLocaleString('ja-JP')}</td><td>${cur.guests.toLocaleString('ja-JP')}人</td><td>${yen(cur.net)}</td><td>${yen(unit)}</td></tr>
+    </tbody></table></div></div>`;
+  return h;
+}
+
 function viewDeposit(){
   const sc=scopeStores(); const selName=selStoreName();
   const m0=depMonthDate();
