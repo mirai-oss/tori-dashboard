@@ -24,6 +24,11 @@
 
 var TOKEN_HOURS = 12; // ログイントークンの有効時間
 
+// 統合アカウント（N-Styleポータル / 日報Supabase）でのログイン用。
+// キーは公開用publishableキー（秘密情報ではない）。トークン検証はSupabase側で行う。
+var SSO_SUPA_URL = 'https://uuvsxzhpxtghojoubjcc.supabase.co';
+var SSO_SUPA_KEY = 'sb_publishable_MrwPJAx_Ws_fdRutprKCiQ_dg3wCiTr';
+
 // ================== エントリポイント ==================
 
 function doGet(e) {
@@ -43,11 +48,12 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'depnote-v45', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'sso-v46', time: new Date().toISOString() });
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     if (action === 'perf') return out(perfDiag(p)); // パフォーマンス計測（専用トークン認証・ログイン不要・数字は返さず時間だけ）
     setupIfNeeded();
     if (action === 'login')  return out(login(p));
+    if (action === 'supalogin') return out(supaLogin(p)); // 統合アカウント（Supabaseトークン）でログイン
     if (action === 'checkInvite')      return out(checkInvite(p));      // 招待リンクの確認（未ログイン）
     if (action === 'registerFromInvite') return out(registerFromInvite(p)); // 招待から自己登録（未ログイン）
     if (action === 'logout') return out(logout(p));
@@ -119,6 +125,11 @@ function setupIfNeeded() {
     // 既存シートに「表示タブ」列が無ければ見出しを追加（アカウント管理画面から編集できる）
     acc.getRange(1, 8).setValue('表示タブ').setFontWeight('bold').setBackground('#efe9dd');
     acc.getRange(1, 8).setNote('空欄＝権限の既定（店舗はPL・広告管理が非表示）。\n表示したいタブだけをカンマ区切りで指定（例: ダッシュボード,推移分析,口コミ）。\n通常はダッシュボードの「アカウント管理」画面のチェックボックスから設定してください。');
+  }
+  // K列「メール」（統合アカウントのメールアドレス。SSOログインの突き合わせに使う）
+  if (acc && String(acc.getRange(1, 11).getValue()) === '') {
+    acc.getRange(1, 11).setValue('メール').setFontWeight('bold').setBackground('#efe9dd');
+    acc.getRange(1, 11).setNote('統合アカウント（ポータル/日報）のメールアドレス。\nここに入れると「統合アカウントでログイン」でこの行の権限が使えます。\n空欄＝統合ログイン不可（従来のID/PWのみ）。');
   }
 
   // 接続設定シート（既定は実シート名に合わせてある）
@@ -349,7 +360,7 @@ function setupIfNeeded() {
 function accountRows() {
   var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('アカウント');
   if (!sh || sh.getLastRow() < 2) return [];
-  var vals = sh.getRange(2, 1, sh.getLastRow() - 1, 10).getValues();
+  var vals = sh.getRange(2, 1, sh.getLastRow() - 1, 11).getValues();
   var rows = [];
   for (var i = 0; i < vals.length; i++) {
     var v = vals[i];
@@ -365,7 +376,8 @@ function accountRows() {
       memo: String(v[6] || ''),
       tabs: String(v[7] || '').trim(),  // 表示タブ（空欄＝権限の既定）
       perms: String(v[8] || '').trim(), // 使える機能（空欄＝権限の既定 / 'なし'＝全部不可）
-      position: String(v[9] || '').trim() // 役職（店長/社員 等。週報テンプレートの出し分けに使う）
+      position: String(v[9] || '').trim(), // 役職（店長/社員 等。週報テンプレートの出し分けに使う）
+      email: String(v[10] || '').trim().toLowerCase() // 統合アカウントのメール（SSO突き合わせ用）
     });
   }
   return rows;
@@ -458,6 +470,42 @@ function login(p) {
   }
   cache.put(failKey, String(fails + 1), 600);
   return { ok: false, error: 'IDまたはパスワードが違います' };
+}
+
+// 統合アカウント（ポータル/日報のSupabase）でログイン。
+// ブラウザ側がSupabaseにメール+PWでログインして得た access_token を受け取り、
+// Supabaseの /auth/v1/user で検証（＝パスワードはGASを通らない）。
+// 検証OKならメールをアカウントシートK列「メール」と突き合わせ、通常と同じセッションを発行する。
+function supaLogin(p) {
+  var stoken = String(p.stoken || '');
+  if (!stoken) return { ok: false, error: '統合アカウントのトークンがありません' };
+  var res;
+  try {
+    res = UrlFetchApp.fetch(SSO_SUPA_URL + '/auth/v1/user', {
+      headers: { apikey: SSO_SUPA_KEY, Authorization: 'Bearer ' + stoken },
+      muteHttpExceptions: true
+    });
+  } catch (e) {
+    return { ok: false, error: '統合アカウントの確認に失敗しました: ' + e.message };
+  }
+  if (res.getResponseCode() !== 200) return { ok: false, error: '統合アカウントの認証が無効です。もう一度ログインしてください' };
+  var email = '';
+  try { email = String(JSON.parse(res.getContentText()).email || '').trim().toLowerCase(); } catch (e) {}
+  if (!email) return { ok: false, error: '統合アカウントのメールアドレスを取得できませんでした' };
+
+  var rows = accountRows();
+  for (var i = 0; i < rows.length; i++) {
+    var a = rows[i];
+    if (a.email && a.email === email) {
+      if (!a.active) return { ok: false, error: 'このアカウントは無効化されています' };
+      sessionCleanup();
+      var token = Utilities.getUuid();
+      var sess = { id: a.id, name: a.name, role: a.role, stores: a.stores, tabs: a.tabs, perms: a.perms, position: a.position };
+      sessionPut(token, sess);
+      return { ok: true, token: token, account: sess };
+    }
+  }
+  return { ok: false, error: 'このメール（' + email + '）に対応するダッシュボードアカウントがありません。アカウント管理の「メール」欄に登録してください' };
 }
 
 function logout(p) {
@@ -1014,7 +1062,7 @@ function dataVersion() {
 function listAccounts(session) {
   if (!isAdmin(session)) return { ok: false, error: 'アカウント管理の権限がありません' };
   var rows = accountRows().map(function (a) {
-    return { id: a.id, name: a.name, role: a.role, stores: a.stores, active: a.active, memo: a.memo, tabs: a.tabs, perms: a.perms, position: a.position, hasPw: a.pw !== '' };
+    return { id: a.id, name: a.name, role: a.role, stores: a.stores, active: a.active, memo: a.memo, tabs: a.tabs, perms: a.perms, position: a.position, email: a.email, hasPw: a.pw !== '' };
   });
   return { ok: true, accounts: rows };
 }
@@ -1041,12 +1089,13 @@ function saveAccount(p, session) {
     String(p.memo || (target ? target.memo : '')),
     String(p.tabs != null ? p.tabs : (target ? target.tabs : '')),  // 表示タブ（空欄＝権限の既定）
     String(p.perms != null ? p.perms : (target ? target.perms : '')),  // 使える機能（空欄＝権限の既定）
-    String(p.position != null ? p.position : (target ? target.position : ''))  // 役職
+    String(p.position != null ? p.position : (target ? target.position : '')),  // 役職
+    String(p.email != null ? p.email : (target ? target.email : '')).trim().toLowerCase()  // 統合アカウントのメール
   ];
   if (!values[1]) return { ok: false, error: '新規アカウントにはパスワードが必要です' };
 
-  if (target) sh.getRange(target.row, 1, 1, 10).setValues([values]);
-  else sh.getRange(sh.getLastRow() + 1, 1, 1, 10).setValues([values]);
+  if (target) sh.getRange(target.row, 1, 1, 11).setValues([values]);
+  else sh.getRange(sh.getLastRow() + 1, 1, 1, 11).setValues([values]);
   return { ok: true };
 }
 

@@ -17,6 +17,10 @@
  * ===================================================================== */
 const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbz9rd37EZa6X8WRMVEBrXobN8DbYWkHRlhFNYU5rd1UZ0V8j0-6shMQjEeoi4HDWZ0B/exec';
 
+// 統合アカウント（N-Styleポータル / 日報Supabase）ログイン用。publishableキーは公開前提の値。
+const SSO_SUPA_URL = 'https://uuvsxzhpxtghojoubjcc.supabase.co';
+const SSO_SUPA_KEY = 'sb_publishable_MrwPJAx_Ws_fdRutprKCiQ_dg3wCiTr';
+
 /* ---------------- 定数 ---------------- */
 const CANON_STORES = ['芝の鳥一代','鳥一代 はなれ','鳥一代 恵比寿','鳥一代 新橋','鳥一代 本店','鶏武者 新横浜','鶏武者 川崎店','黒霧屋 新横浜'];
 const PALETTE = ['#3d5163','#b5502f','#5f7052','#c9a86a','#7d8b6f','#2a6f8f','#9a6a4a','#6a5f8f','#a99f8c','#4a7a6a'];
@@ -1350,6 +1354,38 @@ async function doLogin(){
   afterLogin();
   render();
 }
+// 統合アカウント（ポータル/日報）でログイン：ブラウザ→Supabaseで認証し、
+// 得たaccess_tokenをGASのsupaloginへ渡して通常セッションに引き換える（パスワードはGASを通らない）
+async function doSsoLogin(){
+  const email=($('li-se').value||'').trim(), pw=$('li-sp').value||'';
+  if(!email||!pw){ S.loginErr='メールアドレスとパスワードを入力してください'; S.ssoOpen=true; render(); return; }
+  S.loginErr='';
+  $('li-sbtn').textContent='認証中…';
+  try{
+    const r=await fetch(SSO_SUPA_URL+'/auth/v1/token?grant_type=password',{
+      method:'POST', headers:{ apikey:SSO_SUPA_KEY, 'Content-Type':'application/json' },
+      body:JSON.stringify({ email, password:pw })
+    });
+    let j={}; try{ j=await r.json(); }catch(e){}
+    if(!r.ok){
+      S.loginErr=(j&&j.error_code==='invalid_credentials')?'メールアドレスまたはパスワードが違います':'統合アカウントの認証に失敗しました（'+(j.msg||r.status)+'）';
+      S.ssoOpen=true; render(); return;
+    }
+    const d=await api({ action:'supalogin', stoken:j.access_token });
+    if(!d.ok){
+      // 旧GAS（supalogin未対応）は 'unknown action' か 'unauthorized' を返す → 再デプロイ待ちと案内
+      const eo=String(d.error||'');
+      S.loginErr=(eo.includes('unknown action')||eo==='unauthorized')?'サーバー側の更新（GAS再デプロイ）がまだのため、統合ログインはもう少し先になります':(eo||'ログインに失敗しました');
+      S.ssoOpen=true; render(); return;
+    }
+    S.auth={ token:d.token, account:d.account };
+    try{ localStorage.setItem(LS.sess, JSON.stringify(S.auth)); }catch(e){}
+    afterLogin();
+    S.connState='connecting';
+    render();
+    fetchDataFast().then(()=>startPolling());
+  }catch(e){ S.loginErr='通信エラー: '+e.message; S.ssoOpen=true; render(); }
+}
 function afterLogin(){
   const tabs=myTabs();
   S.tab=tabs[0];
@@ -1530,6 +1566,17 @@ function viewLogin(){
       <label>パスワード</label>
       <input id="li-pw" type="password" autocomplete="current-password" placeholder="パスワードを入力" onkeydown="if(event.key==='Enter')App.login()">
       <button id="li-btn" class="btn-login" onclick="App.login()">ログイン</button>
+      ${live?`
+      <div style="text-align:center;color:var(--mut2);font-size:11px;margin:14px 0 10px">―――　または　―――</div>
+      ${S.ssoOpen?`
+      <label>統合アカウントのメールアドレス</label>
+      <input id="li-se" type="email" autocomplete="username" placeholder="ポータル/日報と同じメール" onkeydown="if(event.key==='Enter')$('li-sp').focus()">
+      <label>パスワード</label>
+      <input id="li-sp" type="password" autocomplete="current-password" placeholder="パスワード" onkeydown="if(event.key==='Enter')App.ssoLogin()">
+      <button id="li-sbtn" class="btn-login" onclick="App.ssoLogin()">🐔 統合アカウントでログイン</button>
+      `:`
+      <button class="btn-login" style="background:transparent;color:var(--mut2);border:1px dashed var(--mut2)" onclick="App.ssoToggle()">🐔 統合アカウント（ポータル/日報）でログイン</button>
+      `}`:''}
       ${live?'':`<div class="login-note">
         <b>デモアカウント（API未接続時）</b><br>
         社長: <b>shacho / tori2026</b>　本部: <b>honbu / torihq</b><br>
@@ -5106,6 +5153,7 @@ function accountModal(){
     <div class="form-grid" style="margin-top:14px">
       <div><label>状態</label><select id="ac-active"><option value="TRUE" ${a.active!==false?'selected':''}>有効</option><option value="FALSE" ${a.active===false?'selected':''}>無効</option></select></div>
       <div><label>メモ</label><input type="text" id="ac-memo" value="${esc(a.memo||'')}"></div>
+      <div><label>統合アカウントのメール（ポータル/日報と共通ログイン）</label><input type="email" id="ac-email" value="${esc(a.email||'')}" placeholder="例: taro@ns0314.com（空欄＝統合ログイン不可）"></div>
     </div>
     <div id="ac-msg" style="font-size:12px;color:#b5502f;margin:4px 0"></div>
     <div class="modal-btns">
@@ -5127,6 +5175,8 @@ function roleHintText(r){
 /* ---------------- アプリ操作（グローバル） ---------------- */
 window.App = {
   login: doLogin,
+  ssoLogin: doSsoLogin,
+  ssoToggle(){ S.ssoOpen=!S.ssoOpen; S.loginErr=''; render(); },
   logout(){ if(confirm('ログアウトしますか？')) doLogout(); },
   tab(t){ S.tab=t; render(); },
   period(p){ S.period=p; S.pWeekIdx=null; render(); },
@@ -5691,6 +5741,7 @@ window.App = {
     const active=$('ac-active').value;
     const memo=$('ac-memo').value;
     const position=($('ac-position')?$('ac-position').value:'').trim();
+    const email=($('ac-email')?$('ac-email').value:'').trim().toLowerCase();
     let stores;
     if(role==='社長'||role==='本部') stores='全店';
     else{
@@ -5714,7 +5765,7 @@ window.App = {
     if(live){
       msg.style.color='#8c8375'; msg.textContent='保存中…';
       try{
-        const d=await api({ action:'saveAccount', token:S.auth.token, accountId:id, pw, name, role, stores, active, memo, tabs, perms, position });
+        const d=await api({ action:'saveAccount', token:S.auth.token, accountId:id, pw, name, role, stores, active, memo, tabs, perms, position, email });
         if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'保存に失敗しました'; return; }
         S.accounts=null; S.modal=null; toast('アカウントを保存しました'); render();
       }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
