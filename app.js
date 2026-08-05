@@ -1386,6 +1386,45 @@ async function doSsoLogin(){
     fetchDataFast().then(()=>startPolling());
   }catch(e){ S.loginErr='通信エラー: '+e.message; S.ssoOpen=true; render(); }
 }
+// ポータル（https://mirai-oss.github.io/ns-portal/）は同一オリジンなのでlocalStorageを共有できる。
+// ポータルでログイン済みなら、その統合アカウントのトークンで黙ってログインする（失敗時は通常のログイン画面のまま）。
+const PORTAL_LS_KEY='nsportal_session_v1';
+function portalSession(){
+  try{ const raw=localStorage.getItem(PORTAL_LS_KEY); return raw?JSON.parse(raw):null; }catch(e){ return null; }
+}
+async function portalAccessToken(){
+  const s=portalSession();
+  if(!s||!s.at) return null;
+  // 期限切れならリフレッシュトークンで更新（ポータル側の保存も更新しておく）
+  const chk=await fetch(SSO_SUPA_URL+'/auth/v1/user',{ headers:{ apikey:SSO_SUPA_KEY, Authorization:'Bearer '+s.at } }).catch(()=>null);
+  if(chk&&chk.ok) return s.at;
+  if(!s.rt) return null;
+  const r=await fetch(SSO_SUPA_URL+'/auth/v1/token?grant_type=refresh_token',{
+    method:'POST', headers:{ apikey:SSO_SUPA_KEY, 'Content-Type':'application/json' },
+    body:JSON.stringify({ refresh_token:s.rt })
+  }).catch(()=>null);
+  if(!r||!r.ok) return null;
+  const j=await r.json().catch(()=>null);
+  if(!j||!j.access_token) return null;
+  try{ localStorage.setItem(PORTAL_LS_KEY, JSON.stringify({ at:j.access_token, rt:j.refresh_token, uid:j.user&&j.user.id })); }catch(e){}
+  return j.access_token;
+}
+async function trySilentPortalLogin(){
+  try{
+    const at=await portalAccessToken();
+    if(!at) return;
+    S.ssoAuto='trying'; render();
+    const d=await api({ action:'supalogin', stoken:at });
+    if(!d.ok){ S.ssoAuto=''; render(); return; }   // メール未登録などは黙って通常ログイン画面のまま
+    S.auth={ token:d.token, account:d.account };
+    try{ localStorage.setItem(LS.sess, JSON.stringify(S.auth)); }catch(e){}
+    S.ssoAuto='';
+    afterLogin();
+    S.connState='connecting';
+    render();
+    fetchDataFast().then(()=>startPolling());
+  }catch(e){ S.ssoAuto=''; render(); }
+}
 function afterLogin(){
   const tabs=myTabs();
   S.tab=tabs[0];
@@ -1560,6 +1599,7 @@ function viewLogin(){
       <h1>鳥一代グループ</h1><p>SALES DASHBOARD</p>
     </div>
     <div class="login-body">
+      ${S.ssoAuto==='trying'?`<div class="login-note" style="margin-bottom:12px">🐔 ポータルのアカウントでログイン中…</div>`:''}
       ${S.loginErr?`<div class="login-err">${esc(S.loginErr)}</div>`:''}
       <label>ログインID</label>
       <input id="li-id" type="text" autocomplete="username" placeholder="ID を入力" onkeydown="if(event.key==='Enter')$('li-pw').focus()">
@@ -5819,15 +5859,18 @@ window.App = {
     if(q.get('report')) S.reportMode={ kind:q.get('report'), date:q.get('date')||'',
       stores:q.get('stores')?q.get('stores').split(',').map(s2=>s2.trim()).filter(Boolean):null, group:q.get('group')||'' };
   }catch(e){}
+  let restored=false;
   try{
     const raw=localStorage.getItem(LS.sess);
     if(raw){
       const sess=JSON.parse(raw);
       if(sess&&sess.account){
-        if(sess.token&&apiUrl()){ S.auth=sess; S.connState='connecting'; fetchDataFast(); startPolling(); }
-        else if(!sess.token&&!apiUrl()){ S.auth=sess; }
+        if(sess.token&&apiUrl()){ S.auth=sess; S.connState='connecting'; fetchDataFast(); startPolling(); restored=true; }
+        else if(!sess.token&&!apiUrl()){ S.auth=sess; restored=true; }
       }
     }
   }catch(e){}
   render();
+  // ポータル（同一ドメインのns-portal）でログイン済みなら、そのセッションで自動ログインする
+  if(!restored&&apiUrl()) trySilentPortalLogin();
 })();
