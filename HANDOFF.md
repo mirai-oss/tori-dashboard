@@ -28,6 +28,9 @@
 - 反映確認: `curl -sL '<GAS_URL>?action=ping'` → `ver` を見る（コード内の`ping`応答と一致すればOK）
 - **GASを変えたら`ping`の`ver`も必ず上げること**（確認手段がなくなる）
 
+### 🚨 GASのマニフェスト(appsscript.json)を差し替えるとBigQueryが消える
+`dependencies.enabledAdvancedServices`にBigQuery(v2)が入っていないマニフェストを適用すると、**明細分析と毎朝のbqLoadOrdersが「BigQuery is not defined」で全滅**します（2026-08-06に実際に発生）。差し替えは必ず `gas/appsscript.reference.json` を使うこと。スコープ変更後は再認可も必要。
+
 ### 🚨 `.github/workflows/` にはpushできない
 GitHubトークンに`workflow`スコープが無く、pushが拒否されます。
 → **`scripts/lark-report.workflow.yml` を更新し、ユーザーにWeb UIで `.github/workflows/lark-report.yml` へ貼り替えてもらう**運用です。
@@ -99,7 +102,8 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 
 | 状態 | 内容 |
 |---|---|
-| ⏳ **要GAS再デプロイ** | `ping`が`depnote-v43`でなければ未反映。`DB_権限定義`/`DB_入金備考`が未作成なら確実に未反映 |
+| ⏳ **要GAS再デプロイ** | `ping`が`fix-v47`でなければ未反映（入金DB空行耐性・外販の担当媒体・BigQuery復旧マニフェスト。手順は作業ログ2026-08-06） |
+| ⏳ **要シート修正** | `入金DB`の1行目の空行を削除（ダッシュボード側・売上DB側の両方） |
 | ⏳ **要ワークフロー貼り替え** | `scripts/lark-report.workflow.yml` → `.github/workflows/lark-report.yml`（Web UIで） |
 | 💡 未着手 | 週報のフィードバック数ランキング（データは`DB_週報FB`に貯まるので**後から遡って集計可能**） |
 | 💡 未着手 | GBP分析（Google Business Profile Performance API）。**Googleの手動承認が必要**で、GBPの「オーナー」権限アカウントから申請しないと弾かれる。承認まで数日〜数週間 |
@@ -129,6 +133,22 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 ---
 
 ## 5. 作業ログ
+
+### 2026-08-06
+**「口座CSV取込ができない」調査 → 実際に壊れていたのは周辺3箇所（取込コード自体は無傷）**
+
+本番APIを直接叩いて全経路を検証（importDeposits到達・権限判定・売上DBオープン・ヘッダー検出・CSV解析3形式・モーダル表示すべて正常を確認）。その過程で以下を発見・修正：
+
+1. 🚨 **入金DBシートの1行目に空行が挿入されていた**（実ヘッダーが2行目にズレ）。書き込み側(`depositHeaderRow_`)は5行スキャンで生きていたが、配信側(`readSheet`)は「1行目＝ヘッダー」固定のため空ヘッダーで配信され、**繰越計算(`depositCarry`)が入金を1件も数えない**状態だった（列が見つからず全行スキップ→累計残が現金だけ積み上がる）。→ `readSheet`を「最初の非空行をヘッダーにする（最大5行スキャン）」に修正。**シート側の空行削除もユーザーに依頼**（売上DB側の入金DBも要確認）
+2. 🚨 **本番GASのBigQuery拡張サービスが消失**（`bqDetail`が「BigQuery is not defined」を実測）。08-06朝のUrlFetchApp権限エラー対策で適用した`appsscript.reference.json`が`dependencies`空だったため。明細分析タブ・毎朝の`bqLoadOrders`(Dinii注文明細のBQ投入)が全滅中 → マニフェストに`enabledAdvancedServices`(BigQuery v2)と`bigquery`スコープを追加。**再適用＋再認可が必要**
+3. 🐛 `accountRows`が11列読みなのにL列(12列目・担当媒体)を参照していて外販の担当媒体が常に空 → 12列読みに修正
+4. ping ver `sso-v46`→`fix-v47`（外販系のGAS変更がver据え置きでデプロイ確認不能になっていた）
+
+**ユーザーにお願いする手順（この順で）:**
+①スプレッドシートの`入金DB`の空の1行目を行ごと削除（売上DB側の入金DBも同様に確認）
+②GASエディタ→プロジェクトの設定→「appsscript.jsonを表示」ON→`gas/appsscript.reference.json`の内容で置き換え保存（BigQueryサービス復活）
+③`gas/Code.gs`を貼り替え→デプロイを管理→編集→新バージョン→デプロイ（承認を求められたら許可）
+④`curl -sL '<GAS_URL>?action=ping'`で`fix-v47`を確認、明細分析タブが出ることを確認
 
 ### 2026-08-03
 **月末着地見込みの高度化（天気・イベント・曜日・祝日補正）**

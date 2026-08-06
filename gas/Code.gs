@@ -48,7 +48,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'sso-v46', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v47', time: new Date().toISOString() });
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     if (action === 'perf') return out(perfDiag(p)); // パフォーマンス計測（専用トークン認証・ログイン不要・数字は返さず時間だけ）
     setupIfNeeded();
@@ -365,7 +365,7 @@ function setupIfNeeded() {
 function accountRows() {
   var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('アカウント');
   if (!sh || sh.getLastRow() < 2) return [];
-  var vals = sh.getRange(2, 1, sh.getLastRow() - 1, 11).getValues();
+  var vals = sh.getRange(2, 1, sh.getLastRow() - 1, 12).getValues();  // L列（担当媒体）まで読む
   var rows = [];
   for (var i = 0; i < vals.length; i++) {
     var v = vals[i];
@@ -674,6 +674,12 @@ function readSheet(sh, months, key) {
   var lr = sh.getLastRow(), lc = sh.getLastColumn();
   if (lr < 1 || lc < 1) return [];
   var vals = sh.getRange(1, 1, lr, lc).getValues();
+  // 先頭に空行が挿入されてもヘッダーを見失わないように、最初の非空行をヘッダーにする（最大5行スキャン）。
+  // 実際に2026-08で入金DBの1行目に空行が入り、配信ヘッダーが空になって繰越計算が壊れた事故対策。
+  var h0 = 0;
+  while (h0 < Math.min(5, vals.length) && String(vals[h0].join('')).trim() === '') h0++;
+  if (h0 >= vals.length) return [];
+  if (h0 > 0) vals = vals.slice(h0);
   var header = vals[0];
   var keepIdx = keepColumnIdx(header, key);
   // 日付列（絞り込み用）
