@@ -1224,12 +1224,25 @@ function lineChart(cat, series, M, opts){
 
 /* ---------------- API通信 ---------------- */
 function apiUrl(){ try{ return localStorage.getItem(LS.api)||DEFAULT_API_URL||''; }catch(e){ return DEFAULT_API_URL||''; } }
-async function api(params){
+// GASは応答が遅いことがあるため既定3分でタイムアウトさせる。無制限だと通信が切れたときに
+// 「保存中…」「取込中…」のまま永久に止まって見えるため（実際に発生）。
+const API_TIMEOUT_MS=180000;
+async function api(params, timeoutMs){
   const url=apiUrl();
   if(!url) throw new Error('APIが未設定です');
-  const r=await fetch(url,{ method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'}, body:JSON.stringify(params) });
-  if(!r.ok) throw new Error('HTTP '+r.status);
-  return r.json();
+  const lim=timeoutMs||API_TIMEOUT_MS;
+  const ctl=(typeof AbortController!=='undefined')?new AbortController():null;
+  const tm=ctl?setTimeout(()=>ctl.abort(),lim):null;
+  try{
+    const opt={ method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'}, body:JSON.stringify(params) };
+    if(ctl) opt.signal=ctl.signal;
+    const r=await fetch(url,opt);
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    return r.json();
+  }catch(e){
+    if(e&&(e.name==='AbortError'||e.code===20)) throw new Error('応答がありません（'+Math.round(lim/1000)+'秒でタイムアウト）。通信環境を確認してもう一度お試しください');
+    throw e;
+  }finally{ if(tm) clearTimeout(tm); }
 }
 function stampNow(){ const n=new Date(); return (n.getMonth()+1)+'/'+n.getDate()+' '+String(n.getHours()).padStart(2,'0')+':'+String(n.getMinutes()).padStart(2,'0'); }
 // タイムスタンプ(ms)を「M/D HH:mm」に整形（週報の提出・編集日時表示用）
@@ -5399,8 +5412,8 @@ window.App = {
       const d=await api({ action:'saveTargets', token:S.auth.token, store, month,
         daily:JSON.stringify(daily), pa:g('tg-pa'), emp:g('tg-emp'), cost:g('tg-cost'), dinii:g('tg-dinii'), review:g('tg-review') });
       if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'保存に失敗しました'; return; }
-      S.modal=null; S.tMonth=month; toast('目標を保存しました');
-      await fetchData(true,{ only:['目標','目標月次'], partial:true }); render();
+      S.modal=null; S.tMonth=month; render(); toast('目標を保存しました');
+      fetchData(true,{ only:['目標','目標月次'], partial:true });
     }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
   },
   openTargetDay(store,date){ S.modal={type:'targetDay', store, date}; render(); },
@@ -5412,8 +5425,8 @@ window.App = {
     try{
       const d=await api({ action:'saveTargetDay', token:S.auth.token, store:m.store, date:m.date, goal:v });
       if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'保存に失敗しました'; return; }
-      S.modal=null; toast(v===''?'この日の目標を削除しました':'目標を更新しました');
-      await fetchData(true,{ only:['目標'], partial:true }); render();
+      S.modal=null; render(); toast(v===''?'この日の目標を削除しました':'目標を更新しました');
+      fetchData(true,{ only:['目標'], partial:true });
     }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
   },
   csvSection(prefix){ downloadCsvSection(prefix); },
@@ -5572,9 +5585,12 @@ window.App = {
     try{
       const d=await api({ action:'importDeposits', token:S.auth.token, store, rows:JSON.stringify(payload) });
       if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'取込に失敗しました'; if(runBtn)runBtn.disabled=false; return; }
-      S.modal=null;
+      // ★取込は完了しているので、重い再取得を待たずに先に画面へ反映する。
+      //   ここでrenderしないと、入金DBの再取得（実測10秒超）が終わるまでモーダルが
+      //   「取込中…」のまま残り、固まったように見える（実際に問い合わせが発生）。
+      S.modal=null; render();
       toast(`入金 ${d.added}件を取り込みました`+(d.dup>0?`（重複スキップ ${d.dup}件）`:''));
-      await fetchData(true,{ only:['deposit'], partial:true }); render();
+      fetchData(true,{ only:['deposit'], partial:true });   // 反映は裏で（完了時にfetchData内でrender）
     }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; if(runBtn)runBtn.disabled=false; }
   },
   /* ---- PL経費入力 ---- */
@@ -5612,9 +5628,9 @@ window.App = {
     try{
       const d=await api({ action:'savePlBulk', token:S.auth.token, ym1, ym2, store, item, cat, amount:amtRaw, memo });
       if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'一括計上に失敗しました'; return; }
-      S.modal=null;
+      S.modal=null; render();
       toast(amtRaw===''?`「${item}」を${d.months}ヶ月分削除しました`:`「${item}」を${d.months}ヶ月分一括計上しました`+(d.plsys?'／'+d.plsys:''));
-      await fetchData(true,{ only:['pl','PL'], partial:true }); render();
+      fetchData(true,{ only:['pl','PL'], partial:true });
     }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
   },
   plGuessCat(inp){ const c=PL_ITEM_CAT[String(inp.value).trim()]; if(c){ const sel=inp.closest('tr').querySelector('.pli-cat'); if(sel)sel.value=c; } },
@@ -5634,8 +5650,8 @@ window.App = {
     try{
       const d=await api({ action:'savePlEntries', token:S.auth.token, ym:$('pli-ym').value||m.ym, store:$('pli-store').value||m.store, entries:JSON.stringify(entries) });
       if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'保存に失敗しました'; return; }
-      S.modal=null; toast('経費を保存しました（'+d.saved+'件）'+(d.plsys?'／'+d.plsys:''));
-      await fetchData(true,{ only:['pl','PL'], partial:true }); render();
+      S.modal=null; render(); toast('経費を保存しました（'+d.saved+'件）'+(d.plsys?'／'+d.plsys:''));
+      fetchData(true,{ only:['pl','PL'], partial:true });
     }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
   },
   /* ---- 広告費入力 ---- */
@@ -5767,9 +5783,9 @@ window.App = {
     try{
       const d=await api({ action:'importReservations', token:S.auth.token, store, rows:JSON.stringify(payload) });
       if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'取込に失敗しました'; if(btn)btn.disabled=false; return; }
-      S.modal=null;
+      S.modal=null; render();
       toast(`予約 ${d.added}件を取り込みました`+(d.dup>0?`（重複スキップ ${d.dup}件）`:''));
-      await fetchData(true,{ only:['予約'], partial:true }); render();
+      fetchData(true,{ only:['予約'], partial:true });
     }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; if(btn)btn.disabled=false; }
   },
   openEventInput(id){ S.modal={type:'event', id:id||''}; render(); },
@@ -5783,8 +5799,8 @@ window.App = {
     try{
       const d=await api({ action:'saveEvent', token:S.auth.token, id:S.modal.id||'', date, name, venue, stores, memo });
       if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'保存に失敗しました'; return; }
-      S.modal=null; toast('イベントを保存しました');
-      await fetchData(true,{ only:['イベント'], partial:true }); render();
+      S.modal=null; render(); toast('イベントを保存しました');
+      fetchData(true,{ only:['イベント'], partial:true });
     }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
   },
   async deleteEventBtn(id){
@@ -5792,8 +5808,8 @@ window.App = {
     try{
       const d=await api({ action:'deleteEvent', token:S.auth.token, id });
       if(!d.ok){ toast(d.error||'削除に失敗しました'); return; }
-      S.modal=null; toast('イベントを削除しました');
-      await fetchData(true,{ only:['イベント'], partial:true }); render();
+      S.modal=null; render(); toast('イベントを削除しました');
+      fetchData(true,{ only:['イベント'], partial:true });
     }catch(e){ toast('通信エラー: '+e.message); }
   },
   refresh(){ if(S.auth&&S.auth.token){ fetchDataFast(); toast('最新データを取得中…'); } else { loadSampleData(); render(); toast('サンプルデータを再読込しました（API未接続）'); } },

@@ -28,8 +28,8 @@
 - 反映確認: `curl -sL '<GAS_URL>?action=ping'` → `ver` を見る（コード内の`ping`応答と一致すればOK）
 - **GASを変えたら`ping`の`ver`も必ず上げること**（確認手段がなくなる）
 
-### 🚨 GASのマニフェスト(appsscript.json)を差し替えるとBigQueryが消える
-`dependencies.enabledAdvancedServices`にBigQuery(v2)が入っていないマニフェストを適用すると、**明細分析と毎朝のbqLoadOrdersが「BigQuery is not defined」で全滅**します（2026-08-06に実際に発生）。差し替えは必ず `gas/appsscript.reference.json` を使うこと。スコープ変更後は再認可も必要。
+### 🚨 GASのマニフェスト(appsscript.json)は「全文置き換え」しない
+`dependencies.enabledAdvancedServices`にBigQuery(v2)が入っていないマニフェストを適用すると、**明細分析と毎朝のbqLoadOrders(dinii-orders)が「BigQuery is not defined」で全滅**します（2026-08-06に実際に発生）。**今のappsscript.jsonを開いて足りない項目だけ追記**すること。必要な項目の一覧は [gas/appsscript_注意.md](gas/appsscript_注意.md)。スコープ変更後は再認可＋新バージョンでのデプロイも必要。
 
 ### 🚨 `.github/workflows/` にはpushできない
 GitHubトークンに`workflow`スコープが無く、pushが拒否されます。
@@ -133,6 +133,16 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 ---
 
 ## 5. 作業ログ
+
+### 2026-08-06（続き）
+**🐛「取込中…」で固まる本体原因を特定・修正（app.js v93）**
+
+ユーザーの症状「取込中…でずっと止まっている」を本番で再現・計測して原因確定。**取込は成功しているのにUIが更新されていなかった**だけだった（データは入っている）。
+
+- `runDepositImport` は成功後に `S.modal=null; toast(); await fetchData(...deposit...); render();` の順で、**`S.modal=null`はDOMを更新しない**ため、重い入金DB再取得（実測10.5秒）が終わるまでモーダルが「取込中…」のまま残っていた。取込5.6秒＋再取得10.5秒＝**16秒間フリーズしたように見える**（本番で計測して再現）。トーストはモーダルの裏で2.6秒で消えるので気づけない
+- → `S.modal=null` の直後に `render()` を入れて先に閉じ、再取得は `await` せず裏で走らせる方式に変更。修正後は5.3秒でモーダルが閉じ「入金 N件を取り込みました」が出ることを実測確認
+- **同じパターンが7箇所**（目標保存・日別目標・口座CSV・PL経費・PL一括・予約CSV・イベント保存/削除）にあったので全部同様に修正
+- `api()` に**3分のタイムアウト**を追加（AbortController）。従来は無制限で、通信が切れると本当に永久に止まって見えた
 
 ### 2026-08-06
 **「口座CSV取込ができない」調査 → 実際に壊れていたのは周辺3箇所（取込コード自体は無傷）**
