@@ -230,6 +230,8 @@ LARK_WEBHOOK=<hook> IMAGE_URL=<releaseURL> node scripts/lark-report.mjs send
 
 | ファイル | 内容 |
 |---|---|
+| [CLAUDE.md](CLAUDE.md) | **AIが守るルール（自動読み込み）**。禁止事項・必須作業・起動手順 |
+| [AI指示書.md](AI指示書.md) | **別マシン／別スレッドで作業を頼むときのコピペ用プロンプト** |
 | [README.md](README.md) | 機能の使い方（人間向け） |
 | [Lark日報設定.md](Lark日報設定.md) | Lark配信のセットアップ |
 | [Lark日報_外部cron設定.md](Lark日報_外部cron設定.md) | GAS時計トリガーでの定時起動 |
