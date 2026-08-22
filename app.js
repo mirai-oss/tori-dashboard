@@ -1376,7 +1376,12 @@ async function fetchDailyBQ(){
     if(d&&d.ok&&d.sheets){ ingestSheets(d.sheets, true); D.dailyBqErr=''; }
     else{ D.dailyBqErr=(d&&d.error)||'取得に失敗しました'; }
   }catch(e){ D.dailyBqErr=String(e&&e.message||e); }
-  D.dailyBqLoading=false; render();
+  D.dailyBqLoading=false;
+  // BQモードではdailyがフェーズ1で除外され(fetchDataFast参照)、その時点のconnState判定は
+  // D.diag.dailyがまだ空のため必ず'livewarn'になってしまう。ここで初めてdailyが届くので、
+  // 判定をやり直す（2026-08-22の初回実装の抜け漏れ・同日中に発見し修正）。
+  if(S.useBqDaily) S.connState=(!D.dailyBqErr && D.diag.daily && D.diag.daily.indexOf('OK')===0)?'live':'livewarn';
+  render();
 }
 // PLタブ用: DB_PLのBQミラーを読む（2026-08-22追加。fetchDailyBQと同じ考え方）
 async function fetchPlBQ(){
