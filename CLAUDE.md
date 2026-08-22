@@ -29,7 +29,7 @@ bash scripts/status.sh               # ②本番の「実際の状態」を実�
 | **`appsscript.json` の全文置き換え** | BigQueryの高度なサービス設定が消え、明細分析と毎朝の`dinii-orders`が全滅（2026-08-06）。**足りない項目だけ追記**する。→ [gas/appsscript_注意.md](gas/appsscript_注意.md) |
 | **GASで「新しいデプロイ」を作る** | URLが変わり、`app.js`の`DEFAULT_API_URL`が旧版を指したまま事故る。正: **デプロイを管理 → 編集(鉛筆) → 新バージョン → デプロイ** |
 | **`git push --force` / リモートを上書きするrebase** | 並行セッションの成果が消える |
-| **`.github/workflows/` へのpush** | トークンに`workflow`スコープが無く拒否される。`scripts/lark-report.workflow.yml`を更新し、ユーザーがWeb UIで貼り替える運用 |
+| **`.github/workflows/` へのpush（要事前確認）** | 過去にトークンの`workflow`スコープ不足で拒否されたことがあるが、2026-08-22時点では`workflow`スコープ有りで普通にpushできた（`gh auth status`で確認）。**pushする前に`gh auth status`でスコープを確認**し、無ければ`scripts/lark-report.workflow.yml`を更新してユーザーにWeb UIで貼り替えてもらう。どちらの場合も`scripts/lark-report.workflow.yml`と`.github/workflows/lark-report.yml`は常に同じ内容に保つこと（乖離した実績あり） |
 | **Webhook URL・トークン・パスワードをリポジトリに書く** | **Publicリポジトリ**。GitHub Secrets / ローカルのみ |
 | **PL管理システムの`コード.gs`を上書き** | リポジトリに無い関数（`syncAd`等）が消える。追加は必ず**別ファイル**で |
 | **ユーザーのChromeを勝手に操作** | 別プロジェクト(ns-daily-import)の取込が壊れる |
