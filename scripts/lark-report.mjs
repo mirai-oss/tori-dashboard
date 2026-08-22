@@ -40,7 +40,10 @@ async function capture() {
   const DASH_ID = process.env.DASH_ID || '', DASH_PW = process.env.DASH_PW || '';
   if (!DASH_ID || !DASH_PW) { console.error('DASH_ID / DASH_PW が未設定です'); process.exit(1); }
   log('browser起動 / kind =', KIND);
-  const browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox', '--disable-setuid-sandbox', '--font-render-hinting=none', '--lang=ja-JP'] });
+  // protocolTimeout未指定だとPuppeteerの既定値(180000ms=3分)が、下のDATA_WAIT(4分)より先に
+  // 効いてしまい「Runtime.callFunctionOn timed out」で強制終了する（2026-08-22の本番テストで実際に発生・原因判明）。
+  // DATA_WAITより長い値にしておく。
+  const browser = await puppeteer.launch({ headless: 'new', protocolTimeout: 300000, args: ['--no-sandbox', '--disable-setuid-sandbox', '--font-render-hinting=none', '--lang=ja-JP'] });
   try {
     const page = await browser.newPage();
     await page.setViewport({ width: 1240, height: 1800, deviceScaleFactor: 2 });
