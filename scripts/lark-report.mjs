@@ -81,13 +81,25 @@ async function capture() {
       } else {
         log('既にログイン済み（セッション復元）→ ログイン手順を飛ばしてデータ読込待ち…');
       }
-      // 媒体別(D.media)はフェーズ2の裏読みで後から届く。ランチ/ディナー内訳と媒体別売上が
-      // 空のまま撮影されるのを防ぐため mediaPending===false まで待つ（読込失敗時もfalseになるので固まらない）。
+      // ログイン成功の判定は daily（軽い）だけを条件にする。以前は媒体別(D.media)の
+      // 裏読み完了(mediaPending===false)まで一緒に待っていたが、2026-08-22時点で
+      // 媒体別日次シートが21,000件超まで育ち、GAS側の読込がDATA_WAIT(4分)を超えて
+      // 終わらないことがあり、ログインごとリトライが空振りして自動配信全体が
+      // 止まる不具合が発生した（本番テストで確認済み）。ログイン自体は daily が
+      // 届いた時点で成功とみなし、媒体別は下のMEDIA_WAITで別枠・短めに待つ
+      // （間に合わなければ空のまま撮影を続行＝レポートの一部欄が空くのを許容し、
+      // 配信全体が止まる方を避ける）。
       await Promise.race([
-        page.waitForFunction(() => typeof S !== 'undefined' && S.auth && S.connState === 'live' && typeof D !== 'undefined' && D.daily.length > 0 && D.mediaPending === false, { timeout: DATA_WAIT, polling: 2000 }),
+        page.waitForFunction(() => typeof S !== 'undefined' && S.auth && S.connState === 'live' && typeof D !== 'undefined' && D.daily.length > 0, { timeout: DATA_WAIT, polling: 2000 }),
         page.waitForFunction(() => { const el = document.querySelector('.login-err'); return el && el.textContent.length > 0 ? el.textContent : false; }, { timeout: DATA_WAIT, polling: 2000 })
           .then(async (h) => { throw new Error('ログイン失敗: ' + (await h.jsonValue())); }),
       ]);
+      const MEDIA_WAIT = 90000;   // 媒体別データの別枠待ち（ここで詰まっても配信全体は止めない）
+      try {
+        await page.waitForFunction(() => typeof D !== 'undefined' && D.mediaPending === false, { timeout: MEDIA_WAIT, polling: 2000 });
+      } catch (e) {
+        log('媒体別データの読込がMEDIA_WAIT(' + MEDIA_WAIT + 'ms)内に終わらなかったため、空のまま続行します（ランチ/ディナー内訳・媒体別売上が空欄になる可能性）');
+      }
     };
     // 混雑時の一時的な遅延に耐えるため4回まで試し、待ち時間を段階的に伸ばす（6s→15s→30s）
     const MAX_LOGIN_TRY = 4;
