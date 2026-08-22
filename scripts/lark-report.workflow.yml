@@ -80,6 +80,7 @@ jobs:
           REPORT_KIND: ${{ env.REPORT_KIND }}
           DASH_ID: ${{ secrets.DASH_ID }}
           DASH_PW: ${{ secrets.DASH_PW }}
+          REPORT_USE_BQ: '1'
         run: node scripts/lark-report.mjs capture
 
       - name: 画像を GitHub Release にアップロード（公開URL化）
@@ -120,6 +121,7 @@ jobs:
           DASH_PW: ${{ secrets.DASH_PW }}
           REPORT_GROUP: tori
           REPORT_STORES: 芝の鳥一代,鳥一代 はなれ,鳥一代 恵比寿,鳥一代 新橋,鳥一代 本店,鶏武者 新横浜,鶏武者 川崎店,黒霧屋 新横浜
+          REPORT_USE_BQ: '1'
         run: node scripts/lark-report.mjs capture
 
       - name: 第2レポート画像を Release にアップロード
@@ -171,8 +173,8 @@ jobs:
       max-parallel: 1     # ダッシュボード(GAS)への同時ログインを避けるため1グループずつ
       matrix:
         include:
-          # 2026-08-22: データ基盤ロードマップDay5「Lark新経路」の先行検証としてgroup1のみuseBq:'1'
-          # （データ元をBigQueryに切替えて撮影）。画像崩れが無いことを確認できたら他グループにも展開する。
+          # 2026-08-22: データ基盤ロードマップDay5「Lark新経路」。group1で先行検証（画像崩れ無し・
+          # ユーザー確認済み）→全グループへ展開（useBq:'1'、データ元をBigQueryに切替えて撮影）。
           - group: group1
             secret: LARK_WEBHOOK_GROUP1
             stores: '鳥一代 本店|honten,鳥一代 はなれ|hanare,芝の鳥一代|shiba,鳥一代 新橋|shinbashi'
@@ -180,9 +182,11 @@ jobs:
           - group: group2
             secret: LARK_WEBHOOK_GROUP2
             stores: '鳥一代 恵比寿|ebisu,黒霧屋 新横浜|kurokiriya-shinyoko,鶏武者 川崎店|torimusha-kawasaki'
+            useBq: '1'
           - group: group3
             secret: LARK_WEBHOOK_GROUP3
             stores: '黒霧屋 新横浜|kurokiriya-shinyoko,鶏武者 川崎店|torimusha-kawasaki,鶏武者 新横浜|torimusha-shinyoko'
+            useBq: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
