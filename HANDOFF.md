@@ -140,6 +140,30 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 
 ## 5. 作業ログ
 
+### 2026-08-22（続き8）
+**Lark日報のBigQuery新経路配信・完了。データ基盤ロードマップDay5が全項目完了**
+
+`scripts/lark-report.mjs`のcapture()に`REPORT_USE_BQ=1`オプションを追加。推移分析タブと同じ
+`App.setDailySource('bq')`を撮影前に呼び、`D.daily`をBigQuery経由で取得してから`App.report()`を
+実行する（reportData()がstat()経由でD.dailyを使うため、コード変更はcapture側の1箇所だけで済んだ）。
+
+- `only_group=group1`でworkflow_dispatchを手動実行し、group1（本店/はなれ/芝/新橋）4店舗で先行検証
+  → 4件success・画像も目視確認して**レイアウト崩れ無し**（ロードマップが懸念していたリスク項目）
+- ユーザー確認のうえgroup2/group3・全体比較表・鳥一代8店舗版すべてに`useBq:'1'`/`REPORT_USE_BQ:'1'`を展開
+- **ヒヤリハット**: 展開後の動作確認で`kind=daily`を`only_group`指定なしで実行してしまい、
+  全グループへ本日分の日報を重複送信するところだった。ジョブ開始55〜70秒後にユーザー確認のうえ
+  即キャンセルし、実際の送信（ログイン・撮影後のLark送信ステップ）には未到達で実害なしと確認。
+  **教訓**: 実際にメッセージを送るworkflowを動作確認する時は、`only_group`のような送信範囲を絞る
+  パラメータがあれば必ず使うこと。範囲を絞らない実行は「配信」そのものになるため、ユーザーへの
+  確認は「デプロイしていいか」だけでなく「今この場でテスト実行していいか」も別途要る
+- `.github/workflows/lark-report.yml`は`scripts/lark-report.workflow.yml`（pushできる側の控え）から
+  実際は乖離していた（only_group/only_stores・リトライロジックが本番側にだけ存在）。**このセッションの
+  `gh`トークンには`workflow`スコープがあり`.github/workflows/`への直接pushができた**（CLAUDE.mdの
+  「pushできない」という記述は別セッション・別トークン時点の制約だった可能性。都度`gh auth status`で
+  実際のスコープを確認するのが確実）
+
+**データ基盤統合ロードマップ Day1〜5が全項目完了**（Day6「店舗追加の1箇所化」・Day7「総合検証」は未着手）
+
 ### 2026-08-22（続き7）
 **日報dash-syncのGAS往復廃止・完了（`ping`=`fix-v53`）**
 
