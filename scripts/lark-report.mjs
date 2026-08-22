@@ -1,27 +1,33 @@
 /**
- * 鳥一代グループ ダッシュボード → Lark 自動日報/週報/月報（画像リンク方式）
+ * 鳥一代グループ ダッシュボード → Lark/Chatwork 自動日報/週報/月報
  * =====================================================================
  * サブコマンド:
  *   node scripts/lark-report.mjs capture   … ログイン→カード撮影→ report.png + report-meta.json 出力
- *   node scripts/lark-report.mjs send      … report-meta.json + 環境変数 IMAGE_URL からLarkへカード送信
+ *   node scripts/lark-report.mjs send      … report-meta.json から配信先へ送信（CHANNEL_KINDで切替）
  *
- * GitHub Actions では capture → 画像をReleaseにアップロード → send の順で実行する。
- * 送るのは「要約テキスト＋画像リンクボタン」のカード（Larkのボット機能不要）。
+ * GitHub Actions では capture → (Larkのみ)画像をReleaseにアップロード → send の順で実行する。
+ * Lark: 「要約テキスト＋画像リンクボタン」のカード（Larkのボット機能不要）。
+ * Chatwork: 要約テキストをメッセージ送信＋report.pngをそのままファイル添付（Day6③）。
  *
  * 環境変数:
  *   DASH_ID / DASH_PW  : ダッシュボードのログイン
- *   LARK_WEBHOOK       : Larkカスタムボットの Webhook URL
  *   REPORT_KIND        : daily | weekly | monthly
  *   SITE_URL           : 省略時 https://mirai-oss.github.io/tori-dashboard/
- *   IMAGE_URL          : send時、公開された日報画像のURL（capture後にActionsが渡す）
+ *   CHANNEL_KIND        : lark（既定） | chatwork
+ *   LARK_WEBHOOK        : kind=larkのとき。Larkカスタムボットの Webhook URL
+ *   IMAGE_URL           : kind=larkのsend時、公開された日報画像のURL（capture後にActionsが渡す）
+ *   CHATWORK_TOKEN       : kind=chatworkのとき。Chatwork APIトークン（X-ChatWorkToken）
+ *   CHATWORK_ROOM_ID     : kind=chatworkのとき。送信先ルームID
  */
 import fs from 'node:fs';
 
 const MODE = (process.argv[2] || 'send').trim();
 const SITE_URL = process.env.SITE_URL || 'https://mirai-oss.github.io/tori-dashboard/';
 const KIND = (process.env.REPORT_KIND || 'daily').trim();
+const CHANNEL_KIND = (process.env.CHANNEL_KIND || 'lark').trim();
 const WEBHOOK = process.env.LARK_WEBHOOK || '';
 const META = 'report-meta.json';
+const IMAGE_PATH = 'report.png';
 
 const yen = (n) => '¥' + Math.round(n || 0).toLocaleString('ja-JP');
 const cnt = (n) => Math.round(n || 0).toLocaleString('ja-JP');
@@ -125,11 +131,8 @@ async function capture() {
   } finally { await browser.close(); }
 }
 
-// ---------- send: Larkカード（要約テキスト＋画像リンク） ----------
-async function send() {
-  if (!WEBHOOK) { console.error('LARK_WEBHOOK が未設定です'); process.exit(1); }
-  const d = JSON.parse(fs.readFileSync(META, 'utf8'));
-  const imageUrl = process.env.IMAGE_URL || '';
+// ---------- 要約テキスト組み立て（Lark/Chatwork共通） ----------
+function buildText(d) {
   const t = d.tot;
   const spend = t.guests > 0 ? t.sales / t.guests : 0;
   const single = d.singleStore || null;
@@ -175,6 +178,14 @@ async function send() {
       .map((r) => `・${r.media}　${yen(r.sales)}${mTot > 0 ? `（${(r.sales / mTot * 100).toFixed(1)}%）` : ''}`).join('\n');
     mediaBlock = `**媒体別 売上トップ3**\n${lines}`;
   }
+  return { headline, summary, detailBlock, mediaBlock, single };
+}
+
+// ---------- send: Larkカード（要約テキスト＋画像リンク） ----------
+async function sendLark(d) {
+  if (!WEBHOOK) { console.error('LARK_WEBHOOK が未設定です'); process.exit(1); }
+  const imageUrl = process.env.IMAGE_URL || '';
+  const { headline, summary, detailBlock, mediaBlock, single } = buildText(d);
 
   const elements = [{ tag: 'markdown', content: summary }];
   if (detailBlock) elements.push({ tag: 'hr' }, { tag: 'markdown', content: detailBlock });
@@ -195,7 +206,47 @@ async function send() {
   const r = await fetch(WEBHOOK, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ msg_type: 'interactive', card }) });
   const j = await r.json().catch(() => ({}));
   if (j.code !== 0 && j.StatusCode !== 0) throw new Error('Webhook送信失敗: ' + JSON.stringify(j));
-  log('✓ カードを送信しました', imageUrl ? '（画像リンク付き）' : '（画像リンクなし）');
+  log('✓ Larkカードを送信しました', imageUrl ? '（画像リンク付き）' : '（画像リンクなし）');
+}
+
+// ---------- send: Chatworkメッセージ＋画像添付（Day6③。GitHub Releaseを経由せず直接添付できる） ----------
+// Larkのmarkdown記法（**太字**・<font color>）はChatworkに無いのでプレーンテキストへ整形する。
+const stripMd = (s) => String(s || '').replace(/\*\*/g, '').replace(/<font[^>]*>/g, '').replace(/<\/font>/g, '');
+async function sendChatwork(d) {
+  const token = process.env.CHATWORK_TOKEN || '';
+  const room = process.env.CHATWORK_ROOM_ID || '';
+  if (!token || !room) { console.error('CHATWORK_TOKEN / CHATWORK_ROOM_ID が未設定です'); process.exit(1); }
+  const { headline, summary, detailBlock, mediaBlock } = buildText(d);
+  const text = [headline, '', stripMd(summary), detailBlock ? stripMd(detailBlock) : '', mediaBlock ? stripMd(mediaBlock) : '',
+    '', `自動日報Bot ／ ダッシュボード: ${SITE_URL} ／ 生成 ${d.gen}`].filter((s) => s !== '').join('\n');
+
+  const mRes = await fetch(`https://api.chatwork.com/v2/rooms/${room}/messages`, {
+    method: 'POST',
+    headers: { 'X-ChatWorkToken': token, 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ body: text, self_unread: '1' }).toString(),
+  });
+  if (!mRes.ok) throw new Error('Chatworkメッセージ送信失敗: HTTP ' + mRes.status + ' ' + (await mRes.text()).slice(0, 300));
+  log('✓ Chatworkメッセージを送信しました');
+
+  if (fs.existsSync(IMAGE_PATH)) {
+    const form = new FormData();
+    form.append('file', new Blob([fs.readFileSync(IMAGE_PATH)], { type: 'image/png' }), (d.fileKey || 'report') + '.png');
+    const fRes = await fetch(`https://api.chatwork.com/v2/rooms/${room}/files`, {
+      method: 'POST',
+      headers: { 'X-ChatWorkToken': token },
+      body: form,
+    });
+    if (!fRes.ok) throw new Error('Chatwork画像添付失敗: HTTP ' + fRes.status + ' ' + (await fRes.text()).slice(0, 300));
+    log('✓ Chatworkへ画像を添付しました');
+  } else {
+    log('report.png が無いため画像添付はスキップしました');
+  }
+}
+
+async function send() {
+  const d = JSON.parse(fs.readFileSync(META, 'utf8'));
+  if (CHANNEL_KIND === 'chatwork') await sendChatwork(d);
+  else await sendLark(d);
 }
 
 (async () => {

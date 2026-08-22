@@ -151,42 +151,59 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-  # ================= グループ別レポート（Larkグループごとに、担当店舗を1店舗ずつ送る） =================
+  # ================= 配信matrixの動的生成（Day6③。データ基盤統合ロードマップDay6） =================
+  # グループ／店舗の割り当てはSupabase（report_channels・report_channel_stores、正本はnippo店舗管理画面の
+  # 「配信グループ管理」）から毎回読み直す。コミット不要・グループ追加はnippo画面で完結する。
+  # anonキーで読める匿名読み取り専用VIEW(report_channel_matrix_v)を使うため、GitHub Secretの追加は不要。
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.build.outputs.matrix }}
+    steps:
+      - name: レポート種別を決定
+        run: |
+          K="${{ github.event.inputs.kind }}"
+          [ -z "$K" ] && K=daily
+          echo "REPORT_KIND=$K" >> "$GITHUB_ENV"
+      - name: 配信matrixをSupabaseから取得
+        id: build
+        env:
+          REPORT_KIND: ${{ env.REPORT_KIND }}
+        run: |
+          set -e
+          KEY='sb_publishable_MrwPJAx_Ws_fdRutprKCiQ_dg3wCiTr'
+          URL="https://uuvsxzhpxtghojoubjcc.supabase.co/rest/v1/report_channel_matrix_v?select=*&report_kinds=cs.%7B${REPORT_KIND}%7D"
+          RES=$(curl -sf "$URL" -H "apikey: $KEY" -H "Authorization: Bearer $KEY")
+          echo "取得: $RES"
+          MATRIX=$(node -e '
+            const rows = JSON.parse(process.argv[1]);
+            const include = rows.map(r => ({
+              group: r.group, kind: r.kind, secret: r.secret_name,
+              room: r.chatwork_room_id || "", stores: r.stores, useBq: "1",
+            }));
+            console.log(JSON.stringify({ include }));
+          ' "$RES")
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+
+  # ================= グループ別レポート（配信グループごとに、担当店舗を1店舗ずつ送る） =================
   # 店舗を1つだけ渡すと、店舗比較表ではなく「直近推移＋ランチ/ディナー内訳＋媒体別売上」の
   # 単店舗フォーマットになる（app.js の viewReport が自動で切り替える）。
   # 1グループにつき、担当店舗の枚数ぶんカードが連続して届く（まとめて1枚にはしない）。
   #
-  # ▼ グループを追加/変更する手順
-  #   1. LarkグループでWebhookを取得（設定 → ボット → ボットを追加 → カスタムボット）
-  #      ※カスタムキーワードを設定する場合は「日報」にすること（全カードのnote行に必ず含まれる）
-  #   2. GitHub → Settings → Secrets and variables → Actions で
-  #      名前 LARK_WEBHOOK_GROUPn ／ 値 そのWebhook URL を登録
-  #   3. 下の matrix に1ブロック追記
-  #      stores は「正式店舗名|画像ファイル名キー」をカンマ区切りで並べる（店舗名は分析_日別店舗の表記に合わせる）
-  # Secret が未登録のグループは自動でスキップされるので、先に matrix だけ書いても安全。
-  # 別グループに同じ店舗が入っていてもよい（同じ内容の画像を作り直すだけで害はない）。
+  # ▼ グループの追加/変更/Lark⇔Chatwork切替は、コード変更不要・nippoの店舗管理画面
+  #   「配信グループ管理」で行う（Day6③。matrixは上のprepareジョブが毎回Supabaseから動的生成する）。
+  #   Secretの名前だけをそこで登録し（値はDBに置かない）、実際のWebhook URL／APIトークンは
+  #   GitHub → Settings → Secrets and variables → Actions に登録する。
+  #   Secret が未登録のグループは自動でスキップされる。別グループに同じ店舗が入っていてもよい。
   group-report:
+    needs: prepare
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
       fail-fast: false    # 1グループ失敗しても他グループの配信は続行する
       max-parallel: 1     # ダッシュボード(GAS)への同時ログインを避けるため1グループずつ
-      matrix:
-        include:
-          # 2026-08-22: データ基盤ロードマップDay5「Lark新経路」。group1で先行検証（画像崩れ無し・
-          # ユーザー確認済み）→全グループへ展開（useBq:'1'、データ元をBigQueryに切替えて撮影）。
-          - group: group1
-            secret: LARK_WEBHOOK_GROUP1
-            stores: '鳥一代 本店|honten,鳥一代 はなれ|hanare,芝の鳥一代|shiba,鳥一代 新橋|shinbashi'
-            useBq: '1'
-          - group: group2
-            secret: LARK_WEBHOOK_GROUP2
-            stores: '鳥一代 恵比寿|ebisu,黒霧屋 新横浜|kurokiriya-shinyoko,鶏武者 川崎店|torimusha-kawasaki'
-            useBq: '1'
-          - group: group3
-            secret: LARK_WEBHOOK_GROUP3
-            stores: '黒霧屋 新横浜|kurokiriya-shinyoko,鶏武者 川崎店|torimusha-kawasaki,鶏武者 新横浜|torimusha-shinyoko'
-            useBq: '1'
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -208,6 +225,9 @@ jobs:
             echo "SKIP=1" >> "$GITHUB_ENV"
           elif [ -z "$DID" ]; then
             echo "::notice::DASH_ID が未設定のためスキップ"
+            echo "SKIP=1" >> "$GITHUB_ENV"
+          elif [ "${{ matrix.kind }}" = "chatwork" ] && [ -z "${{ matrix.room }}" ]; then
+            echo "::notice::${{ matrix.group }} はChatworkルームIDが未設定のためスキップ"
             echo "SKIP=1" >> "$GITHUB_ENV"
           fi
           # 店舗を絞る指定があればそれを使う（無ければmatrixの全店舗）
@@ -233,7 +253,10 @@ jobs:
           REPORT_KIND: ${{ env.REPORT_KIND }}
           DASH_ID: ${{ secrets.DASH_ID }}
           DASH_PW: ${{ secrets.DASH_PW }}
+          CHANNEL_KIND: ${{ matrix.kind }}
           LARK_WEBHOOK: ${{ secrets[matrix.secret] }}
+          CHATWORK_TOKEN: ${{ secrets[matrix.secret] }}
+          CHATWORK_ROOM_ID: ${{ matrix.room }}
           STORES: ${{ matrix.stores }}
           REPORT_USE_BQ: ${{ matrix.useBq }}
           GH_TOKEN: ${{ github.token }}
@@ -275,6 +298,17 @@ jobs:
             "); then
               echo "::warning::$STORE のメタ検証に失敗"
               FAIL=$((FAIL+1)); FAILED="$FAILED $STORE"; echo "::endgroup::"; continue
+            fi
+
+            if [ "$CHANNEL_KIND" = "chatwork" ]; then
+              # Chatworkはreport.pngをそのまま添付できるのでGitHub Releaseを経由しない（Day6③）
+              if node scripts/lark-report.mjs send; then
+                echo "$STORE ✓ 送信完了"; OK=$((OK+1))
+              else
+                echo "::warning::$STORE の送信に失敗"
+                FAIL=$((FAIL+1)); FAILED="$FAILED $STORE"
+              fi
+              echo "::endgroup::"; continue
             fi
 
             cp report.png "$FILEKEY.png"

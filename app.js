@@ -60,19 +60,49 @@ const REVIEW_CHILDREN = {
   '鶏武者 新横浜': ['匠味 新横浜'],
   '鶏武者 川崎店': ['匠味 川崎'],
 };
-// コード側の 子→親 逆引き（既定値）。実際の親子は下の関数でスプレッドシート(DB_店舗親子)とも合成する。
+// コード側の 子→親 逆引き（既定値）。実際の親子は下の関数でスプレッドシート(DB_店舗親子)・Supabase(store_aliases)とも合成する。
 const REVIEW_PARENT_CODE = (()=>{ const m={}; Object.keys(REVIEW_CHILDREN).forEach(p=>REVIEW_CHILDREN[p].forEach(c=>m[c]=p)); return m; })();
-// 親店舗にぶら下がる子店舗（サブブランド）一覧＝コード既定 ＋ スプレッドシート「DB_店舗親子」(D.storeParent)
+// Day6②: Supabase店舗マスタ（D.storeDirectory）のstore_aliases(kind='listing')＝口コミ上の別掲載名。
+// 正本はこちら。データが無い（GAS未対応・取得失敗）間はコード既定＋DB_店舗親子だけで動く。
+function storeDirListingChildren_(parent){
+  if(!D.storeDirectory) return [];
+  const hit=D.storeDirectory.find(s=>s.name===parent);
+  return hit&&hit.aliases ? hit.aliases.filter(a=>a.kind==='listing').map(a=>a.alias) : [];
+}
+function storeDirParentOf_(name){
+  if(!D.storeDirectory) return null;
+  const hit=D.storeDirectory.find(s=>(s.aliases||[]).some(a=>a.kind==='listing'&&a.alias===name));
+  return hit ? hit.name : null;
+}
+// 親店舗にぶら下がる子店舗（サブブランド）一覧＝コード既定 ＋ Supabase(store_aliases) ＋ スプレッドシート「DB_店舗親子」(D.storeParent)
 function childrenOfStore(parent){
   const kids=(REVIEW_CHILDREN[parent]||[]).slice();
+  storeDirListingChildren_(parent).forEach(c=>{ if(!kids.includes(c)) kids.push(c); });
   const sp=D.storeParent||{};
   for(const c in sp){ if(sp[c]===parent && !kids.includes(c)) kids.push(c); }
   return kids;
 }
-// 子店舗 → 親店舗（スプレッドシート優先）
-function parentOfStore(name){ return (D.storeParent&&D.storeParent[name]) || REVIEW_PARENT_CODE[name] || null; }
-// 全子店舗の一覧（コード＋シート）
-function allChildStores(){ const set=new Set(); Object.keys(REVIEW_CHILDREN).forEach(p=>REVIEW_CHILDREN[p].forEach(c=>set.add(c))); Object.keys(D.storeParent||{}).forEach(c=>set.add(c)); return [...set]; }
+// 子店舗 → 親店舗（Supabase優先、次にスプレッドシート、次にコード既定）
+function parentOfStore(name){ return storeDirParentOf_(name) || (D.storeParent&&D.storeParent[name]) || REVIEW_PARENT_CODE[name] || null; }
+// 全子店舗の一覧（コード＋Supabase＋シート）
+function allChildStores(){
+  const set=new Set();
+  Object.keys(REVIEW_CHILDREN).forEach(p=>REVIEW_CHILDREN[p].forEach(c=>set.add(c)));
+  Object.keys(D.storeParent||{}).forEach(c=>set.add(c));
+  if(D.storeDirectory) D.storeDirectory.forEach(s=>(s.aliases||[]).forEach(a=>{ if(a.kind==='listing') set.add(a.alias); }));
+  return [...set];
+}
+// 移行期間中の突合ログ（Day7で廃止判断する材料）：DB_店舗親子とSupabaseで親が食い違う子店舗が無いか確認
+function logReviewChildrenDiff_(){
+  if(!D.storeDirectory) return;
+  const supa={};
+  D.storeDirectory.forEach(s=>(s.aliases||[]).forEach(a=>{ if(a.kind==='listing') supa[a.alias]=s.name; }));
+  Object.keys(D.storeParent||{}).forEach(child=>{
+    if(supa[child] && supa[child]!==D.storeParent[child]){
+      console.warn('[口コミ親子] 差分: '+child+' はDB_店舗親子='+D.storeParent[child]+' / Supabase='+supa[child]);
+    }
+  });
+}
 // ある親店舗に表示すべき口コミ店舗名（親自身＋子）
 function reviewNamesFor(parent){ return [parent].concat(childrenOfStore(parent)); }
 
@@ -136,7 +166,7 @@ const S = {
   useBqDaily:(localStorage.getItem(LS.dailyBq)==='1'),   // 推移分析のデータソース切替（既定=false=シート。2026-08-22追加）
 };
 const D = { daily:[], media:[], deposit:[], review:[], ad:[], adfx:[], tanka:{}, pl:[], dinii:[], diniiCols:[], targets:[], targetsM:[], events:[], extra:{}, storeAlias:{}, storeParent:{}, mediaClass:{}, adMediaMaster:[], adPlanMaster:{}, adStoreMaster:[], holidays:null, detailData:null, detailKey:'', detailLoading:'', refDate:null, maxDate:null,
-  wkTpl:{}, wkRep:[], wkAns:{}, wkFb:{}, roleDef:{}, depNote:{}, dailyBqLoading:false, dailyBqErr:'', plBqLoading:false, plBqErr:'' };
+  wkTpl:{}, wkRep:[], wkAns:{}, wkFb:{}, roleDef:{}, depNote:{}, dailyBqLoading:false, dailyBqErr:'', plBqLoading:false, plBqErr:'', storeDirectory:null };
 let EXPORT = [];      // 現在タブのCSVエクスポート対象 [{title,headers,rows}]
 let pollTimer = null;
 
@@ -208,7 +238,16 @@ const WX_LOCS=[
   { key:'atsugi',   re:/本厚木|厚木|エース/,                            lat:35.4408, lon:139.3648, name:'本厚木' },
   { key:'tokyo',    re:/.*/,                                            lat:35.6895, lon:139.6917, name:'東京' }
 ];
-function wxLocOf(store){ const s=String(store||''); return WX_LOCS.find(l=>l.re.test(s))||WX_LOCS[WX_LOCS.length-1]; }
+// Day6②: 店舗ごとの緯度経度（Supabase store_directory_v.weather_lat/lon）を正とし、
+// 未設定またはSupabase未取得の店舗だけWX_LOCSの地域正規表現にフォールバックする（決定3）。
+function wxLocOf(store){
+  const s=String(store||'');
+  if(D.storeDirectory){
+    const hit=D.storeDirectory.find(x=>x.name===s);
+    if(hit && hit.weather_lat!=null && hit.weather_lon!=null) return { key:'store', re:null, lat:hit.weather_lat, lon:hit.weather_lon, name:s };
+  }
+  return WX_LOCS.find(l=>l.re.test(s))||WX_LOCS[WX_LOCS.length-1];
+}
 // WMO天気コード → 表示。alert: typhoon/thunder/rain/snow は強調表示する
 const WX_CODES={
   0:{i:'☀️',t:'快晴'}, 1:{i:'🌤️',t:'晴れ'}, 2:{i:'⛅',t:'晴れ時々くもり'}, 3:{i:'☁️',t:'くもり'},
@@ -1019,11 +1058,17 @@ function loadSampleData(){
 }
 
 /* ---------------- 店舗・権限 ---------------- */
+// Day6②: Supabase店舗マスタの表示順（sort_order）があればそちらを使い、無ければ現行のCANON_STORES。
+function canonStoreOrder(){
+  if(D.storeDirectory && D.storeDirectory.length) return D.storeDirectory.slice().sort((a,b)=>(a.sort_order||0)-(b.sort_order||0)).map(s=>s.name);
+  return CANON_STORES;
+}
 function allStores(){
   const inData={}; D.daily.forEach(r=>inData[r.store]=1);
-  const list=CANON_STORES.filter(n=>inData[n]);
+  const order=canonStoreOrder();
+  const list=order.filter(n=>inData[n]);
   Object.keys(inData).forEach(n=>{ if(!list.includes(n)) list.push(n); });
-  return list.length?list:CANON_STORES.slice();
+  return list.length?list:order.slice();
 }
 function scopeStores(){
   const acc=S.auth&&S.auth.account; const all=allStores();
@@ -1278,6 +1323,7 @@ async function fetchData(silent, opts){
       throw new Error(d.error||'取得に失敗しました');
     }
     ingestSheets(d.sheets||{}, !!opts.partial);
+    if(d.stores && d.stores.length){ D.storeDirectory=d.stores; logReviewChildrenDiff_(); }
     if(d.version) S.dataVersion=d.version;
     // daily を含む読込のときだけ接続状態を判定（媒体別だけの追い読みでは変えない）
     if(!opts.only || opts.only.indexOf('daily')>=0){

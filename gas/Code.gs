@@ -48,7 +48,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v53', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v54', time: new Date().toISOString() });
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     if (action === 'bqSetupSalesDataset') return out(bqSetupSalesDataset(p)); // salesデータセット作成（初回のみ・専用トークン認証）
     if (action === 'bqSyncSales') return out(bqSyncAllSales(p)); // 分析_日別店舗ほかのBQミラー（専用トークン認証・ログイン不要）
@@ -757,8 +757,42 @@ function getData(p, session) {
     ok: true,
     updated: new Date().toISOString(),
     account: session,
-    sheets: sheets
+    sheets: sheets,
+    stores: fetchStoreDirectory_() // Day6②: Supabase店舗マスタ（表示順・看板・別名・天気地点等）。取得失敗時はnull＝フロントが現行定数にフォールバック
   };
+}
+
+// ================== 店舗マスタ（Day6②: Supabase直読み） ==================
+// 正本はSupabase（nippo店舗管理画面で編集）。anonキーで読める匿名読み取り専用VIEW
+// store_directory_v を10分キャッシュで読む。取得できない間はnullを返し、
+// 呼び出し側（getData・resolveAdStore_）はこれまでどおりのハードコード値／シートに
+// フォールバックして処理を止めない（決定1: docs/実装指示書_Day6_店舗マスタ1箇所化②③.md）。
+var STORE_DIRECTORY_URL_ = 'https://uuvsxzhpxtghojoubjcc.supabase.co/rest/v1/store_directory_v?select=*';
+var STORE_DIRECTORY_ANON_KEY_ = 'sb_publishable_MrwPJAx_Ws_fdRutprKCiQ_dg3wCiTr';
+function fetchStoreDirectory_() {
+  var cache = CacheService.getScriptCache();
+  var ck = 'store_directory_v1';
+  var cached = cache.get(ck);
+  if (cached) { try { return JSON.parse(cached); } catch (e) {} }
+  try {
+    var res = UrlFetchApp.fetch(STORE_DIRECTORY_URL_, {
+      headers: { apikey: STORE_DIRECTORY_ANON_KEY_, Authorization: 'Bearer ' + STORE_DIRECTORY_ANON_KEY_ },
+      muteHttpExceptions: true
+    });
+    if (res.getResponseCode() !== 200) throw new Error('store_directory_v http ' + res.getResponseCode());
+    var rows = JSON.parse(res.getContentText());
+    if (!rows || !rows.length) throw new Error('store_directory_v empty');
+    var missingWx = [];
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].is_active && (rows[i].weather_lat == null || rows[i].weather_lon == null)) missingWx.push(rows[i].name);
+    }
+    if (missingWx.length) Logger.log('天気地点 未設定店舗（地域デフォルトにフォールバック）: ' + missingWx.join(', '));
+    cache.put(ck, JSON.stringify(rows), 600);
+    return rows;
+  } catch (e) {
+    Logger.log('fetchStoreDirectory_ フォールバック: ' + e);
+    return null;
+  }
 }
 
 // ================== 入金の繰越（開始残高）だけを全期間で計算して返す ==================
@@ -1639,17 +1673,29 @@ function normStoreName_(s) {
   return STORE_CANONICAL_BY_NOSPACE_[nospace] || t;
 }
 // 広告側の店舗名（⚙️店舗マスタの「匠味（新横浜）」等）を、売上側の店舗名へ解決する。
-// DB_店舗名対応（別表記→正式名）→ DB_店舗親子（子ブランド→親店舗）の順に引く。
+// Day6②: 正本はSupabase store_aliases（表記ゆれ・口コミ別掲載名を1つのテーブルに統合済みなので
+// DB_店舗名対応→DB_店舗親子の2段引きは不要・1段で解決できる）。取得できない間だけ現行シート方式にフォールバック。
 // 解決できなければ元の名前を返す。※権限チェックのために使う。
 function resolveAdStore_(name) {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
   var cur = String(name == null ? '' : name).trim();
   if (!cur) return '';
+  var key = storeKey_(cur);
+  var dir = fetchStoreDirectory_();
+  if (dir) {
+    for (var i = 0; i < dir.length; i++) {
+      var aliases = dir[i].aliases || [];
+      for (var j = 0; j < aliases.length; j++) {
+        if (storeKey_(aliases[j].alias) === key && storeKey_(dir[i].name) !== key) return dir[i].name;
+      }
+    }
+    return cur;
+  }
+  // フォールバック: 現行のシート方式（DB_店舗名対応→DB_店舗親子の順に引く）
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
   function lookup(sheetName) {
     var sh = ss.getSheetByName(sheetName);
     if (!sh || sh.getLastRow() < 2) return null;
     var v = sh.getRange(1, 1, sh.getLastRow(), 2).getValues();
-    var key = storeKey_(cur);
     for (var i = 0; i < v.length; i++) {
       var a = String(v[i][0]).trim(), b = String(v[i][1]).trim();
       if (!a || !b) continue;
