@@ -1833,6 +1833,9 @@ function viewDash(){
     kpis.push({ lb:'ダイニー再来店意向', vl: ds.avg!=null?ds.avg.toFixed(2):'—', yy:dyy });
   }
   let h=periodCtrlHtml()+storeSegHtml();
+  // 2026-08-22追加: このタブもD.daily経由でBigQueryトグル(推移分析タブ)の影響を受けるため、
+  // BQモード中は管理者にだけ分かるよう小さく表示（トグル自体は推移分析タブに一本化）
+  if(isAdminRole()&&S.useBqDaily) h+=`<div class="mut" style="font-size:11px;margin:2px 0 8px">🧪 データ元: BigQuery（推移分析タブのトグルで切替）</div>`;
   h+=`<div class="kpi-grid">`+kpis.map(k=>`<div class="kpi"><div class="lb">${k.lb}</div><div class="vl">${k.vl}</div>${k.sub?`<div class="yy" style="color:#5c5348;font-weight:600;margin-bottom:2px">${k.sub}</div>`:''}${k.segsub?`<div class="yy" style="color:#7a6f5c;font-size:10.5px;margin-bottom:2px">${k.segsub}</div>`:''}<div class="yy ${k.yy.cls}">${k.yy.t}</div></div>`).join('')+`</div>`;
   EXPORT.push({ title:'KPI（'+r.label+(selName?'・'+selName:'・'+(sc.length===allStores().length?'全店':'担当店舗'))+'）',
     headers:['指標','値','前年比較'], rows:kpis.map(k=>[k.lb,k.vl+(k.sub?'（'+k.sub+'）':''),k.yy.t]) });
@@ -3341,6 +3344,8 @@ function viewTarget(){
     <button class="icon-btn" onclick="App.openEventInput('')">＋ イベント追加</button>`:''}
     <span class="period-label">目標と実績（${mLabel} ／ ${selN?esc(selN):'合算'}）</span>
   </div>`;
+  // 2026-08-22追加: このタブもD.daily経由でBigQueryトグル(推移分析タブ)の影響を受ける
+  if(isAdminRole()&&S.useBqDaily) h+=`<div class="mut" style="font-size:11px;margin:2px 0 8px">🧪 データ元: BigQuery（推移分析タブのトグルで切替）</div>`;
   // 目標データ
   const goalByDay={}; let goalM=0;
   for(const r of D.targets){ if(r.t<mS||r.t>mE) continue; if(!scopeSet.has(r.store)) continue; goalByDay[r.t]=(goalByDay[r.t]||0)+r.goal; goalM+=r.goal; }
