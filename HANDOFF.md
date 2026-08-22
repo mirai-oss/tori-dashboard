@@ -140,6 +140,30 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 
 ## 5. 作業ログ
 
+### 2026-08-22（続き4）
+**入金管理タブもBigQueryミラー化・実機確認まで完了（`ping`=`fix-v52`、`app.js?v=97`）**
+
+Day5「タブを順次切替」の最後の1枚、入金管理タブに対応。`分析_日別店舗`と同じくこのプロジェクトの
+ローカルシート「入金DB」が対象（PLタブのときにユーザーから「入金DBは対象外」と言われたのはPL作業
+そのもののスコープの話であり、入金タブ自体の切替は今回のスコープ）。
+
+- GAS: `bqSalesTargets_()`に入金DBを追加（`stg_deposit`、A店舗 B日付 C入金額 D摘要 のうちA〜Dをミラー）。
+  `bqGetDeposit(p, session)`を新設（`bqGetPL`と同じ方針：ログイン必須・店舗スコープ制限）
+- **ハマった点1**: 初回デプロイでstartRow:2としたところ`stg_deposit`だけロード失敗
+  （`Unable to parse...column_name:"date"...value:"日付"`）。`readSheet()`のコメントに
+  「2026-08に入金DBの1行目に空行が入った」事故の記録があり、**現在も2行目が本当のヘッダー・
+  3行目からデータ**という状態だった。startRow:3に修正して解消（実際にエラーログで実データの
+  構造を確認してから直す、という今までどおりのやり方が有効だった）
+- **ハマった点2（重要）**: 同期を`curl -X POST`で叩いたところ、GAS Webアプリのリダイレクト先
+  （`script.googleusercontent.com/macros/echo`）が**POSTだと405 Method Not Allowedを返す**現象が発生
+  （`curl -L`はデフォルトで302後にPOST→GETへ変換するため、`--post302`を付けても405のままだった）。
+  **`curl -G --data-urlencode`でGET方式（`?action=...&token=...`）に変えたら解決**。今後この手のGAS
+  webapp直叩きはPOSTでなくGETを使うこと（`ping`など既存の確認用コマンドが元からGETだったのはこれが理由）
+- app.js: `fetchDepositBQ()`新設（`fetchPlBQ`と同じ考え方）。`S.useBqDaily`のトグルに`deposit`も連動
+  （フェーズ2先読みからも除外）。入金管理タブに「🧪 データ元: BigQuery」表示を追加
+- ユーザーが実機でトグルON→入金管理タブの数値がシート版と一致することを確認済み
+- **Day5「タブを順次切替」は全タブ完了**（推移分析・ダッシュボード・目標管理・PL・入金管理）
+
 ### 2026-08-22（続き3）
 **PLタブの手入力経費（`DB_PL`）もBigQueryミラー化（`ping`=`fix-v50`、`app.js?v=96`）**
 
