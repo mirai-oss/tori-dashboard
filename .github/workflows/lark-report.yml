@@ -171,9 +171,12 @@ jobs:
       max-parallel: 1     # ダッシュボード(GAS)への同時ログインを避けるため1グループずつ
       matrix:
         include:
+          # 2026-08-22: データ基盤ロードマップDay5「Lark新経路」の先行検証としてgroup1のみuseBq:'1'
+          # （データ元をBigQueryに切替えて撮影）。画像崩れが無いことを確認できたら他グループにも展開する。
           - group: group1
             secret: LARK_WEBHOOK_GROUP1
             stores: '鳥一代 本店|honten,鳥一代 はなれ|hanare,芝の鳥一代|shiba,鳥一代 新橋|shinbashi'
+            useBq: '1'
           - group: group2
             secret: LARK_WEBHOOK_GROUP2
             stores: '鳥一代 恵比寿|ebisu,黒霧屋 新横浜|kurokiriya-shinyoko,鶏武者 川崎店|torimusha-kawasaki'
@@ -228,6 +231,7 @@ jobs:
           DASH_PW: ${{ secrets.DASH_PW }}
           LARK_WEBHOOK: ${{ secrets[matrix.secret] }}
           STORES: ${{ matrix.stores }}
+          REPORT_USE_BQ: ${{ matrix.useBq }}
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
@@ -246,7 +250,7 @@ jobs:
             CAPTURED=0
             for try in 1 2; do
               rm -f report.png report-meta.json
-              if REPORT_STORES="$STORE" REPORT_GROUP="$KEY" node scripts/lark-report.mjs capture; then
+              if REPORT_STORES="$STORE" REPORT_GROUP="$KEY" REPORT_USE_BQ="$REPORT_USE_BQ" node scripts/lark-report.mjs capture; then
                 CAPTURED=1; break
               fi
               if [ "$try" -lt 2 ]; then

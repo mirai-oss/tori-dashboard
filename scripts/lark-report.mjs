@@ -98,6 +98,20 @@ async function capture() {
     const stores = (process.env.REPORT_STORES || '').trim();   // カンマ区切りで店舗を絞る（空=全店）
     const group = (process.env.REPORT_GROUP || '').trim();     // 画像ファイル名の識別子（例 tori）
     const dateOverride = (process.env.REPORT_DATE || '').trim(); // 過去の期間を指定して再送したい時（例 2026-06-15）。空=最新日
+
+    // 2026-08-22追加（データ基盤ロードマップDay5「Lark新経路」）: データ元をBigQueryに切替えて撮影する。
+    // 推移分析タブのトグル(S.useBqDaily)と全く同じ仕組みで、reportData()が使うD.dailyもBQ経由になる。
+    // group1だけで先行検証→画像崩れが無ければ他グループにも展開する運用（workflow側のmatrix.useBqで制御）。
+    if ((process.env.REPORT_USE_BQ || '').trim() === '1') {
+      log('BigQueryモードに切替中…');
+      await page.evaluate(() => App.setDailySource('bq'));
+      await page.waitForFunction(
+        () => typeof D !== 'undefined' && D.daily.length > 0 && D.dailyBqLoading === false,
+        { timeout: DATA_WAIT, polling: 2000 },
+      );
+      log('BigQueryモードでのデータ取得完了');
+    }
+
     await page.evaluate((k, dt, st, g) => { App.report(k, dt || '', st || null, g || ''); }, KIND, dateOverride, stores, group);
     await page.waitForSelector('#report-card', { timeout: 30000 });
     await page.evaluate(async () => { await document.fonts.ready; });
