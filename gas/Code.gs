@@ -48,8 +48,11 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v47', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v48', time: new Date().toISOString() });
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
+    if (action === 'bqSetupSalesDataset') return out(bqSetupSalesDataset(p)); // salesデータセット作成（初回のみ・専用トークン認証）
+    if (action === 'bqSyncSales') return out(bqSyncAllSales(p)); // 分析_日別店舗ほかのBQミラー（専用トークン認証・ログイン不要）
+    if (action === 'bqReconcileSales') return out(bqReconcileSales(p)); // BQとシートの突合（専用トークン認証・ログイン不要）
     if (action === 'perf') return out(perfDiag(p)); // パフォーマンス計測（専用トークン認証・ログイン不要・数字は返さず時間だけ）
     setupIfNeeded();
     if (action === 'login')  return out(login(p));
@@ -1013,6 +1016,202 @@ function bqLoadOrders(p) {
   }
 }
 
+// ===== 売上サマリ(分析_日別店舗ほか)のBigQueryミラー =====
+// 2026-08-22 追加（データ基盤ロードマップ Phase 3「売上」）。
+// 「売上DB」プロジェクト(コード.gs/取込WebApp.gs/分析集計.gs)は一切変更しない。
+// 既にSALES_DB_ID(下記)でクロス参照している「売上DB」スプレッドシートの4DBシートと、
+// このプロジェクトがローカルに持つ「分析_日別店舗」(=最終集計値・実質的な正本)を、
+// そのままBigQueryへミラーする（12個の取込ジョブ自体・GAS集計ロジックには一切手を入れない）。
+// 「社員人件費DB」はレイアウトが非標準(データがrow25から始まる等)のためミラー対象外
+// （その集計結果は分析_日別店舗の「社員給与賞与/法定福利費/通勤手当」列に反映済みのため）。
+var BQ_SALES_DATASET = 'sales';
+
+var BQ_FACT_DAILY_STORE_SCHEMA = [
+  { name: 'date', type: 'DATE' }, { name: 'year_month', type: 'STRING' },
+  { name: 'year', type: 'INTEGER' }, { name: 'month', type: 'INTEGER' },
+  { name: 'week_start', type: 'DATE' }, { name: 'week_key', type: 'STRING' },
+  { name: 'weekday', type: 'STRING' },
+  { name: 'prev_year_same_day', type: 'DATE' }, { name: 'prev_year_same_week_day', type: 'DATE' },
+  { name: 'store_name', type: 'STRING' }, { name: 'sort_order', type: 'INTEGER' },
+  { name: 'guests_in', type: 'INTEGER' }, { name: 'parties_in', type: 'INTEGER' },
+  { name: 'guests_out', type: 'INTEGER' }, { name: 'parties_out', type: 'INTEGER' },
+  { name: 'guests_total', type: 'INTEGER' }, { name: 'parties_total', type: 'INTEGER' },
+  { name: 'net_sales', type: 'NUMERIC' }, { name: 'payment_total', type: 'NUMERIC' },
+  { name: 'cash', type: 'NUMERIC' }, { name: 'points', type: 'NUMERIC' },
+  { name: 'credit', type: 'NUMERIC' }, { name: 'other_payment', type: 'NUMERIC' },
+  { name: 'parttime_labor_cost', type: 'NUMERIC' }, { name: 'fulltime_labor_cost', type: 'NUMERIC' },
+  { name: 'labor_cost_total', type: 'NUMERIC' }, { name: 'cogs', type: 'NUMERIC' },
+  { name: 'labor_cost_ratio', type: 'FLOAT64' }, { name: 'cogs_ratio', type: 'FLOAT64' },
+  { name: 'fl_ratio', type: 'FLOAT64' },
+  { name: 'sales_per_guest', type: 'NUMERIC' }, { name: 'sales_per_party', type: 'NUMERIC' },
+  { name: 'employee_salary_bonus', type: 'NUMERIC' }, { name: 'statutory_welfare', type: 'NUMERIC' },
+  { name: 'commute_allowance', type: 'NUMERIC' }
+];
+var BQ_STG_PAYMENT_SCHEMA = [
+  { name: 'store_name', type: 'STRING' }, { name: 'business_date', type: 'DATE' },
+  { name: 'guests_in', type: 'INTEGER' }, { name: 'parties_in', type: 'INTEGER' },
+  { name: 'guests_out', type: 'INTEGER' }, { name: 'parties_out', type: 'INTEGER' },
+  { name: 'net_sales', type: 'NUMERIC' }, { name: 'payment_total', type: 'NUMERIC' },
+  { name: 'cash', type: 'NUMERIC' }, { name: 'points', type: 'NUMERIC' },
+  { name: 'credit', type: 'NUMERIC' }, { name: 'emoney', type: 'NUMERIC' },
+  { name: 'credit_sale', type: 'NUMERIC' }, { name: 'gift_cert', type: 'NUMERIC' },
+  { name: 'qr_payment', type: 'NUMERIC' }, { name: 'mobile_payment', type: 'NUMERIC' },
+  { name: 'campaign', type: 'NUMERIC' }, { name: 'other', type: 'NUMERIC' }
+];
+var BQ_STG_MEDIA_SCHEMA = [
+  { name: 'store_name', type: 'STRING' }, { name: 'date', type: 'DATE' },
+  { name: 'media_name', type: 'STRING' }, { name: 'guests', type: 'INTEGER' },
+  { name: 'parties', type: 'INTEGER' }, { name: 'net_sales', type: 'NUMERIC' },
+  { name: 'gross_sales', type: 'NUMERIC' }, { name: 'unit_price', type: 'NUMERIC' }
+];
+var BQ_STG_SIIRE_SCHEMA = [
+  { name: 'store_name', type: 'STRING' }, { name: 'date', type: 'DATE' },
+  { name: 'amount', type: 'NUMERIC' }, { name: 'year_month', type: 'STRING' }
+];
+var BQ_STG_JINKEN_SCHEMA = [
+  { name: 'store_name', type: 'STRING' }, { name: 'work_date', type: 'DATE' },
+  { name: 'employee_name', type: 'STRING' }, { name: 'worked_hours', type: 'FLOAT64' },
+  { name: 'wage_total', type: 'NUMERIC' }, { name: 'transport_allowance', type: 'NUMERIC' },
+  { name: 'total_amount', type: 'NUMERIC' }
+];
+
+// ミラー対象一覧（src='local'はこのプロジェクトの自分のスプレッドシート。それ以外はopenByIdで開く）
+function bqSalesTargets_() {
+  return [
+    // startRow: データが実際に始まる行。分析_日別店舗は1行目がヘッダーなので2行目から。
+    // 支払いDB等の4シートは1行目がシート説明の見出し・2行目が本当のヘッダーのため3行目から
+    // （2026-08-22 bqDebugPeekで実データを確認して判明。分析_日別店舗との構造差異に注意）。
+    { src: 'local',     sheet: '分析_日別店舗', table: 'fact_daily_store', schema: BQ_FACT_DAILY_STORE_SCHEMA, startRow: 2 },
+    { src: SALES_DB_ID, sheet: '支払いDB',      table: 'stg_payment',      schema: BQ_STG_PAYMENT_SCHEMA,      startRow: 3 },
+    { src: SALES_DB_ID, sheet: '媒体別DB',      table: 'stg_media',        schema: BQ_STG_MEDIA_SCHEMA,        startRow: 3 },
+    { src: SALES_DB_ID, sheet: '仕入れDB',      table: 'stg_siire',        schema: BQ_STG_SIIRE_SCHEMA,        startRow: 3 },
+    { src: SALES_DB_ID, sheet: '人件費DB',      table: 'stg_jinken',       schema: BQ_STG_JINKEN_SCHEMA,       startRow: 3 }
+  ];
+}
+// シートのstartRow行目以降(schemaの列数分)をCSV文字列に変換
+function bqSheetToCsv_(sheet, schema, startRow) {
+  var lastRow = sheet.getLastRow();
+  if (lastRow < startRow) return '';
+  var values = sheet.getRange(startRow, 1, lastRow - startRow + 1, schema.length).getValues();
+  var lines = [];
+  for (var r = 0; r < values.length; r++) {
+    var cells = [];
+    for (var c = 0; c < schema.length; c++) cells.push(bqCsvCell_(values[r][c], schema[c].type));
+    lines.push(cells.join(','));
+  }
+  return lines.join('\n');
+}
+function bqCsvCell_(v, type) {
+  if (v === '' || v === null || v === undefined) return '';
+  if (type === 'DATE') {
+    if (Object.prototype.toString.call(v) === '[object Date]') return Utilities.formatDate(v, 'Asia/Tokyo', 'yyyy-MM-dd');
+    return String(v);
+  }
+  if (type === 'STRING') return '"' + String(v).replace(/"/g, '""').replace(/\r?\n/g, ' ') + '"';
+  // NUMERIC/INTEGER/FLOAT64: 0除算等でNaN/InfinityになっているセルはNULL扱いにする。
+  // NUMERICは小数点以下9桁までの制約があり、GAS側の割り算の丸め誤差でそれを超えることがあるため6桁に丸める
+  // （dinii-orders.jsのnormNumと同じ対策。過去にこれが原因で行が静かに拒否される事故があった）。
+  var n = Number(v);
+  if (!isFinite(n)) return '';
+  if (type === 'INTEGER') return String(Math.round(n));
+  return n.toFixed(6);
+}
+// 1シート分をLoad Job投入（毎回WRITE_TRUNCATE=全置換。シート自体が毎回全件洗い替えのため、
+// これが最も単純で安全＝初回実行がそのまま全履歴バックフィルを兼ねる）
+function bqLoadSheetToTable_(csv, table, schema) {
+  if (!csv) return { ok: true, table: table, rows: 0, note: 'シートにデータ行が無いためスキップ' };
+  var job = { configuration: { load: {
+    destinationTable: { projectId: BQ_PROJECT, datasetId: BQ_SALES_DATASET, tableId: table },
+    sourceFormat: 'CSV', skipLeadingRows: 0, allowQuotedNewlines: true,
+    writeDisposition: 'WRITE_TRUNCATE', maxBadRecords: 0, schema: { fields: schema }
+  }}};
+  var blob = Utilities.newBlob(csv, 'application/octet-stream', table + '.csv');
+  var ins = BigQuery.Jobs.insert(job, BQ_PROJECT, blob);
+  var jobId = ins.jobReference.jobId;
+  var loc = (ins.jobReference && ins.jobReference.location) || 'asia-northeast1';
+  var st = null;
+  for (var i = 0; i < 90; i++) { st = BigQuery.Jobs.get(BQ_PROJECT, jobId, { location: loc }); if (st.status && st.status.state === 'DONE') break; Utilities.sleep(2000); }
+  if (st && st.status && st.status.errorResult) {
+    var detail = (st.status.errors || []).slice(0, 5).map(function (e) { return e.message; });
+    return { ok: false, table: table, error: st.status.errorResult.message, detail: detail };
+  }
+  var loaded = (st && st.statistics && st.statistics.load) ? st.statistics.load.outputRows : null;
+  return { ok: true, table: table, rows: Number(loaded || 0) };
+}
+// 一度だけ実行: salesデータセットが無ければ作成
+function bqSetupSalesDataset(p) {
+  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+  if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
+  try {
+    BigQuery.Datasets.insert({ datasetReference: { projectId: BQ_PROJECT, datasetId: BQ_SALES_DATASET }, location: 'asia-northeast1' }, BQ_PROJECT);
+    return { ok: true, created: true };
+  } catch (e) {
+    if (String(e).indexOf('Already Exists') >= 0) return { ok: true, created: false, note: 'already exists' };
+    return { ok: false, error: String(e && e.message || e) };
+  }
+}
+// 5テーブル全部を同期（専用トークン認証・ログイン不要。bqLoadOrdersと同じ方針）
+function bqSyncAllSales(p) {
+  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+  if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
+  var targets = bqSalesTargets_(), results = [];
+  for (var i = 0; i < targets.length; i++) {
+    var t = targets[i];
+    try {
+      var sh = (t.src === 'local') ? SpreadsheetApp.getActiveSpreadsheet().getSheetByName(t.sheet)
+                                    : SpreadsheetApp.openById(t.src).getSheetByName(t.sheet);
+      if (!sh) { results.push({ ok: false, table: t.table, error: 'シートが見つかりません: ' + t.sheet }); continue; }
+      var csv = bqSheetToCsv_(sh, t.schema, t.startRow);
+      results.push(bqLoadSheetToTable_(csv, t.table, t.schema));
+    } catch (e) {
+      results.push({ ok: false, table: t.table, error: String(e && e.message || e) });
+    }
+  }
+  return { ok: results.every(function (r) { return r.ok; }), results: results, time: new Date().toISOString() };
+}
+// 直近days日分の合計(純売上・仕入れ・人件費合計)をBQとシートで突合。差額が出たテーブル名をmismatchedに返す
+// （通知メールはこの関数自体では送らない。呼び出し元＝ns-daily-importの日次タスクが
+//  mismatchedを見てemailNotify()するのが役割分担。GASの権限を増やさないための設計）
+function bqReconcileSales(p) {
+  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+  if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
+  var days = Number((p || {}).days) || 35;
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('分析_日別店舗');
+  if (!sh) return { ok: false, error: '分析_日別店舗が見つかりません' };
+  var lastRow = sh.getLastRow();
+  if (lastRow < 2) return { ok: false, error: 'データがありません' };
+  var values = sh.getRange(2, 1, lastRow - 1, 35).getValues();
+  var cutoff = new Date(); cutoff.setDate(cutoff.getDate() - days);
+  var cutoffStr = Utilities.formatDate(cutoff, 'Asia/Tokyo', 'yyyy-MM-dd');
+  var sheetSum = { net_sales: 0, cogs: 0, labor_cost_total: 0, count: 0 };
+  for (var i = 0; i < values.length; i++) {
+    var d = values[i][0];
+    // 2026-08-22 修正: 時刻付きのDate同士で比較すると「今日の現在時刻」がズレを生み境界日が
+    // 抜け落ちる(BQ側はDATE型の日付のみ比較のため)。日付文字列同士の比較に統一して一致させる。
+    if (!(Object.prototype.toString.call(d) === '[object Date]')) continue;
+    var dStr = Utilities.formatDate(d, 'Asia/Tokyo', 'yyyy-MM-dd');
+    if (dStr < cutoffStr) continue;
+    sheetSum.net_sales += Number(values[i][17]) || 0;        // 18列目: 純売上
+    sheetSum.labor_cost_total += Number(values[i][25]) || 0; // 26列目: 人件費合計
+    sheetSum.cogs += Number(values[i][26]) || 0;             // 27列目: 仕入れ
+    sheetSum.count++;
+  }
+  var sql = 'SELECT SUM(net_sales) AS net_sales, SUM(cogs) AS cogs, SUM(labor_cost_total) AS labor_cost_total, COUNT(*) AS cnt ' +
+    'FROM `' + BQ_PROJECT + '.' + BQ_SALES_DATASET + '.fact_daily_store` WHERE date >= DATE(\'' + cutoffStr + '\')';
+  var bqRows = bqRows_(sql);
+  if (!bqRows || bqRows.length < 2) return { ok: false, error: 'BQクエリ失敗（先にbqSyncSalesを実行済みか確認）' };
+  var row = bqRows[1];
+  var bq = { net_sales: Number(row[0] || 0), cogs: Number(row[1] || 0), labor_cost_total: Number(row[2] || 0), count: Number(row[3] || 0) };
+  var diffs = {
+    net_sales: Math.round(sheetSum.net_sales - bq.net_sales),
+    cogs: Math.round(sheetSum.cogs - bq.cogs),
+    labor_cost_total: Math.round(sheetSum.labor_cost_total - bq.labor_cost_total)
+  };
+  var threshold = 100; // 円。丸め誤差程度は許容
+  var mismatched = [];
+  for (var k in diffs) if (Math.abs(diffs[k]) >= threshold) mismatched.push(k);
+  return { ok: true, days: days, sinceDate: cutoffStr, sheet: sheetSum, bq: bq, diffs: diffs, mismatched: mismatched };
+}
 // パフォーマンス計測：getData と同じ処理を段階ごとに時間計測して返す（データ本体は返さない）。
 // 認証はBQ投入と同じ専用トークン。ログイン不要なので外部からも計測できる。
 function perfDiag(p) {

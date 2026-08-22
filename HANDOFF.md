@@ -112,6 +112,8 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 | 💡 未着手 | レシピ機能・原価計算。**INFOMARTの日次取込は店舗×日付の合計金額のみで品目別明細が無い**のが壁。一方 Dinii注文明細(BigQuery)には`原価`列が既にあるので、Dinii側でレシピ設定済みか要確認 |
 | 💡 未着手 | 人時売上高・勤務スケジュール。スマレジ勤務明細に労働時間が含まれるか要確認（現状は金額のみPL管理システムへ流れている） |
 | ✅ 完了 | 着地予測の高度化（2026-08-03・天気予報/イベント/曜日祝日の補正を実装済み。作業ログ参照） |
+| ✅ 完了 | 売上サマリのBigQueryミラー（`tori-analytics.sales`、2026-08-22。GAS再デプロイ済み・`ping`=`fix-v48`稼働確認済み） |
+| 💡 未着手 | 「推移分析」タブ等の読み取り元をBigQueryミラーへ切替（データ基盤ロードマップPhase4「切替」。GAS側の土台はできたがapp.js側は未着手） |
 
 ---
 
@@ -135,6 +137,17 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 ---
 
 ## 5. 作業ログ
+
+### 2026-08-22
+**売上サマリ(分析_日別店舗ほか)のBigQueryミラーを追加（`gas/Code.gs`、fix-v47→fix-v48）**
+
+別プロジェクト（`ns-portal`のデータ基盤整備セッション）から、このGASプロジェクトに新規アクションを3つ追加した:
+- `bqSetupSalesDataset` / `bqSyncSales` / `bqReconcileSales`（すべて既存の`BQ_LOAD_TOKEN`で認証、`bqLoadOrders`と同じ方針）
+- 新設`tori-analytics.sales`データセットに、`分析_日別店舗`（35列・最終集計値）と支払い/媒体別/仕入れ/人件費の4DBシート（「売上DB」スプレッドシート側）をミラー。「売上DB」プロジェクト自体・既存の`dinii.orders`連携は無変更
+- 直近35日の突合で純売上・仕入れ・人件費合計・行数すべて完全一致まで確認済み
+- **このリポジトリの`gas/Code.gs`が本番と同期していなかった**（別プロジェクトのセッションが直接Apps Script APIで本番へデプロイし、このリポジトリへの反映を忘れていた）ため、今回まとめて追いつかせた。デプロイは`projects.versions.create`＋`projects.deployments.update`で正規の手順（このCLAUDE.mdが指示する「デプロイを管理→編集→新バージョン」と同じ考え方）で実施し、`ping`の`ver`も`fix-v48`に更新済み
+- 詳細・ハマった点（バージョン管理・BigQueryスコープの再認可・シートの2行ヘッダー構造・NUMERIC丸め誤差・日付境界比較）: `NStyle-AI/gas-backup/dashboard-server/README.md`
+- 今後、`app.js`側で「推移分析」タブ等の読み取り元をこのBigQueryミラーに切り替える構想がある（ロードマップのPhase4「切替」）が、**今回はまだ着手していない**（GAS側のミラー・突合機能を用意しただけ）
 
 ### 2026-08-06（続き2）
 **再発防止の仕組みを追加**
