@@ -25,7 +25,7 @@ const SSO_SUPA_KEY = 'sb_publishable_MrwPJAx_Ws_fdRutprKCiQ_dg3wCiTr';
 const CANON_STORES = ['芝の鳥一代','鳥一代 はなれ','鳥一代 恵比寿','鳥一代 新橋','鳥一代 本店','鶏武者 新横浜','鶏武者 川崎店','黒霧屋 新横浜'];
 const PALETTE = ['#3d5163','#b5502f','#5f7052','#c9a86a','#7d8b6f','#2a6f8f','#9a6a4a','#6a5f8f','#a99f8c','#4a7a6a'];
 const C_NOW='#3d5163', C_PREV='#c9b7a0', C_MID='#7d8b6f';
-const LS = { api:'toriApiUrl', sess:'toriSession', acc:'toriDemoAccounts', poll:'toriPollSec', months:'toriMonths' };
+const LS = { api:'toriApiUrl', sess:'toriSession', acc:'toriDemoAccounts', poll:'toriPollSec', months:'toriMonths', dailyBq:'toriDailySourceBq' };
 const ROLE_TABS = {
   '社長':       ['dash','target','analysis','detail','pl','deposit','ad','review','weekly','weeklyAdmin','ai','accounts'],
   '本部':       ['dash','target','analysis','detail','pl','deposit','ad','review','weekly','weeklyAdmin','ai','accounts'],
@@ -133,9 +133,10 @@ const S = {
   aiQ:'', aiResult:null, dataVersion:'',
   reportMode:null, invite:null, inviteDone:false, wkWeek:'', wkFStore:'', wkFPos:'', wkFState:'', wkFQ:'',   // {kind:'daily'|'weekly'|'monthly', date:'YYYY-MM-DD'} Lark日報用の1枚カード表示
   accounts:null, accErr:'', modal:null, loginErr:'',
+  useBqDaily:(localStorage.getItem(LS.dailyBq)==='1'),   // 推移分析のデータソース切替（既定=false=シート。2026-08-22追加）
 };
 const D = { daily:[], media:[], deposit:[], review:[], ad:[], adfx:[], tanka:{}, pl:[], dinii:[], diniiCols:[], targets:[], targetsM:[], events:[], extra:{}, storeAlias:{}, storeParent:{}, mediaClass:{}, adMediaMaster:[], adPlanMaster:{}, adStoreMaster:[], holidays:null, detailData:null, detailKey:'', detailLoading:'', refDate:null, maxDate:null,
-  wkTpl:{}, wkRep:[], wkAns:{}, wkFb:{}, roleDef:{}, depNote:{} };
+  wkTpl:{}, wkRep:[], wkAns:{}, wkFb:{}, roleDef:{}, depNote:{}, dailyBqLoading:false, dailyBqErr:'' };
 let EXPORT = [];      // 現在タブのCSVエクスポート対象 [{title,headers,rows}]
 let pollTimer = null;
 
@@ -1297,7 +1298,11 @@ let prefetchRun=0;
 // 初回・更新時：まずダッシュボードに必要な軽いデータだけ出し、重い/他タブ用は裏で先読み
 async function fetchDataFast(){
   D.mediaPending=true; D.media=[];                       // サンプル媒体データを一旦クリア
-  await fetchData(true, { exclude:HEAVY_KEYS });         // 軽い必須のみ → すぐ表示
+  // 推移分析のデータ元をBigQueryに切り替えている間は、シート側のdailyを毎回上書きしないよう除外し、
+  // 代わりにfetchDailyBQ()で取得する（2026-08-22追加）
+  const excl = S.useBqDaily ? HEAVY_KEYS.concat(['daily']) : HEAVY_KEYS;
+  await fetchData(true, { exclude:excl });               // 軽い必須のみ → すぐ表示
+  if(S.useBqDaily) fetchDailyBQ();
   render();
   // data は version を返さないので、初回に署名を取得（次の自動更新のムダ取得を防ぐ）
   fetchVersion().then(v=>{ if(v!==null) S.dataVersion=v; });
@@ -1312,6 +1317,19 @@ async function fetchDataFast(){
     }
     D.mediaPending=false; render();
   })();
+}
+// 推移分析のデータ元をBigQuery(fact_daily_store)に切り替えているときに呼ぶ。
+// GAS側のbqDailyStoreは既存action:'data'と同じ形({sheets:{daily:[...]}})で返すので、
+// 既存のingestSheets()/ingestDaily()をそのまま使い回せる（2026-08-22追加）。
+async function fetchDailyBQ(){
+  if(!S.auth||!S.auth.token) return;
+  D.dailyBqLoading=true; render();
+  try{
+    const d=await api({ action:'bqDailyStore', token:S.auth.token, months:monthsWindow() });
+    if(d&&d.ok&&d.sheets){ ingestSheets(d.sheets, true); D.dailyBqErr=''; }
+    else{ D.dailyBqErr=(d&&d.error)||'取得に失敗しました'; }
+  }catch(e){ D.dailyBqErr=String(e&&e.message||e); }
+  D.dailyBqLoading=false; render();
 }
 // 軽量版：まず署名(version)だけ取り、変化があるときだけフル取得
 async function fetchVersion(){
@@ -2293,6 +2311,7 @@ function viewAnalysis(){
     <div class="seg">${[['30','直近30日'],['90','直近90日'],['year','年初来'],['custom','期間指定']].map(([k,l])=>`<button class="${RG===k?'on':''}" onclick="App.set('aRange','${k}')">${l}</button>`).join('')}</div>
     ${RG==='custom'?`${ymdSelect('cStart',S.cStart,(D.refDate||new Date()).getFullYear()+'-'+String((D.refDate||new Date()).getMonth()+1).padStart(2,'0')+'-'+String((D.refDate||new Date()).getDate()).padStart(2,'0'))} 〜 ${ymdSelect('cEnd',S.cEnd,'')}`:''}
     ${B==='total'?`<button class="icon-btn" onclick="App.set('aYoY',${S.aYoY?'false':'true'})">${S.aYoY?'☑':'☐'} 前年重ね</button>`:''}
+    ${isAdminRole()?`<button class="icon-btn" title="データ元をシート/BigQueryで切替（テスト中）" onclick="App.setDailySource('${S.useBqDaily?'sheet':'bq'}')">🧪 データ元: ${S.useBqDaily?'BigQuery':'シート'}</button>${D.dailyBqLoading?'<span class="mut" style="margin-left:6px">読込中…</span>':''}${D.dailyBqErr?`<span style="color:#b5502f;margin-left:6px">BQ取得エラー: ${esc(D.dailyBqErr)}</span>`:''}`:''}
   </div>`+storeSegHtml();
   h+=`<div class="panel"><div class="panel-head"><div><h3>${ml} の推移（${G==='day'?'日別':G==='week'?'週別':'月別'}・${B==='total'?'合計':B==='store'?'店舗別':'媒体別'}）</h3>
     <div class="sub">${(s.getMonth()+1)}/${s.getDate()}〜${(e.getMonth()+1)}/${e.getDate()} ／ ${buckets.length}区間</div></div><div class="legend">${legend}</div></div>
@@ -5320,6 +5339,14 @@ window.App = {
   period(p){ S.period=p; S.pWeekIdx=null; render(); },
   store(n){ S.store=n; render(); },
   set(k,v){ S[k]=v; render(); },
+  // 推移分析のデータソース切替（2026-08-22追加。既定はシート＝false）
+  setDailySource(src){
+    const bq=(src==='bq');
+    S.useBqDaily=bq;
+    try{ localStorage.setItem(LS.dailyBq, bq?'1':'0'); }catch(e){}
+    if(bq) fetchDailyBQ(); else fetchData(true, { only:['daily'] });
+    render();
+  },
   setWeek(i){ S.pWeekIdx=i; render(); },
   aiRun(){ const el=$('ai-q'); S.aiQ=el?el.value:S.aiQ; S.aiResult=answerQuery(S.aiQ); render(); },
   aiFill(q){ S.aiQ=q; S.aiResult=answerQuery(q); render(); },

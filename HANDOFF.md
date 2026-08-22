@@ -113,7 +113,7 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 | 💡 未着手 | 人時売上高・勤務スケジュール。スマレジ勤務明細に労働時間が含まれるか要確認（現状は金額のみPL管理システムへ流れている） |
 | ✅ 完了 | 着地予測の高度化（2026-08-03・天気予報/イベント/曜日祝日の補正を実装済み。作業ログ参照） |
 | ✅ 完了 | 売上サマリのBigQueryミラー（`tori-analytics.sales`、2026-08-22。GAS再デプロイ済み・`ping`=`fix-v48`稼働確認済み） |
-| 💡 未着手 | 「推移分析」タブ等の読み取り元をBigQueryミラーへ切替（データ基盤ロードマップPhase4「切替」。GAS側の土台はできたがapp.js側は未着手） |
+| ✅ 完了 | 「推移分析」タブのデータソース切替フラグ実装（2026-08-22。`ping`=`fix-v49`・`app.js?v=94`稼働確認済み。**最終確認＝実際にログインしてトグルONで数値一致を見るのはユーザー作業として未実施**） |
 
 ---
 
@@ -137,6 +137,15 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 ---
 
 ## 5. 作業ログ
+
+### 2026-08-22（続き）
+**「推移分析」タブのデータソース切替フラグを実装（`ping`=`fix-v49`、`app.js?v=94`）**
+
+ロードマップのPhase4「切替」着手。既存の`分析_日別店舗`読み取り経路（`action:'data'`→`sheets.daily`→`ingestDaily()`→`D.daily`→`viewAnalysis()`）を一切変更せず、**同じ形のデータをBigQuery側からも返せるようにする**設計にした:
+- GAS: `bqDailyStore(p, session)`を追加（`bqDetail`と同じくログイン必須・`session.stores`で店舗スコープ制限）。`fact_daily_store`から`SELECT`し、ヘッダーに`ingestDaily`が検出する日本語キーワードのラベルを付けて`{ok:true, sheets:{daily:[[...],...]}}`を返す。**クライアント側の`ingestSheets`/`ingestDaily`/`viewAnalysis`/`viewDowCompare`は無変更**
+- app.js: `S.useBqDaily`（既定false=シート、`localStorage`の`toriDailySourceBq`に永続化）、`fetchDailyBQ()`（新アクションを呼びingestSheetsへ渡すだけ）、`fetchDataFast()`はBQモード時に`daily`をシート取得から除外、`App.setDailySource('sheet'|'bq')`でトグル。UIは「推移分析」タブの操作バーに**社長・本部（`isAdminRole()`）にのみ表示**するボタン（「🧪 データ元: シート/BigQuery」）を追加
+- **⚠️ 私はダッシュボードのログイン情報を持っておらず、実際にトグルON→数値がシート表示と一致するかの最終確認はまだ**。ユーザーに、社長/本部アカウントでログイン→推移分析タブ→新しいトグルをONにして確認してもらう必要がある（分析_日別店舗とfact_daily_storeは今朝の突合で完全一致済みなので、一致するはずという想定）
+- 詳細: `NStyle-AI/gas-backup/dashboard-server/README.md`にも同内容を記録予定
 
 ### 2026-08-22
 **売上サマリ(分析_日別店舗ほか)のBigQueryミラーを追加（`gas/Code.gs`、fix-v47→fix-v48）**

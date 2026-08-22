@@ -48,7 +48,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v48', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v49', time: new Date().toISOString() });
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     if (action === 'bqSetupSalesDataset') return out(bqSetupSalesDataset(p)); // salesデータセット作成（初回のみ・専用トークン認証）
     if (action === 'bqSyncSales') return out(bqSyncAllSales(p)); // 分析_日別店舗ほかのBQミラー（専用トークン認証・ログイン不要）
@@ -73,6 +73,7 @@ function handle(p) {
     if (action === 'data')     return out(getData(p, session));
     if (action === 'depositCarry') return out(depositCarry(p, session)); // 入金の繰越（開始残高）だけ全期間で計算
     if (action === 'bqDetail') return out(bqDetail(p, session)); // 明細分析：期間・店舗で絞ってBQ集計
+    if (action === 'bqDailyStore') return out(bqDailyStore(p, session)); // 推移分析：分析_日別店舗のBQミラーを読む（データソース切替フラグ用）
     if (action === 'accounts') return out(listAccounts(session));
     if (action === 'saveAccount')   return out(saveAccount(p, session));
     if (action === 'deleteAccount') return out(deleteAccount(p, session));
@@ -964,6 +965,52 @@ function bqDetail(p, session) {
     return res;
   } catch (e) { return { ok: false, error: String(e && e.message || e) }; }
 }
+
+// ===== 推移分析タブ用: 分析_日別店舗のBigQueryミラー(fact_daily_store)から読む =====
+// 2026-08-22 データ基盤ロードマップ Phase4「切替」。タブ単位のデータソース切替の第一弾。
+// bqDetailと同じ方針（ログイン必須・session.storesで店舗スコープ制限）。
+// 既存の`action:'data'`が返す sheets.daily と同じ形（ヘッダー行＋データ行の2次元配列、
+// ヘッダーはingestDaily()がキーワードで検出する日本語ラベル）で返すことで、
+// クライアント側のingestSheets()/ingestDaily()/viewAnalysis()を一切変更せずに済む設計。
+var BQ_DAILY_STORE_HEADER = ['日付', '店舗名', '純売上', '総客数', 'アルバイト人件費', '社員人件費', '人件費合計', '仕入', '現金', '社員給与賞与', '法定福利費', '通勤手当', '組数'];
+function bqDailyStore(p, session) {
+  try {
+    var sessStores = String(session && session.stores || '').trim();
+    var restricted = sessStores && sessStores !== '全店';
+    var where = '';
+    if (restricted) {
+      var allowNames = sessStores.split(/[,、]/).map(function (s) { return s.trim(); }).filter(Boolean);
+      if (!allowNames.length) return { ok: true, sheets: { daily: [BQ_DAILY_STORE_HEADER] } };
+      where = "WHERE store_name IN ('" + allowNames.map(function (n) { return String(n).replace(/'/g, "''"); }).join("','") + "')";
+    }
+    var months = Number(p.months) || 0;
+    if (months > 0) {
+      var cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - months);
+      var cutoffStr = Utilities.formatDate(cutoff, 'Asia/Tokyo', 'yyyy-MM-dd');
+      where += (where ? ' AND ' : 'WHERE ') + "date >= DATE('" + cutoffStr + "')";
+    }
+    var sql = 'SELECT date, store_name, net_sales, guests_total, parttime_labor_cost, fulltime_labor_cost, ' +
+      'labor_cost_total, cogs, cash, employee_salary_bonus, statutory_welfare, commute_allowance, parties_total ' +
+      'FROM `' + BQ_PROJECT + '.' + BQ_SALES_DATASET + '.fact_daily_store` ' + where + ' ORDER BY date';
+    var rows = bqRows_(sql);
+    if (!rows) return { ok: false, error: 'BigQueryクエリ失敗' };
+    var out = [BQ_DAILY_STORE_HEADER];
+    for (var i = 1; i < rows.length; i++) {
+      var r = rows[i];
+      out.push([
+        String(r[0]).replace(/-/g, '/'), // DATE型は'YYYY-MM-DD'文字列で返るため、シート版と同じ'YYYY/MM/DD'に変換
+        r[1],
+        Number(r[2] || 0), Number(r[3] || 0), Number(r[4] || 0), Number(r[5] || 0),
+        Number(r[6] || 0), Number(r[7] || 0), Number(r[8] || 0),
+        Number(r[9] || 0), Number(r[10] || 0), Number(r[11] || 0), Number(r[12] || 0)
+      ]);
+    }
+    return { ok: true, sheets: { daily: out } };
+  } catch (e) {
+    return { ok: false, error: String(e && e.message || e) };
+  }
+}
+
 // 明細テーブルを日付パーティション＋店舗クラスタで作り直す（初回1回・スキャン量を激減させる）。
 // ※BigQueryコンソールで下記SQLを1回実行するのと同じ。GASのタイムアウトを避けるなら手動SQL推奨。
 function bqPartitionOrders() {
