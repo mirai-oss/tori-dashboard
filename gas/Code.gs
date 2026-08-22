@@ -48,11 +48,12 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v49', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v50', time: new Date().toISOString() });
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     if (action === 'bqSetupSalesDataset') return out(bqSetupSalesDataset(p)); // salesデータセット作成（初回のみ・専用トークン認証）
     if (action === 'bqSyncSales') return out(bqSyncAllSales(p)); // 分析_日別店舗ほかのBQミラー（専用トークン認証・ログイン不要）
     if (action === 'bqReconcileSales') return out(bqReconcileSales(p)); // BQとシートの突合（専用トークン認証・ログイン不要）
+    if (action === 'bqSyncPL') return out(bqSyncPL(p)); // PL経費(DB_PL)のBQミラー同期（専用トークン認証・ログイン不要）
     if (action === 'perf') return out(perfDiag(p)); // パフォーマンス計測（専用トークン認証・ログイン不要・数字は返さず時間だけ）
     setupIfNeeded();
     if (action === 'login')  return out(login(p));
@@ -74,6 +75,7 @@ function handle(p) {
     if (action === 'depositCarry') return out(depositCarry(p, session)); // 入金の繰越（開始残高）だけ全期間で計算
     if (action === 'bqDetail') return out(bqDetail(p, session)); // 明細分析：期間・店舗で絞ってBQ集計
     if (action === 'bqDailyStore') return out(bqDailyStore(p, session)); // 推移分析：分析_日別店舗のBQミラーを読む（データソース切替フラグ用）
+    if (action === 'bqGetPL') return out(bqGetPL(p, session)); // PLタブ：DB_PLのBQミラーを読む（データソース切替フラグ用）
     if (action === 'accounts') return out(listAccounts(session));
     if (action === 'saveAccount')   return out(saveAccount(p, session));
     if (action === 'deleteAccount') return out(deleteAccount(p, session));
@@ -1216,6 +1218,72 @@ function bqSyncAllSales(p) {
   }
   return { ok: results.every(function (r) { return r.ok; }), results: results, time: new Date().toISOString() };
 }
+
+// ===== PL経費(DB_PL)のBigQueryミラー・読み出し =====
+// 2026-08-22 追加（PLタブのデータソース切替。ユーザー指摘によりDB_PLのみ対応・入金DBは対象外）。
+// DB_PLは「ダッシュボード」自身のスプレッドシートに同居するローカルシート
+// （PL管理システム本体とは別。savePlEntries/savePlBulkがDB_PLとPL管理システムの両方に書く設計。
+//  1615行目付近のコメント参照）。年月列は文字列'yyyy/MM'または日付セルどちらもあり得るため、
+//  汎用のbqSheetToCsv_ではなく専用の変換にする。
+var BQ_STG_PL_SCHEMA = [
+  { name: 'year_month', type: 'STRING' }, { name: 'store_name', type: 'STRING' },
+  { name: 'item', type: 'STRING' }, { name: 'category', type: 'STRING' },
+  { name: 'amount', type: 'NUMERIC' }, { name: 'memo', type: 'STRING' }
+];
+function bqPlYm_(v) {
+  if (Object.prototype.toString.call(v) === '[object Date]') return Utilities.formatDate(v, 'Asia/Tokyo', 'yyyy/MM');
+  return String(v || '').trim();
+}
+function bqCsvStr_(v) { return '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"'; }
+function bqSyncPL(p) {
+  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+  if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_PL');
+  if (!sh) return { ok: false, error: 'DB_PLシートがありません' };
+  var lastRow = sh.getLastRow();
+  if (lastRow < 2) return { ok: true, rows: 0, note: 'データ行がありません' };
+  var values = sh.getRange(2, 1, lastRow - 1, 6).getValues();
+  var lines = [];
+  for (var i = 0; i < values.length; i++) {
+    var r = values[i];
+    if (!String(r[2] || '').trim()) continue; // 勘定科目が空の行はスキップ（テンプレートの空行対策）
+    var amt = Number(r[4]);
+    lines.push([
+      bqCsvStr_(bqPlYm_(r[0])), bqCsvStr_(r[1]), bqCsvStr_(r[2]), bqCsvStr_(r[3]),
+      isFinite(amt) ? amt.toFixed(6) : '0', bqCsvStr_(r[5])
+    ].join(','));
+  }
+  var csv = lines.join('\n');
+  return bqLoadSheetToTable_(csv, 'stg_pl', BQ_STG_PL_SCHEMA);
+}
+// PLタブ用: DB_PLのBQミラーを読む。bqDailyStoreと同じ方針（ログイン必須・店舗スコープ制限）で、
+// 既存のingestPL()がそのまま解釈できる形（{sheets:{PL:[[年月,店舗名,勘定科目,区分,金額,メモ],...]}}）で返す。
+// 全社共通経費（店舗名が空欄）は店舗スコープに関わらず常に含める（plAgg側で選択状況に応じて除外される）。
+function bqGetPL(p, session) {
+  try {
+    var sessStores = String(session && session.stores || '').trim();
+    var restricted = sessStores && sessStores !== '全店';
+    var where = '';
+    if (restricted) {
+      var allowNames = sessStores.split(/[,、]/).map(function (s) { return s.trim(); }).filter(Boolean);
+      if (allowNames.length) {
+        where = "WHERE (store_name IN ('" + allowNames.map(function (n) { return String(n).replace(/'/g, "''"); }).join("','") + "') OR store_name = '')";
+      }
+    }
+    var sql = 'SELECT year_month, store_name, item, category, amount, memo FROM `' + BQ_PROJECT + '.' + BQ_SALES_DATASET + '.stg_pl` ' + where + ' ORDER BY year_month';
+    var rows = bqRows_(sql);
+    if (!rows) return { ok: false, error: 'BigQueryクエリ失敗' };
+    var out = [['年月', '店舗名', '勘定科目', '区分', '金額', 'メモ']];
+    for (var i = 1; i < rows.length; i++) {
+      var r = rows[i];
+      out.push([r[0], r[1], r[2], r[3], Number(r[4] || 0), r[5]]);
+    }
+    return { ok: true, sheets: { PL: out } };
+  } catch (e) {
+    return { ok: false, error: String(e && e.message || e) };
+  }
+}
+
 // 直近days日分の合計(純売上・仕入れ・人件費合計)をBQとシートで突合。差額が出たテーブル名をmismatchedに返す
 // （通知メールはこの関数自体では送らない。呼び出し元＝ns-daily-importの日次タスクが
 //  mismatchedを見てemailNotify()するのが役割分担。GASの権限を増やさないための設計）

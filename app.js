@@ -136,7 +136,7 @@ const S = {
   useBqDaily:(localStorage.getItem(LS.dailyBq)==='1'),   // 推移分析のデータソース切替（既定=false=シート。2026-08-22追加）
 };
 const D = { daily:[], media:[], deposit:[], review:[], ad:[], adfx:[], tanka:{}, pl:[], dinii:[], diniiCols:[], targets:[], targetsM:[], events:[], extra:{}, storeAlias:{}, storeParent:{}, mediaClass:{}, adMediaMaster:[], adPlanMaster:{}, adStoreMaster:[], holidays:null, detailData:null, detailKey:'', detailLoading:'', refDate:null, maxDate:null,
-  wkTpl:{}, wkRep:[], wkAns:{}, wkFb:{}, roleDef:{}, depNote:{}, dailyBqLoading:false, dailyBqErr:'' };
+  wkTpl:{}, wkRep:[], wkAns:{}, wkFb:{}, roleDef:{}, depNote:{}, dailyBqLoading:false, dailyBqErr:'', plBqLoading:false, plBqErr:'' };
 let EXPORT = [];      // 現在タブのCSVエクスポート対象 [{title,headers,rows}]
 let pollTimer = null;
 
@@ -1298,11 +1298,11 @@ let prefetchRun=0;
 // 初回・更新時：まずダッシュボードに必要な軽いデータだけ出し、重い/他タブ用は裏で先読み
 async function fetchDataFast(){
   D.mediaPending=true; D.media=[];                       // サンプル媒体データを一旦クリア
-  // 推移分析のデータ元をBigQueryに切り替えている間は、シート側のdailyを毎回上書きしないよう除外し、
-  // 代わりにfetchDailyBQ()で取得する（2026-08-22追加）
-  const excl = S.useBqDaily ? HEAVY_KEYS.concat(['daily']) : HEAVY_KEYS;
+  // BigQueryモード中は、シート側のdaily/PLを毎回上書きしないよう除外し、
+  // 代わりにfetchDailyBQ()/fetchPlBQ()で取得する（2026-08-22追加）
+  const excl = S.useBqDaily ? HEAVY_KEYS.concat(['daily','PL']) : HEAVY_KEYS;
   await fetchData(true, { exclude:excl });               // 軽い必須のみ → すぐ表示
-  if(S.useBqDaily) fetchDailyBQ();
+  if(S.useBqDaily){ fetchDailyBQ(); fetchPlBQ(); }
   render();
   // data は version を返さないので、初回に署名を取得（次の自動更新のムダ取得を防ぐ）
   fetchVersion().then(v=>{ if(v!==null) S.dataVersion=v; });
@@ -1330,6 +1330,17 @@ async function fetchDailyBQ(){
     else{ D.dailyBqErr=(d&&d.error)||'取得に失敗しました'; }
   }catch(e){ D.dailyBqErr=String(e&&e.message||e); }
   D.dailyBqLoading=false; render();
+}
+// PLタブ用: DB_PLのBQミラーを読む（2026-08-22追加。fetchDailyBQと同じ考え方）
+async function fetchPlBQ(){
+  if(!S.auth||!S.auth.token) return;
+  D.plBqLoading=true; render();
+  try{
+    const d=await api({ action:'bqGetPL', token:S.auth.token });
+    if(d&&d.ok&&d.sheets){ ingestSheets(d.sheets, true); D.plBqErr=''; }
+    else{ D.plBqErr=(d&&d.error)||'取得に失敗しました'; }
+  }catch(e){ D.plBqErr=String(e&&e.message||e); }
+  D.plBqLoading=false; render();
 }
 // 軽量版：まず署名(version)だけ取り、変化があるときだけフル取得
 async function fetchVersion(){
@@ -3550,6 +3561,8 @@ function viewPL(){
     ${ctrlHtml}
     ${canUse('plInput')?`<button class="icon-btn primary" onclick="App.openPlInput()">✎ 経費を入力</button>`:''}
     <span class="period-label">損益（${mLabel} ／ ${esc(scopeLabel)}）</span></div>`+storeSegHtml();
+  // 2026-08-22追加: 売上/原価/人件費(stat())とDB_PL手入力経費(plAgg())の両方がBQトグルの対象
+  if(isAdminRole()&&S.useBqDaily) h+=`<div class="mut" style="font-size:11px;margin:2px 0 8px">🧪 データ元: BigQuery（推移分析タブのトグルで切替）${D.plBqLoading?' ・PL読込中…':''}${D.plBqErr?` ・PL取得エラー: ${esc(D.plBqErr)}`:''}</div>`;
 
   // KPIカード
   h+=`<div class="kpi-grid">
@@ -5344,12 +5357,12 @@ window.App = {
   period(p){ S.period=p; S.pWeekIdx=null; render(); },
   store(n){ S.store=n; render(); },
   set(k,v){ S[k]=v; render(); },
-  // 推移分析のデータソース切替（2026-08-22追加。既定はシート＝false）
+  // データソース切替（2026-08-22追加。既定はシート＝false。daily/PLの両方に効く）
   setDailySource(src){
     const bq=(src==='bq');
     S.useBqDaily=bq;
     try{ localStorage.setItem(LS.dailyBq, bq?'1':'0'); }catch(e){}
-    if(bq) fetchDailyBQ(); else fetchData(true, { only:['daily'] });
+    if(bq){ fetchDailyBQ(); fetchPlBQ(); } else fetchData(true, { only:['daily','PL'] });
     render();
   },
   setWeek(i){ S.pWeekIdx=i; render(); },
