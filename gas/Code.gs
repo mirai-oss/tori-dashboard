@@ -48,10 +48,11 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v52', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v53', time: new Date().toISOString() });
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     if (action === 'bqSetupSalesDataset') return out(bqSetupSalesDataset(p)); // salesデータセット作成（初回のみ・専用トークン認証）
     if (action === 'bqSyncSales') return out(bqSyncAllSales(p)); // 分析_日別店舗ほかのBQミラー（専用トークン認証・ログイン不要）
+    if (action === 'bqDailyStoreForSync') return out(bqDailyStoreForSync(p)); // dash-sync用の軽量BQ問い合わせ（専用トークン認証・ログイン不要・スプレッドシート不使用）
     if (action === 'bqReconcileSales') return out(bqReconcileSales(p)); // BQとシートの突合（専用トークン認証・ログイン不要）
     if (action === 'bqSyncPL') return out(bqSyncPL(p)); // PL経費(DB_PL)のBQミラー同期（専用トークン認証・ログイン不要）
     if (action === 'perf') return out(perfDiag(p)); // パフォーマンス計測（専用トークン認証・ログイン不要・数字は返さず時間だけ）
@@ -1230,6 +1231,27 @@ function bqSyncAllSales(p) {
     }
   }
   return { ok: results.every(function (r) { return r.ok; }), results: results, time: new Date().toISOString() };
+}
+
+// 2026-08-22 追加（dash-syncのGAS往復簡略化）。ns-portal側のdash-syncがこれまで
+// 「ログイン→スプレッドシート全読み」で取っていた実績データを、ログイン不要・BQ_LOAD_TOKEN認証のみで
+// BigQueryから直接返す軽量アクション（GCPサービスアカウント鍵が組織ポリシーで作れなかったため、
+// 代わりにGAS側の既存BigQueryアクセス権をそのまま使う方式）。スプレッドシートは一切読まない。
+function bqDailyStoreForSync(p) {
+  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+  if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
+  var months = Number(p.months) || 2;
+  var cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - months);
+  var cutoffStr = Utilities.formatDate(cutoff, 'Asia/Tokyo', 'yyyy-MM-dd');
+  var sql = 'SELECT date, store_name, net_sales, cogs, labor_cost_total FROM `' + BQ_PROJECT + '.' + BQ_SALES_DATASET + '.fact_daily_store` WHERE date >= DATE(\'' + cutoffStr + '\') ORDER BY date';
+  var rows = bqRows_(sql);
+  if (!rows) return { ok: false, error: 'BigQueryクエリ失敗' };
+  var out = [['日付', '店舗名', '純売上', '仕入', '人件費合計']];
+  for (var i = 1; i < rows.length; i++) {
+    var r = rows[i];
+    out.push([String(r[0]).replace(/-/g, '/'), r[1], Number(r[2] || 0), Number(r[3] || 0), Number(r[4] || 0)]);
+  }
+  return { ok: true, sheets: { daily: out } };
 }
 
 // ===== PL経費(DB_PL)のBigQueryミラー・読み出し =====
