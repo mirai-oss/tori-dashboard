@@ -1298,18 +1298,19 @@ let prefetchRun=0;
 // 初回・更新時：まずダッシュボードに必要な軽いデータだけ出し、重い/他タブ用は裏で先読み
 async function fetchDataFast(){
   D.mediaPending=true; D.media=[];                       // サンプル媒体データを一旦クリア
-  // BigQueryモード中は、シート側のdaily/PLを毎回上書きしないよう除外し、
-  // 代わりにfetchDailyBQ()/fetchPlBQ()で取得する（2026-08-22追加）
+  // BigQueryモード中は、シート側のdaily/PL/depositを毎回上書きしないよう除外し、
+  // 代わりにfetchDailyBQ()/fetchPlBQ()/fetchDepositBQ()で取得する（2026-08-22追加）
   const excl = S.useBqDaily ? HEAVY_KEYS.concat(['daily','PL']) : HEAVY_KEYS;
   await fetchData(true, { exclude:excl });               // 軽い必須のみ → すぐ表示
-  if(S.useBqDaily){ fetchDailyBQ(); fetchPlBQ(); }
+  if(S.useBqDaily){ fetchDailyBQ(); fetchPlBQ(); fetchDepositBQ(); }
   render();
   // data は version を返さないので、初回に署名を取得（次の自動更新のムダ取得を防ぐ）
   fetchVersion().then(v=>{ if(v!==null) S.dataVersion=v; });
   // フェーズ2：裏で先読み。優先順＝ダッシュボード関連(口コミ明細・媒体別)→他タブ(入金・予約)
   const myRun=++prefetchRun;
   (async()=>{
-    const groups=[['dinii','media'], ['deposit','予約']];
+    // BigQueryモード中はdepositをシートから先読みしない（fetchDepositBQ()に任せる。2026-08-22追加）
+    const groups=[['dinii','media'], S.useBqDaily?['予約']:['deposit','予約']];
     for(const g of groups){
       if(myRun!==prefetchRun) return;                    // 新しい読込が始まったら中断（多重先読み防止）
       try{ await fetchData(true, { only:g, partial:true }); }catch(e){}
@@ -1341,6 +1342,18 @@ async function fetchPlBQ(){
     else{ D.plBqErr=(d&&d.error)||'取得に失敗しました'; }
   }catch(e){ D.plBqErr=String(e&&e.message||e); }
   D.plBqLoading=false; render();
+}
+// 入金管理タブ用: 入金DBのBQミラーを読む（2026-08-22追加。fetchPlBQと同じ考え方。
+// 繰越〔開始残高〕は別途fetchDepCarryがサーバー全期間計算で常に取得するため、ここでは影響しない）
+async function fetchDepositBQ(){
+  if(!S.auth||!S.auth.token) return;
+  D.depositBqLoading=true; render();
+  try{
+    const d=await api({ action:'bqGetDeposit', token:S.auth.token });
+    if(d&&d.ok&&d.sheets){ ingestSheets(d.sheets, true); D.depositBqErr=''; }
+    else{ D.depositBqErr=(d&&d.error)||'取得に失敗しました'; }
+  }catch(e){ D.depositBqErr=String(e&&e.message||e); }
+  D.depositBqLoading=false; render();
 }
 // 軽量版：まず署名(version)だけ取り、変化があるときだけフル取得
 async function fetchVersion(){
@@ -2807,6 +2820,7 @@ function viewDeposit(){
     ${canUse('depositImport')?`<button class="icon-btn primary" onclick="App.openDepositImport()">⬆ 口座CSVを取込</button>`:''}
     <span class="period-label">現金売上（入金予定）と ATM入金の照合 ／ ${esc(scopeLabel)}</span>
   </div>`+storeSegHtml();
+  if(isAdminRole()&&S.useBqDaily) h+=`<div class="mut" style="font-size:11px;margin:2px 0 8px">🧪 データ元: BigQuery（推移分析タブのトグルで切替）${D.depositBqLoading?' ・入金読込中…':''}${D.depositBqErr?` ・入金取得エラー: ${esc(D.depositBqErr)}`:''}</div>`;
 
   // 繰越（開始残高）の計算元の状態を表示。サーバー全期間計算なら期間設定に関係なく正確。
   if(carrySrc==='loading'){
@@ -5357,12 +5371,12 @@ window.App = {
   period(p){ S.period=p; S.pWeekIdx=null; render(); },
   store(n){ S.store=n; render(); },
   set(k,v){ S[k]=v; render(); },
-  // データソース切替（2026-08-22追加。既定はシート＝false。daily/PLの両方に効く）
+  // データソース切替（2026-08-22追加。既定はシート＝false。daily/PL/depositの3つに効く）
   setDailySource(src){
     const bq=(src==='bq');
     S.useBqDaily=bq;
     try{ localStorage.setItem(LS.dailyBq, bq?'1':'0'); }catch(e){}
-    if(bq){ fetchDailyBQ(); fetchPlBQ(); } else fetchData(true, { only:['daily','PL'] });
+    if(bq){ fetchDailyBQ(); fetchPlBQ(); fetchDepositBQ(); } else fetchData(true, { only:['daily','PL','deposit'] });
     render();
   },
   setWeek(i){ S.pWeekIdx=i; render(); },

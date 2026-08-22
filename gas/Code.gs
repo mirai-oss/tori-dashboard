@@ -48,7 +48,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v50', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v51', time: new Date().toISOString() });
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     if (action === 'bqSetupSalesDataset') return out(bqSetupSalesDataset(p)); // salesデータセット作成（初回のみ・専用トークン認証）
     if (action === 'bqSyncSales') return out(bqSyncAllSales(p)); // 分析_日別店舗ほかのBQミラー（専用トークン認証・ログイン不要）
@@ -76,6 +76,7 @@ function handle(p) {
     if (action === 'bqDetail') return out(bqDetail(p, session)); // 明細分析：期間・店舗で絞ってBQ集計
     if (action === 'bqDailyStore') return out(bqDailyStore(p, session)); // 推移分析：分析_日別店舗のBQミラーを読む（データソース切替フラグ用）
     if (action === 'bqGetPL') return out(bqGetPL(p, session)); // PLタブ：DB_PLのBQミラーを読む（データソース切替フラグ用）
+    if (action === 'bqGetDeposit') return out(bqGetDeposit(p, session)); // 入金管理タブ：入金DBのBQミラーを読む（データソース切替フラグ用）
     if (action === 'accounts') return out(listAccounts(session));
     if (action === 'saveAccount')   return out(saveAccount(p, session));
     if (action === 'deleteAccount') return out(deleteAccount(p, session));
@@ -1123,6 +1124,13 @@ var BQ_STG_JINKEN_SCHEMA = [
   { name: 'wage_total', type: 'NUMERIC' }, { name: 'transport_allowance', type: 'NUMERIC' },
   { name: 'total_amount', type: 'NUMERIC' }
 ];
+// 2026-08-22 追加（Day5「入金管理タブの切替」）。入金DBはこのプロジェクトのローカルシート
+// （分析_日別店舗と同じ・1行目がヘッダー）。A店舗 B日付 C入金額 D摘要 E取引時刻 F取込日時のうち
+// 表示に使うA〜Dだけをミラー（E/F取込管理用の列はCSV取込機能側がシートを直接読むため対象外）。
+var BQ_STG_DEPOSIT_SCHEMA = [
+  { name: 'store_name', type: 'STRING' }, { name: 'date', type: 'DATE' },
+  { name: 'amount', type: 'NUMERIC' }, { name: 'memo', type: 'STRING' }
+];
 
 // ミラー対象一覧（src='local'はこのプロジェクトの自分のスプレッドシート。それ以外はopenByIdで開く）
 function bqSalesTargets_() {
@@ -1134,7 +1142,8 @@ function bqSalesTargets_() {
     { src: SALES_DB_ID, sheet: '支払いDB',      table: 'stg_payment',      schema: BQ_STG_PAYMENT_SCHEMA,      startRow: 3 },
     { src: SALES_DB_ID, sheet: '媒体別DB',      table: 'stg_media',        schema: BQ_STG_MEDIA_SCHEMA,        startRow: 3 },
     { src: SALES_DB_ID, sheet: '仕入れDB',      table: 'stg_siire',        schema: BQ_STG_SIIRE_SCHEMA,        startRow: 3 },
-    { src: SALES_DB_ID, sheet: '人件費DB',      table: 'stg_jinken',       schema: BQ_STG_JINKEN_SCHEMA,       startRow: 3 }
+    { src: SALES_DB_ID, sheet: '人件費DB',      table: 'stg_jinken',       schema: BQ_STG_JINKEN_SCHEMA,       startRow: 3 },
+    { src: 'local',     sheet: '入金DB',        table: 'stg_deposit',      schema: BQ_STG_DEPOSIT_SCHEMA,      startRow: 2 }
   ];
 }
 // シートのstartRow行目以降(schemaの列数分)をCSV文字列に変換
@@ -1279,6 +1288,36 @@ function bqGetPL(p, session) {
       out.push([r[0], r[1], r[2], r[3], Number(r[4] || 0), r[5]]);
     }
     return { ok: true, sheets: { PL: out } };
+  } catch (e) {
+    return { ok: false, error: String(e && e.message || e) };
+  }
+}
+
+// 入金管理タブ用: 入金DBのBQミラーを読む。bqGetPLと同じ方針（ログイン必須・店舗スコープ制限）で、
+// 既存のingestDeposit()がそのまま解釈できる形（{sheets:{deposit:[[店舗名,日付,入金額,メモ],...]}}）で返す。
+// 繰越（開始残高）計算のdepositCarry()はこのBQミラーを経由せず、常にローカルシートを直接読む
+// （全期間の累計が必要なため。ここで切り替わるのは「今月の明細」を表示する部分だけ）。
+function bqGetDeposit(p, session) {
+  try {
+    var sessStores = String(session && session.stores || '').trim();
+    var restricted = sessStores && sessStores !== '全店';
+    var where = '';
+    if (restricted) {
+      var allowNames = sessStores.split(/[,、]/).map(function (s) { return s.trim(); }).filter(Boolean);
+      if (allowNames.length) {
+        where = "WHERE store_name IN ('" + allowNames.map(function (n) { return String(n).replace(/'/g, "''"); }).join("','") + "')";
+      }
+    }
+    var sql = 'SELECT store_name, date, amount, memo FROM `' + BQ_PROJECT + '.' + BQ_SALES_DATASET + '.stg_deposit` ' + where + ' ORDER BY date';
+    var rows = bqRows_(sql);
+    if (!rows) return { ok: false, error: 'BigQueryクエリ失敗' };
+    var out = [['店舗名', '日付', '入金額', 'メモ']];
+    for (var i = 1; i < rows.length; i++) {
+      var r = rows[i];
+      // DATE型は'YYYY-MM-DD'文字列で返るため、bqDailyStoreと同じくシート版と揃えて'YYYY/MM/DD'に変換
+      out.push([r[0], String(r[1]).replace(/-/g, '/'), Number(r[2] || 0), r[3]]);
+    }
+    return { ok: true, sheets: { deposit: out } };
   } catch (e) {
     return { ok: false, error: String(e && e.message || e) };
   }
