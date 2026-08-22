@@ -48,7 +48,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v51', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v52', time: new Date().toISOString() });
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     if (action === 'bqSetupSalesDataset') return out(bqSetupSalesDataset(p)); // salesデータセット作成（初回のみ・専用トークン認証）
     if (action === 'bqSyncSales') return out(bqSyncAllSales(p)); // 分析_日別店舗ほかのBQミラー（専用トークン認証・ログイン不要）
@@ -1124,9 +1124,11 @@ var BQ_STG_JINKEN_SCHEMA = [
   { name: 'wage_total', type: 'NUMERIC' }, { name: 'transport_allowance', type: 'NUMERIC' },
   { name: 'total_amount', type: 'NUMERIC' }
 ];
-// 2026-08-22 追加（Day5「入金管理タブの切替」）。入金DBはこのプロジェクトのローカルシート
-// （分析_日別店舗と同じ・1行目がヘッダー）。A店舗 B日付 C入金額 D摘要 E取引時刻 F取込日時のうち
-// 表示に使うA〜Dだけをミラー（E/F取込管理用の列はCSV取込機能側がシートを直接読むため対象外）。
+// 2026-08-22 追加（Day5「入金管理タブの切替」）。入金DBはこのプロジェクトのローカルシートだが、
+// readSheet()のコメントにある「1行目に空行が入った」事故の影響が残っており、
+// 2行目が本当のヘッダー・3行目からがデータ（実際にstartRow:2でCSVロードしエラーになり判明）。
+// A店舗 B日付 C入金額 D摘要 E取引時刻 F取込日時のうち表示に使うA〜Dだけをミラー
+// （E/F取込管理用の列はCSV取込機能側がシートを直接読むため対象外）。
 var BQ_STG_DEPOSIT_SCHEMA = [
   { name: 'store_name', type: 'STRING' }, { name: 'date', type: 'DATE' },
   { name: 'amount', type: 'NUMERIC' }, { name: 'memo', type: 'STRING' }
@@ -1143,7 +1145,9 @@ function bqSalesTargets_() {
     { src: SALES_DB_ID, sheet: '媒体別DB',      table: 'stg_media',        schema: BQ_STG_MEDIA_SCHEMA,        startRow: 3 },
     { src: SALES_DB_ID, sheet: '仕入れDB',      table: 'stg_siire',        schema: BQ_STG_SIIRE_SCHEMA,        startRow: 3 },
     { src: SALES_DB_ID, sheet: '人件費DB',      table: 'stg_jinken',       schema: BQ_STG_JINKEN_SCHEMA,       startRow: 3 },
-    { src: 'local',     sheet: '入金DB',        table: 'stg_deposit',      schema: BQ_STG_DEPOSIT_SCHEMA,      startRow: 2 }
+    // 入金DBはstartRow:3（2026-08-22 実データで確認。readSheet()内のコメントにある「1行目に
+    // 空行が入った」事故の影響が残っており、2行目が本当のヘッダー・3行目からがデータのため）
+    { src: 'local',     sheet: '入金DB',        table: 'stg_deposit',      schema: BQ_STG_DEPOSIT_SCHEMA,      startRow: 3 }
   ];
 }
 // シートのstartRow行目以降(schemaの列数分)をCSV文字列に変換
