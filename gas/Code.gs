@@ -48,7 +48,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v57', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v58', time: new Date().toISOString() });
     if (action === 'syncSeisanFeeToPl') return out(syncSeisanFeeToPl(p)); // 運営委託費のPL自動連携（専用トークン認証・ログイン不要。2026-08-23追加）
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     if (action === 'bqSetupSalesDataset') return out(bqSetupSalesDataset(p)); // salesデータセット作成（初回のみ・専用トークン認証）
@@ -1384,7 +1384,10 @@ function syncSeisanFeeToPl(p) {
   );
   if (storeRes.getResponseCode() !== 200) return { ok: false, error: '店舗一覧の取得に失敗しました' };
   var stores = JSON.parse(storeRes.getContentText())
-    .filter(function (s) { return s.seisan_target && s.is_active; })
+    // is_activeでは絞らない：業務委託店舗はnippo/シフト管理の対象外という意味でis_active=falseに
+    // なっているだけで、精算・PL上は稼働中（2026-08-23の実地テストで判明。既存4店舗とも
+    // is_active=falseだったため絞ると0件になっていた）。seisan_targetのみで判定する。
+    .filter(function (s) { return s.seisan_target; })
     .map(function (s) { return s.name; });
   if (!stores.length) return { ok: true, ym: ym, synced: 0, note: '精算対象の店舗がありません' };
 
