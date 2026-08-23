@@ -48,7 +48,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v73', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'speed-v1', time: new Date().toISOString() });
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'detailVsDailyDiag') return out(detailVsDailyDiag(p)); // 明細分析とダッシュボードの売上・客数・組数の差を実測で突合（専用トークン認証・読み取り専用・一時的）
@@ -86,6 +86,7 @@ function handle(p) {
     if (action === 'bqGetPL') return out(bqGetPL(p, session)); // PLタブ：DB_PLのBQミラーを読む（データソース切替フラグ用）
     if (action === 'bqGetDeposit') return out(bqGetDeposit(p, session)); // 入金管理タブ：入金DBのBQミラーを読む（データソース切替フラグ用）
     if (action === 'bqGetMedia') return out(bqGetMedia(p, session)); // 媒体別日次：媒体別DBのBQミラーを読む（ログイン直後の同期エラー対策・2026-08-23追加）
+    if (action === 'dataFreshness') return out(dataFreshness(p, session)); // データ最新日・BQ同期時刻の表示用（実装指示書_ダッシュボード高速化タスク1・2026-08-23追加）
     if (action === 'accounts') return out(listAccounts(session));
     if (action === 'saveAccount')   return out(saveAccount(p, session));
     if (action === 'deleteAccount') return out(deleteAccount(p, session));
@@ -1324,7 +1325,46 @@ function bqSyncAllSales(p) {
       results.push({ ok: false, table: t.table, error: String(e && e.message || e) });
     }
   }
-  return { ok: results.every(function (r) { return r.ok; }), results: results, time: new Date().toISOString() };
+  var allOk = results.every(function (r) { return r.ok; });
+  // 鮮度表示（dataFreshness・2026-08-23追加）用に、最後に成功したBQ同期の時刻をScript Propertiesへ記録。
+  // 既存の戻り値・動作は変えない（呼び出し元のbq-sales-reconcileタスクはtimeを見ていないため無影響）。
+  try { PropertiesService.getScriptProperties().setProperty('BQ_SYNC_LAST_OK', JSON.stringify({ time: new Date().toISOString(), ok: allOk })); } catch (eProp) {}
+  return { ok: allOk, results: results, time: new Date().toISOString() };
+}
+
+// 画面に「データがいつまで揃っているか」を表示するための軽量アクション（2026-08-23追加・
+// 実装指示書_ダッシュボード高速化）。ログイン必須（他の軽量トークン系と違い、担当店舗の権限は
+// 問わない全社共通の情報のため、単にログイン済みかどうかだけ見る）。
+function dataFreshness(p, session) {
+  var out = { ok: true };
+  try {
+    var maxRow = bqRows_('SELECT MAX(date) AS d FROM `' + BQ_PROJECT + '.' + BQ_SALES_DATASET + '.fact_daily_store` WHERE net_sales > 0 OR guests_total > 0');
+    out.bqMaxDate = (maxRow && maxRow[1] && maxRow[1][0]) ? String(maxRow[1][0]) : null;
+  } catch (eBq) { out.bqMaxDate = null; out.bqError = String(eBq && eBq.message || eBq); }
+  try {
+    var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('分析_日別店舗');
+    out.sheetMaxDate = null;
+    if (sh) {
+      var lr = sh.getLastRow();
+      if (lr >= 2) {
+        // 全件走査は重い（実測4秒超・7000行超）ため、末尾側だけ見る。同日に複数店舗ぶんの行が
+        // 並ぶ想定でも直近50行あれば十分カバーできる。
+        var scanFrom = Math.max(2, lr - 50);
+        var vals = sh.getRange(scanFrom, 1, lr - scanFrom + 1, 1).getValues();
+        var maxD = null;
+        for (var i = 0; i < vals.length; i++) {
+          var v = vals[i][0];
+          if (v instanceof Date && (!maxD || v.getTime() > maxD.getTime())) maxD = v;
+        }
+        if (maxD) out.sheetMaxDate = Utilities.formatDate(maxD, 'Asia/Tokyo', 'yyyy-MM-dd');
+      }
+    }
+  } catch (eSheet) { out.sheetMaxDate = null; }
+  try {
+    var raw = PropertiesService.getScriptProperties().getProperty('BQ_SYNC_LAST_OK');
+    if (raw) { var j = JSON.parse(raw); out.bqSyncedAt = j.time || null; out.bqSyncedOk = !!j.ok; }
+  } catch (eProp2) {}
+  return out;
 }
 
 // 2026-08-22 追加（dash-syncのGAS往復簡略化）。ns-portal側のdash-syncがこれまで

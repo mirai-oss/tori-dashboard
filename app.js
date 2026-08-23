@@ -182,7 +182,8 @@ const S = {
   useBqDaily:(localStorage.getItem(LS.dailyBq)==='1'),   // 推移分析のデータソース切替（既定=false=シート。2026-08-22追加）
 };
 const D = { daily:[], media:[], deposit:[], review:[], ad:[], adfx:[], tanka:{}, pl:[], dinii:[], diniiCols:[], targets:[], targetsM:[], events:[], extra:{}, storeAlias:{}, storeParent:{}, mediaClass:{}, adMediaMaster:[], adPlanMaster:{}, adStoreMaster:[], holidays:null, detailData:null, detailKey:'', detailLoading:'', refDate:null, maxDate:null,
-  wkTpl:{}, wkRep:[], wkAns:{}, wkFb:{}, roleDef:{}, depNote:{}, dailyBqLoading:false, dailyBqErr:'', plBqLoading:false, plBqErr:'', storeDirectory:null };
+  wkTpl:{}, wkRep:[], wkAns:{}, wkFb:{}, roleDef:{}, depNote:{}, dailyBqLoading:false, dailyBqErr:'', plBqLoading:false, plBqErr:'', storeDirectory:null,
+  freshness:null, freshnessAt:0 };
 let EXPORT = [];      // 現在タブのCSVエクスポート対象 [{title,headers,rows}]
 let pollTimer = null;
 
@@ -1365,6 +1366,7 @@ async function fetchDataFast(){
   const excl = S.useBqDaily ? HEAVY_KEYS.concat(['daily','PL']) : HEAVY_KEYS;
   await fetchData(true, { exclude:excl });               // 軽い必須のみ → すぐ表示
   if(S.useBqDaily){ fetchDailyBQ(); fetchPlBQ(); fetchDepositBQ(); fetchMediaBQ(); }
+  fetchFreshness();                                       // データ鮮度表示（5分キャッシュ・下のfetchFreshness参照）
   render();
   // data は version を返さないので、初回に署名を取得（次の自動更新のムダ取得を防ぐ）
   fetchVersion().then(v=>{ if(v!==null) S.dataVersion=v; });
@@ -1438,6 +1440,18 @@ async function fetchMediaBQ(){
     if(d&&d.ok&&d.sheets){ ingestSheets(d.sheets, true); }
   }catch(e){}
   D.mediaPending=false; render();
+}
+// データ鮮度表示（実装指示書_ダッシュボード高速化タスク1・2026-08-23追加）。
+// 「数字が古い/処理中/失敗」を画面で判別できるようにする。5分キャッシュ（毎render時には叩かない）。
+async function fetchFreshness(){
+  if(!S.auth||!S.auth.token) return;
+  if(D.freshness && Date.now()-D.freshnessAt<5*60*1000) return;   // 5分以内なら再取得しない
+  try{
+    const d=await api({ action:'dataFreshness', token:S.auth.token });
+    if(d&&d.ok){ D.freshness=d; D.freshnessAt=Date.now(); }
+    else{ D.freshness={ ok:false }; D.freshnessAt=Date.now(); }
+  }catch(e){ D.freshness={ ok:false }; D.freshnessAt=Date.now(); }
+  const el=document.querySelector('.sync-info'); if(el) el.innerHTML=connBadge();
 }
 // 軽量版：まず署名(version)だけ取り、変化があるときだけフル取得
 async function fetchVersion(){
@@ -1677,9 +1691,22 @@ function ctxBarHtml(){
     <span class="cb-up">▲ 上へ</span></div>`;
 }
 
+// 「データ最新日／BQ同期時刻／状態」の1行（実装指示書_ダッシュボード高速化タスク1）
+function freshnessLine(){
+  const f=D.freshness;
+  if(!f) return '';
+  if(f.ok===false) return `<div class="mut" style="font-size:11px;margin-top:2px">⚠️ データ鮮度の取得に失敗</div>`;
+  const md=(s)=>{ if(!s) return '—'; const p=String(s).split('-'); return p.length===3?(+p[1])+'/'+(+p[2]):s; };
+  const dt=(iso)=>{ if(!iso) return '—'; const d2=new Date(iso); if(isNaN(d2)) return '—';
+    return (d2.getMonth()+1)+'/'+d2.getDate()+' '+String(d2.getHours()).padStart(2,'0')+':'+String(d2.getMinutes()).padStart(2,'0'); };
+  let status='—';
+  if(f.sheetMaxDate&&f.bqMaxDate) status=(f.bqMaxDate>=f.sheetMaxDate)?'✅ 最新':'⏳ 同期待ち';
+  else if(f.sheetMaxDate&&!f.bqMaxDate) status='—';
+  return `<div class="mut" style="font-size:11px;margin-top:2px">データ最新日: ${esc(md(f.sheetMaxDate))} ／ BigQuery同期: ${esc(dt(f.bqSyncedAt))}${f.bqSyncedOk===false?' ⚠️':(f.bqSyncedAt?' ✅':'')} ／ 状態: ${status}</div>`;
+}
 function connBadge(){
-  if(S.connState==='live') return `<span class="st-live">● スプレッドシート連携中</span>（自動更新）<br>最終同期 ${esc(S.lastSync)}`;
-  if(S.connState==='livewarn') return `<span style="color:#b5502f">● 連携中（データ未取込）</span><br>最終同期 ${esc(S.lastSync)}`;
+  if(S.connState==='live') return `<span class="st-live">● スプレッドシート連携中</span>（自動更新）<br>最終同期 ${esc(S.lastSync)}`+freshnessLine();
+  if(S.connState==='livewarn') return `<span style="color:#b5502f">● 連携中（データ未取込）</span><br>最終同期 ${esc(S.lastSync)}`+freshnessLine();
   if(S.connState==='connecting') return `<span style="color:#a2803f">● 同期中…</span>`;
   if(S.connState==='error') return `<span style="color:#b5502f">● 同期エラー</span><br>最終同期 ${esc(S.lastSync||'—')}`;
   return `<span class="st-demo">● サンプルデータ表示中</span><br>接続設定からAPIを登録してください`;
