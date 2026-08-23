@@ -48,7 +48,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'speed-v5', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'speed-v6', time: new Date().toISOString() });
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'detailVsDailyDiag') return out(detailVsDailyDiag(p)); // 明細分析とダッシュボードの売上・客数・組数の差を実測で突合（専用トークン認証・読み取り専用・一時的）
@@ -940,6 +940,19 @@ function bqCacheKey_(prefix, parts) {
   var raw = prefix + '_' + parts.join('_');
   return raw.length > 200 ? prefix + '_' + md5Hex_(raw) : raw;
 }
+// PL（stg_pl）は他と違い、書き込み直後に画面に反映されないと「入力したのに消えた」ように見える
+// （bqSyncPLで直接同期する設計のため）。世代番号をキャッシュキーに混ぜ、bqSyncPL成功のたびに
+// 世代を進めることで、店舗権限スコープごとに何通りもあるキャッシュキーを個別に消さなくても
+// 一括で無効化できるようにする（2026-08-23追加）。
+function bqCacheGen_(kind) {
+  try { return PropertiesService.getScriptProperties().getProperty('BQ_CACHE_GEN_' + kind) || '0'; } catch (e) { return '0'; }
+}
+function bqCacheGenBump_(kind) {
+  try {
+    var props = PropertiesService.getScriptProperties();
+    props.setProperty('BQ_CACHE_GEN_' + kind, String((Number(props.getProperty('BQ_CACHE_GEN_' + kind)) || 0) + 1));
+  } catch (e) {}
+}
 // CacheServiceは1キーあたり100KBまでのため、bqDailyStore/bqGetMedia等の全期間・全店舗結果は
 // 素の1キーだと簡単に超えてしまい、キャッシュがずっと無効なまま気づかない（実測で発覚・2026-08-23）。
 // 長い文字列を複数キーに分割して保存し、読むときに結合する（チャンク数はkey+'_n'に記録）。
@@ -1454,7 +1467,7 @@ function bqSyncPL(p) {
   var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_PL');
   if (!sh) return { ok: false, error: 'DB_PLシートがありません' };
   var lastRow = sh.getLastRow();
-  if (lastRow < 2) return { ok: true, rows: 0, note: 'データ行がありません' };
+  if (lastRow < 2) { bqCacheGenBump_('pl'); return { ok: true, rows: 0, note: 'データ行がありません' }; }
   var values = sh.getRange(2, 1, lastRow - 1, 6).getValues();
   var lines = [];
   for (var i = 0; i < values.length; i++) {
@@ -1467,7 +1480,11 @@ function bqSyncPL(p) {
     ].join(','));
   }
   var csv = lines.join('\n');
-  return bqLoadSheetToTable_(csv, 'stg_pl', BQ_STG_PL_SCHEMA);
+  var plSyncRes = bqLoadSheetToTable_(csv, 'stg_pl', BQ_STG_PL_SCHEMA);
+  // PL画面のキャッシュ（bqGetPL・実装指示書_ダッシュボード高速化タスク3）を無効化。
+  // 同期直後にキャッシュが古いままだと「入力したのに反映されない」に見えるため。
+  if (plSyncRes && plSyncRes.ok) bqCacheGenBump_('pl');
+  return plSyncRes;
 }
 // PLタブ用: DB_PLのBQミラーを読む。bqDailyStoreと同じ方針（ログイン必須・店舗スコープ制限）で、
 // 既存のingestPL()がそのまま解釈できる形（{sheets:{PL:[[年月,店舗名,勘定科目,区分,金額,メモ],...]}}）で返す。
@@ -1483,7 +1500,7 @@ function bqGetPL(p, session) {
         where = "WHERE (store_name IN ('" + allowNames.map(function (n) { return String(n).replace(/'/g, "''"); }).join("','") + "') OR store_name = '')";
       }
     }
-    var ck = bqCacheKey_('pl', [restricted && allowNames.length ? allowNames.slice().sort().join('.') : 'all']);
+    var ck = bqCacheKey_('pl', [bqCacheGen_('pl'), restricted && allowNames.length ? allowNames.slice().sort().join('.') : 'all']);
     var cached = bqCacheGet_(ck);
     if (cached) return cached;
     var sql = 'SELECT year_month, store_name, item, category, amount, memo FROM `' + BQ_PROJECT + '.' + BQ_SALES_DATASET + '.stg_pl` ' + where + ' ORDER BY year_month';
@@ -2413,6 +2430,13 @@ function savePlEntries(p, session) {
       plsys = 'PL管理システムにも反映しました';
     } else plsys = 'PL管理システムに「' + PL_INPUT_SHEET + '」シートが見つかりません（DB_PLのみ反映）';
   } catch (e) { plsys = 'PL管理システムへの反映に失敗（DB_PLのみ反映）: ' + String(e && e.message || e); }
+  // DB_PL（シート）を更新しただけではBigQueryモードのPLタブに反映されない（bqSyncPLで別途ミラーする
+  // 設計のため）。syncSeisanFeeToPlでは対応済みだったが、この画面からの手入力保存は同期を呼んでおらず
+  // 「入力してもBQモードでは翌朝8時の自動同期まで反映されない」状態だった（2026-08-23発覚・修正）。
+  try {
+    var tkPl = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+    if (tkPl) bqSyncPL({ token: tkPl });
+  } catch (eSync) { /* BQ同期に失敗してもシート保存自体は成功として扱う（次回同期で追いつく） */ }
   return { ok: true, saved: clean.length, plsys: plsys };
 }
 
@@ -2562,6 +2586,11 @@ function savePlBulk(p, session) {
       plsys = 'PL管理システムにも反映しました';
     } else plsys = 'PL管理システムに「' + PL_INPUT_SHEET + '」シートが見つかりません（DB_PLのみ反映）';
   } catch (e) { plsys = 'PL管理システムへの反映に失敗（DB_PLのみ反映）: ' + String(e && e.message || e); }
+  // savePlEntriesと同じ理由でBQミラーも同期する（2026-08-23発覚・修正）。
+  try {
+    var tkPl2 = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+    if (tkPl2) bqSyncPL({ token: tkPl2 });
+  } catch (eSync2) { /* BQ同期に失敗してもシート保存自体は成功として扱う（次回同期で追いつく） */ }
   return { ok: true, months: n, deleted: amount <= 0, plsys: plsys };
 }
 
