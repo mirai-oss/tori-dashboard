@@ -2645,7 +2645,7 @@ function viewDetail(){
     <div class="seg">${[['excl','税別'],['incl','税込']].map(([k,l])=>`<button class="${(S.detailTax||'excl')===k?'on':''}" onclick="App.set('detailTax','${k}')">${l}</button>`).join('')}</div>
     <span class="period-label">${esc(r.label)} ／ ${S.dStore==='all'?(fullAccess?'全店':'担当店舗（一覧）'):esc(S.dStore)}（${taxLb}）</span>
   </div>
-  <div class="note-box no-print" style="margin:4px 0 2px;padding:9px 13px;font-size:11.5px">ℹ️ POS明細の積み上げ（傾向・構成比を見る用／金額の正は日別売上）。客数はお通し数ベースの推定です。</div>`;
+  <div class="note-box no-print" style="margin:4px 0 2px;padding:9px 13px;font-size:11.5px">ℹ️ 上部サマリー・店舗別テーブルの売上/客数/組数は、レジ実績（同期済みの期間のみ）。時間帯別・商品別の内訳はPOS明細からの推定です（傾向・構成比を見る用）。</div>`;
   // その日のイベント（「日」表示かつ特定店舗を選んでいるときだけ・その店舗対象のイベントのみ）。
   // 月/年/全店では出さない（多すぎ・対象外店舗のイベントが混じるため）。
   if(S.dPeriod==='day' && S.dStore && S.dStore!=='all'){
@@ -2688,22 +2688,38 @@ function viewDetail(){
     const recs=dd.hour.slice(1).map(row=>({hour:parseInt(String(row[iH]).replace(/[^0-9]/g,''),10),sales:salesAt(H,row),checks:num(row[iChk]),guests:num(row[iG]),qty:num(row[iQ])})).filter(x=>!isNaN(x.hour));
     const ord=(x)=>(x.hour+18)%24; recs.sort((a,b)=>ord(a)-ord(b));
     const cat=recs.map(x=>x.hour+'時');
+    // 時間帯別テーブル自身の内訳・構成比・合計行は、明細(dinii)からの推定である時間帯別データどうしで揃える
+    // （実績に一部だけ差し替えると、行を合計しても表の合計行と合わなくなるため）。
     const tS=recs.reduce((s,x)=>s+x.sales,0),tC=recs.reduce((s,x)=>s+x.checks,0),tG=recs.reduce((s,x)=>s+x.guests,0),tQ=recs.reduce((s,x)=>s+x.qty,0);
+    // ページ上部のKPIサマリーだけは、店舗別テーブルと同じ実績値（dd.store・レジ実績）を使う
+    // （2026-08-23追加。時間帯別は日次粒度の実績と紐づけられないため推定のままだが、ページ上部の
+    // サマリーは「店舗別 売上」テーブルと数字が食い違って見えると混乱するため、実績があれば優先する）。
+    let kpiS=tS, kpiC=tC, kpiG=tG, kpiReal=false;
+    if(dd.store&&dd.store.length>1){
+      const HS=dd.store[0]; const iChkS=hcol(HS,'checks'),iGS=hcol(HS,'guests');
+      const storeRecs=dd.store.slice(1).filter(row=>String(row[0]||'').trim());
+      if(storeRecs.length){
+        kpiS=storeRecs.reduce((s,row)=>s+salesAt(HS,row),0);
+        kpiC=storeRecs.reduce((s,row)=>s+num(row[iChkS]),0);
+        kpiG=storeRecs.reduce((s,row)=>s+num(row[iGS]),0);
+        kpiReal=true;
+      }
+    }
     const peak=recs.reduce((m,x)=>x.sales>m.sales?x:m,{sales:-1});
     h+=`<div class="kpi-grid">
-      <div class="kpi"><div class="lb">売上（${taxLb}）</div><div class="vl">${yen(tS)}</div><div class="yy">${esc(r.label)}</div></div>
-      <div class="kpi"><div class="lb">会計数 / 客数</div><div class="vl" style="font-size:19px">${cnt(tC)}組 / ${cnt(tG)}人</div><div class="yy">客数=お通し推定</div></div>
-      <div class="kpi"><div class="lb">客単価</div><div class="vl">${yen(tG>0?tS/tG:0)}</div><div class="yy">${taxLb}・売上÷客数</div></div>
+      <div class="kpi"><div class="lb">売上（${taxLb}）</div><div class="vl">${yen(kpiS)}</div><div class="yy">${esc(r.label)}${kpiReal?'・レジ実績':''}</div></div>
+      <div class="kpi"><div class="lb">会計数 / 客数</div><div class="vl" style="font-size:19px">${cnt(kpiC)}組 / ${cnt(kpiG)}人</div><div class="yy">${kpiReal?'客数=レジ実績':'客数=お通し推定'}</div></div>
+      <div class="kpi"><div class="lb">客単価</div><div class="vl">${yen(kpiG>0?kpiS/kpiG:0)}</div><div class="yy">${taxLb}・売上÷客数</div></div>
       <div class="kpi"><div class="lb">ピーク時間帯</div><div class="vl">${peak.sales>=0?peak.hour+'時台':'—'}</div><div class="yy">${peak.sales>=0?yen(peak.sales):''}</div></div>
     </div>`;
     const series=[{name:'売上',color:C_NOW,data:recs.map(x=>x.sales)}];
     const basisNow=(S.dBasis==='order'||S.dBasis==='arrival')?S.dBasis:'checkout';
     const basisSeg=`<div class="seg no-print">${[['checkout','会計時'],['arrival','来店時'],['order','オーダー時']].map(([k,l])=>`<button class="${basisNow===k?'on':''}" onclick="App.set('dBasis','${k}')">${l}</button>`).join('')}</div>`;
     const basisLb={checkout:'会計時（会計日時）',arrival:'来店時（伝票の最初のオーダー）',order:'オーダー時（各明細のオーダー日時）'}[basisNow];
-    h+=`<div class="panel"><div class="panel-head"><div><h3>時間帯別 売上（${taxLb}）</h3><div class="sub">営業日順（夕方→深夜）／ 棒＝売上／ 集計基準＝${basisLb}</div></div>${basisSeg}</div>${barChart(cat,series,{})}
+    h+=`<div class="panel"><div class="panel-head"><div><h3>時間帯別 売上（${taxLb}）</h3><div class="sub">営業日順（夕方→深夜）／ 棒＝売上／ 集計基準＝${basisLb}${kpiReal?'／ここから下は明細からの推定のため、上のサマリー（レジ実績）とは合計が一致しません':''}</div></div>${basisSeg}</div>${barChart(cat,series,{})}
       <div class="scroll-x"><table class="tbl"><thead><tr><th>時間帯</th><th>売上</th><th>出数</th><th>会計数</th><th>客数</th><th>客単価</th><th>構成比</th></tr></thead><tbody>`;
     recs.forEach(x=>{ h+=`<tr><td>${x.hour}時台</td><td>${yen(x.sales)}</td><td>${cnt(x.qty)}点</td><td>${cnt(x.checks)}組</td><td>${cnt(x.guests)}人</td><td>${yen(x.guests>0?x.sales/x.guests:0)}</td><td>${tS>0?(x.sales/tS*100).toFixed(1):'—'}%</td></tr>`; });
-    h+=`<tr class="total"><td>合計</td><td>${yen(tS)}</td><td>${cnt(tQ)}点</td><td>${cnt(tC)}組</td><td>${cnt(tG)}人</td><td>${yen(tG>0?tS/tG:0)}</td><td>100%</td></tr></tbody></table></div></div>`;
+    h+=`<tr class="total"><td>合計（推定）</td><td>${yen(tS)}</td><td>${cnt(tQ)}点</td><td>${cnt(tC)}組</td><td>${cnt(tG)}人</td><td>${yen(tG>0?tS/tG:0)}</td><td>100%</td></tr></tbody></table></div></div>`;
     EXPORT.push({ title:'時間帯別('+taxLb+')', headers:['時間帯','売上','出数','会計数','客数','客単価','構成比'], rows:recs.map(x=>[x.hour+'時台',Math.round(x.sales),Math.round(x.qty),Math.round(x.checks),Math.round(x.guests),Math.round(x.guests>0?x.sales/x.guests:0),tS>0?(x.sales/tS*100).toFixed(1)+'%':'']) });
   }
   // 時間帯×商品 出数（0円商品も含む・出数上位40商品）
