@@ -48,7 +48,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v68', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v69', time: new Date().toISOString() });
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'syncSeisanFeeToPl') return out(syncSeisanFeeToPl(p)); // 運営委託費のPL自動連携（専用トークン認証・ログイン不要。2026-08-23追加）
@@ -1010,19 +1010,28 @@ function bqDetail(p, session) {
       // ようになったため）。店舗名で突合。時間帯別(hour)は日次粒度の実績と紐づけられないため、
       // 引き続きお通し数からの推定のまま。
       try {
-        var realWhere = "WHERE date BETWEEN DATE('" + from + "') AND DATE('" + to + "')";
-        if (restricted) {
-          realWhere += " AND store_name IN ('" + allowNames.map(function (n) { return String(n).replace(/'/g, "''"); }).join("','") + "')";
-        } else if (p.store && p.store !== 'all') {
-          realWhere += " AND store_name = '" + String(p.store).replace(/'/g, "''") + "'";
-        }
-        var real = bqRows_("SELECT store_name, SUM(guests_total) guests, SUM(parties_total) checks FROM `" + BQ_PROJECT + "." + BQ_SALES_DATASET + ".fact_daily_store` " + realWhere + " GROUP BY store_name");
-        if (real) {
-          var realMap = {};
-          for (var ri = 1; ri < real.length; ri++) realMap[real[ri][0]] = { guests: Number(real[ri][1] || 0), checks: Number(real[ri][2] || 0) };
-          for (var si = 1; si < st.length; si++) {
-            var rm = realMap[st[si][0]];
-            if (rm) { st[si][3] = rm.checks; st[si][4] = rm.guests; } // checks(組数)・guests(客数)を実績値に差し替え
+        // fact_daily_storeは日次バッチ同期（Mac mini・毎日11時頃）のミラーのため、直近1日以上遅れることがある
+        // （同期ホストの再起動等で更に遅れる場合も）。指定期間の終端(to)までデータが揃っていない状態で
+        // 実績値に差し替えると、ダッシュボード（シート直読・ほぼリアルタイム）と比べて過少な数字になり、
+        // 「明細分析とダッシュボードの数字が全然違う」という混乱を生む。そのため、ミラーの最新日(MAX(date))が
+        // 期間の終端(to)以降まで揃っている場合に限り実績値へ差し替える。揃っていなければ従来の推定値のまま。
+        var maxRow = bqRows_("SELECT MAX(date) AS d FROM `" + BQ_PROJECT + "." + BQ_SALES_DATASET + ".fact_daily_store`");
+        var maxDate = (maxRow && maxRow[1] && maxRow[1][0]) ? String(maxRow[1][0]) : '';
+        if (maxDate && maxDate >= to) {
+          var realWhere = "WHERE date BETWEEN DATE('" + from + "') AND DATE('" + to + "')";
+          if (restricted) {
+            realWhere += " AND store_name IN ('" + allowNames.map(function (n) { return String(n).replace(/'/g, "''"); }).join("','") + "')";
+          } else if (p.store && p.store !== 'all') {
+            realWhere += " AND store_name = '" + String(p.store).replace(/'/g, "''") + "'";
+          }
+          var real = bqRows_("SELECT store_name, SUM(guests_total) guests, SUM(parties_total) checks FROM `" + BQ_PROJECT + "." + BQ_SALES_DATASET + ".fact_daily_store` " + realWhere + " GROUP BY store_name");
+          if (real) {
+            var realMap = {};
+            for (var ri = 1; ri < real.length; ri++) realMap[real[ri][0]] = { guests: Number(real[ri][1] || 0), checks: Number(real[ri][2] || 0) };
+            for (var si = 1; si < st.length; si++) {
+              var rm = realMap[st[si][0]];
+              if (rm) { st[si][3] = rm.checks; st[si][4] = rm.guests; } // checks(組数)・guests(客数)を実績値に差し替え
+            }
           }
         }
       } catch (eReal) { /* 実績が取れなければ従来の推定値のまま（BQエラー等で明細分析自体を止めない） */ }
