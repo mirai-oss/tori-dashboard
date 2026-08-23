@@ -48,7 +48,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v61', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v62', time: new Date().toISOString() });
     if (action === 'syncSeisanFeeToPl') return out(syncSeisanFeeToPl(p)); // 運営委託費のPL自動連携（専用トークン認証・ログイン不要。2026-08-23追加）
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     if (action === 'bqSetupSalesDataset') return out(bqSetupSalesDataset(p)); // salesデータセット作成（初回のみ・専用トークン認証）
@@ -1439,7 +1439,12 @@ function syncSeisanFeeToPl(p) {
   if (lastRow >= 2) sh.getRange(2, 1, lastRow - 1, 6).clearContent();
   if (keep.length) { sh.getRange(2, 1, keep.length, 6).setValues(keep); sh.getRange(2, 1, keep.length, 1).setNumberFormat('yyyy/m/d'); }
 
-  return { ok: true, ym: ym, synced: Object.keys(byStore).length, detail: results, errors: errors };
+  // DB_PL（シート）を更新しただけではPLタブのBigQueryモードに反映されない
+  // （bqSyncPLで別途ミラーする設計のため）。書き忘れると「反映されない」に見えるので、
+  // ここで自動的にBQミラーも同期する（2026-08-23発覚・修正）。
+  var bqSync = bqSyncPL({ token: tk });
+
+  return { ok: true, ym: ym, synced: Object.keys(byStore).length, detail: results, errors: errors, bqSync: bqSync };
 }
 // 既存のingestDeposit()がそのまま解釈できる形（{sheets:{deposit:[[店舗名,日付,入金額,メモ],...]}}）で返す。
 // 繰越（開始残高）計算のdepositCarry()はこのBQミラーを経由せず、常にローカルシートを直接読む
