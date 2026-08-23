@@ -48,7 +48,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'speed-v1', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'speed-v2', time: new Date().toISOString() });
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'detailVsDailyDiag') return out(detailVsDailyDiag(p)); // 明細分析とダッシュボードの売上・客数・組数の差を実測で突合（専用トークン認証・読み取り専用・一時的）
@@ -1723,7 +1723,9 @@ function bqPerfDiag(p) {
   s = now(); try { var d4 = bqGetDeposit({ months: 13 }, sess); T.bqGetDeposit_入金管理 = { ms: now() - s, ok: !!(d4 && d4.ok) }; } catch (e) { T.bqGetDeposit_入金管理 = { ms: now() - s, error: String(e) }; }
   s = now(); try { var d5 = bqGetMedia({ months: 3 }, sess); T.bqGetMedia_媒体別 = { ms: now() - s, ok: !!(d5 && d5.ok) }; } catch (e) { T.bqGetMedia_媒体別 = { ms: now() - s, error: String(e) }; }
   T.grandTotal_5アクション合計 = now() - t0;
-  return { ok: true, timing_ms: T, note: 'いずれも全店・直近13ヶ月分でクライアントと同条件。キャッシュがあれば効いた状態での計測（実利用に近い）。' };
+  var freshness = null;
+  s = now(); try { freshness = dataFreshness({}, sess); T.dataFreshness = { ms: now() - s, ok: !!(freshness && freshness.ok !== false) }; } catch (e) { T.dataFreshness = { ms: now() - s, error: String(e) }; }
+  return { ok: true, timing_ms: T, freshness: freshness, note: 'いずれも全店・直近13ヶ月分でクライアントと同条件。キャッシュがあれば効いた状態での計測（実利用に近い）。' };
 }
 
 // 一時的な診断用（2026-08-23）: 「広告管理タブが「DB_広告シートを受信できていません」になる」報告を受け、
