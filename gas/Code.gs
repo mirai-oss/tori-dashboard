@@ -48,7 +48,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'speed-v3', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'speed-v4', time: new Date().toISOString() });
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'detailVsDailyDiag') return out(detailVsDailyDiag(p)); // 明細分析とダッシュボードの売上・客数・組数の差を実測で突合（専用トークン認証・読み取り専用・一時的）
@@ -932,6 +932,24 @@ function md5Hex_(s) {
   var h = ''; for (var i = 0; i < b.length; i++) { h += ('0' + (b[i] & 0xFF).toString(16)).slice(-2); }
   return h;
 }
+// BQモード各アクション(bqDailyStore/bqGetPL/bqGetDeposit/bqGetMedia)共通のキャッシュ（10分・
+// 実装指示書_ダッシュボード高速化タスク3）。bqDetailの既存キャッシュと同じ考え方をヘルパー化した。
+// キーは呼び出し元ごとに条件（months・店舗権限スコープ等）を含めた文字列をそのままMD5短縮する
+// （CacheServiceのキー上限250字対策。担当店舗が多いアカウントだと素の文字列で超えうる）。
+function bqCacheKey_(prefix, parts) {
+  var raw = prefix + '_' + parts.join('_');
+  return raw.length > 200 ? prefix + '_' + md5Hex_(raw) : raw;
+}
+function bqCacheGet_(key) {
+  try {
+    var hit = CacheService.getScriptCache().get(key);
+    if (!hit) return null;
+    var o = JSON.parse(hit); o.cached = true; return o;
+  } catch (e) { return null; }
+}
+function bqCachePut_(key, obj) {
+  try { CacheService.getScriptCache().put(key, JSON.stringify(obj), 600); } catch (e) { /* 100KB超はキャッシュしない（黙って諦める・BQモード自体は動き続ける） */ }
+}
 // 明細分析（対話的）：期間 from〜to・店舗で絞り、時間帯別/商品別/店舗別を集計して返す。
 // guests=客数・checks=組数は、店舗別(st)の集計だけレジ実績(fact_daily_store)の実数に差し替える
 // （2026-08-23〜）。時間帯別(hour)は日次粒度の実績と紐づけられないため、引き続きお通し数
@@ -1088,6 +1106,9 @@ function bqDailyStore(p, session) {
       var cutoffStr = Utilities.formatDate(cutoff, 'Asia/Tokyo', 'yyyy-MM-dd');
       where += (where ? ' AND ' : 'WHERE ') + "date >= DATE('" + cutoffStr + "')";
     }
+    var ck = bqCacheKey_('dailystore', [months, restricted ? allowNames.slice().sort().join('.') : 'all']);
+    var cached = bqCacheGet_(ck);
+    if (cached) return cached;
     var sql = 'SELECT date, store_name, net_sales, guests_total, parttime_labor_cost, fulltime_labor_cost, ' +
       'labor_cost_total, cogs, cash, employee_salary_bonus, statutory_welfare, commute_allowance, parties_total ' +
       'FROM `' + BQ_PROJECT + '.' + BQ_SALES_DATASET + '.fact_daily_store` ' + where + ' ORDER BY date';
@@ -1104,7 +1125,9 @@ function bqDailyStore(p, session) {
         Number(r[9] || 0), Number(r[10] || 0), Number(r[11] || 0), Number(r[12] || 0)
       ]);
     }
-    return { ok: true, sheets: { daily: out } };
+    var res = { ok: true, sheets: { daily: out } };
+    bqCachePut_(ck, res);
+    return res;
   } catch (e) {
     return { ok: false, error: String(e && e.message || e) };
   }
@@ -1442,6 +1465,9 @@ function bqGetPL(p, session) {
         where = "WHERE (store_name IN ('" + allowNames.map(function (n) { return String(n).replace(/'/g, "''"); }).join("','") + "') OR store_name = '')";
       }
     }
+    var ck = bqCacheKey_('pl', [restricted && allowNames.length ? allowNames.slice().sort().join('.') : 'all']);
+    var cached = bqCacheGet_(ck);
+    if (cached) return cached;
     var sql = 'SELECT year_month, store_name, item, category, amount, memo FROM `' + BQ_PROJECT + '.' + BQ_SALES_DATASET + '.stg_pl` ' + where + ' ORDER BY year_month';
     var rows = bqRows_(sql);
     if (!rows) return { ok: false, error: 'BigQueryクエリ失敗' };
@@ -1450,7 +1476,9 @@ function bqGetPL(p, session) {
       var r = rows[i];
       out.push([r[0], r[1], r[2], r[3], Number(r[4] || 0), r[5]]);
     }
-    return { ok: true, sheets: { PL: out } };
+    var res = { ok: true, sheets: { PL: out } };
+    bqCachePut_(ck, res);
+    return res;
   } catch (e) {
     return { ok: false, error: String(e && e.message || e) };
   }
@@ -1574,6 +1602,9 @@ function bqGetDeposit(p, session) {
         where = "WHERE store_name IN ('" + allowNames.map(function (n) { return String(n).replace(/'/g, "''"); }).join("','") + "')";
       }
     }
+    var ck = bqCacheKey_('deposit', [restricted && allowNames.length ? allowNames.slice().sort().join('.') : 'all']);
+    var cached = bqCacheGet_(ck);
+    if (cached) return cached;
     var sql = 'SELECT store_name, date, amount, memo FROM `' + BQ_PROJECT + '.' + BQ_SALES_DATASET + '.stg_deposit` ' + where + ' ORDER BY date';
     var rows = bqRows_(sql);
     if (!rows) return { ok: false, error: 'BigQueryクエリ失敗' };
@@ -1583,7 +1614,9 @@ function bqGetDeposit(p, session) {
       // DATE型は'YYYY-MM-DD'文字列で返るため、bqDailyStoreと同じくシート版と揃えて'YYYY/MM/DD'に変換
       out.push([r[0], String(r[1]).replace(/-/g, '/'), Number(r[2] || 0), r[3]]);
     }
-    return { ok: true, sheets: { deposit: out } };
+    var res = { ok: true, sheets: { deposit: out } };
+    bqCachePut_(ck, res);
+    return res;
   } catch (e) {
     return { ok: false, error: String(e && e.message || e) };
   }
@@ -1613,6 +1646,9 @@ function bqGetMedia(p, session) {
       var cutoffStr = Utilities.formatDate(cutoff, 'Asia/Tokyo', 'yyyy-MM-dd');
       where += (where ? ' AND ' : 'WHERE ') + "date >= DATE('" + cutoffStr + "')";
     }
+    var ck = bqCacheKey_('media', [months, restricted && allowNames.length ? allowNames.slice().sort().join('.') : 'all']);
+    var cached = bqCacheGet_(ck);
+    if (cached) return cached;
     var sql = 'SELECT store_name, date, media_name, guests, parties, net_sales FROM `' + BQ_PROJECT + '.' + BQ_SALES_DATASET + '.stg_media` ' + where + ' ORDER BY date';
     var rows = bqRows_(sql);
     if (!rows) return { ok: false, error: 'BigQueryクエリ失敗' };
@@ -1621,7 +1657,9 @@ function bqGetMedia(p, session) {
       var r = rows[i];
       out.push([r[0], String(r[1]).replace(/-/g, '/'), r[2], Number(r[3] || 0), Number(r[4] || 0), Number(r[5] || 0)]);
     }
-    return { ok: true, sheets: { media: out } };
+    var res = { ok: true, sheets: { media: out } };
+    bqCachePut_(ck, res);
+    return res;
   } catch (e) {
     return { ok: false, error: String(e && e.message || e) };
   }

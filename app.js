@@ -183,7 +183,7 @@ const S = {
 };
 const D = { daily:[], media:[], deposit:[], review:[], ad:[], adfx:[], tanka:{}, pl:[], dinii:[], diniiCols:[], targets:[], targetsM:[], events:[], extra:{}, storeAlias:{}, storeParent:{}, mediaClass:{}, adMediaMaster:[], adPlanMaster:{}, adStoreMaster:[], holidays:null, detailData:null, detailKey:'', detailLoading:'', refDate:null, maxDate:null,
   wkTpl:{}, wkRep:[], wkAns:{}, wkFb:{}, roleDef:{}, depNote:{}, dailyBqLoading:false, dailyBqErr:'', plBqLoading:false, plBqErr:'', storeDirectory:null,
-  freshness:null, freshnessAt:0 };
+  freshness:null, freshnessAt:0, bqFallback:{} };
 let EXPORT = [];      // 現在タブのCSVエクスポート対象 [{title,headers,rows}]
 let pollTimer = null;
 
@@ -1394,9 +1394,9 @@ async function fetchDailyBQ(){
   D.dailyBqLoading=true; render();
   try{
     const d=await api({ action:'bqDailyStore', token:S.auth.token, months:monthsWindow() });
-    if(d&&d.ok&&d.sheets){ ingestSheets(d.sheets, true); D.dailyBqErr=''; }
-    else{ D.dailyBqErr=(d&&d.error)||'取得に失敗しました'; }
-  }catch(e){ D.dailyBqErr=String(e&&e.message||e); }
+    if(d&&d.ok&&d.sheets){ ingestSheets(d.sheets, true); D.dailyBqErr=''; D.bqFallback.daily=false; }
+    else{ D.dailyBqErr=(d&&d.error)||'取得に失敗しました'; await bqFallbackToSheet_('daily'); }
+  }catch(e){ D.dailyBqErr=String(e&&e.message||e); await bqFallbackToSheet_('daily'); }
   D.dailyBqLoading=false;
   // BQモードではdailyがフェーズ1で除外され(fetchDataFast参照)、その時点のconnState判定は
   // D.diag.dailyがまだ空のため必ず'livewarn'になってしまう。ここで初めてdailyが届くので、
@@ -1410,9 +1410,9 @@ async function fetchPlBQ(){
   D.plBqLoading=true; render();
   try{
     const d=await api({ action:'bqGetPL', token:S.auth.token });
-    if(d&&d.ok&&d.sheets){ ingestSheets(d.sheets, true); D.plBqErr=''; }
-    else{ D.plBqErr=(d&&d.error)||'取得に失敗しました'; }
-  }catch(e){ D.plBqErr=String(e&&e.message||e); }
+    if(d&&d.ok&&d.sheets){ ingestSheets(d.sheets, true); D.plBqErr=''; D.bqFallback.PL=false; }
+    else{ D.plBqErr=(d&&d.error)||'取得に失敗しました'; await bqFallbackToSheet_('PL'); }
+  }catch(e){ D.plBqErr=String(e&&e.message||e); await bqFallbackToSheet_('PL'); }
   D.plBqLoading=false; render();
 }
 // 入金管理タブ用: 入金DBのBQミラーを読む（2026-08-22追加。fetchPlBQと同じ考え方。
@@ -1422,9 +1422,9 @@ async function fetchDepositBQ(){
   D.depositBqLoading=true; render();
   try{
     const d=await api({ action:'bqGetDeposit', token:S.auth.token });
-    if(d&&d.ok&&d.sheets){ ingestSheets(d.sheets, true); D.depositBqErr=''; }
-    else{ D.depositBqErr=(d&&d.error)||'取得に失敗しました'; }
-  }catch(e){ D.depositBqErr=String(e&&e.message||e); }
+    if(d&&d.ok&&d.sheets){ ingestSheets(d.sheets, true); D.depositBqErr=''; D.bqFallback.deposit=false; }
+    else{ D.depositBqErr=(d&&d.error)||'取得に失敗しました'; await bqFallbackToSheet_('deposit'); }
+  }catch(e){ D.depositBqErr=String(e&&e.message||e); await bqFallbackToSheet_('deposit'); }
   D.depositBqLoading=false; render();
 }
 // 媒体別日次用: 媒体別DBのBQミラーを読む（2026-08-23追加。fetchDepositBQと同じ考え方）。
@@ -1437,9 +1437,23 @@ async function fetchMediaBQ(){
     // （実測21,000件超／5ヶ月）、他のBQ取得と同じmonthsWindow()=13ヶ月ではほぼ絞れない。
     // ログイン直後の表示に必要な直近3ヶ月だけに絞って高速化する（2026-08-23）。
     const d=await api({ action:'bqGetMedia', token:S.auth.token, months:3 });
-    if(d&&d.ok&&d.sheets){ ingestSheets(d.sheets, true); }
-  }catch(e){}
+    if(d&&d.ok&&d.sheets){ ingestSheets(d.sheets, true); D.bqFallback.media=false; }
+    else{ await bqFallbackToSheet_('media'); }
+  }catch(e){ await bqFallbackToSheet_('media'); }
   D.mediaPending=false; render();
+}
+// BQ取得が失敗した時、自動でシート経路へ切替えて再取得する（実装指示書_ダッシュボード高速化タスク3・
+// フォールバック実装。fetchStoreDirectory_のフォールバックと同じ思想）。呼び出し元(fetchXxxBQ)が
+// エラー時に呼ぶ。D.bqFallback[key]を立てて、画面に小さく「予備経路（シート）で表示中」と出す。
+async function bqFallbackToSheet_(key){
+  D.bqFallback[key]=true;
+  try{ await fetchData(true, { only:[key], partial:true }); }catch(e){}
+  render();
+}
+// 上のフォールバックが効いている間、タブの見出し付近に出す小さな注意書き（管理者以外にも見える）。
+function bqFallbackNote_(key){
+  if(!S.useBqDaily||!D.bqFallback[key]) return '';
+  return `<div class="mut" style="font-size:11px;margin:2px 0 8px;color:#a2803f">⚠️ BigQueryの取得に失敗したため、予備経路（スプレッドシート）で表示中です</div>`;
 }
 // データ鮮度表示（実装指示書_ダッシュボード高速化タスク1・2026-08-23追加）。
 // 「数字が古い/処理中/失敗」を画面で判別できるようにする。5分キャッシュ（毎render時には叩かない）。
@@ -1971,6 +1985,7 @@ function viewDash(){
   // 2026-08-22追加: このタブもD.daily経由でBigQueryトグル(推移分析タブ)の影響を受けるため、
   // BQモード中は管理者にだけ分かるよう小さく表示（トグル自体は推移分析タブに一本化）
   if(isAdminRole()&&S.useBqDaily) h+=`<div class="mut" style="font-size:11px;margin:2px 0 8px">🧪 データ元: BigQuery（推移分析タブのトグルで切替）</div>`;
+  h+=bqFallbackNote_('daily');
   h+=`<div class="kpi-grid">`+kpis.map(k=>`<div class="kpi"><div class="lb">${k.lb}</div><div class="vl">${k.vl}</div>${k.sub?`<div class="yy" style="color:#5c5348;font-weight:600;margin-bottom:2px">${k.sub}</div>`:''}${k.segsub?`<div class="yy" style="color:#7a6f5c;font-size:10.5px;margin-bottom:2px">${k.segsub}</div>`:''}<div class="yy ${k.yy.cls}">${k.yy.t}</div></div>`).join('')+`</div>`;
   EXPORT.push({ title:'KPI（'+r.label+(selName?'・'+selName:'・'+(sc.length===allStores().length?'全店':'担当店舗'))+'）',
     headers:['指標','値','前年比較'], rows:kpis.map(k=>[k.lb,k.vl+(k.sub?'（'+k.sub+'）':''),k.yy.t]) });
@@ -2332,7 +2347,7 @@ function mediaPanel(a,b,pa2,pb2,scopeSet,selName){
   const { total, rows }=mediaTableRows(a,b,pa2,pb2,scopeSet,selName,mode);
   if(!rows.length && D.mediaPending) return `<div class="panel"><div class="panel-head"><div><h3>${M.t}</h3><div class="sub">読み込み中…</div></div>${picker}</div><div class="empty">媒体別データを読み込んでいます…</div></div>`;
   if(!rows.length) return `<div class="panel"><div class="panel-head"><div><h3>${M.t}</h3></div>${picker}</div><div class="empty">媒体別データがありません</div></div>`;
-  let h=`<div class="panel"><div class="panel-head"><div><h3>${M.t}</h3><div class="sub">${M.sub}</div></div>${picker}</div>
+  let h=bqFallbackNote_('media')+`<div class="panel"><div class="panel-head"><div><h3>${M.t}</h3><div class="sub">${M.sub}</div></div>${picker}</div>
   <div class="scroll-x"><table class="tbl"><thead><tr><th>${M.col}</th><th>売上</th><th>構成比</th><th>客数</th><th>客単価</th><th>前年比</th></tr></thead><tbody>`;
   const shown=mode==='media'?rows.slice(0,12):rows;   // 用途・区分はグループ数が少ないので全件
   let tG=0,tPrev=0;
@@ -2948,6 +2963,7 @@ function viewDeposit(){
     <span class="period-label">現金売上（入金予定）と ATM入金の照合 ／ ${esc(scopeLabel)}</span>
   </div>`+storeSegHtml();
   if(isAdminRole()&&S.useBqDaily) h+=`<div class="mut" style="font-size:11px;margin:2px 0 8px">🧪 データ元: BigQuery（推移分析タブのトグルで切替）${D.depositBqLoading?' ・入金読込中…':''}${D.depositBqErr?` ・入金取得エラー: ${esc(D.depositBqErr)}`:''}</div>`;
+  h+=bqFallbackNote_('deposit');
 
   // 繰越（開始残高）の計算元の状態を表示。サーバー全期間計算なら期間設定に関係なく正確。
   if(carrySrc==='loading'){
@@ -3498,6 +3514,7 @@ function viewTarget(){
   </div>`;
   // 2026-08-22追加: このタブもD.daily経由でBigQueryトグル(推移分析タブ)の影響を受ける
   if(isAdminRole()&&S.useBqDaily) h+=`<div class="mut" style="font-size:11px;margin:2px 0 8px">🧪 データ元: BigQuery（推移分析タブのトグルで切替）</div>`;
+  h+=bqFallbackNote_('daily');
   // 目標データ
   const goalByDay={}; let goalM=0;
   for(const r of D.targets){ if(r.t<mS||r.t>mE) continue; if(!scopeSet.has(r.store)) continue; goalByDay[r.t]=(goalByDay[r.t]||0)+r.goal; goalM+=r.goal; }
@@ -3719,6 +3736,7 @@ function viewPL(){
       : storeSegHtml()+`<div class="store-pick no-print"><button class="icon-btn" onclick="App.openPlStorePick()">🏪 複数店舗を選んで合算</button></div>`);
   // 2026-08-22追加: 売上/原価/人件費(stat())とDB_PL手入力経費(plAgg())の両方がBQトグルの対象
   if(isAdminRole()&&S.useBqDaily) h+=`<div class="mut" style="font-size:11px;margin:2px 0 8px">🧪 データ元: BigQuery（推移分析タブのトグルで切替）${D.plBqLoading?' ・PL読込中…':''}${D.plBqErr?` ・PL取得エラー: ${esc(D.plBqErr)}`:''}</div>`;
+  h+=bqFallbackNote_('PL');
 
   // KPIカード
   h+=`<div class="kpi-grid">
