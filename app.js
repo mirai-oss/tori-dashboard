@@ -44,13 +44,14 @@ const FEATURE_LABELS = {
   adInput:'広告費を入力（広告管理）',
   adSales:'売上を入力（広告管理）',
   rsvImport:'予約CSVを取込（広告管理）',
+  spot:'スポット人件費を入力',   // タイミー等の単発人件費（2026-08-23追加）
 };
 const ALL_FEATURES = Object.keys(FEATURE_LABELS);
 const ROLE_FEATURES = {
   '社長':       ALL_FEATURES.slice(),
   '本部':       ALL_FEATURES.slice(),
-  'マネージャー':[],   // 既定は閲覧のみ（アカウントごとに個別許可できる）
-  '店舗':       [],
+  'マネージャー':['spot'],   // 既定は閲覧のみ＋スポット人件費入力（アカウントごとに個別許可できる）
+  '店舗':       ['spot'],   // 店長=自店舗のスポット人件費のみ既定で入力可
   '外販':       [],   // 閲覧のみ
 };
 // 口コミ集約：同じ実店舗にぶら下がる別名店舗（Googleマイビジネスが分かれているケース）
@@ -181,7 +182,8 @@ const S = {
   accounts:null, accErr:'', modal:null, loginErr:'',
   useBqDaily:(localStorage.getItem(LS.dailyBq)==='1'),   // 推移分析のデータソース切替（既定=false=シート。2026-08-22追加）
 };
-const D = { daily:[], media:[], deposit:[], review:[], ad:[], adfx:[], tanka:{}, pl:[], dinii:[], diniiCols:[], targets:[], targetsM:[], events:[], extra:{}, storeAlias:{}, storeParent:{}, mediaClass:{}, adMediaMaster:[], adPlanMaster:{}, adStoreMaster:[], holidays:null, detailData:null, detailKey:'', detailLoading:'', refDate:null, maxDate:null,
+const D = { daily:[], media:[], deposit:[], review:[], ad:[], adfx:[], tanka:{}, pl:[], dinii:[], diniiCols:[], targets:[], targetsM:[], events:[], extra:{}, storeAlias:{}, storeParent:{}, mediaClass:{}, adMediaMaster:[], adPlanMaster:{}, adStoreMaster:[], subItemMaster:{}, holidays:null, detailData:null, detailKey:'', detailLoading:'', refDate:null, maxDate:null,
+  spot:[], spotBqLoading:false, spotBqErr:'',
   wkTpl:{}, wkRep:[], wkAns:{}, wkFb:{}, roleDef:{}, depNote:{}, dailyBqLoading:false, dailyBqErr:'', plBqLoading:false, plBqErr:'', storeDirectory:null,
   freshness:null, freshnessAt:0, bqFallback:{} };
 let EXPORT = [];      // 現在タブのCSVエクスポート対象 [{title,headers,rows}]
@@ -774,6 +776,7 @@ function ingestPL(rows){
   const iA=colAny(H,['金額','費用','経費']);
   const iK=colAny(H,['区分','分類','カテゴリ']);   // F/L/A/R/O（無ければ全てO=その他扱い）
   const iMemo=colAny(H,['メモ','備考']);           // 経費入力モーダルでの編集時に保持する
+  const iSub=colAny(H,['補助科目']);               // 勘定科目の内訳（2026-08-23追加・任意列）
   if(iD<0||iI<0||iA<0){ D.diag['PL']='列が見つかりません（必要: 年月・勘定科目・金額）／見出し行: '+H.filter(Boolean).join('|'); return false; }
   const recs=[]; let dateSkipped=0;
   for(let i=hi+1;i<rows.length;i++){
@@ -782,10 +785,37 @@ function ingestPL(rows){
     const t0=parseYm(c[iD])||parseDateStr(c[iD]);
     if(!t0){ dateSkipped++; continue; }
     const d=new Date(t0);
-    recs.push({ store:String(iS>=0?c[iS]||'':'').trim(), t:new Date(d.getFullYear(),d.getMonth(),1).getTime(), item, cat:iK>=0?plCatOf(c[iK]):'O', amount:num(c[iA]), memo:iMemo>=0?String(c[iMemo]||'').trim():'' });
+    recs.push({ store:String(iS>=0?c[iS]||'':'').trim(), t:new Date(d.getFullYear(),d.getMonth(),1).getTime(), item, cat:iK>=0?plCatOf(c[iK]):'O', amount:num(c[iA]), memo:iMemo>=0?String(c[iMemo]||'').trim():'', sub:iSub>=0?String(c[iSub]||'').trim():'' });
   }
   if(!recs.length){ D.diag['PL']='0件'+(dateSkipped>0?'（'+dateSkipped+'行あるが年月を読めていません）':'（データ行がありません）'); return false; }
   D.pl=recs; D.diag['PL']='OK '+recs.length+'件'; return true;
+}
+// DB_スポット人件費（タイミー等の単発人件費）。日付は「日」単位（PLの月単位とは違う）。
+// 日別の人件費率にPA/社員と合算するためstat()から参照される（2026-08-23追加）。
+function ingestSpot(rows){
+  let hi=-1;
+  for(let i=0;i<Math.min(rows.length,10);i++){
+    const line=rows[i].map(x=>String(x==null?'':x)).join(',');
+    if(/日付/.test(line) && /店舗/.test(line) && /金額/.test(line)){ hi=i; break; }
+  }
+  if(hi<0) hi=0;
+  const H=rows[hi].map(h=>String(h).trim());
+  const iD=colAny(H,['日付']), iS=colAny(H,['店舗名','店舗']), iK=colAny(H,['区分']),
+        iA=colAny(H,['金額']), iN=colAny(H,['人数']), iMemo=colAny(H,['メモ','備考']),
+        iBy=colAny(H,['入力者']), iAt=colAny(H,['入力日時']), iId=colAny(H,['ID']);
+  if(iD<0||iS<0||iA<0){ D.diag['スポット人件費']='列が見つかりません（必要: 日付・店舗名・金額）／見出し行: '+H.filter(Boolean).join('|'); return false; }
+  const recs=[];
+  for(let i=hi+1;i<rows.length;i++){
+    const c=rows[i];
+    const store=String(c[iS]||'').trim(); if(!store) continue;
+    const t0=parseDateStr(c[iD]); if(!t0) continue;
+    const amount=num(c[iA]); if(!amount) continue;
+    const d=new Date(t0);
+    recs.push({ id:iId>=0?String(c[iId]||'').trim():'', store, t:dayMs(d), kind:iK>=0?String(c[iK]||'').trim():'', amount,
+      headcount:iN>=0&&String(c[iN]||'').trim()!==''?num(c[iN])||0:'', memo:iMemo>=0?String(c[iMemo]||'').trim():'',
+      by:iBy>=0?String(c[iBy]||'').trim():'', at:iAt>=0?String(c[iAt]||'').trim():'' });
+  }
+  D.spot=recs; D.diag['スポット人件費']='OK '+recs.length+'件'; return true;
 }
 // 広告費用対効果_管理シートの ⚙️媒体マスタ / ⚙️プランマスタ。
 // 広告費入力モーダルのプルダウン候補（マスタに行を足せばそのまま選択肢が増える）
@@ -841,6 +871,25 @@ function ingestPlanMaster(rows){
   for(const k in map) map[k].sort((a,b)=>a.order-b.order);
   D.adPlanMaster=map;
   D.diag['プランマスタ']='OK '+Object.keys(map).length+'媒体 / '+Object.values(map).reduce((s,v)=>s+v.length,0)+'プラン（'+String.fromCharCode(65+iP)+'列＝プラン名）'; return true;
+}
+// DB_補助科目：A=勘定科目 / B=補助科目 / C=表示順 / D=有効。勘定科目名 → 補助科目一覧（表示順ソート済み）。
+// 有効列がFALSEの行はプルダウン候補から外す（行は消さない）。PL入力画面のプルダウン用（2026-08-23追加）。
+function ingestSubItemMaster(rows){
+  const hi=findHeaderExact(rows,['勘定科目','補助科目']);
+  if(hi<0){ D.diag['補助科目']='見出し行（勘定科目・補助科目）が見つかりません'; return false; }
+  const H=rows[hi].map(h=>String(h).trim());
+  const iI=colPick(H,'勘定科目',0), iS=colPick(H,'補助科目',1);
+  const iO=colPick(H,'表示順',null), iE=colPick(H,'有効',null);
+  const map={};
+  for(let i=hi+1;i<rows.length;i++){
+    const r=rows[i]||[];
+    const item=String(r[iI]||'').trim(), sub=String(r[iS]||'').trim(); if(!item||!sub)continue;
+    if(iE>=0){ const v=String(r[iE]||'').trim().toUpperCase(); if(v==='FALSE'||v==='0') continue; }
+    (map[item]=map[item]||[]).push({name:sub, order:iO>=0?num(r[iO])||999:999});
+  }
+  for(const k in map) map[k].sort((a,b)=>a.order-b.order);
+  D.subItemMaster=map;
+  D.diag['補助科目']='OK '+Object.keys(map).length+'勘定科目 / '+Object.values(map).reduce((s,v)=>s+v.length,0)+'件'; return true;
 }
 // ⚙️店舗マスタ（管理シート）：B=店舗ID / C=店舗名 / D=エリア。広告側の店舗名（匠味（新横浜）等）を
 // 広告費・売上入力のプルダウン候補にする。売上側に無い広告専用の店舗もここから選べるようになる。
@@ -1029,7 +1078,7 @@ function ingestStoreParent(rows){
   return map;
 }
 function ingestSheets(sheets, partial){
-  if(!partial){ D.extra={}; D.diag={}; D.receivedKeys=Object.keys(sheets); D.ad=[]; D.adSrc=''; D.adfx=[]; D.tanka={}; D.rsv=[]; D.pl=[]; D.dinii=[]; D.targets=[]; D.targetsM=[]; D.events=[]; D.storeAlias={}; D.storeParent={}; D.adMediaMaster=[]; D.adPlanMaster={}; D.adStoreMaster=[]; }  // 広告・PL・ダイニー・目標・対応表・親子はフル受信のたびに入れ替え
+  if(!partial){ D.extra={}; D.diag={}; D.receivedKeys=Object.keys(sheets); D.ad=[]; D.adSrc=''; D.adfx=[]; D.tanka={}; D.rsv=[]; D.pl=[]; D.spot=[]; D.dinii=[]; D.targets=[]; D.targetsM=[]; D.events=[]; D.storeAlias={}; D.storeParent={}; D.adMediaMaster=[]; D.adPlanMaster={}; D.adStoreMaster=[]; D.subItemMaster={}; }  // 広告・PL・スポット人件費・ダイニー・目標・対応表・親子・補助科目マスタはフル受信のたびに入れ替え
   else { D.receivedKeys=(D.receivedKeys||[]).concat(Object.keys(sheets)); }
   const known=['daily','media','deposit','review','ad','広告'];
   if(!partial){ known.forEach(k=>{ if(!(k in sheets)) D.diag[k]='シート未受信（接続設定のシート名を確認）'; }); }
@@ -1045,6 +1094,7 @@ function ingestSheets(sheets, partial){
     else if(isTankaKey(key)) ingestTanka(rows);
     else if(isRsvKey(key)) ingestRsv(rows);
     else if(isPLKey(key)) ingestPL(rows);
+    else if(key==='スポット人件費') ingestSpot(rows);
     else if(isDiniiKey(key)) ingestDinii(rows);
     else if(isMediaClassKey(key)) ingestMediaClass(rows);
     else if(isTargetMKey(key)) ingestTargetsM(rows);
@@ -1053,6 +1103,7 @@ function ingestSheets(sheets, partial){
     else if(isHolidayKey(key)) ingestHoliday(rows);
     else if(key==='媒体マスタ') ingestMediaMaster(rows);
     else if(key==='プランマスタ') ingestPlanMaster(rows);
+    else if(key==='補助科目') ingestSubItemMaster(rows);
     else if(key==='広告店舗マスタ') ingestAdStoreMaster(rows);
     else if(isStoreParentKey(key)){ D.storeParent=ingestStoreParent(rows); D.diag[key]='OK '+Object.keys(D.storeParent).length+'件の親子'; }
     else if(isStoreMapKey(key)){ D.storeAlias=ingestStoreMap(rows); D.diag[key]='OK '+Object.keys(D.storeAlias).length+'件の対応'; }
@@ -1152,7 +1203,7 @@ function selStoreName(){ return S.store==='all'?null:S.store; }
 
 /* ---------------- 集計 ---------------- */
 function stat(setNames, a, b, selName){
-  const o={sales:0,guests:0,groups:0,hasGroups:false,cost:0,pa:0,emp:0,labor:0,cash:0,empBase:0,welfare:0,commute:0};
+  const o={sales:0,guests:0,groups:0,hasGroups:false,cost:0,pa:0,emp:0,labor:0,cash:0,empBase:0,welfare:0,commute:0,spot:0};
   for(const r of D.daily){
     if(r.t<a||r.t>b) continue;
     if(selName){ if(r.store!==selName) continue; }
@@ -1161,6 +1212,15 @@ function stat(setNames, a, b, selName){
     o.empBase+=r.empBase||0; o.welfare+=r.welfare||0; o.commute+=r.commute||0;
     if(r.groups!=null){ o.groups+=r.groups; o.hasGroups=true; }
   }
+  // スポット人件費（タイミー等）を人件費合計に合算する（2026-08-23追加）。分析_日別店舗/fact_daily_store
+  // 自体は一切触らず、DB_スポット人件費由来のD.spotをここで足し込むだけ（表示用のcur.spotも別途保持）。
+  for(const r of D.spot){
+    if(r.t<a||r.t>b) continue;
+    if(selName){ if(r.store!==selName) continue; }
+    else if(setNames && !setNames.has(r.store)) continue;
+    o.spot+=r.amount;
+  }
+  o.labor+=o.spot;   // 人件費合計 = PA＋社員（既存labor列）＋スポット
   return o;
 }
 function periodRange(){
@@ -1363,9 +1423,9 @@ async function fetchDataFast(){
   D.mediaPending=true; D.media=[];                       // サンプル媒体データを一旦クリア
   // BigQueryモード中は、シート側のdaily/PL/depositを毎回上書きしないよう除外し、
   // 代わりにfetchDailyBQ()/fetchPlBQ()/fetchDepositBQ()で取得する（2026-08-22追加）
-  const excl = S.useBqDaily ? HEAVY_KEYS.concat(['daily','PL']) : HEAVY_KEYS;
+  const excl = S.useBqDaily ? HEAVY_KEYS.concat(['daily','PL','スポット人件費']) : HEAVY_KEYS;
   await fetchData(true, { exclude:excl });               // 軽い必須のみ → すぐ表示
-  if(S.useBqDaily){ fetchDailyBQ(); fetchPlBQ(); fetchDepositBQ(); fetchMediaBQ(); }
+  if(S.useBqDaily){ fetchDailyBQ(); fetchPlBQ(); fetchDepositBQ(); fetchMediaBQ(); fetchSpotBQ(); }
   fetchFreshness();                                       // データ鮮度表示（5分キャッシュ・下のfetchFreshness参照）
   render();
   // data は version を返さないので、初回に署名を取得（次の自動更新のムダ取得を防ぐ）
@@ -1414,6 +1474,17 @@ async function fetchPlBQ(){
     else{ D.plBqErr=(d&&d.error)||'取得に失敗しました'; await bqFallbackToSheet_('PL'); }
   }catch(e){ D.plBqErr=String(e&&e.message||e); await bqFallbackToSheet_('PL'); }
   D.plBqLoading=false; render();
+}
+// スポット人件費タブ用: DB_スポット人件費のBQミラーを読む（2026-08-23追加。fetchPlBQと同じ考え方）
+async function fetchSpotBQ(){
+  if(!S.auth||!S.auth.token) return;
+  D.spotBqLoading=true; render();
+  try{
+    const d=await api({ action:'bqGetSpot', token:S.auth.token });
+    if(d&&d.ok&&d.sheets){ ingestSheets(d.sheets, true); D.spotBqErr=''; D.bqFallback['スポット人件費']=false; }
+    else{ D.spotBqErr=(d&&d.error)||'取得に失敗しました'; await bqFallbackToSheet_('スポット人件費'); }
+  }catch(e){ D.spotBqErr=String(e&&e.message||e); await bqFallbackToSheet_('スポット人件費'); }
+  D.spotBqLoading=false; render();
 }
 // 入金管理タブ用: 入金DBのBQミラーを読む（2026-08-22追加。fetchPlBQと同じ考え方。
 // 繰越〔開始残高〕は別途fetchDepCarryがサーバー全期間計算で常に取得するため、ここでは影響しない）
@@ -2319,9 +2390,12 @@ function flPanel(cur,prev){
     { nm:'PA 人件費', c:'#5f7052', amt:cur.pa, r:cur.pa/Ssl, pr:prev.sales>0?prev.pa/prev.sales:0 },
     { nm:'社員 人件費', c:'#7d8b6f', amt:cur.emp, r:cur.emp/Ssl, pr:prev.sales>0?prev.emp/prev.sales:0 },
   ];
+  if(cur.spot||prev.spot){   // スポット人件費（タイミー等）はデータがある期間だけ内訳に出す（2026-08-23追加）
+    rows.push({ nm:'スポット人件費（タイミー等）', c:'#a98b5f', amt:cur.spot, r:cur.spot/Ssl, pr:prev.sales>0?prev.spot/prev.sales:0 });
+  }
   const fl=cur.cost+cur.labor, flR=fl/Ssl, pFlR=prev.sales>0?(prev.cost+prev.labor)/prev.sales:0;
   const profit=Ssl-fl;
-  let h=`<div class="panel"><div class="panel-head"><div><h3>FL（原価・人件費）内訳</h3><div class="sub">集約シート実績</div></div></div><div class="scroll-x"><table class="tbl"><thead><tr><th>項目</th><th>金額</th><th>比率</th><th>前年</th></tr></thead><tbody>`;
+  let h=`<div class="panel"><div class="panel-head"><div><h3>FL（原価・人件費）内訳</h3><div class="sub">集約シート実績（人件費＝PA＋社員＋スポット）</div></div>${canUse('spot')?`<button class="icon-btn no-print" onclick="App.openSpotInput()">＋ スポット人件費</button>`:''}</div><div class="scroll-x"><table class="tbl"><thead><tr><th>項目</th><th>金額</th><th>比率</th><th>前年</th></tr></thead><tbody>`;
   rows.forEach(x=>{ const pt=ptStr(x.r,x.pr,true);
     h+=`<tr><td><span class="sw" style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${x.c};margin-right:8px"></span>${esc(x.nm)}</td><td>${yen(x.amt)}</td><td>${(x.r*100).toFixed(1)}%</td><td class="${pt.cls==='up'?'pos':pt.cls==='dn'?'neg':'mut'}">${pt.t}</td></tr>`; });
   const ptFL=ptStr(flR,pFlR,true);
@@ -3636,9 +3710,18 @@ function isHolidayOrSunday(dt){ try{ const key=dt.getFullYear()+'-'+(dt.getMonth
 // 区分別に集計: byCat[区分][勘定科目]=金額, catTotal[区分]=合計（F=仕入れ/L=人件費/A=広告/R=家賃/O=他）
 function plAgg(scopeSet, selN, a, b){
   const byCat={F:{},L:{},A:{},R:{},O:{}}, catTotal={F:0,L:0,A:0,R:0,O:0}, unmatched={};
+  // bySub[区分][勘定科目][補助科目]=金額。補助科目なしは''キーに集計される（2026-08-23追加）。
+  // 集計そのもの（byCat/catTotal）は従来どおり勘定科目合計ベースのままなので、既存の数値計算には一切影響しない。
+  const bySub={F:{},L:{},A:{},R:{},O:{}};
   let total=0, common=0;
   const rc={};
-  const add=(r)=>{ const k=r.cat||'O'; byCat[k][r.item]=(byCat[k][r.item]||0)+r.amount; catTotal[k]+=r.amount; total+=r.amount; };
+  const add=(r)=>{
+    const k=r.cat||'O';
+    byCat[k][r.item]=(byCat[k][r.item]||0)+r.amount; catTotal[k]+=r.amount; total+=r.amount;
+    const sub=r.sub||'';
+    if(!bySub[k][r.item]) bySub[k][r.item]={};
+    bySub[k][r.item][sub]=(bySub[k][r.item][sub]||0)+r.amount;
+  };
   for(const r of D.pl){
     if(r.t<a||r.t>b) continue;
     if(!r.store){
@@ -3651,7 +3734,7 @@ function plAgg(scopeSet, selN, a, b){
     if(!scopeSet.has(res.parent)) continue;
     add(r);
   }
-  return { byCat, catTotal, total, common, unmatched };
+  return { byCat, catTotal, total, common, unmatched, bySub };
 }
 function plMonthDate(){
   if(S.plMonth){ const p=S.plMonth.split('-'); return new Date(+p[0],+p[1]-1,1); }
@@ -3730,6 +3813,7 @@ function viewPL(){
     <div class="seg">${[['month','月次'],['year','年間'],['custom','期間指定']].map(([k,l])=>`<button class="${P===k?'on':''}" onclick="App.set('plPeriod','${k}')">${l}</button>`).join('')}</div>
     ${ctrlHtml}
     ${canUse('plInput')?`<button class="icon-btn primary" onclick="App.openPlInput()">✎ 経費を入力</button>`:''}
+    ${canUse('spot')?`<button class="icon-btn" onclick="App.openSpotInput()">＋ スポット人件費</button>`:''}
     <span class="period-label">損益（${mLabel} ／ ${esc(scopeLabel)}）</span></div>`
     +(multiActive
       ? `<div class="store-pick no-print"><span class="sp-lb">🏪 店舗（個別選択）</span><button class="icon-btn" onclick="App.openPlStorePick()">${multiStores.length}店舗を選択中・変更</button><button class="icon-btn" onclick="App.clearPlStorePick()">選択解除</button></div>`
@@ -3807,11 +3891,33 @@ function viewPL(){
 
   // ---- PL表（区分ごとにセクション表示: F=原価 / L=人件費 / A=広告 / R=家賃 / O=他） ----
   const rows=[];   // {name, c, p, l, indent, bold, line, profit}
-  // 区分内の勘定科目を行として追加（当期・前期・前年同期を突き合わせ）
+  // 補助科目の開閉状態（2026-08-23追加）。既定は閉じた状態。S.plExpandAllで一括展開。
+  const plExpAll=!!S.plExpandAll;
+  const plExpSet=new Set(S.plExpandedItems||[]);
+  let plAnyHasSub=false;
+  // 区分内の勘定科目を行として追加（当期・前期・前年同期を突き合わせ）。補助科目があれば行頭に▶/▼を出し、
+  // 開いているときだけ内訳行を続けて追加する（集計値＝勘定科目行の当期/前期/前年同期は不変）。
   const pushCatItems=(cat)=>{
     const keys=[...new Set([].concat(Object.keys(exCur.byCat[cat]),Object.keys(exPrv.byCat[cat]),Object.keys(exLyr.byCat[cat])))]
       .sort((a2,b2)=>(exCur.byCat[cat][b2]||0)-(exCur.byCat[cat][a2]||0));
-    keys.forEach(it=>rows.push({name:it, c:-(exCur.byCat[cat][it]||0), p:-(exPrv.byCat[cat][it]||0), l:-(exLyr.byCat[cat][it]||0), indent:true, editItem:it}));
+    keys.forEach(it=>{
+      const subKeysAll=new Set([...Object.keys(exCur.bySub[cat][it]||{}),...Object.keys(exPrv.bySub[cat][it]||{}),...Object.keys(exLyr.bySub[cat][it]||{})]);
+      subKeysAll.delete('');
+      const hasSub=subKeysAll.size>0;
+      if(hasSub) plAnyHasSub=true;
+      const subKey=cat+'|'+it;
+      const isOpen=hasSub&&(plExpAll||plExpSet.has(subKey));
+      rows.push({name:it, c:-(exCur.byCat[cat][it]||0), p:-(exPrv.byCat[cat][it]||0), l:-(exLyr.byCat[cat][it]||0), indent:true, editItem:it, hasSub, subKey, isOpen});
+      if(isOpen){
+        const curSub=exCur.bySub[cat][it]||{}, prvSub=exPrv.bySub[cat][it]||{}, lyrSub=exLyr.bySub[cat][it]||{};
+        [...subKeysAll].sort((a2,b2)=>(curSub[b2]||0)-(curSub[a2]||0)).forEach(sn=>{
+          rows.push({name:sn, c:-(curSub[sn]||0), p:-(prvSub[sn]||0), l:-(lyrSub[sn]||0), indent2:true});
+        });
+        if((curSub['']||prvSub['']||lyrSub[''])){
+          rows.push({name:'（補助科目なし）', c:-(curSub['']||0), p:-(prvSub['']||0), l:-(lyrSub['']||0), indent2:true});
+        }
+      }
+    });
     return keys.length;
   };
   rows.push({name:'売上高', c:cur.sales, p:prv.sales, l:lyr.sales, bold:true});
@@ -3844,14 +3950,17 @@ function viewPL(){
   const yoyBase=(r2)=>showYoY?r2.l:r2.p;
   const cmp=(c,base)=>{ if(!(Math.abs(base)>0)) return {t:'—',cls:'mut'}; const d2=(c-base)/Math.abs(base)*100; return {t:(d2>=0?'+':'▲')+Math.abs(d2).toFixed(1)+'%', cls:d2>=0?'up':'dn'}; };
   h+=`<div class="panel"><div class="panel-head"><div><h3>${plTitle}（${mLabel} ／ ${esc(scopeLabel)}）</h3>
-    <div class="sub">売上・原価・人件費＝分析_日別店舗 ／ 広告費＝DB_広告 ／ その他経費＝DB_PL（自動連携）${P==='custom'?' ※経費は月単位のため、月初日が期間内の月分を計上':''}</div></div></div>
+    <div class="sub">売上・原価・人件費＝分析_日別店舗 ／ 広告費＝DB_広告 ／ その他経費＝DB_PL（自動連携）${P==='custom'?' ※経費は月単位のため、月初日が期間内の月分を計上':''}</div></div>
+    ${plAnyHasSub?`<div class="no-print"><button class="icon-btn" style="font-size:11px" onclick="App.plExpandAllSub()">▼ すべて展開</button> <button class="icon-btn" style="font-size:11px" onclick="App.plCollapseAllSub()">▶ すべて折りたたむ</button></div>`:''}</div>
   <div class="scroll-x"><table class="tbl"><thead><tr><th>項目</th><th>当期</th><th>売上比</th><th>${prevName}</th>${showYoY?'<th>前年同期</th>':''}<th>前年比</th></tr></thead><tbody>`;
   const expP=[];
   rows.forEach(r2=>{
     const v=(n)=>n===0?'—':(n<0?'▲'+yen(-n).slice(1):yen(n));
     const yc=cmp(r2.c,yoyBase(r2));
     const color=r2.profit?(r2.c>=0?'color:#4c7d5c;font-weight:700':'color:#b5502f;font-weight:700'):'';
-    h+=`<tr class="${r2.line?'total':''}"><td style="${r2.indent?'padding-left:24px;':''}${r2.bold?'font-weight:700':''}">${esc(r2.name)}${r2.editItem&&P==='month'?` <button class="icon-btn no-print" style="padding:1px 7px;font-size:10px;margin-left:6px" data-i="${esc(r2.editItem)}" onclick="App.openPlItemEdit(this.dataset.i)">編集</button>`:''}</td>
+    const pad=r2.indent2?'padding-left:40px;':(r2.indent?'padding-left:24px;':'');
+    const toggle=r2.hasSub?`<span class="no-print" style="cursor:pointer;display:inline-block;width:14px" onclick="App.togglePlSub('${esc(r2.subKey)}')">${r2.isOpen?'▼':'▶'}</span>`:'';
+    h+=`<tr class="${r2.line?'total':''}"><td style="${pad}${r2.bold?'font-weight:700':''}${r2.indent2?'color:var(--mut)':''}">${toggle}${esc(r2.name)}${r2.editItem&&P==='month'?` <button class="icon-btn no-print" style="padding:1px 7px;font-size:10px;margin-left:6px" data-i="${esc(r2.editItem)}" onclick="App.openPlItemEdit(this.dataset.i)">編集</button>`:''}</td>
       <td style="${color}">${v(r2.c)}</td><td class="mut">${pct(Math.abs(r2.c))}</td>
       <td class="mut">${v(r2.p)}</td>${showYoY?`<td class="mut">${v(r2.l)}</td>`:''}
       <td class="${yc.cls==='up'?'pos':yc.cls==='dn'?'neg':'mut'}">${yc.t}</td></tr>`;
@@ -4887,6 +4996,7 @@ function viewModal(){
   if(S.modal&&S.modal.type==='rsvImport') return rsvImportModal();
   if(S.modal&&S.modal.type==='event') return eventModal();
   if(S.modal&&S.modal.type==='plStorePick') return plStorePickModal();
+  if(S.modal&&S.modal.type==='spotInput') return spotInputModal();
   return '';
 }
 /* ---- 目標入力モーダル：日別売上（昨年同週同曜日を指標表示）＋月次目標 ---- */
@@ -5122,11 +5232,20 @@ const PL_ITEM_CAT={
   '水道光熱費':'O','通信費':'O','消耗品・備品費':'O','修繕費':'O','衛生管理費':'O','カード手数料':'O','支払手数料':'O','支払報酬料':'O','採用教育費':'O','接待交際費':'O','会議費':'O','慶弔見舞費':'O','保険料':'O','租税公課':'O','減価償却費':'O','福利厚生費':'O','諸会費':'O','雑費':'O','本部経費（按分）':'O',
   'その他売上':'S','銀行返済':'X','仕入（食材・飲料）':'F'
 };
-function plRowHtml(item,cat,amt,memo){
+// 勘定科目→補助科目の候補（DB_補助科目マスタ＋実データに既にある値の合成）。plRowHtmlの行ごとdatalistで使う。
+function plSubOptions(item){
+  const fromMaster=(D.subItemMaster[String(item||'').trim()]||[]).map(s=>s.name);
+  const fromData=D.pl.filter(r=>r.item===item&&r.sub).map(r=>r.sub);
+  return [...new Set(fromMaster.concat(fromData))];
+}
+function plRowHtml(item,cat,amt,memo,sub,idx){
   const cats=[['F','F 仕入'],['L','L 人件費'],['A','A 広告'],['R','R 家賃'],['O','O 他'],['S','S 売上'],['X','X PL外']];
+  const dlId='pl-sub-'+(idx==null?Math.random().toString(36).slice(2):idx);
   return `<tr>
     <td><input class="pli-item" list="pl-items" value="${esc(item||'')}" placeholder="勘定科目" style="width:150px;padding:5px 7px" onchange="App.plGuessCat(this)"></td>
     <td><select class="pli-cat" style="padding:5px 4px">${cats.map(c=>`<option value="${c[0]}" ${cat===c[0]?'selected':''}>${c[1]}</option>`).join('')}</select></td>
+    <td><input class="pli-sub" list="${dlId}" value="${esc(sub||'')}" placeholder="補助科目(任意)" style="width:110px;padding:5px 7px">
+      <datalist id="${dlId}">${plSubOptions(item).map(s=>`<option value="${esc(s)}">`).join('')}</datalist></td>
     <td><input type="number" class="pli-amt" value="${amt>0?Math.round(amt):''}" placeholder="金額" style="width:100px;text-align:right;padding:5px 7px"></td>
     <td><input class="pli-memo" value="${esc(memo||'')}" placeholder="メモ" style="width:120px;padding:5px 7px"></td>
   </tr>`;
@@ -5171,8 +5290,8 @@ function plInputModal(){
       </select></div>
     </div>
     <div class="scroll-x" style="max-height:300px;overflow-y:auto;border:1px solid var(--line2);border-radius:10px;margin-top:8px">
-      <table class="tbl"><thead><tr><th>勘定科目</th><th>区分</th><th>金額(円)</th><th>メモ</th></tr></thead>
-      <tbody id="pli-rows">${rows.map(r=>plRowHtml(r.item,r.cat,r.amount,r.memo)).join('')||plRowHtml('','O','','')}</tbody></table>
+      <table class="tbl"><thead><tr><th>勘定科目</th><th>区分</th><th>補助科目</th><th>金額(円)</th><th>メモ</th></tr></thead>
+      <tbody id="pli-rows">${rows.map((r,idx)=>plRowHtml(r.item,r.cat,r.amount,r.memo,r.sub,idx)).join('')||plRowHtml('','O','','','',0)}</tbody></table>
     </div>
     <button class="icon-btn" style="margin-top:6px" onclick="App.plAddRow()">＋ 行を追加</button>
     <datalist id="pl-items">${items.map(i2=>`<option value="${esc(i2)}">`).join('')}</datalist>
@@ -5183,18 +5302,69 @@ function plInputModal(){
     </div>
     <div style="margin-top:14px;border-top:1px dashed var(--line2);padding-top:12px">
       <div style="font-weight:700;font-size:13px">📅 期間一括計上（毎月同じ経費をまとめて入力）</div>
-      <div class="sub" style="margin:3px 0 8px">例：家賃 500,000円を 2026/01〜2026/12 に一括計上。期間内の各月に同じ科目の行を作成します（既にある同じ科目の行は上書き／<b>金額を空欄にして実行すると期間内のその科目を削除</b>）。店舗は上で選択中の「${isCommon?'全社共通':esc(st)}」に計上します。</div>
+      <div class="sub" style="margin:3px 0 8px">例：家賃 500,000円を 2026/01〜2026/12 に一括計上。期間内の各月に同じ科目×補助科目の行を作成します（既にある同じ科目×補助科目の行は上書き／<b>金額を空欄にして実行すると期間内のその科目を削除</b>）。店舗は上で選択中の「${isCommon?'全社共通':esc(st)}」に計上します。</div>
       <div class="form-grid">
         <div><label>開始月</label><input type="month" id="plb-ym1" value="${m.ym}"></div>
         <div><label>終了月</label><input type="month" id="plb-ym2" value="${m.ym}"></div>
         <div><label>勘定科目</label><input id="plb-item" list="pl-items" placeholder="例 家賃" onchange="const c=PL_ITEM_CAT[this.value.trim()];if(c)$('plb-cat').value=c;"></div>
         <div><label>区分</label><select id="plb-cat">${[['F','F 仕入'],['L','L 人件費'],['A','A 広告'],['R','R 家賃'],['O','O 他'],['S','S 売上'],['X','X PL外']].map(c=>`<option value="${c[0]}" ${c[0]==='R'?'selected':''}>${c[1]}</option>`).join('')}</select></div>
+        <div><label>補助科目（任意）</label><input id="plb-sub" list="pl-items-sub-all" placeholder="例 電気料金"></div>
         <div><label>金額（円／月）</label><input type="number" id="plb-amt" placeholder="例 500000" style="text-align:right"></div>
         <div><label>メモ（任意）</label><input id="plb-memo"></div>
       </div>
+      <datalist id="pl-items-sub-all">${[...new Set(Object.values(D.subItemMaster).flat().map(s=>s.name))].map(s=>`<option value="${esc(s)}">`).join('')}</datalist>
       <div id="plb-msg" style="font-size:12px;color:#b5502f;margin:6px 0"></div>
       <button class="icon-btn primary" style="margin-top:4px" onclick="App.savePlBulk()">📅 期間一括で計上</button>
     </div>
+  </div></div>`;
+}
+/* ---- スポット人件費入力モーダル（2026-08-23追加） ----
+ * タイミー等の単発人件費を1行ずつ記録。保存は saveSpotEntry（ID一致なら更新・無ければ追加）。
+ * 同月内の一覧を表示し、行の「編集」でこのフォームに読み込んでから保存すると上書き、「削除」で即削除。 */
+function spotInputModal(){
+  const m=S.modal;
+  const stores=scopeStores();
+  const st=m.store&&stores.includes(m.store)?m.store:stores[0];
+  const ym=m.ym||(()=>{ const d=D.refDate||new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); })();
+  const [y,mo]=ym.split('-').map(Number);
+  const t0=dayMs(new Date(y,mo-1,1)), t1=dayMs(new Date(y,mo,0));
+  const rows=D.spot.filter(r=>r.t>=t0&&r.t<=t1&&normStore(r.store)===normStore(st)).sort((a,b)=>b.t-a.t);
+  const e=m.edit||null;   // 編集中のエントリ（{id,...}）。App.spotEditRowでセットされる
+  const todayStr=(()=>{ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); })();
+  return `<div class="modal-bg" onclick="if(event.target===this)App.closeModal()"><div class="modal" style="max-width:600px">
+    <h3>スポット人件費（タイミー等）</h3>
+    <div class="sub">日別の人件費率（PA＋社員＋スポット）と、月次PLの「スポット人件費」に反映されます。</div>
+    <div class="form-grid" style="margin-top:10px">
+      <div><label>対象月（一覧の表示範囲）</label><input type="month" id="sp-ym" value="${ym}" onchange="App.spotSwitch()"></div>
+      <div><label>店舗</label><select id="sp-store" onchange="App.spotSwitch()">${stores.map(s=>`<option value="${esc(s)}" ${st===s?'selected':''}>${esc(s)}</option>`).join('')}</select></div>
+    </div>
+    <div style="margin-top:12px;border-top:1px dashed var(--line2);padding-top:10px">
+      <div style="font-weight:700;font-size:13px">${e?'編集中：保存すると上書きします':'＋ 新規追加'}</div>
+      <div class="form-grid" style="margin-top:6px">
+        <div><label>日付</label><input type="date" id="sp-date" value="${e?esc(new Date(e.t).getFullYear()+'-'+String(new Date(e.t).getMonth()+1).padStart(2,'0')+'-'+String(new Date(e.t).getDate()).padStart(2,'0')):todayStr}"></div>
+        <div><label>区分</label><select id="sp-kind"><option value="タイミー" ${(!e||e.kind==='タイミー')?'selected':''}>タイミー</option><option value="その他" ${e&&e.kind==='その他'?'selected':''}>その他</option></select></div>
+        <div><label>金額（円）</label><input type="number" id="sp-amt" value="${e?Math.round(e.amount):''}" placeholder="例 12000" style="text-align:right"></div>
+        <div><label>人数（任意）</label><input type="number" id="sp-headcount" value="${e&&e.headcount!==''?e.headcount:''}" placeholder="例 2"></div>
+        <div style="grid-column:1/-1"><label>メモ（任意）</label><input id="sp-memo" value="${e?esc(e.memo||''):''}"></div>
+      </div>
+      <input type="hidden" id="sp-edit-id" value="${e?esc(e.id):''}">
+      <div id="sp-msg" style="font-size:12px;color:#b5502f;margin:8px 0"></div>
+      <div class="modal-btns">
+        <button class="icon-btn primary" onclick="App.saveSpotInput()">${e?'上書き保存':'追加'}</button>
+        ${e?`<button class="icon-btn" onclick="App.spotEditCancel()">新規入力に戻す</button>`:''}
+      </div>
+    </div>
+    <div class="scroll-x" style="max-height:260px;overflow-y:auto;border:1px solid var(--line2);border-radius:10px;margin-top:12px">
+      <table class="tbl"><thead><tr><th>日付</th><th>区分</th><th>金額</th><th>人数</th><th>メモ</th><th>入力者/日時</th><th></th></tr></thead>
+      <tbody>${rows.length?rows.map(r=>{
+        const dd=new Date(r.t);
+        return `<tr><td>${dd.getMonth()+1}/${dd.getDate()}</td><td>${esc(r.kind||'')}</td><td>${yen(r.amount)}</td><td>${r.headcount===''?'—':r.headcount}</td><td>${esc(r.memo||'')}</td>
+          <td class="mut" style="font-size:11px">${esc(r.by||'')}<br>${esc(r.at||'')}</td>
+          <td class="no-print"><button class="icon-btn" style="padding:1px 7px;font-size:10px" data-id="${esc(r.id)}" onclick="App.spotEditRow(this.dataset.id)">編集</button>
+          <button class="icon-btn" style="padding:1px 7px;font-size:10px" data-id="${esc(r.id)}" onclick="App.deleteSpotRow(this.dataset.id)">削除</button></td></tr>`;
+      }).join(''):`<tr><td colspan="7" class="empty">この月×店舗の入力はまだありません</td></tr>`}</tbody></table>
+    </div>
+    <div class="modal-btns"><button class="icon-btn" onclick="App.closeModal()">閉じる</button></div>
   </div></div>`;
 }
 /* ---- 広告費入力モーダル ----
@@ -5857,6 +6027,15 @@ window.App = {
   },
   plSwitch(){ const ym=$('pli-ym')&&$('pli-ym').value, st=$('pli-store')&&$('pli-store').value;
     S.modal={type:'plInput', ym:ym||S.modal.ym, store:st||S.modal.store}; render(); },
+  // PL表の補助科目の開閉（2026-08-23追加）。subKeyは「区分|勘定科目」。集計値には一切影響しない表示上の操作。
+  togglePlSub(subKey){
+    S.plExpandAll=false;
+    const s=new Set(S.plExpandedItems||[]);
+    if(s.has(subKey)) s.delete(subKey); else s.add(subKey);
+    S.plExpandedItems=[...s]; render();
+  },
+  plExpandAllSub(){ S.plExpandAll=true; S.plExpandedItems=[]; render(); },
+  plCollapseAllSub(){ S.plExpandAll=false; S.plExpandedItems=[]; render(); },
   // PL表の科目行の「編集」→ その科目が入っている店舗（or 全社共通）の月次編集モーダルを開く
   openPlItemEdit(item){
     const m0=plMonthDate();
@@ -5876,20 +6055,29 @@ window.App = {
     if(!S.auth||!S.auth.token){ msg.textContent='スプレッドシート接続時のみ保存できます'; return; }
     const ym1=$('plb-ym1').value, ym2=$('plb-ym2').value, store=$('pli-store').value;
     const item=$('plb-item').value.trim(), cat=$('plb-cat').value, memo=$('plb-memo').value.trim();
+    const sub=($('plb-sub')&&$('plb-sub').value||'').trim();
     const amtRaw=String($('plb-amt').value).trim();
     if(!ym1||!ym2){ msg.textContent='開始月と終了月を指定してください'; return; }
     if(!item){ msg.textContent='勘定科目を入力してください'; return; }
     msg.style.color='#8c8375'; msg.textContent='一括計上中…（PL管理システムにも反映しています）';
     try{
-      const d=await api({ action:'savePlBulk', token:S.auth.token, ym1, ym2, store, item, cat, amount:amtRaw, memo });
+      const d=await api({ action:'savePlBulk', token:S.auth.token, ym1, ym2, store, item, cat, sub, amount:amtRaw, memo });
       if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'一括計上に失敗しました'; return; }
       S.modal=null; render();
       toast(amtRaw===''?`「${item}」を${d.months}ヶ月分削除しました`:`「${item}」を${d.months}ヶ月分一括計上しました`+(d.plsys?'／'+d.plsys:''));
       fetchData(true,{ only:['pl','PL'], partial:true });
     }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
   },
-  plGuessCat(inp){ const c=PL_ITEM_CAT[String(inp.value).trim()]; if(c){ const sel=inp.closest('tr').querySelector('.pli-cat'); if(sel)sel.value=c; } },
-  plAddRow(){ const tb=$('pli-rows'); if(tb) tb.insertAdjacentHTML('beforeend', plRowHtml('','O','','')); },
+  plGuessCat(inp){
+    const item=String(inp.value).trim();
+    const tr=inp.closest('tr');
+    const c=PL_ITEM_CAT[item]; if(c){ const sel=tr.querySelector('.pli-cat'); if(sel)sel.value=c; }
+    // 勘定科目を変えたら、その行の補助科目プルダウンの候補もこの科目のものに差し替える（2026-08-23追加）
+    const subInp=tr.querySelector('.pli-sub');
+    if(subInp){ const dl=document.getElementById(subInp.getAttribute('list'));
+      if(dl) dl.innerHTML=plSubOptions(item).map(s=>`<option value="${esc(s)}">`).join(''); }
+  },
+  plAddRow(){ const tb=$('pli-rows'); if(tb) tb.insertAdjacentHTML('beforeend', plRowHtml('','O','','','',tb.children.length)); },
   async savePlInput(){
     const msg=$('pli-msg'); const m=S.modal;
     if(!S.auth||!S.auth.token){ msg.textContent='スプレッドシート接続時のみ保存できます'; return; }
@@ -5899,7 +6087,8 @@ window.App = {
       const cat=tr.querySelector('.pli-cat').value;
       const amt=Number(tr.querySelector('.pli-amt').value)||0;
       const memo=tr.querySelector('.pli-memo').value.trim();
-      if(item&&amt>0) entries.push([item,cat,amt,memo]);
+      const subEl=tr.querySelector('.pli-sub'); const sub=subEl?subEl.value.trim():'';
+      if(item&&amt>0) entries.push([item,cat,amt,memo,sub]);
     });
     msg.style.color='#8c8375'; msg.textContent='保存中…（PL管理システムにも反映しています）';
     try{
@@ -5908,6 +6097,49 @@ window.App = {
       S.modal=null; render(); toast('経費を保存しました（'+d.saved+'件）'+(d.plsys?'／'+d.plsys:''));
       fetchData(true,{ only:['pl','PL'], partial:true });
     }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
+  },
+  /* ---- スポット人件費入力（2026-08-23追加） ---- */
+  openSpotInput(){
+    if(!requireFeature('spot'))return;
+    const ref=D.refDate||new Date();
+    const ym=ref.getFullYear()+'-'+String(ref.getMonth()+1).padStart(2,'0');
+    S.modal={type:'spotInput', ym, store:selStoreName()||scopeStores()[0], edit:null}; render();
+  },
+  spotSwitch(){ const ym=$('sp-ym')&&$('sp-ym').value, st=$('sp-store')&&$('sp-store').value;
+    S.modal={type:'spotInput', ym:ym||S.modal.ym, store:st||S.modal.store, edit:null}; render(); },
+  spotEditRow(id){
+    const e=D.spot.find(r=>r.id===id); if(!e) return;
+    S.modal=Object.assign({}, S.modal, { edit:e }); render();
+  },
+  spotEditCancel(){ S.modal=Object.assign({}, S.modal, { edit:null }); render(); },
+  async saveSpotInput(){
+    const msg=$('sp-msg');
+    if(!S.auth||!S.auth.token){ msg.textContent='スプレッドシート接続時のみ保存できます'; return; }
+    const store=$('sp-store').value, date=$('sp-date').value, kind=$('sp-kind').value;
+    const amount=Number($('sp-amt').value)||0, headcount=$('sp-headcount').value, memo=$('sp-memo').value.trim();
+    const id=$('sp-edit-id').value;
+    if(!date){ msg.textContent='日付を入力してください'; return; }
+    if(amount<=0){ msg.textContent='金額を入力してください'; return; }
+    msg.style.color='#8c8375'; msg.textContent='保存中…';
+    try{
+      const d=await api({ action:'saveSpotEntry', token:S.auth.token, id, store, date, kind, amount, headcount, memo });
+      if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'保存に失敗しました'; return; }
+      toast('スポット人件費を保存しました');
+      S.modal=Object.assign({}, S.modal, { edit:null });
+      await fetchData(true,{ only:['スポット人件費'], partial:true });
+      render();
+    }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
+  },
+  async deleteSpotRow(id){
+    if(!confirm('この行を削除しますか？')) return;
+    if(!S.auth||!S.auth.token) return;
+    try{
+      const d=await api({ action:'deleteSpotEntry', token:S.auth.token, id });
+      if(!d.ok){ toast(d.error||'削除に失敗しました'); return; }
+      toast('削除しました');
+      await fetchData(true,{ only:['スポット人件費'], partial:true });
+      render();
+    }catch(e){ toast('通信エラー: '+e.message); }
   },
   /* ---- 広告費入力 ---- */
   openAdInput(){

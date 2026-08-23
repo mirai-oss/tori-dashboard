@@ -109,9 +109,9 @@ function plSyncToDbPl_(dryRun) {
       });
     }
 
-    /* ③ 販管費入力の手入力行 */
+    /* ③ 販管費入力の手入力行（G列＝補助科目。2026-08-23追加・任意項目） */
     var last = src.getLastRow();
-    var raw = last >= 3 ? src.getRange(3, 1, last - 2, 6).getValues() : [];
+    var raw = last >= 3 ? src.getRange(3, 1, last - 2, 7).getValues() : [];
     var manual = [], skippedAuto = 0, skippedBad = 0;
     raw.forEach(function (r) {
       var ym = plsYm_(r[0], tz);
@@ -120,16 +120,17 @@ function plSyncToDbPl_(dryRun) {
       var cat = String(r[3] == null ? '' : r[3]).trim().toUpperCase();
       var amt = Number(String(r[4] == null ? '' : r[4]).replace(/[,¥\s]/g, ''));
       var memo = String(r[5] == null ? '' : r[5]).trim();
+      var sub = String(r[6] == null ? '' : r[6]).trim();
       if (!ym && !store && !acct) return;                       // 空行
       if (!ym || !store || !acct || !amt) { if (ym || store || acct) skippedBad++; return; }
       if (autoAcct[acct]) { skippedAuto++; return; }             // 自動計上科目は転記しない
       if (['S', 'F', 'L', 'R', 'A', 'O', 'X'].indexOf(cat) < 0) { skippedBad++; return; }
       targetMonths[ym] = true;                                   // データが有る月も洗い替え対象に
       if (store === cfg.common) store = '';                      // 全社共通 → DB_PLでは店舗空欄
-      manual.push([plsYmToDate_(ym), store, acct, cat, amt, memo]);
+      manual.push([plsYmToDate_(ym), store, acct, cat, amt, memo, sub]);
     });
 
-    /* ④ 媒体販促費（自動）行（既存 computeAutoPromoRows を再利用） */
+    /* ④ 媒体販促費（自動）行（既存 computeAutoPromoRows を再利用。補助科目は常に空） */
     var auto = [], autoMonths = {};
     if (typeof computeAutoPromoRows === 'function') {
       try {
@@ -138,25 +139,26 @@ function plSyncToDbPl_(dryRun) {
           if (!ym) return;
           autoMonths[ym] = true;
           var st = String(r[1]).trim();
-          auto.push([plsYmToDate_(ym), st === cfg.common ? '' : st, r[2], r[3], r[4], r[5]]);
+          auto.push([plsYmToDate_(ym), st === cfg.common ? '' : st, r[2], r[3], r[4], r[5], '']);
         });
       } catch (e) { /* 媒体販促の算出に失敗しても手入力の同期は続行する */ }
     }
 
     /* ⑤ DB_PL 洗い替え */
     var dlast = dp.getLastRow(), keep = [], dropped = [];
-    // 販管費入力に現存する 月×店舗×科目 のキー（差し替えではなく"消滅"した行を見分けるため）
+    var dlastCol = Math.max(dp.getLastColumn(), 7);
+    // 販管費入力に現存する 月×店舗×科目×補助科目 のキー（差し替えではなく"消滅"した行を見分けるため）
     var liveKey = {};
-    manual.forEach(function (r) { liveKey[plsYm_(r[0], tz) + '\t' + r[1] + '\t' + r[2]] = true; });
+    manual.forEach(function (r) { liveKey[plsYm_(r[0], tz) + '\t' + r[1] + '\t' + r[2] + '\t' + r[6]] = true; });
     if (dlast >= 2) {
-      dp.getRange(2, 1, dlast - 1, 6).getValues().forEach(function (r) {
+      dp.getRange(2, 1, dlast - 1, dlastCol).getValues().forEach(function (r) {
         if (r[0] === '' && r[1] === '' && r[2] === '') return;    // 空行は捨てる
         var ym = plsYm_(r[0], tz);
         if (String(r[5]).trim() === cfg.autoMemo) {               // 自動行：今回更新する月だけ差し替え
           if (!autoMonths[ym]) keep.push(r);
         } else {                                                  // 手入力行：対象月なら差し替え
           if (!targetMonths[ym]) keep.push(r);
-          else if (!liveKey[ym + '\t' + String(r[1]).trim() + '\t' + String(r[2]).trim()]) {
+          else if (!liveKey[ym + '\t' + String(r[1]).trim() + '\t' + String(r[2]).trim() + '\t' + String(r[6] || '').trim()]) {
             dropped.push([ym, String(r[1]).trim(), String(r[2]).trim(), r[4]]);   // 入力側に無い＝消える行
           }
         }
@@ -164,9 +166,9 @@ function plSyncToDbPl_(dryRun) {
     }
     var out = keep.concat(manual).concat(auto);
     if (!dryRun) {
-      if (dlast >= 2) dp.getRange(2, 1, dlast - 1, 6).clearContent();
+      if (dlast >= 2) dp.getRange(2, 1, dlast - 1, dlastCol).clearContent();
       if (out.length) {
-        dp.getRange(2, 1, out.length, 6).setValues(out);
+        dp.getRange(2, 1, out.length, 7).setValues(out);
         dp.getRange(2, 1, out.length, 1).setNumberFormat('yyyy/m/d');
       }
       SpreadsheetApp.flush();
@@ -234,7 +236,7 @@ function plOnInputEdit_(e) {
     if (nm !== key) return;
     if (e.range.getRow() < 3) return;              // 見出し行
     var c1 = e.range.getColumn(), c2 = c1 + e.range.getNumColumns() - 1;
-    if (c2 < 1 || c1 > 6) return;                  // A〜F列以外は無視
+    if (c2 < 1 || c1 > 7) return;                  // A〜G列以外は無視（G=補助科目）
     PropertiesService.getScriptProperties().setProperty('PLSYNC_DIRTY', String(Date.now()));
   } catch (err) { /* onEditは失敗してもユーザー操作を妨げない */ }
 }
@@ -291,6 +293,30 @@ function uninstallPlAutoSync() {
   });
   console.log('自動同期トリガーを ' + n + ' 件削除しました');
   return n;
+}
+
+/* ---------- 補助科目（G列）の追加（2026-08-23・本番シートへの一回きりの安全な移行） ----------
+ * buildInput()（pl_system.gs）はsheetResetで全体を作り直すため、実データが入った本番シートに
+ * 対して再実行するのは危険（seedを渡さないと消える）。この関数はG列ヘッダーを追加するだけで、
+ * 既存の年月/店舗/科目/区分/金額/メモ（A〜F列）には一切触れない。
+ * 実行方法: このApps Scriptエディタで plsMigrateAddSubItemColumn_ を選んで実行ボタンを押すだけ。 */
+function plsMigrateAddSubItemColumn_() {
+  var cfg = plsCfg_();
+  var ss = SpreadsheetApp.getActive();
+  var sh = plsSheet_(ss, cfg.inputName);
+  if (!sh) { var m0 = '「' + cfg.inputName + '」シートが見つかりません'; console.log(m0); return m0; }
+  if (String(sh.getRange('G2').getValue()).trim() === '補助科目') {
+    var m1 = '既に補助科目（G列）はあります。何もしていません。';
+    console.log(m1); return m1;
+  }
+  sh.getRange('G2').setValue('補助科目').setFontWeight('bold');
+  try { sh.getRange('G2').setBackground(sh.getRange('C2').getBackground()); } catch (e) {}
+  sh.getRange(3, 7, 2000, 1).setBackground('#FFF2CC');   // C.in相当（黄色系の入力色）
+  sh.setColumnWidth(7, 150);
+  var msg = '「' + cfg.inputName + '」にG列（補助科目）を追加しました。A〜F列のデータは変更していません。';
+  console.log(msg);
+  try { SpreadsheetApp.getUi().alert('補助科目列を追加', msg, SpreadsheetApp.getUi().ButtonSet.OK); } catch (e) {}
+  return msg;
 }
 
 /* ---------- 現在のトリガー確認（デバッグ用） ---------- */

@@ -80,9 +80,10 @@ function readDbPl(){
     var dp=SpreadsheetApp.openById(DASH_ID).getSheetByName('DB_PL');
     var last=dp.getLastRow(); if(last<2) return [];
     var tz=Session.getScriptTimeZone();
-    return dp.getRange(2,1,last-1,6).getValues().filter(function(r){return r[0]!=='' && r[1]!=='' && String(r[5])!==AUTO_MEMO;}).map(function(r){
+    var col=Math.max(dp.getLastColumn(),7);   // G列（補助科目）が無い旧シートでも読める
+    return dp.getRange(2,1,last-1,col).getValues().filter(function(r){return r[0]!=='' && r[1]!=='' && String(r[5])!==AUTO_MEMO;}).map(function(r){
       var ym=(r[0] instanceof Date)?Utilities.formatDate(r[0],tz,'yyyy/MM'):String(r[0]);
-      return [ym,r[1],r[2],r[4],r[5]]; // 年月,店舗,科目,金額,メモ（区分は数式）
+      return [ym,r[1],r[2],r[4],r[5],r[6]||'']; // 年月,店舗,科目,金額,メモ,補助科目（区分は数式）
     });
   }catch(e){ return []; }
 }
@@ -197,17 +198,22 @@ function buildMaster(ss){
 }
 
 /* ---------- 販管費入力 ---------- */
+// ⚠️ 注意（2026-08-23）: この関数は初期構築専用。本番の「✍ 販管費入力」に対して
+// 実データが入った状態で再実行すると sheetReset() でシートが作り直され、seed引数を渡さない限り
+// 既存データが消える。本番シートへ補助科目（G列）だけを安全に追加したい場合は
+// pl_dbpl_autosync.gs の plsMigrateAddSubItemColumn_() を使うこと（新規プロジェクト構築時のみ本関数を使う）。
 function buildInput(ss,seed){
   var sh=sheetReset(ss,N.i,'#BF9000');
   var LAST=2002;
-  title(sh,'✍ 販管費入力 ── 唯一の手入力タブ。1行＝年月×店舗×科目×金額（DB_PLと同じ並び順）。AIエージェントはここに追記',6);
-  hdr(sh,2,['年月','店舗名','勘定科目','区分(自動)','金額','メモ']);
+  title(sh,'✍ 販管費入力 ── 唯一の手入力タブ。1行＝年月×店舗×科目×金額×補助科目（DB_PLと同じ並び順）。AIエージェントはここに追記',7);
+  hdr(sh,2,['年月','店舗名','勘定科目','区分(自動)','金額','メモ','補助科目']);
   // D列: 区分自動
   var df=[]; for(var r=3;r<=LAST;r++) df.push(['=IF($C'+r+'="","",IFERROR(VLOOKUP($C'+r+','+q(N.m)+'$B$3:$C$62,2,FALSE),"？"))']);
   sh.getRange(3,4,df.length,1).setFormulas(df);
   // 書式
   sh.getRange(3,1,LAST-2,3).setBackground(C.in);
   sh.getRange(3,5,LAST-2,2).setBackground(C.in);
+  sh.getRange(3,7,LAST-2,1).setBackground(C.in);
   sh.getRange(3,4,LAST-2,1).setBackground(C.gray).setHorizontalAlignment('center');
   sh.getRange(3,5,LAST-2,1).setNumberFormat(NUM);
   // 入力規則
@@ -215,14 +221,17 @@ function buildInput(ss,seed){
   sh.getRange(3,1,LAST-2,1).setDataValidation(SpreadsheetApp.newDataValidation().requireValueInRange(ml,true).setAllowInvalid(true).build());
   sh.getRange(3,2,LAST-2,1).setDataValidation(SpreadsheetApp.newDataValidation().requireValueInRange(sl,true).setAllowInvalid(true).build());
   sh.getRange(3,3,LAST-2,1).setDataValidation(SpreadsheetApp.newDataValidation().requireValueInRange(al,true).setAllowInvalid(true).build());
+  // 補助科目（G列）はダッシュボード側のDB_補助科目マスタが本体のため、ここでは自由入力（入力規則なし）
   // 既存DB_PL行を引き継ぎ
   if(seed && seed.length){
     var abc=seed.map(function(r){return [r[0],r[1],r[2]];});
     var ef=seed.map(function(r){return [r[3],r[4]||'既存DB_PLから引継'];});
+    var g=seed.map(function(r){return [r[5]||''];});
     sh.getRange(3,1,seed.length,3).setValues(abc);
     sh.getRange(3,5,seed.length,2).setValues(ef);
+    sh.getRange(3,7,seed.length,1).setValues(g);
   }
-  var w=[80,220,160,70,110,220];
+  var w=[80,220,160,70,110,220,150];
   for(var i=0;i<w.length;i++) sh.setColumnWidth(i+1,w[i]);
   sh.setFrozenRows(2);
 }
@@ -510,7 +519,9 @@ function syncToDbPl(){
   var ss=SpreadsheetApp.getActive(), ui=SpreadsheetApp.getUi(), tz=Session.getScriptTimeZone();
   var src=ss.getSheetByName(N.i);
   var last=src.getLastRow();
-  var data=last>=3?src.getRange(3,1,last-2,6).getValues().filter(function(r){return r[0]!==''&&r[1]!==''&&r[2]!==''&&r[4]!=='';}):[];
+  // G列（補助科目）は2026-08-23追加・任意項目。旧シート（G列が無い）でも読めるよう最低7列で読む。
+  var srcCol=Math.max(src.getLastColumn(),7);
+  var data=last>=3?src.getRange(3,1,last-2,srcCol).getValues().filter(function(r){return r[0]!==''&&r[1]!==''&&r[2]!==''&&r[4]!=='';}):[];
   var auto=computeAutoPromoRows(ss);
   if(!data.length && !auto.length){ ui.alert('転記','転記するデータがありません。',ui.ButtonSet.OK); return; }
   var months={}, autoMonths={};
@@ -518,8 +529,11 @@ function syncToDbPl(){
   auto.forEach(function(r){ autoMonths[r[0]]=true; });
   var dash=SpreadsheetApp.openById(DASH_ID), dp=dash.getSheetByName('DB_PL');
   var dlast=dp.getLastRow(), keep=[];
+  // ※G列（補助科目）を含めて読み書きすること。6列だけだと他の行のG列の値が元の行位置に取り残され、
+  // 行の中身（A〜F）だけ入れ替わってズレる（2026-08-23判明・対策済み。syncSeisanFeeToPlと同じ問題）。
+  var dlastCol=Math.max(dp.getLastColumn(),7);
   if(dlast>=2){
-    dp.getRange(2,1,dlast-1,6).getValues().forEach(function(r){
+    dp.getRange(2,1,dlast-1,dlastCol).getValues().forEach(function(r){
       if(r[0]==='') return;
       var ym=ymKey(r[0],tz);
       if(String(r[5])===AUTO_MEMO){ if(!autoMonths[ym]) keep.push(r); }
@@ -528,16 +542,16 @@ function syncToDbPl(){
   }
   var rows=data.map(function(r){
     var ym=ymKey(r[0],tz).split('/');
-    return [new Date(Number(ym[0]),Number(ym[1])-1,1), r[1], r[2], r[3], r[4], r[5]];
+    return [new Date(Number(ym[0]),Number(ym[1])-1,1), r[1], r[2], r[3], r[4], r[5], r[6]||''];
   });
   var autoRows=auto.map(function(r){
     var ym=r[0].split('/');
-    return [new Date(Number(ym[0]),Number(ym[1])-1,1), r[1], r[2], r[3], r[4], r[5]];
+    return [new Date(Number(ym[0]),Number(ym[1])-1,1), r[1], r[2], r[3], r[4], r[5], ''];
   });
   var out=keep.concat(rows).concat(autoRows);
-  if(dlast>=2) dp.getRange(2,1,dlast-1,6).clearContent();
+  if(dlast>=2) dp.getRange(2,1,dlast-1,dlastCol).clearContent();
   if(out.length){
-    dp.getRange(2,1,out.length,6).setValues(out);
+    dp.getRange(2,1,out.length,7).setValues(out);
     dp.getRange(2,1,out.length,1).setNumberFormat('yyyy/m/d');
   }
   ui.alert('転記完了','DB_PLへ 手入力 '+rows.length+' 行＋媒体販促費（自動）'+autoRows.length+' 行を転記しました。\n手入力対象月: '+Object.keys(months).sort().join(', ')+'\n（対象月の既存行は差し替え、それ以外の月は保持）',ui.ButtonSet.OK);
@@ -553,8 +567,10 @@ function autoPromoToDbPl_() {
   var dash = SpreadsheetApp.openById(DASH_ID), dp = dash.getSheetByName('DB_PL');
   if (!dp) return { error: 'DB_PLが無い' };
   var dlast = dp.getLastRow(), keep = [];
+  // ※G列（補助科目）ごと読み書きする（理由はsyncToDbPl/syncSeisanFeeToPlと同じ。2026-08-23対策済み）。
+  var dlastCol = Math.max(dp.getLastColumn(), 7);
   if (dlast >= 2) {
-    dp.getRange(2, 1, dlast - 1, 6).getValues().forEach(function (r) {
+    dp.getRange(2, 1, dlast - 1, dlastCol).getValues().forEach(function (r) {
       if (r[0] === '') return;
       var ym = ymKey(r[0], tz);
       // 媒体販促費の自動行のうち「今回更新する月」だけ捨てる。それ以外（手入力・他月の自動）は全て残す。
@@ -564,12 +580,12 @@ function autoPromoToDbPl_() {
   }
   var autoRows = auto.map(function (r) {
     var ym = r[0].split('/');
-    return [new Date(Number(ym[0]), Number(ym[1]) - 1, 1), r[1], r[2], r[3], r[4], r[5]];
+    return [new Date(Number(ym[0]), Number(ym[1]) - 1, 1), r[1], r[2], r[3], r[4], r[5], ''];
   });
   var out = keep.concat(autoRows);
-  if (dlast >= 2) dp.getRange(2, 1, dlast - 1, 6).clearContent();
+  if (dlast >= 2) dp.getRange(2, 1, dlast - 1, dlastCol).clearContent();
   if (out.length) {
-    dp.getRange(2, 1, out.length, 6).setValues(out);
+    dp.getRange(2, 1, out.length, 7).setValues(out);
     dp.getRange(2, 1, out.length, 1).setNumberFormat('yyyy/m/d');
   }
   return { promoRows: autoRows.length, kept: keep.length };

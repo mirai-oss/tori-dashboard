@@ -1,0 +1,26 @@
+name: スポット人件費の月次PL自動連携（DB_スポット人件費→PL）
+
+# DB_スポット人件費（タイミー等の単発人件費）を年月×店舗で合計し、経営ダッシュボードのPL（DB_PL）へ
+# 「自動｜スポット人件費」（L区分）として自動反映する。日別の人件費率（PLタブとは別の推移分析タブ側）は
+# 保存の都度その場でBQへ即時反映されるため（saveSpotEntry/deleteSpotEntryがbqSyncSpotNow_を呼ぶ）、
+# このワークフローは「月次PL表にも科目として出す」ための後追いバッチ（毎日1回で十分）。
+#
+# syncSeisanFeeToPl（seisan-fee-sync.yml）と同じ設計思想:
+# syncSpotLaborToPlは「今回データがある月 ∪ 既存の自動計上行がある月」をまるごと差し替えるので、
+# 毎回何回実行しても安全（入力を全部消した月もちゃんと掃除される）。対象月の指定は不要（毎回全件対象）。
+on:
+  schedule:
+    - cron: '0 20 * * *'   # 毎日 UTC20:00 = JST翌5:00（08:45の朝の反映前倒しより前に済ませる）
+  workflow_dispatch: {}
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: syncSpotLaborToPlを実行
+        env:
+          BQ_LOAD_TOKEN: ${{ secrets.BQ_LOAD_TOKEN }}
+        run: |
+          curl -sL "https://script.google.com/macros/s/AKfycbz9rd37EZa6X8WRMVEBrXobN8DbYWkHRlhFNYU5rd1UZ0V8j0-6shMQjEeoi4HDWZ0B/exec?action=syncSpotLaborToPl&token=$BQ_LOAD_TOKEN" \
+            | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{const j=JSON.parse(d);console.log(JSON.stringify(j,null,2));if(!j.ok)process.exit(1);});"

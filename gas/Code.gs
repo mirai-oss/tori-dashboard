@@ -48,13 +48,14 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'speed-v6', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'pl-subitem-v1', time: new Date().toISOString() });
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'detailVsDailyDiag') return out(detailVsDailyDiag(p)); // 明細分析とダッシュボードの売上・客数・組数の差を実測で突合（専用トークン認証・読み取り専用・一時的）
     if (action === 'bqPerfDiag') return out(bqPerfDiag(p)); // BQモード各アクションの所要時間計測（専用トークン認証・読み取り専用・一時的）
     if (action === 'dataKeysDiag') return out(dataKeysDiag(p)); // getData()が実際にどのキーを返すか確認（専用トークン認証・読み取り専用・一時的）
     if (action === 'syncSeisanFeeToPl') return out(syncSeisanFeeToPl(p)); // 運営委託費のPL自動連携（専用トークン認証・ログイン不要。2026-08-23追加）
+    if (action === 'syncSpotLaborToPl') return out(syncSpotLaborToPl(p)); // スポット人件費の月次PL自動連携（専用トークン認証・ログイン不要。2026-08-23追加）
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     if (action === 'bqSetupSalesDataset') return out(bqSetupSalesDataset(p)); // salesデータセット作成（初回のみ・専用トークン認証）
     if (action === 'bqSyncSales') return out(bqSyncAllSales(p)); // 分析_日別店舗ほかのBQミラー（専用トークン認証・ログイン不要）
@@ -84,6 +85,9 @@ function handle(p) {
     if (action === 'bqDetail') return out(bqDetail(p, session)); // 明細分析：期間・店舗で絞ってBQ集計
     if (action === 'bqDailyStore') return out(bqDailyStore(p, session)); // 推移分析：分析_日別店舗のBQミラーを読む（データソース切替フラグ用）
     if (action === 'bqGetPL') return out(bqGetPL(p, session)); // PLタブ：DB_PLのBQミラーを読む（データソース切替フラグ用）
+    if (action === 'bqGetSpot') return out(bqGetSpot(p, session)); // スポット人件費：DB_スポット人件費のBQミラーを読む（2026-08-23追加）
+    if (action === 'saveSpotEntry') return out(saveSpotEntry(p, session)); // スポット人件費の保存（ID一致なら更新・無ければ追加）
+    if (action === 'deleteSpotEntry') return out(deleteSpotEntry(p, session)); // スポット人件費の削除
     if (action === 'bqGetDeposit') return out(bqGetDeposit(p, session)); // 入金管理タブ：入金DBのBQミラーを読む（データソース切替フラグ用）
     if (action === 'bqGetMedia') return out(bqGetMedia(p, session)); // 媒体別日次：媒体別DBのBQミラーを読む（ログイン直後の同期エラー対策・2026-08-23追加）
     if (action === 'dataFreshness') return out(dataFreshness(p, session)); // データ最新日・BQ同期時刻の表示用（実装指示書_ダッシュボード高速化タスク1・2026-08-23追加）
@@ -239,11 +243,12 @@ function setupIfNeeded() {
   }
 
   // PL経費入力シート（DB_PL）。無ければテンプレートを自動作成。
-  // 1行＝年月×店舗×勘定科目。区分: F=仕入れ/L=人件費/A=広告/R=家賃/O=他
+  // 1行＝年月×店舗×勘定科目×補助科目。区分: F=仕入れ/L=人件費/A=広告/R=家賃/O=他
+  // 補助科目（G列）は2026-08-23追加。既存行は空欄=補助科目なし（一意キーは年月×店舗×勘定科目×補助科目）。
   var plSh = ss.getSheetByName('DB_PL');
   if (!plSh) {
     plSh = ss.insertSheet('DB_PL');
-    plSh.getRange(1, 1, 1, 6).setValues([['年月', '店舗名', '勘定科目', '区分', '金額', 'メモ']])
+    plSh.getRange(1, 1, 1, 7).setValues([['年月', '店舗名', '勘定科目', '区分', '金額', 'メモ', '補助科目']])
       .setFontWeight('bold').setBackground('#efe9dd');
     plSh.getRange('A1').setNote(
       '月次経費を1行ずつ入力してください。\n' +
@@ -252,13 +257,56 @@ function setupIfNeeded() {
       '・勘定科目: 家賃／水道光熱費／消耗品費／支払手数料 など自由\n' +
       '・区分: F=仕入れ / L=人件費 / A=広告 / R=家賃 / O=他\n' +
       '・金額: 数値（円）\n' +
+      '・補助科目（任意）: 勘定科目の内訳。空欄なら補助科目なし扱い\n' +
       '※売上・仕入・人件費・広告費（DB_広告）は自動連携。ここに入れたF/L/Aは自動分に加算されます。'
     );
     // 区分列にプルダウン（F/L/A/R/O）
     var rule = SpreadsheetApp.newDataValidation().requireValueInList(['F', 'L', 'A', 'R', 'O'], true).setAllowInvalid(true).build();
     plSh.getRange(2, 4, 999, 1).setDataValidation(rule);
     plSh.setFrozenRows(1);
-    plSh.setColumnWidths(1, 6, 130);
+    plSh.setColumnWidths(1, 7, 130);
+  } else if (plSh.getRange('G1').getValue() === '') {
+    // 既存の本番シート向けの一回きりの移行: G列（補助科目）ヘッダーだけ追加する。
+    // データ行は一切触らない（既存行はG列が空欄のまま＝補助科目なし、という約束を壊さない）。
+    plSh.getRange('G1').setValue('補助科目').setFontWeight('bold').setBackground('#efe9dd');
+    plSh.setColumnWidth(7, 130);
+  }
+
+  // スポット人件費（DB_スポット人件費）。無ければ雛形を自動作成（2026-08-23追加）。
+  // 列: 日付／店舗名／区分／金額／人数／メモ／入力者／入力日時／ID。
+  // I列（ID）はBigQueryミラー対象外（saveSpotEntry/deleteSpotEntryの検索キーとしてのみ使う）。
+  var spotSh = ss.getSheetByName('DB_スポット人件費');
+  if (!spotSh) {
+    spotSh = ss.insertSheet('DB_スポット人件費');
+    spotSh.getRange(1, 1, 1, 9).setValues([['日付', '店舗名', '区分', '金額', '人数', 'メモ', '入力者', '入力日時', 'ID']])
+      .setFontWeight('bold').setBackground('#efe9dd');
+    spotSh.getRange('A1').setNote(
+      'タイミー等の単発人件費を1行ずつ記録します（ダッシュボードのPLタブ「＋スポット人件費」から自動で追記されます）。\n' +
+      '・日付: 勤務日\n・店舗名: 分析_日別店舗と同じ表記\n・区分: タイミー／その他\n・金額: 数値（円）\n' +
+      '・人数: 任意\n・入力者/入力日時/ID: 画面から保存すると自動で入る（手で消さないこと）'
+    );
+    spotSh.setFrozenRows(1);
+    spotSh.setColumnWidths(1, 9, 120);
+  }
+
+  // 補助科目マスタ（DB_補助科目）。無ければ雛形を自動作成（2026-08-23追加）。
+  // 列: 勘定科目／補助科目／表示順／有効。入力画面の「＋新しい補助科目を追加」でも自動的に行が増える
+  // （ensureSubItemMaster_参照）。ここでは空の雛形だけ作る（初期の種は運用しながら育てる）。
+  var subSh = ss.getSheetByName('DB_補助科目');
+  if (!subSh) {
+    subSh = ss.insertSheet('DB_補助科目');
+    subSh.getRange(1, 1, 1, 4).setValues([['勘定科目', '補助科目', '表示順', '有効']])
+      .setFontWeight('bold').setBackground('#efe9dd');
+    subSh.getRange('A1').setNote(
+      '勘定科目ごとの補助科目（内訳）のマスタです。\n' +
+      '・勘定科目: DB_PLで使っている勘定科目名と同じ表記\n' +
+      '・補助科目: 例）水道光熱費 → 電気料金／ガス料金／水道料金\n' +
+      '・表示順: 数値（空欄可・小さい順に表示）\n' +
+      '・有効: FALSE にするとプルダウンの候補から外れる（行は消さない）\n' +
+      '※PL入力画面で新しい補助科目をその場入力すると、この一覧に自動で追加されます。'
+    );
+    subSh.setFrozenRows(1);
+    subSh.setColumnWidths(1, 4, 150);
   }
 
   // 祝日シート（DB_祝日）。無ければ雛形を作成。
@@ -1283,6 +1331,14 @@ var BQ_STG_DEPOSIT_SCHEMA = [
   { name: 'store_name', type: 'STRING' }, { name: 'date', type: 'DATE' },
   { name: 'amount', type: 'NUMERIC' }, { name: 'memo', type: 'STRING' }
 ];
+// スポット人件費（2026-08-23追加）。DB_スポット人件費のA〜H列と1対1対応（I列のIDはミラー対象外＝
+// schema.length=8列だけを先頭から読むbqSheetToCsv_の仕様上、ID列はスキーマに含めないことで自動的に除外される）。
+var BQ_STG_SPOT_SCHEMA = [
+  { name: 'work_date', type: 'DATE' }, { name: 'store_name', type: 'STRING' },
+  { name: 'kind', type: 'STRING' }, { name: 'amount', type: 'NUMERIC' },
+  { name: 'headcount', type: 'NUMERIC' }, { name: 'memo', type: 'STRING' },
+  { name: 'entered_by', type: 'STRING' }, { name: 'entered_at', type: 'STRING' }
+];
 
 // ミラー対象一覧（src='local'はこのプロジェクトの自分のスプレッドシート。それ以外はopenByIdで開く）
 function bqSalesTargets_() {
@@ -1297,7 +1353,9 @@ function bqSalesTargets_() {
     { src: SALES_DB_ID, sheet: '人件費DB',      table: 'stg_jinken',       schema: BQ_STG_JINKEN_SCHEMA,       startRow: 3 },
     // 入金DBはstartRow:3（2026-08-22 実データで確認。readSheet()内のコメントにある「1行目に
     // 空行が入った」事故の影響が残っており、2行目が本当のヘッダー・3行目からがデータのため）
-    { src: 'local',     sheet: '入金DB',        table: 'stg_deposit',      schema: BQ_STG_DEPOSIT_SCHEMA,      startRow: 3 }
+    { src: 'local',     sheet: '入金DB',        table: 'stg_deposit',      schema: BQ_STG_DEPOSIT_SCHEMA,      startRow: 3 },
+    // スポット人件費はこのプロジェクトのローカルシート・1行目がヘッダーなので2行目から（分析_日別店舗と同じ構造）
+    { src: 'local',     sheet: 'DB_スポット人件費', table: 'stg_spot',    schema: BQ_STG_SPOT_SCHEMA,        startRow: 2 }
   ];
 }
 // シートのstartRow行目以降(schemaの列数分)をCSV文字列に変換
@@ -1454,7 +1512,8 @@ function bqDailyStoreForSync(p) {
 var BQ_STG_PL_SCHEMA = [
   { name: 'year_month', type: 'STRING' }, { name: 'store_name', type: 'STRING' },
   { name: 'item', type: 'STRING' }, { name: 'category', type: 'STRING' },
-  { name: 'amount', type: 'NUMERIC' }, { name: 'memo', type: 'STRING' }
+  { name: 'amount', type: 'NUMERIC' }, { name: 'memo', type: 'STRING' },
+  { name: 'sub_item', type: 'STRING' }   // 補助科目（2026-08-23追加。DB_PLのG列と対応）
 ];
 function bqPlYm_(v) {
   if (Object.prototype.toString.call(v) === '[object Date]') return Utilities.formatDate(v, 'Asia/Tokyo', 'yyyy/MM');
@@ -1468,7 +1527,8 @@ function bqSyncPL(p) {
   if (!sh) return { ok: false, error: 'DB_PLシートがありません' };
   var lastRow = sh.getLastRow();
   if (lastRow < 2) { bqCacheGenBump_('pl'); return { ok: true, rows: 0, note: 'データ行がありません' }; }
-  var values = sh.getRange(2, 1, lastRow - 1, 6).getValues();
+  var lastCol = Math.max(sh.getLastColumn(), 7);   // G列（補助科目）が無い旧シートでも6列で読めるようにする
+  var values = sh.getRange(2, 1, lastRow - 1, lastCol).getValues();
   var lines = [];
   for (var i = 0; i < values.length; i++) {
     var r = values[i];
@@ -1476,7 +1536,7 @@ function bqSyncPL(p) {
     var amt = Number(r[4]);
     lines.push([
       bqCsvStr_(bqPlYm_(r[0])), bqCsvStr_(r[1]), bqCsvStr_(r[2]), bqCsvStr_(r[3]),
-      isFinite(amt) ? amt.toFixed(6) : '0', bqCsvStr_(r[5])
+      isFinite(amt) ? amt.toFixed(6) : '0', bqCsvStr_(r[5]), bqCsvStr_(r[6])
     ].join(','));
   }
   var csv = lines.join('\n');
@@ -1487,7 +1547,7 @@ function bqSyncPL(p) {
   return plSyncRes;
 }
 // PLタブ用: DB_PLのBQミラーを読む。bqDailyStoreと同じ方針（ログイン必須・店舗スコープ制限）で、
-// 既存のingestPL()がそのまま解釈できる形（{sheets:{PL:[[年月,店舗名,勘定科目,区分,金額,メモ],...]}}）で返す。
+// 既存のingestPL()がそのまま解釈できる形（{sheets:{PL:[[年月,店舗名,勘定科目,区分,金額,メモ,補助科目],...]}}）で返す。
 // 全社共通経費（店舗名が空欄）は店舗スコープに関わらず常に含める（plAgg側で選択状況に応じて除外される）。
 function bqGetPL(p, session) {
   try {
@@ -1503,13 +1563,13 @@ function bqGetPL(p, session) {
     var ck = bqCacheKey_('pl', [bqCacheGen_('pl'), restricted && allowNames.length ? allowNames.slice().sort().join('.') : 'all']);
     var cached = bqCacheGet_(ck);
     if (cached) return cached;
-    var sql = 'SELECT year_month, store_name, item, category, amount, memo FROM `' + BQ_PROJECT + '.' + BQ_SALES_DATASET + '.stg_pl` ' + where + ' ORDER BY year_month';
+    var sql = 'SELECT year_month, store_name, item, category, amount, memo, sub_item FROM `' + BQ_PROJECT + '.' + BQ_SALES_DATASET + '.stg_pl` ' + where + ' ORDER BY year_month';
     var rows = bqRows_(sql);
     if (!rows) return { ok: false, error: 'BigQueryクエリ失敗' };
-    var out = [['年月', '店舗名', '勘定科目', '区分', '金額', 'メモ']];
+    var out = [['年月', '店舗名', '勘定科目', '区分', '金額', 'メモ', '補助科目']];
     for (var i = 1; i < rows.length; i++) {
       var r = rows[i];
-      out.push([r[0], r[1], r[2], r[3], Number(r[4] || 0), r[5]]);
+      out.push([r[0], r[1], r[2], r[3], Number(r[4] || 0), r[5], r[6]]);
     }
     var res = { ok: true, sheets: { PL: out } };
     bqCachePut_(ck, res);
@@ -1517,6 +1577,157 @@ function bqGetPL(p, session) {
   } catch (e) {
     return { ok: false, error: String(e && e.message || e) };
   }
+}
+
+// ================== スポット人件費（2026-08-23追加） ==================
+// タイミー等の単発人件費。DB_スポット人件費に1行ずつ記録し、①日別の人件費率（PA＋社員＋スポット、
+// フロントのstat()で合算・分析_日別店舗/fact_daily_storeは一切触らない）②月次PL（自動｜スポット人件費、
+// L区分でDB_PLへ集計upsert）の2系統に反映する。
+
+// 保存済みの内容をすぐBQへミラー（savePlEntries等と同じ理由：翌朝の定期同期まで待たせない）。
+// 失敗しても保存自体は成功として扱う（次のbqSyncSales定期同期で追いつく）。
+function bqSyncSpotNow_() {
+  try {
+    var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+    if (!tk) return;
+    var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_スポット人件費');
+    if (!sh) return;
+    var csv = bqSheetToCsv_(sh, BQ_STG_SPOT_SCHEMA, 2);
+    var res = bqLoadSheetToTable_(csv, 'stg_spot', BQ_STG_SPOT_SCHEMA);
+    if (res && res.ok) bqCacheGenBump_('spot');
+  } catch (e) { /* 即時同期失敗は無視（次回定期同期で追いつく） */ }
+}
+// ダッシュボード初期表示（BQモード）用: stg_spotを店舗権限フィルタ付きで読む。bqGetPLと同じ方針。
+function bqGetSpot(p, session) {
+  try {
+    var sessStores = String(session && session.stores || '').trim();
+    var restricted = sessStores && sessStores !== '全店';
+    var allowNames = [], where = '';
+    if (restricted) {
+      allowNames = sessStores.split(/[,、]/).map(function (s) { return s.trim(); }).filter(Boolean);
+      if (allowNames.length) {
+        where = "WHERE store_name IN ('" + allowNames.map(function (n) { return String(n).replace(/'/g, "''"); }).join("','") + "')";
+      }
+    }
+    var ck = bqCacheKey_('spot', [bqCacheGen_('spot'), restricted && allowNames.length ? allowNames.slice().sort().join('.') : 'all']);
+    var cached = bqCacheGet_(ck);
+    if (cached) return cached;
+    var sql = 'SELECT work_date, store_name, kind, amount, headcount, memo, entered_by, entered_at FROM `' +
+      BQ_PROJECT + '.' + BQ_SALES_DATASET + '.stg_spot` ' + where + ' ORDER BY work_date';
+    var rows = bqRows_(sql);
+    if (!rows) return { ok: false, error: 'BigQueryクエリ失敗' };
+    var out = [['日付', '店舗名', '区分', '金額', '人数', 'メモ', '入力者', '入力日時']];
+    for (var i = 1; i < rows.length; i++) {
+      var r = rows[i];
+      out.push([r[0], r[1], r[2], Number(r[3] || 0), r[4] == null ? '' : Number(r[4]), r[5], r[6], r[7]]);
+    }
+    var res = { ok: true, sheets: { 'スポット人件費': out } };
+    bqCachePut_(ck, res);
+    return res;
+  } catch (e) {
+    return { ok: false, error: String(e && e.message || e) };
+  }
+}
+// スポット人件費の保存（ID一致なら更新・無ければ追加。saveEventと同じ型）。
+function saveSpotEntry(p, session) {
+  var store = String(p.store || '').trim();
+  if (!store) return { ok: false, error: '店舗が未指定です' };
+  if (!scopeAllows_(session, store)) return { ok: false, error: 'この店舗の入力権限がありません' };
+  var date = String(p.date || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { ok: false, error: '日付が不正です' };
+  var kind = String(p.kind || 'タイミー').trim().slice(0, 20) || 'タイミー';
+  var amount = Number(p.amount) || 0;
+  if (amount <= 0) return { ok: false, error: '金額を入力してください' };
+  var headcountRaw = String(p.headcount == null ? '' : p.headcount).trim();
+  var headcount = headcountRaw === '' ? '' : (Number(headcountRaw) || 0);
+  var memo = String(p.memo || '').trim().slice(0, 200);
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_スポット人件費');
+  if (!sh) return { ok: false, error: 'DB_スポット人件費シートがありません' };
+  var id = String(p.id || '').trim() || Utilities.getUuid().slice(0, 8);
+  var last = sh.getLastRow(), found = -1;
+  if (last >= 2) {
+    var ids = sh.getRange(2, 9, last - 1, 1).getValues();
+    for (var i = 0; i < ids.length; i++) if (String(ids[i][0]).trim() === id) { found = i + 2; break; }
+  }
+  // 既存行の更新なら、元の店舗（変更前）にも編集権限が必要（担当外店舗の記録を書き換えられないようにする）
+  if (found > 0) {
+    var prevStore = String(sh.getRange(found, 2).getValue()).trim();
+    if (prevStore && !scopeAllows_(session, prevStore)) return { ok: false, error: '元の店舗の編集権限がありません' };
+  }
+  var d = date.split('-');
+  var who = (session && (session.name || session.id)) || '不明';
+  var whenStr = Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyy-MM-dd HH:mm');
+  var row = [new Date(Number(d[0]), Number(d[1]) - 1, Number(d[2])), store, kind, amount, headcount, memo, who, whenStr, id];
+  var target = found > 0 ? found : last + 1;
+  sh.getRange(target, 1, 1, 9).setValues([row]);
+  sh.getRange(target, 1).setNumberFormat('yyyy/m/d');
+  bqSyncSpotNow_();
+  return { ok: true, id: id };
+}
+function deleteSpotEntry(p, session) {
+  var id = String(p.id || '').trim(); if (!id) return { ok: false, error: 'idが必要です' };
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_スポット人件費');
+  if (!sh) return { ok: false, error: 'DB_スポット人件費シートがありません' };
+  var last = sh.getLastRow();
+  if (last >= 2) {
+    var vals = sh.getRange(2, 1, last - 1, 9).getValues();
+    for (var i = 0; i < vals.length; i++) {
+      if (String(vals[i][8]).trim() === id) {
+        var store = String(vals[i][1]).trim();
+        if (store && !scopeAllows_(session, store)) return { ok: false, error: 'この店舗の削除権限がありません' };
+        sh.deleteRow(i + 2);
+        bqSyncSpotNow_();
+        return { ok: true };
+      }
+    }
+  }
+  return { ok: false, error: '該当データが見つかりません' };
+}
+// 月次PLへの自動計上：DB_スポット人件費を年月×店舗で合計し、DB_PLへ「自動｜スポット人件費」（L区分）として
+// upsert（syncSeisanFeeToPlと同じ「対象月×このメモの行だけ差し替え」方式）。
+// 対象月＝今回データがある月 ∪ 既存の自動計上行がある月（入力を全部消した月の掃除漏れを防ぐ）。
+var PL_SPOT_MEMO = '自動｜スポット人件費';
+function syncSpotLaborToPl(p) {
+  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+  if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_スポット人件費');
+  var totals = {};   // 'yyyy/MM\t店舗' -> 金額合計
+  if (sh) {
+    var lastS = sh.getLastRow();
+    if (lastS >= 2) {
+      sh.getRange(2, 1, lastS - 1, 4).getValues().forEach(function (r) {   // A日付 B店舗名 C区分 D金額
+        var d = r[0], store = String(r[1] || '').trim(), amt = Number(r[3]) || 0;
+        if (!store || !amt || !(d instanceof Date)) return;
+        var ym = Utilities.formatDate(d, 'Asia/Tokyo', 'yyyy/MM');
+        var k = ym + '\t' + store;
+        totals[k] = (totals[k] || 0) + amt;
+      });
+    }
+  }
+  var dp = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_PL');
+  if (!dp) return { ok: false, error: 'DB_PLシートがありません' };
+  var dlast = dp.getLastRow();
+  var dlastCol = Math.max(dp.getLastColumn(), 7);
+  var allRows = dlast >= 2 ? dp.getRange(2, 1, dlast - 1, dlastCol).getValues() : [];
+  var months = {};
+  Object.keys(totals).forEach(function (k) { months[k.split('\t')[0]] = true; });
+  allRows.forEach(function (r) { if (String(r[5]) === PL_SPOT_MEMO) months[ymOf_(r[0])] = true; });
+  var keep = [];
+  allRows.forEach(function (r) {
+    if (r[0] === '' && r[1] === '' && r[2] === '') return;
+    var ym = ymOf_(r[0]);
+    if (months[ym] && String(r[5]) === PL_SPOT_MEMO) return;   // 差し替え対象は捨てる
+    keep.push(r);
+  });
+  Object.keys(totals).forEach(function (k) {
+    var parts = k.split('\t'), ym = parts[0], store = parts[1];
+    var y = +ym.slice(0, 4), mo = +ym.slice(5, 7);
+    keep.push([new Date(y, mo - 1, 1), store, 'スポット人件費', 'L', totals[k], PL_SPOT_MEMO, '']);
+  });
+  if (dlast >= 2) dp.getRange(2, 1, dlast - 1, dlastCol).clearContent();
+  if (keep.length) { dp.getRange(2, 1, keep.length, 7).setValues(keep); dp.getRange(2, 1, keep.length, 1).setNumberFormat('yyyy/m/d'); }
+  var bqSync = bqSyncPL({ token: tk });
+  return { ok: true, months: Object.keys(months).length, stores: Object.keys(totals).length, bqSync: bqSync };
 }
 
 // ================== 運営委託費のPL自動連携（2026-08-23追加） ==================
@@ -1592,13 +1803,16 @@ function syncSeisanFeeToPl(p) {
   });
 
   // DB_PLへ反映: 対象月×対象店舗×このメモの既存行を削除し、取得できた分だけ入れ直す
+  // ※G列（補助科目）を含めて読み書きすること。6列だけ読み書きすると、他の行のG列の値が
+  // 元の行位置に取り残されたまま行の中身（A〜F）だけ入れ替わり、値がズレる（2026-08-23判明・対策済み）。
   var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_PL');
   if (!sh) return { ok: false, error: 'DB_PLシートがありません' };
   var lastRow = sh.getLastRow();
+  var lastColSeisan = Math.max(sh.getLastColumn(), 7);
   var ymSlash = ym.slice(0, 4) + '/' + ym.slice(5, 7);
   var keep = [];
   if (lastRow >= 2) {
-    sh.getRange(2, 1, lastRow - 1, 6).getValues().forEach(function (r) {
+    sh.getRange(2, 1, lastRow - 1, lastColSeisan).getValues().forEach(function (r) {
       if (r[0] === '' && r[1] === '' && r[2] === '') return;
       var sameMonth = bqPlYm_(r[0]) === ymSlash;
       var isMyAuto = String(r[5]) === PL_SEISAN_MEMO && storeNames.indexOf(String(r[1]).trim()) >= 0;
@@ -1611,10 +1825,10 @@ function syncSeisanFeeToPl(p) {
   }
   var y = Number(ym.slice(0, 4)), mo = Number(ym.slice(5, 7));
   Object.keys(byStore).forEach(function (store) {
-    keep.push([new Date(y, mo - 1, 1), store, '運営委託費', 'O', byStore[store], PL_SEISAN_MEMO]);
+    keep.push([new Date(y, mo - 1, 1), store, '運営委託費', 'O', byStore[store], PL_SEISAN_MEMO, '']);
   });
-  if (lastRow >= 2) sh.getRange(2, 1, lastRow - 1, 6).clearContent();
-  if (keep.length) { sh.getRange(2, 1, keep.length, 6).setValues(keep); sh.getRange(2, 1, keep.length, 1).setNumberFormat('yyyy/m/d'); }
+  if (lastRow >= 2) sh.getRange(2, 1, lastRow - 1, lastColSeisan).clearContent();
+  if (keep.length) { sh.getRange(2, 1, keep.length, 7).setValues(keep); sh.getRange(2, 1, keep.length, 1).setNumberFormat('yyyy/m/d'); }
 
   // DB_PL（シート）を更新しただけではPLタブのBigQueryモードに反映されない
   // （bqSyncPLで別途ミラーする設計のため）。書き忘れると「反映されない」に見えるので、
@@ -1938,6 +2152,12 @@ function reportDataBQ(p) {
 
   var sales = Number(tot[1][0] || 0), guests = Number(tot[1][1] || 0);
   var cogsV = Number(tot[1][2] || 0), laborV = Number(tot[1][3] || 0);
+  // スポット人件費（タイミー等）も人件費率に合算する（2026-08-23追加）。stg_spotが未作成/未同期でも日報を止めない。
+  try {
+    var spotWhere = "work_date BETWEEN DATE('" + fmt(periodStart) + "') AND DATE('" + fmt(periodEnd) + "')";
+    var spotRes = bqRows_('SELECT SUM(amount) spot FROM `' + BQ_PROJECT + '.' + BQ_SALES_DATASET + '.stg_spot` WHERE ' + spotWhere + storeWhere);
+    if (spotRes && spotRes[1] && spotRes[1][0] != null) laborV += Number(spotRes[1][0]);
+  } catch (eSpot) { /* stg_spot未作成でもここは無視 */ }
   var prevSales = (prev && prev[1] && prev[1][0] != null) ? Number(prev[1][0]) : null;
   var cumSales = (cum && cum[1] && cum[1][0] != null) ? Number(cum[1][0]) : null;
   var cumPrevSales = (cumPrev && cumPrev[1] && cumPrev[1][0] != null) ? Number(cumPrev[1][0]) : null;
@@ -2364,7 +2584,36 @@ function mgmtStoreName_(mss, dashName) {
   return dashName;
 }
 
-// PL経費の保存：対象月×店舗の手入力行を丸ごと差し替え。entries=[[科目,区分,金額,メモ],...]
+// 補助科目のその場追加（2026-08-23追加）: 保存された勘定科目×補助科目の組が
+// DB_補助科目マスタに無ければ末尾に追加する（表示順=999・有効=TRUE）。既にあれば何もしない。
+// 1回の保存（最大300行）ごとに読み書きするだけなので負荷は小さい。
+function ensureSubItemMaster_(pairs) {
+  if (!pairs || !pairs.length) return;
+  try {
+    var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_補助科目');
+    if (!sh) return;
+    var last = sh.getLastRow();
+    var known = {};
+    if (last >= 2) {
+      sh.getRange(2, 1, last - 1, 2).getValues().forEach(function (r) {
+        known[String(r[0]).trim() + '\t' + String(r[1]).trim()] = true;
+      });
+    }
+    var add = [];
+    var seen = {};
+    pairs.forEach(function (pr) {
+      var item = String(pr[0] || '').trim(), sub = String(pr[1] || '').trim();
+      if (!item || !sub) return;
+      var k = item + '\t' + sub;
+      if (known[k] || seen[k]) return;
+      seen[k] = true;
+      add.push([item, sub, 999, true]);
+    });
+    if (add.length) sh.getRange(sh.getLastRow() + 1, 1, add.length, 4).setValues(add);
+  } catch (e) { /* マスタ追加に失敗しても本体の保存は失敗させない */ }
+}
+
+// PL経費の保存：対象月×店舗の手入力行を丸ごと差し替え。entries=[[科目,区分,金額,メモ,補助科目],...]
 // 反映先: ①このスプレッドシートのDB_PL（ダッシュボード表示用・AUTO行は保持）
 //        ②PL管理システムの「✍ 販管費入力」（手入力の本体。D列の区分式は触らない）
 // store='__common__' は全社共通（DB_PLでは店舗空欄／PL側では『本社・共通』）。社長・本部のみ。
@@ -2386,7 +2635,8 @@ function savePlEntries(p, session) {
     if (['S', 'F', 'L', 'A', 'R', 'O', 'X'].indexOf(cat) < 0) cat = 'O';
     var amt = Number(a[2]) || 0;
     var memo = String(a[3] || '').trim().slice(0, 100);
-    if (item && amt > 0) clean.push([item, cat, amt, memo]);
+    var sub = String(a[4] || '').trim().slice(0, 60);   // 補助科目（任意・2026-08-23追加）
+    if (item && amt > 0) clean.push([item, cat, amt, memo, sub]);
   });
   if (clean.length > 300) return { ok: false, error: '一度に保存できるのは300行までです' };
   var y = Number(ym.slice(0, 4)), mo = Number(ym.slice(5, 7));
@@ -2395,18 +2645,20 @@ function savePlEntries(p, session) {
   var dp = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_PL');
   if (!dp) return { ok: false, error: 'DB_PLシートがありません' };
   var dlast = dp.getLastRow(), keep = [];
+  var dlastCol = Math.max(dp.getLastColumn(), 7);
   if (dlast >= 2) {
-    dp.getRange(2, 1, dlast - 1, 6).getValues().forEach(function (r) {
+    dp.getRange(2, 1, dlast - 1, dlastCol).getValues().forEach(function (r) {
       if (r[0] === '' && r[1] === '' && r[2] === '') return;
       var same = ymOf_(r[0]) === ymSlash && String(r[1]).trim() === store;
       if (same && String(r[5]) !== PL_AUTO_MEMO) return;   // 差し替え対象は捨てる
       keep.push(r);
     });
   }
-  var out = keep.concat(clean.map(function (a) { return [new Date(y, mo - 1, 1), store, a[0], a[1], a[2], a[3]]; }));
-  if (dlast >= 2) dp.getRange(2, 1, dlast - 1, 6).clearContent();
-  if (out.length) { dp.getRange(2, 1, out.length, 6).setValues(out); dp.getRange(2, 1, out.length, 1).setNumberFormat('yyyy/m/d'); }
-  // ② PL管理システム ✍販管費入力（A年月/B店舗/C科目/E金額/Fメモ。D列の式は触らない）
+  var out = keep.concat(clean.map(function (a) { return [new Date(y, mo - 1, 1), store, a[0], a[1], a[2], a[3], a[4]]; }));
+  if (dlast >= 2) dp.getRange(2, 1, dlast - 1, dlastCol).clearContent();
+  if (out.length) { dp.getRange(2, 1, out.length, 7).setValues(out); dp.getRange(2, 1, out.length, 1).setNumberFormat('yyyy/m/d'); }
+  ensureSubItemMaster_(clean.map(function (a) { return [a[0], a[4]]; }));
+  // ② PL管理システム ✍販管費入力（A年月/B店舗/C科目/E金額/Fメモ/G補助科目。D列の式は触らない）
   var plsys = '';
   try {
     var psh = SpreadsheetApp.openById(PL_SYSTEM_ID).getSheetByName(PL_INPUT_SHEET);
@@ -2415,17 +2667,19 @@ function savePlEntries(p, session) {
       var lastR = psh.getLastRow(), n = Math.max(lastR - 2, 0);   // データは3行目から（D列の式で行数は伸びている）
       var A = n > 0 ? psh.getRange(3, 1, n, 3).getValues() : [];
       var E = n > 0 ? psh.getRange(3, 5, n, 2).getValues() : [];
+      var G = n > 0 ? psh.getRange(3, 7, n, 1).getValues() : [];
       var keepP = [];
       for (var i = 0; i < n; i++) {
         if (String(A[i][0]) === '' && String(A[i][2]) === '') continue;                 // 空行
         if (ymOf_(A[i][0]) === ymSlash && String(A[i][1]).trim() === plStore) continue; // 差し替え対象
-        keepP.push([A[i][0], A[i][1], A[i][2], E[i][0], E[i][1]]);
+        keepP.push([A[i][0], A[i][1], A[i][2], E[i][0], E[i][1], G[i][0]]);
       }
-      clean.forEach(function (a) { keepP.push([ymSlash, plStore, a[0], a[2], a[3] || 'ダッシュボードから入力']); });
-      if (n > 0) { psh.getRange(3, 1, n, 3).clearContent(); psh.getRange(3, 5, n, 2).clearContent(); }
+      clean.forEach(function (a) { keepP.push([ymSlash, plStore, a[0], a[2], a[3] || 'ダッシュボードから入力', a[4]]); });
+      if (n > 0) { psh.getRange(3, 1, n, 3).clearContent(); psh.getRange(3, 5, n, 2).clearContent(); psh.getRange(3, 7, n, 1).clearContent(); }
       if (keepP.length) {
         psh.getRange(3, 1, keepP.length, 3).setValues(keepP.map(function (r) { return [r[0], r[1], r[2]]; }));
         psh.getRange(3, 5, keepP.length, 2).setValues(keepP.map(function (r) { return [r[3], r[4]]; }));
+        psh.getRange(3, 7, keepP.length, 1).setValues(keepP.map(function (r) { return [r[5]]; }));
       }
       plsys = 'PL管理システムにも反映しました';
     } else plsys = 'PL管理システムに「' + PL_INPUT_SHEET + '」シートが見つかりません（DB_PLのみ反映）';
@@ -2522,8 +2776,8 @@ function saveAdFee(p, session) {
   return { ok: true, months: mlist.length, added: appendRows.length, updated: mlist.length - appendRows.length };
 }
 
-// PL経費の期間一括計上：開始月〜終了月の各月に 店舗×科目 の行を作成（既存の同科目行は差し替え）。
-// 金額が空/0なら期間内のその科目の行を削除。DB_PLとPL管理システム（✍販管費入力）の両方に反映。
+// PL経費の期間一括計上：開始月〜終了月の各月に 店舗×科目×補助科目 の行を作成（既存の同科目・同補助科目行は差し替え）。
+// 金額が空/0なら期間内のその科目（＋補助科目）の行を削除。DB_PLとPL管理システム（✍販管費入力）の両方に反映。
 function savePlBulk(p, session) {
   var ym1 = String(p.ym1 || '').trim(), ym2 = String(p.ym2 || '').trim();
   if (!/^\d{4}-\d{2}$/.test(ym1) || !/^\d{4}-\d{2}$/.test(ym2)) return { ok: false, error: '開始月・終了月が不正です' };
@@ -2541,27 +2795,30 @@ function savePlBulk(p, session) {
   var amtRaw = String(p.amount == null ? '' : p.amount).trim();
   var amount = amtRaw === '' ? 0 : (Number(amtRaw.replace(/[,¥\s]/g, '')) || 0);
   var memo = String(p.memo || '').trim().slice(0, 100);
+  var sub = String(p.sub || '').trim().slice(0, 60);   // 補助科目（任意・2026-08-23追加）
   var y1 = +ym1.slice(0, 4), m1 = +ym1.slice(5, 7), y2 = +ym2.slice(0, 4), m2 = +ym2.slice(5, 7);
   var n = (y2 - y1) * 12 + (m2 - m1) + 1;
   if (n < 1) return { ok: false, error: '終了月が開始月より前です' };
   if (n > 36) return { ok: false, error: '一括計上できるのは36ヶ月までです' };
   var months = {}, list = [];
   for (var i = 0; i < n; i++) { var yy = y1 + Math.floor((m1 - 1 + i) / 12), mm = (m1 - 1 + i) % 12 + 1; var ms = yy + '/' + ('0' + mm).slice(-2); months[ms] = 1; list.push([yy, mm, ms]); }
-  // ① DB_PL：期間内の 店舗×科目 行（AUTO以外）を除去 → 金額>0なら各月分を追加
+  // ① DB_PL：期間内の 店舗×科目×補助科目 行（AUTO以外）を除去 → 金額>0なら各月分を追加
   var dp = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_PL');
   if (!dp) return { ok: false, error: 'DB_PLシートがありません' };
   var dlast = dp.getLastRow(), keep = [];
+  var dlastCol = Math.max(dp.getLastColumn(), 7);
   if (dlast >= 2) {
-    dp.getRange(2, 1, dlast - 1, 6).getValues().forEach(function (r) {
+    dp.getRange(2, 1, dlast - 1, dlastCol).getValues().forEach(function (r) {
       if (r[0] === '' && r[1] === '' && r[2] === '') return;
-      if (months[ymOf_(r[0])] && String(r[1]).trim() === store && String(r[2]).trim() === item && String(r[5]) !== PL_AUTO_MEMO) return;
+      if (months[ymOf_(r[0])] && String(r[1]).trim() === store && String(r[2]).trim() === item && String(r[6] || '').trim() === sub && String(r[5]) !== PL_AUTO_MEMO) return;
       keep.push(r);
     });
   }
   var out = keep.slice();
-  if (amount > 0) list.forEach(function (mo) { out.push([new Date(mo[0], mo[1] - 1, 1), store, item, cat, amount, memo]); });
-  if (dlast >= 2) dp.getRange(2, 1, dlast - 1, 6).clearContent();
-  if (out.length) { dp.getRange(2, 1, out.length, 6).setValues(out); dp.getRange(2, 1, out.length, 1).setNumberFormat('yyyy/m/d'); }
+  if (amount > 0) list.forEach(function (mo) { out.push([new Date(mo[0], mo[1] - 1, 1), store, item, cat, amount, memo, sub]); });
+  if (dlast >= 2) dp.getRange(2, 1, dlast - 1, dlastCol).clearContent();
+  if (out.length) { dp.getRange(2, 1, out.length, 7).setValues(out); dp.getRange(2, 1, out.length, 1).setNumberFormat('yyyy/m/d'); }
+  if (amount > 0 && sub) ensureSubItemMaster_([[item, sub]]);
   // ② PL管理システム ✍販管費入力：同じ差し替え（D列の区分式は触らない）
   var plsys = '';
   try {
@@ -2571,17 +2828,19 @@ function savePlBulk(p, session) {
       var lastR = psh.getLastRow(), nR = Math.max(lastR - 2, 0);
       var A = nR > 0 ? psh.getRange(3, 1, nR, 3).getValues() : [];
       var E = nR > 0 ? psh.getRange(3, 5, nR, 2).getValues() : [];
+      var G = nR > 0 ? psh.getRange(3, 7, nR, 1).getValues() : [];
       var keepP = [];
       for (var i2 = 0; i2 < nR; i2++) {
         if (String(A[i2][0]) === '' && String(A[i2][2]) === '') continue;
-        if (months[ymOf_(A[i2][0])] && String(A[i2][1]).trim() === plStore && String(A[i2][2]).trim() === item) continue;
-        keepP.push([A[i2][0], A[i2][1], A[i2][2], E[i2][0], E[i2][1]]);
+        if (months[ymOf_(A[i2][0])] && String(A[i2][1]).trim() === plStore && String(A[i2][2]).trim() === item && String(G[i2][0] || '').trim() === sub) continue;
+        keepP.push([A[i2][0], A[i2][1], A[i2][2], E[i2][0], E[i2][1], G[i2][0]]);
       }
-      if (amount > 0) list.forEach(function (mo) { keepP.push([mo[2], plStore, item, amount, memo || 'ダッシュボードから一括計上']); });
-      if (nR > 0) { psh.getRange(3, 1, nR, 3).clearContent(); psh.getRange(3, 5, nR, 2).clearContent(); }
+      if (amount > 0) list.forEach(function (mo) { keepP.push([mo[2], plStore, item, amount, memo || 'ダッシュボードから一括計上', sub]); });
+      if (nR > 0) { psh.getRange(3, 1, nR, 3).clearContent(); psh.getRange(3, 5, nR, 2).clearContent(); psh.getRange(3, 7, nR, 1).clearContent(); }
       if (keepP.length) {
         psh.getRange(3, 1, keepP.length, 3).setValues(keepP.map(function (r) { return [r[0], r[1], r[2]]; }));
         psh.getRange(3, 5, keepP.length, 2).setValues(keepP.map(function (r) { return [r[3], r[4]]; }));
+        psh.getRange(3, 7, keepP.length, 1).setValues(keepP.map(function (r) { return [r[5]]; }));
       }
       plsys = 'PL管理システムにも反映しました';
     } else plsys = 'PL管理システムに「' + PL_INPUT_SHEET + '」シートが見つかりません（DB_PLのみ反映）';
