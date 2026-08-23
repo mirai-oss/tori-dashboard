@@ -48,7 +48,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v72', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v73', time: new Date().toISOString() });
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'detailVsDailyDiag') return out(detailVsDailyDiag(p)); // 明細分析とダッシュボードの売上・客数・組数の差を実測で突合（専用トークン認証・読み取り専用・一時的）
@@ -1740,6 +1740,22 @@ function detailVsDailyDiag(p) {
       out.salesRatio_incl大dashboard比 = Number((out.detail明細分析側.sales_incl / out.dashboard側.net_sales).toFixed(3));
       out.salesRatio_excl大dashboard比 = Number((out.detail明細分析側.sales_excl / out.dashboard側.net_sales).toFixed(3));
     }
+    // fix-v72の実績差し替えロジックが実際に働いているかを、bqDetail()自体を呼んで直接確認する
+    // （このdetailVsDailyDiagのdetail明細分析側は差し替え前の生の推定値のため、それだけでは確認できない）。
+    try {
+      var bd = bqDetail({ from: from, to: to, store: store || 'all' }, { stores: '全店' });
+      if (bd && bd.ok && bd.store && bd.store.length > 1) {
+        var H = bd.store[0], iSales = H.indexOf('sales'), iChk = H.indexOf('checks'), iG = H.indexOf('guests');
+        var rowsOut = [];
+        for (var bi = 1; bi < bd.store.length; bi++) {
+          if (store && bd.store[bi][0] !== store) continue;
+          rowsOut.push({ store: bd.store[bi][0], sales: bd.store[bi][iSales], checks: bd.store[bi][iChk], guests: bd.store[bi][iG] });
+        }
+        out.bqDetail実際の出力 = rowsOut;
+      } else {
+        out.bqDetail実際の出力 = { error: (bd && bd.error) || '取得失敗' };
+      }
+    } catch (eBd) { out.bqDetail実際の出力 = { error: String(eBd && eBd.message || eBd) }; }
     return out;
   } catch (e) { return { ok: false, error: String(e && e.message || e) }; }
 }
