@@ -1,0 +1,19 @@
+name: 運営委託費の二重計上を確認（送信なし）
+on:
+  workflow_dispatch:
+    inputs:
+      ym:
+        description: '対象月（YYYY-MM）。空なら全期間'
+        required: false
+        default: ''
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: plSeisanDiagを実行
+        env:
+          BQ_LOAD_TOKEN: ${{ secrets.BQ_LOAD_TOKEN }}
+        run: |
+          curl -sL "https://script.google.com/macros/s/AKfycbz9rd37EZa6X8WRMVEBrXobN8DbYWkHRlhFNYU5rd1UZ0V8j0-6shMQjEeoi4HDWZ0B/exec?action=plSeisanDiag&token=$BQ_LOAD_TOKEN&ym=${{ github.event.inputs.ym }}" \
+            | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.stringify(JSON.parse(d),null,2)));"
