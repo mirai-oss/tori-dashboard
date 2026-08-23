@@ -122,6 +122,22 @@ function resolveStore(name){
   let hit=all.find(s=>_norm(s)===nn);                  // スペース・全半角の違いを無視
   if(hit) return hit;
   hit=all.find(s=>{ const ns=_norm(s); return ns.length>=2 && (ns.includes(nn)||nn.includes(ns)); }); // 部分一致
+  if(hit) return hit;
+  // Supabase店舗マスタのstore_aliases(kind='name')＝表記ゆれの別名経由でも試す（2026-08-23追加）。
+  // 例: 精算システムの正本「じんべぇ 川崎」で書いたPL行が、売上シート側の表記「じんべえ 川崎店」と
+  // 文字種の違い（え/ぇ）で↑の部分一致にもかからず未突合になっていたのを解消。
+  if(D.storeDirectory){
+    const rec=D.storeDirectory.find(s=>s.name===target);
+    if(rec&&rec.aliases){
+      for(const a of rec.aliases){
+        if(a.kind!=='name'||a.alias===target) continue;
+        if(all.includes(a.alias)) return a.alias;
+        const an=_norm(a.alias);
+        const h2=all.find(s=>_norm(s)===an || (an.length>=2 && (_norm(s).includes(an)||an.includes(_norm(s)))));
+        if(h2) return h2;
+      }
+    }
+  }
   return hit||null;
 }
 // 名前がサブブランド(子店舗)に一致すれば、その正式な子店舗名を返す（スペース差も吸収）
@@ -1068,10 +1084,6 @@ function allStores(){
   const order=canonStoreOrder();
   const list=order.filter(n=>inData[n]);
   Object.keys(inData).forEach(n=>{ if(!list.includes(n)) list.push(n); });
-  // 業務委託店舗(seisan_target)は自社の売上データ(分析_日別店舗)を持たないため、
-  // 上のinDataフィルタだけでは一覧から漏れてPL(運営委託費)が「未突合」扱いになってしまう
-  // （2026-08-23発覚）。売上が無くても店舗一覧には含める（売上0円・PLの委託費だけが乗る形になる）。
-  if(D.storeDirectory) D.storeDirectory.forEach(s=>{ if(s.seisan_target && !list.includes(s.name)) list.push(s.name); });
   return list.length?list:order.slice();
 }
 function scopeStores(){
