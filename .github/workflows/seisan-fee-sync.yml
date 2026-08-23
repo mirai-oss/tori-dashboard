@@ -1,0 +1,49 @@
+name: 運営委託費PL自動連携（精算ダッシュボード→PL）
+# 精算対象(stores.seisan_target)の店舗について、精算ダッシュボードの業務委託費（税抜）を
+# 経営ダッシュボードのPL（DB_PL）へ自動反映する。
+#
+# 毎週月曜9:00 JSTに自動実行し、直近3ヶ月分（今月・先月・先々月）をまとめて再同期する。
+# 精算書の発行が月末から数週間遅れることがある点と、発行済みの精算書が後日修正される
+# ことがある点の両方に対応するため、「今月分だけ」ではなく直近3ヶ月を毎回取り直す
+# （syncSeisanFeeToPlは対象月×対象店舗の自動計上行を毎回まるごと差し替える設計なので、
+#  同じ月を何度実行しても安全＝金額が変わっていれば新しい値に上書きされる）。
+#
+# 手動実行時は対象月を1つだけ指定できる（過去分の反映・特定月の再確認用）。
+on:
+  schedule:
+    - cron: '0 0 * * 1'   # 毎週月曜 9:00 JST（UTC 0:00）
+  workflow_dispatch:
+    inputs:
+      ym:
+        description: '対象月（YYYY-MM）。空欄なら直近3ヶ月をまとめて実行'
+        required: false
+        default: ''
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 対象月を決める
+        id: months
+        run: |
+          if [ -n "${{ github.event.inputs.ym }}" ]; then
+            echo "list=${{ github.event.inputs.ym }}" >> "$GITHUB_OUTPUT"
+          else
+            m0=$(date -u +%Y-%m)
+            m1=$(date -u -d "$m0-01 -1 month" +%Y-%m)
+            m2=$(date -u -d "$m0-01 -2 month" +%Y-%m)
+            echo "list=$m0,$m1,$m2" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: syncSeisanFeeToPlを対象月ごとに実行
+        env:
+          BQ_LOAD_TOKEN: ${{ secrets.BQ_LOAD_TOKEN }}
+        run: |
+          IFS=',' read -ra YMS <<< "${{ steps.months.outputs.list }}"
+          for ym in "${YMS[@]}"; do
+            echo "::group::$ym"
+            curl -sL "https://script.google.com/macros/s/AKfycbz9rd37EZa6X8WRMVEBrXobN8DbYWkHRlhFNYU5rd1UZ0V8j0-6shMQjEeoi4HDWZ0B/exec?action=syncSeisanFeeToPl&token=$BQ_LOAD_TOKEN&ym=$ym" \
+              | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.stringify(JSON.parse(d),null,2)));"
+            echo "::endgroup::"
+          done
