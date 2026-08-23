@@ -263,7 +263,7 @@ function wxLocOf(store){
   const s=String(store||'');
   if(D.storeDirectory){
     const hit=D.storeDirectory.find(x=>x.name===s);
-    if(hit && hit.weather_lat!=null && hit.weather_lon!=null) return { key:'store', re:null, lat:hit.weather_lat, lon:hit.weather_lon, name:s };
+    if(hit && hit.weather_lat!=null && hit.weather_lon!=null) return { key:'store:'+s, re:null, lat:hit.weather_lat, lon:hit.weather_lon, name:s };
   }
   return WX_LOCS.find(l=>l.re.test(s))||WX_LOCS[WX_LOCS.length-1];
 }
@@ -304,9 +304,14 @@ function wxGet(store,t){ return D.wx[wxKey(wxLocOf(store).key, ymdStr(t))]||null
 function ensureWeather(stores, fromT, toT){
   if(!(fromT>0)||!(toT>0)) return;
   const today=dayMs(new Date());
-  const locs=[...new Set((stores&&stores.length?stores:['']).map(s=>wxLocOf(s).key))];
-  locs.forEach(lk=>{
-    const loc=WX_LOCS.find(l=>l.key===lk);
+  // wxLocOf()は「WX_LOCSの地域」だけでなく「店舗ごとのSupabase座標（key:'store:店舗名'）」も返す
+  // ため、WX_LOCSへ再検索すると見つからずクラッシュしていた（2026-08-24修正）。
+  // 実際に返ってきたlocオブジェクトをそのままkeyでユニーク化して使う。
+  const seenLk={}; const locs=[];
+  (stores&&stores.length?stores:['']).forEach(s=>{ const l=wxLocOf(s); if(!seenLk[l.key]){ seenLk[l.key]=1; locs.push(l); } });
+  locs.forEach(loc=>{
+    const lk=loc.key;
+    if(!loc) return;
     // 未取得の日付があるか
     let need=false;
     for(let t=fromT;t<=toT;t+=86400000){ if(!(wxKey(lk,ymdStr(t)) in D.wx)){ need=true; break; } }
