@@ -48,9 +48,10 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v69', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v70', time: new Date().toISOString() });
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
+    if (action === 'detailVsDailyDiag') return out(detailVsDailyDiag(p)); // 明細分析とダッシュボードの売上・客数・組数の差を実測で突合（専用トークン認証・読み取り専用・一時的）
     if (action === 'syncSeisanFeeToPl') return out(syncSeisanFeeToPl(p)); // 運営委託費のPL自動連携（専用トークン認証・ログイン不要。2026-08-23追加）
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     if (action === 'bqSetupSalesDataset') return out(bqSetupSalesDataset(p)); // salesデータセット作成（初回のみ・専用トークン認証）
@@ -1642,6 +1643,44 @@ function storeMapDiag(p) {
   var realNames = real ? real.slice(1).map(function (r) { return r[0]; }) : [];
   var unmatched = diniiNames.filter(function (n) { return realNames.indexOf(n) < 0; });
   return { ok: true, diniiNames: diniiNames, realNames: realNames, unmatched: unmatched };
+}
+
+// 一時的な診断用（2026-08-23）: 明細分析(dinii明細集計)とダッシュボード(fact_daily_store=分析_日別店舗の
+// BQミラー)の「売上・客数・組数」がどれくらい・なぜ違うのかを、実際の数字で突合する。読み取り専用。
+// store省略可（省略時は全店合計）。ym必須（YYYY-MM、その月まるごと）。
+function detailVsDailyDiag(p) {
+  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+  if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
+  var store = String((p || {}).store || '').trim();
+  var ym = String((p || {}).ym || '').trim();
+  if (!/^\d{4}-\d{2}$/.test(ym)) return { ok: false, error: 'ymはYYYY-MM形式で指定してください' };
+  var y = Number(ym.slice(0, 4)), mo = Number(ym.slice(5, 7));
+  var from = ym + '-01';
+  var to = Utilities.formatDate(new Date(y, mo, 0), 'Asia/Tokyo', 'yyyy-MM-dd'); // その月の末日
+  var out = { ok: true, store: store || '(全店)', from: from, to: to };
+  try {
+    var maxDinii = bqRows_('SELECT MAX(business_date) d FROM ' + BQ_TABLE);
+    out.diniiMaxBusinessDate = (maxDinii && maxDinii[1] && maxDinii[1][0]) ? String(maxDinii[1][0]) : null;
+    var maxDaily = bqRows_('SELECT MAX(date) d FROM `' + BQ_PROJECT + '.' + BQ_SALES_DATASET + '.fact_daily_store`');
+    out.dailyMaxDate = (maxDaily && maxDaily[1] && maxDaily[1][0]) ? String(maxDaily[1][0]) : null;
+    var diniiWhere = "WHERE business_date BETWEEN DATE('" + from + "') AND DATE('" + to + "')";
+    if (store) {
+      var id = reverseStoreId_(store);
+      if (!id) return { ok: false, error: '明細分析側の店舗名マップにありません: ' + store };
+      out.storeId = id;
+      diniiWhere += " AND store_id = '" + String(id).replace(/'/g, '') + "'";
+    }
+    var dinii = bqRows_("SELECT SUM(sales_incl) sales_incl, SUM(price_excl*qty) sales_excl, COUNT(DISTINCT check_id) checks, SUM(IF(menu LIKE '%お通し%', qty, 0)) guests FROM " + BQ_TABLE + ' ' + diniiWhere);
+    out.detail明細分析側 = (dinii && dinii[1]) ? { sales_incl: Number(dinii[1][0] || 0), sales_excl: Number(dinii[1][1] || 0), checks: Number(dinii[1][2] || 0), guests: Number(dinii[1][3] || 0) } : null;
+    var dailyWhere = "WHERE date BETWEEN DATE('" + from + "') AND DATE('" + to + "')" + (store ? " AND store_name = '" + store.replace(/'/g, "''") + "'" : '');
+    var daily = bqRows_('SELECT SUM(net_sales) net_sales, SUM(guests_total) guests, SUM(parties_total) checks FROM `' + BQ_PROJECT + '.' + BQ_SALES_DATASET + '.fact_daily_store` ' + dailyWhere);
+    out.dashboard側 = (daily && daily[1]) ? { net_sales: Number(daily[1][0] || 0), guests: Number(daily[1][1] || 0), checks: Number(daily[1][2] || 0) } : null;
+    if (out.detail明細分析側 && out.dashboard側 && out.dashboard側.net_sales) {
+      out.salesRatio_incl大dashboard比 = Number((out.detail明細分析側.sales_incl / out.dashboard側.net_sales).toFixed(3));
+      out.salesRatio_excl大dashboard比 = Number((out.detail明細分析側.sales_excl / out.dashboard側.net_sales).toFixed(3));
+    }
+    return out;
+  } catch (e) { return { ok: false, error: String(e && e.message || e) }; }
 }
 
 function reportDataBQ(p) {

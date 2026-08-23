@@ -1,0 +1,24 @@
+name: 明細分析とダッシュボードの売上・客数差を突合（送信なし）
+on:
+  workflow_dispatch:
+    inputs:
+      ym:
+        description: '対象月（YYYY-MM）'
+        required: true
+        default: '2026-06'
+      store:
+        description: '確認したい店舗名（1つ。空なら全店合計）'
+        required: false
+        default: ''
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: detailVsDailyDiagを実行
+        env:
+          BQ_LOAD_TOKEN: ${{ secrets.BQ_LOAD_TOKEN }}
+        run: |
+          curl -sL "https://script.google.com/macros/s/AKfycbz9rd37EZa6X8WRMVEBrXobN8DbYWkHRlhFNYU5rd1UZ0V8j0-6shMQjEeoi4HDWZ0B/exec?action=detailVsDailyDiag&token=$BQ_LOAD_TOKEN&ym=${{ github.event.inputs.ym }}&store=${{ github.event.inputs.store }}" \
+            | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.stringify(JSON.parse(d),null,2)));"
