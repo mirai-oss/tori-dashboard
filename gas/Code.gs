@@ -1433,7 +1433,12 @@ function bqSyncAllSales(p) {
                                     : SpreadsheetApp.openById(t.src).getSheetByName(t.sheet);
       if (!sh) { results.push({ ok: false, table: t.table, error: 'シートが見つかりません: ' + t.sheet }); continue; }
       var csv = bqSheetToCsv_(sh, t.schema, t.startRow);
-      results.push(bqLoadSheetToTable_(csv, t.table, t.schema));
+      var loadRes = bqLoadSheetToTable_(csv, t.table, t.schema);
+      results.push(loadRes);
+      // stg_spotが更新できたらbqGetSpotの応答キャッシュ(10分)を無効化する。
+      // これが漏れていると、手動同期でBigQuery側は最新でも、アプリ側は古いキャッシュ応答
+      // （IDが無い旧スキーマ時代のもの等）を最大10分間返し続けてしまう（2026-08-24実地判明）。
+      if (loadRes && loadRes.ok && t.table === 'stg_spot') bqCacheGenBump_('spot');
     } catch (e) {
       results.push({ ok: false, table: t.table, error: String(e && e.message || e) });
     }
