@@ -1068,6 +1068,10 @@ function allStores(){
   const order=canonStoreOrder();
   const list=order.filter(n=>inData[n]);
   Object.keys(inData).forEach(n=>{ if(!list.includes(n)) list.push(n); });
+  // 業務委託店舗(seisan_target)は自社の売上データ(分析_日別店舗)を持たないため、
+  // 上のinDataフィルタだけでは一覧から漏れてPL(運営委託費)が「未突合」扱いになってしまう
+  // （2026-08-23発覚）。売上が無くても店舗一覧には含める（売上0円・PLの委託費だけが乗る形になる）。
+  if(D.storeDirectory) D.storeDirectory.forEach(s=>{ if(s.seisan_target && !list.includes(s.name)) list.push(s.name); });
   return list.length?list:order.slice();
 }
 function scopeStores(){
