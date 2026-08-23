@@ -1337,7 +1337,8 @@ var BQ_STG_SPOT_SCHEMA = [
   { name: 'work_date', type: 'DATE' }, { name: 'store_name', type: 'STRING' },
   { name: 'kind', type: 'STRING' }, { name: 'amount', type: 'NUMERIC' },
   { name: 'headcount', type: 'NUMERIC' }, { name: 'memo', type: 'STRING' },
-  { name: 'entered_by', type: 'STRING' }, { name: 'entered_at', type: 'STRING' }
+  { name: 'entered_by', type: 'STRING' }, { name: 'entered_at', type: 'STRING' },
+  { name: 'id', type: 'STRING' }   // I列。2026-08-24追加: BQモードで編集・削除するのに必須（元は含めておらずIDが取れない不具合があった）
 ];
 
 // ミラー対象一覧（src='local'はこのプロジェクトの自分のスプレッドシート。それ以外はopenByIdで開く）
@@ -1612,14 +1613,14 @@ function bqGetSpot(p, session) {
     var ck = bqCacheKey_('spot', [bqCacheGen_('spot'), restricted && allowNames.length ? allowNames.slice().sort().join('.') : 'all']);
     var cached = bqCacheGet_(ck);
     if (cached) return cached;
-    var sql = 'SELECT work_date, store_name, kind, amount, headcount, memo, entered_by, entered_at FROM `' +
+    var sql = 'SELECT work_date, store_name, kind, amount, headcount, memo, entered_by, entered_at, id FROM `' +
       BQ_PROJECT + '.' + BQ_SALES_DATASET + '.stg_spot` ' + where + ' ORDER BY work_date';
     var rows = bqRows_(sql);
     if (!rows) return { ok: false, error: 'BigQueryクエリ失敗' };
-    var out = [['日付', '店舗名', '区分', '金額', '人数', 'メモ', '入力者', '入力日時']];
+    var out = [['日付', '店舗名', '区分', '金額', '人数', 'メモ', '入力者', '入力日時', 'ID']];
     for (var i = 1; i < rows.length; i++) {
       var r = rows[i];
-      out.push([r[0], r[1], r[2], Number(r[3] || 0), r[4] == null ? '' : Number(r[4]), r[5], r[6], r[7]]);
+      out.push([r[0], r[1], r[2], Number(r[3] || 0), r[4] == null ? '' : Number(r[4]), r[5], r[6], r[7], r[8]]);
     }
     var res = { ok: true, sheets: { 'スポット人件費': out } };
     bqCachePut_(ck, res);

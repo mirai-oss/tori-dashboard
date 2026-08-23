@@ -2037,7 +2037,7 @@ function viewDash(){
   const kpis=[
     { lb:(S.period==='day'?'日次':S.period==='week'?'週次':S.period==='month'?'月次':S.period==='year'?'累計':'期間')+'売上', vl:yen(Ssl), segsub:segSales, yy:y1 },
     { lb:'原価率 (F)', vl:Ssl>0?(foodR*100).toFixed(1)+'%':'—', sub:Ssl>0?yen(cur.cost):'', yy:yF },
-    { lb:'人件費率 (L)', vl:Ssl>0?(laborR*100).toFixed(1)+'%':'—', sub:Ssl>0?('PA '+yen(cur.pa)+' ／ 社員 '+yen(cur.emp)):'', yy:yL },
+    { lb:'人件費率 (L)', vl:Ssl>0?(laborR*100).toFixed(1)+'%':'—', sub:Ssl>0?('PA '+yen(cur.pa)+' ／ 社員 '+yen(cur.emp)+(cur.spot?' ／ スポット '+yen(cur.spot):'')):'', yy:yL },
     { lb:'FL合計', vl:Ssl>0?(flR*100).toFixed(1)+'%':'—', yy:yFL },
     { lb:'客数', vl:cnt(cur.guests)+'人', segsub:segGuests, yy:yG },
     ...(checksKpi?[checksKpi]:[]),
