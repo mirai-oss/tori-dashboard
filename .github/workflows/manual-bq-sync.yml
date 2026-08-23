@@ -1,0 +1,19 @@
+name: BigQuery同期を今すぐ実行（手動）
+# 通常はMac mini側のns-daily-import（毎日11:00・bq-sales-reconcileタスク）が自動実行する。
+# 全置換(WRITE_TRUNCATE)・冪等なので、いつ・何回実行しても安全（実装指示書_ダッシュボード高速化にも明記）。
+# 動作確認や、朝イチで最新化したいときの手動実行用。
+on:
+  workflow_dispatch:
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: bqSyncSalesを実行
+        env:
+          BQ_LOAD_TOKEN: ${{ secrets.BQ_LOAD_TOKEN }}
+        run: |
+          curl -sL -G "https://script.google.com/macros/s/AKfycbz9rd37EZa6X8WRMVEBrXobN8DbYWkHRlhFNYU5rd1UZ0V8j0-6shMQjEeoi4HDWZ0B/exec" \
+            --data-urlencode "action=bqSyncSales" \
+            --data-urlencode "token=$BQ_LOAD_TOKEN" \
+            | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.stringify(JSON.parse(d),null,2)));"
