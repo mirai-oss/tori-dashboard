@@ -3615,7 +3615,17 @@ function plMonthDate(){
 }
 function viewPL(){
   const sc=scopeStores(); const selN=selStoreName();
-  const scopeSet=new Set(selN?[selN]:sc);
+  // 複数店舗の自由選択（2026-08-23追加）。業態・ブランドでの自動グルーピングではなく、
+  // S.plStoresにチェックした店舗名の配列をそのまま持たせているだけ。権限外の店舗が紛れないよう
+  // scopeStores()との積を取る（アカウントの担当店舗変更などで選択が古くなった場合の保険）。
+  const multiStores=(S.plStores&&S.plStores.length)?S.plStores.filter(n=>sc.includes(n)):null;
+  const multiActive=!!(multiStores&&multiStores.length);
+  const multiIsFullScope=multiActive&&multiStores.length===sc.length;
+  const scopeSet=multiActive?new Set(multiStores):new Set(selN?[selN]:sc);
+  // plAgg()の第2引数は「一部の店舗だけを見ているか（真＝全社共通経費を除外）」の真偽値として使う。
+  // 複数選択でも、選んだ店舗が担当範囲の全店と一致しない限りは同じ扱い（一部の店舗に全社共通経費を
+  // 丸ごと乗せると過大になるため）にする。
+  const plAggFlag=multiActive?(multiIsFullScope?null:true):selN;
   const P=S.plPeriod||'month';
   const ref=D.refDate||new Date();
   // 期間の計算：月次（前月・前年同月比較）／年間（前年比較）／期間指定（直前の同じ長さ・前年同期比較）
@@ -3649,14 +3659,16 @@ function viewPL(){
     mLabel=y+'年 '+(m+1)+'月';
     ctrlHtml=ymSelect('plMonth', y, m);
   }
-  const isAll=!selN&&sc.length===allStores().length;
-  const scopeLabel=selN||(isAll?'全店合算':'担当店舗合算');
+  const isAll=!selN&&!multiActive&&sc.length===allStores().length;
+  const scopeLabel=multiActive
+    ? (multiIsFullScope?'全店合算（個別選択）':(multiStores.length<=3?multiStores.map(shortStore).join('・'):multiStores.length+'店舗を選択'))
+    : (selN||(isAll?'全店合算':'担当店舗合算'));
 
   // 自動項目（売上・原価・人件費・広告）
   const cur=stat(scopeSet,mS,mE,null), prv=stat(scopeSet,pS,pE,null), lyr=stat(scopeSet,yS,yE,null);
   const adCur=adAgg(scopeSet,mS,mE).ad, adPrv=adAgg(scopeSet,pS,pE).ad, adLyr=adAgg(scopeSet,yS,yE).ad;
   // 手入力経費（DB_PL・月次）※期間指定のときは「月初日が期間内の月」の分を計上
-  const exCur=plAgg(scopeSet,selN,mS,mE), exPrv=plAgg(scopeSet,selN,pS,pE), exLyr=plAgg(scopeSet,selN,yS,yE);
+  const exCur=plAgg(scopeSet,plAggFlag,mS,mE), exPrv=plAgg(scopeSet,plAggFlag,pS,pE), exLyr=plAgg(scopeSet,plAggFlag,yS,yE);
 
   // 区分の合成：F=自動仕入＋DB_PLのF行 ／ L=自動人件費＋L行 ／ A=DB_広告＋A行 ／ R=家賃 ／ O=他
   const costT=cur.cost+exCur.catTotal.F,  costP=prv.cost+exPrv.catTotal.F,  costL=lyr.cost+exLyr.catTotal.F;
@@ -3674,7 +3686,10 @@ function viewPL(){
     <div class="seg">${[['month','月次'],['year','年間'],['custom','期間指定']].map(([k,l])=>`<button class="${P===k?'on':''}" onclick="App.set('plPeriod','${k}')">${l}</button>`).join('')}</div>
     ${ctrlHtml}
     ${canUse('plInput')?`<button class="icon-btn primary" onclick="App.openPlInput()">✎ 経費を入力</button>`:''}
-    <span class="period-label">損益（${mLabel} ／ ${esc(scopeLabel)}）</span></div>`+storeSegHtml();
+    <span class="period-label">損益（${mLabel} ／ ${esc(scopeLabel)}）</span></div>`
+    +(multiActive
+      ? `<div class="store-pick no-print"><span class="sp-lb">🏪 店舗（個別選択）</span><button class="icon-btn" onclick="App.openPlStorePick()">${multiStores.length}店舗を選択中・変更</button><button class="icon-btn" onclick="App.clearPlStorePick()">選択解除</button></div>`
+      : storeSegHtml()+`<div class="store-pick no-print"><button class="icon-btn" onclick="App.openPlStorePick()">🏪 複数店舗を選んで合算</button></div>`);
   // 2026-08-22追加: 売上/原価/人件費(stat())とDB_PL手入力経費(plAgg())の両方がBQトグルの対象
   if(isAdminRole()&&S.useBqDaily) h+=`<div class="mut" style="font-size:11px;margin:2px 0 8px">🧪 データ元: BigQuery（推移分析タブのトグルで切替）${D.plBqLoading?' ・PL読込中…':''}${D.plBqErr?` ・PL取得エラー: ${esc(D.plBqErr)}`:''}</div>`;
 
@@ -3719,7 +3734,7 @@ function viewPL(){
     while(dayMs(mCur)<=mE){
       const a2=Math.max(dayMs(mCur),mS), b2=Math.min(dayMs(new Date(mCur.getFullYear(),mCur.getMonth()+1,0)),mE);
       const c2=stat(scopeSet,a2,b2,null);
-      const p2=plAgg(scopeSet,selN,a2,b2);
+      const p2=plAgg(scopeSet,plAggFlag,a2,b2);
       const ad2=adAgg(scopeSet,a2,b2).ad+p2.catTotal.A;
       const cost2=c2.cost+p2.catTotal.F, labor2=c2.labor+p2.catTotal.L;
       const g2=c2.sales-cost2, rent2=p2.catTotal.R, oth2=p2.catTotal.O;
@@ -3801,12 +3816,13 @@ function viewPL(){
   h+=`</tbody></table></div></div>`;
   EXPORT.push({ title:plTitle+'（'+mLabel+'／'+scopeLabel+'）', headers:showYoY?['項目','当期','売上比',prevName,'前年同期']:['項目','当期','売上比',prevName], rows:expP });
 
-  // ---- 店舗別PL比較（全店/合算表示のときのみ） ----
+  // ---- 店舗別PL比較（全店/合算表示・複数店舗の個別選択のときのみ） ----
   if(!selN&&sc.length>1){
-    h+=`<div class="panel"><div class="panel-head"><div><h3>店舗別 損益比較（${mLabel}）</h3><div class="sub">行クリックで店舗のPLへ ／ 共通経費（店舗名空欄）は含みません</div></div></div>
+    const cmpStores=multiActive?multiStores:sc;
+    h+=`<div class="panel"><div class="panel-head"><div><h3>店舗別 損益比較（${mLabel}）</h3><div class="sub">行クリックで店舗のPLへ ／ 共通経費（店舗名空欄）は含みません${multiActive?'／選択中の'+cmpStores.length+'店舗のみ表示':''}</div></div></div>
     <div class="scroll-x"><table class="tbl"><thead><tr><th>店舗</th><th>売上高</th><th>粗利</th><th>人件費</th><th>広告費</th><th>家賃・他経費</th><th>営業利益</th><th>利益率</th></tr></thead><tbody>`;
     const expC=[]; let tS=0,tG=0,tL=0,tA=0,tE=0,tO=0;
-    sc.forEach(nm=>{
+    cmpStores.forEach(nm=>{
       const s1=new Set([nm]);
       const c1=stat(s1,mS,mE,null);
       const p1=plAgg(s1,nm,mS,mE);
@@ -3817,7 +3833,7 @@ function viewPL(){
       const o1=g1-l1-a1-e1;
       tS+=c1.sales;tG+=g1;tL+=l1;tA+=a1;tE+=e1;tO+=o1;
       const orate=c1.sales>0?(o1/c1.sales*100).toFixed(1)+'%':'—';
-      h+=`<tr class="click" onclick="App.store(this.dataset.n)" data-n="${esc(nm)}"><td>${shortStoreTd(nm)}</td><td>${yen(c1.sales)}</td><td>${yen(g1)}</td><td>${yen(l1)}</td><td>${yen(a1)}</td><td>${yen(e1)}</td>
+      h+=`<tr class="click" onclick="App.plDrillStore(this.dataset.n)" data-n="${esc(nm)}"><td>${shortStoreTd(nm)}</td><td>${yen(c1.sales)}</td><td>${yen(g1)}</td><td>${yen(l1)}</td><td>${yen(a1)}</td><td>${yen(e1)}</td>
         <td class="${o1>=0?'pos':'neg'}" style="font-weight:700">${o1<0?'▲'+yen(-o1).slice(1):yen(o1)}</td><td class="${o1>=0?'pos':'neg'}">${orate}</td></tr>`;
       expC.push([nm,Math.round(c1.sales),Math.round(g1),Math.round(l1),Math.round(a1),Math.round(e1),Math.round(o1),orate]);
     });
@@ -4825,6 +4841,7 @@ function viewModal(){
   if(S.modal&&S.modal.type==='adSales') return adSalesModal();
   if(S.modal&&S.modal.type==='rsvImport') return rsvImportModal();
   if(S.modal&&S.modal.type==='event') return eventModal();
+  if(S.modal&&S.modal.type==='plStorePick') return plStorePickModal();
   return '';
 }
 /* ---- 目標入力モーダル：日別売上（昨年同週同曜日を指標表示）＋月次目標 ---- */
@@ -5068,6 +5085,24 @@ function plRowHtml(item,cat,amt,memo){
     <td><input type="number" class="pli-amt" value="${amt>0?Math.round(amt):''}" placeholder="金額" style="width:100px;text-align:right;padding:5px 7px"></td>
     <td><input class="pli-memo" value="${esc(memo||'')}" placeholder="メモ" style="width:120px;padding:5px 7px"></td>
   </tr>`;
+}
+// PLタブ用: 複数店舗を自由に選んで合算するためのモーダル（業態・ブランドでの自動グルーピングではなく手動選択）。
+// 2026-08-23追加。選択結果はS.plStoresに配列で保持し、有効な間は通常の単一店舗プルダウン(S.store)より優先される。
+function plStorePickModal(){
+  const all=scopeStores();
+  const cur=(S.plStores&&S.plStores.length)?S.plStores:(selStoreName()?[selStoreName()]:all.slice());
+  return `<div class="modal-bg" onclick="if(event.target===this)App.closeModal()"><div class="modal">
+    <h3>🏪 店舗を選ぶ（複数選択）</h3>
+    <div class="sub">チェックした店舗の合算でPLを表示します。業態やブランドでの自動グルーピングではなく、店舗ごとに自由に組み合わせられます。</div>
+    <div class="chk-stores" id="pl-store-pick">
+      ${all.map(n=>`<label class="${cur.includes(n)?'on':''}"><input type="checkbox" ${cur.includes(n)?'checked':''} value="${esc(n)}" onchange="this.parentElement.classList.toggle('on',this.checked)">${esc(n)}</label>`).join('')}
+    </div>
+    <div class="modal-btns">
+      <button class="icon-btn" style="margin-right:auto" onclick="App.plStorePickAll()">全店にチェック</button>
+      <button class="icon-btn primary" onclick="App.applyPlStorePick()">この組み合わせで表示</button>
+      <button class="icon-btn" onclick="App.closeModal()">キャンセル</button>
+    </div>
+  </div></div>`;
 }
 function plInputModal(){
   const m=S.modal;
@@ -5752,12 +5787,28 @@ window.App = {
       fetchData(true,{ only:['deposit'], partial:true });   // 反映は裏で（完了時にfetchData内でrender）
     }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; if(runBtn)runBtn.disabled=false; }
   },
+  /* ---- PL: 複数店舗選択 ---- */
+  openPlStorePick(){ S.modal={type:'plStorePick'}; render(); },
+  plStorePickAll(){
+    const box=$('pl-store-pick');
+    if(box) box.querySelectorAll('input').forEach(i=>{ i.checked=true; i.parentElement.classList.add('on'); });
+  },
+  applyPlStorePick(){
+    const box=$('pl-store-pick');
+    const checked=box?[...box.querySelectorAll('input:checked')].map(i=>i.value):[];
+    if(!checked.length){ toast('1店舗以上選んでください'); return; }
+    S.plStores=checked; S.modal=null; render();
+  },
+  clearPlStorePick(){ S.plStores=null; render(); },
+  // 店舗別比較テーブルの行クリック→その1店舗のPLへ。複数選択中だった場合は解除する
+  // （選んだ組み合わせを無視して1店舗だけ表示してしまうのを防ぐ）。
+  plDrillStore(n){ S.plStores=null; S.store=n; render(); },
   /* ---- PL経費入力 ---- */
   openPlInput(){
     if(!requireFeature('plInput'))return;
     const m0=plMonthDate();
     const ym=m0.getFullYear()+'-'+String(m0.getMonth()+1).padStart(2,'0');
-    S.modal={type:'plInput', ym, store:selStoreName()||scopeStores()[0]}; render();
+    S.modal={type:'plInput', ym, store:selStoreName()||(S.plStores&&S.plStores[0])||scopeStores()[0]}; render();
   },
   plSwitch(){ const ym=$('pli-ym')&&$('pli-ym').value, st=$('pli-store')&&$('pli-store').value;
     S.modal={type:'plInput', ym:ym||S.modal.ym, store:st||S.modal.store}; render(); },
