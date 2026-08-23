@@ -48,7 +48,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v55', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v56', time: new Date().toISOString() });
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     if (action === 'bqSetupSalesDataset') return out(bqSetupSalesDataset(p)); // salesデータセット作成（初回のみ・専用トークン認証）
     if (action === 'bqSyncSales') return out(bqSyncAllSales(p)); // 分析_日別店舗ほかのBQミラー（専用トークン認証・ログイン不要）
@@ -1446,10 +1446,14 @@ function reportDataBQ(p) {
     ? " AND store_name IN (" + storeList.map(function (s) { return "'" + s.replace(/'/g, "''") + "'"; }).join(',') + ")"
     : '';
 
-  // 対象日: 指定が無ければテーブル内の最新日
+  // 対象日: 指定が無ければテーブル内の最新日。
+  // 単純にMAX(date)を取ると、月末まで日付欄だけ先に埋まっているテンプレート行（実績はまだ0件）を
+  // 拾ってしまう（2026-08-23の実地テストで発覚：8日も先の未来日を「本日」として送ってしまった）。
+  // 実績（純売上または客数）が入っている行に限定して最新日を取る。
   var d0 = String(p.date || '').slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(d0)) {
-    var latest = bqRows_('SELECT MAX(date) AS d FROM `' + BQ_PROJECT + '.' + BQ_SALES_DATASET + '.fact_daily_store`');
+    var latest = bqRows_('SELECT MAX(date) AS d FROM `' + BQ_PROJECT + '.' + BQ_SALES_DATASET + '.fact_daily_store`' +
+      ' WHERE net_sales > 0 OR guests_total > 0');
     if (!latest || latest.length < 2 || !latest[1][0]) return { ok: false, error: '対象日が見つかりません' };
     d0 = String(latest[1][0]);
   }
