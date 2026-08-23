@@ -48,7 +48,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v66', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v67', time: new Date().toISOString() });
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'syncSeisanFeeToPl') return out(syncSeisanFeeToPl(p)); // 運営委託費のPL自動連携（専用トークン認証・ログイン不要。2026-08-23追加）
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
@@ -928,7 +928,9 @@ function md5Hex_(s) {
   return h;
 }
 // 明細分析（対話的）：期間 from〜to・店舗で絞り、時間帯別/商品別/店舗別を集計して返す。
-// guests=客数はお通し数ベースの推定（お通し=1人1品の慣習）。checks=会計数(組)。
+// guests=客数・checks=組数は、店舗別(st)の集計だけレジ実績(fact_daily_store)の実数に差し替える
+// （2026-08-23〜）。時間帯別(hour)は日次粒度の実績と紐づけられないため、引き続きお通し数
+// ベースの推定（お通し=1人1品の慣習）・明細ベースの会計数のまま。
 function bqDetail(p, session) {
   var from = String(p.from || '').slice(0, 10), to = String(p.to || '').slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) return { ok: false, error: 'bad date range' };
@@ -1000,7 +1002,30 @@ function bqDetail(p, session) {
     var hour = bqRows_("SELECT EXTRACT(HOUR FROM " + hourCol + ") AS hour, SUM(sales_incl) AS sales, SUM(price_excl*qty) AS sales_excl, " + VCHK + ", " + G + ", SUM(qty) AS qty FROM " + hourFrom + " GROUP BY hour ORDER BY hour");
     var item = bqRows_("SELECT menu, SUM(sales_incl) AS sales, SUM(price_excl*qty) AS sales_excl, SUM(qty) AS qty FROM " + T + " " + where + " GROUP BY menu ORDER BY sales DESC LIMIT 2000"); // 500だと全店・月間で商品数が超過し0円商品などが丸ごと欠落する
     var st = bqRows_("SELECT store_id, SUM(sales_incl) AS sales, SUM(price_excl*qty) AS sales_excl, " + VCHK + ", " + G + ", " + DRINK + ", " + KARA + ", " + FOOD + " FROM " + T + " " + where + " GROUP BY store_id ORDER BY sales DESC");
-    if (st) { var m = bqStoreMap_(); for (var r = 1; r < st.length; r++) st[r][0] = m[st[r][0]] || st[r][0]; if (st[0]) st[0][0] = '店舗'; }
+    if (st) {
+      var m = bqStoreMap_(); for (var r = 1; r < st.length; r++) st[r][0] = m[st[r][0]] || st[r][0]; if (st[0]) st[0][0] = '店舗';
+      // 客数・組数は、dinii明細の「お通し」注文数からの推定ではなく、レジ実績(fact_daily_store)の
+      // 実数に差し替える（2026-08-23変更・ユーザー指摘。Day4のBigQueryミラーで実績が取得できる
+      // ようになったため）。店舗名で突合。時間帯別(hour)は日次粒度の実績と紐づけられないため、
+      // 引き続きお通し数からの推定のまま。
+      try {
+        var realWhere = "WHERE date BETWEEN DATE('" + from + "') AND DATE('" + to + "')";
+        if (restricted) {
+          realWhere += " AND store_name IN ('" + allowNames.map(function (n) { return String(n).replace(/'/g, "''"); }).join("','") + "')";
+        } else if (p.store && p.store !== 'all') {
+          realWhere += " AND store_name = '" + String(p.store).replace(/'/g, "''") + "'";
+        }
+        var real = bqRows_("SELECT store_name, SUM(guests_total) guests, SUM(parties_total) checks FROM `" + BQ_PROJECT + "." + BQ_SALES_DATASET + ".fact_daily_store` " + realWhere + " GROUP BY store_name");
+        if (real) {
+          var realMap = {};
+          for (var ri = 1; ri < real.length; ri++) realMap[real[ri][0]] = { guests: Number(real[ri][1] || 0), checks: Number(real[ri][2] || 0) };
+          for (var si = 1; si < st.length; si++) {
+            var rm = realMap[st[si][0]];
+            if (rm) { st[si][3] = rm.checks; st[si][4] = rm.guests; } // checks(組数)・guests(客数)を実績値に差し替え
+          }
+        }
+      } catch (eReal) { /* 実績が取れなければ従来の推定値のまま（BQエラー等で明細分析自体を止めない） */ }
+    }
     var hourItem = bqRows_("SELECT EXTRACT(HOUR FROM " + hourCol + ") AS hour, menu, SUM(qty) AS qty, SUM(sales_incl) AS sales FROM " + hiFrom + " " + hiWhere + " GROUP BY hour, menu");
     var res = { ok: true, hour: hour || [], item: item || [], store: st || [], hourItem: hourItem || [], basis: basis };
     try { cache.put(ck, JSON.stringify(res), 900); } catch (e3) { /* 100KB超はキャッシュしない */ }
