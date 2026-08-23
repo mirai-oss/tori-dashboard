@@ -88,6 +88,7 @@ function handle(p) {
     if (action === 'bqGetSpot') return out(bqGetSpot(p, session)); // スポット人件費：DB_スポット人件費のBQミラーを読む（2026-08-23追加）
     if (action === 'saveSpotEntry') return out(saveSpotEntry(p, session)); // スポット人件費の保存（ID一致なら更新・無ければ追加）
     if (action === 'deleteSpotEntry') return out(deleteSpotEntry(p, session)); // スポット人件費の削除
+    if (action === 'refreshSpotPl') return out(refreshSpotPl(p, session)); // スポット人件費→月次PLへ今すぐ反映（画面の更新ボタン用）
     if (action === 'bqGetDeposit') return out(bqGetDeposit(p, session)); // 入金管理タブ：入金DBのBQミラーを読む（データソース切替フラグ用）
     if (action === 'bqGetMedia') return out(bqGetMedia(p, session)); // 媒体別日次：媒体別DBのBQミラーを読む（ログイン直後の同期エラー対策・2026-08-23追加）
     if (action === 'dataFreshness') return out(dataFreshness(p, session)); // データ最新日・BQ同期時刻の表示用（実装指示書_ダッシュボード高速化タスク1・2026-08-23追加）
@@ -1693,9 +1694,22 @@ function deleteSpotEntry(p, session) {
 // upsert（syncSeisanFeeToPlと同じ「対象月×このメモの行だけ差し替え」方式）。
 // 対象月＝今回データがある月 ∪ 既存の自動計上行がある月（入力を全部消した月の掃除漏れを防ぐ）。
 var PL_SPOT_MEMO = '自動｜スポット人件費';
+// 専用トークン認証版（GitHub Actionsの毎日バッチ用）。実処理はsyncSpotLaborToPl_()に分離し、
+// 画面のボタンから叩く refreshSpotPl（ログインセッション認証）と共有する（2026-08-24追加）。
 function syncSpotLaborToPl(p) {
   var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
   if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
+  return syncSpotLaborToPl_(tk);
+}
+// 画面の「🔄 スポット人件費をPLへ反映」ボタン用。ログインしていれば誰でも実行できる
+// （全店舗・全月を対象に再計算するだけの読み書きで、対象月×自動計上メモの行を差し替えるのみ・
+//  何度実行しても安全な設計のため、店舗スコープでの絞り込みは行わない）。
+function refreshSpotPl(p, session) {
+  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+  if (!tk) return { ok: false, error: 'サーバー側の設定が不足しています（BQ_LOAD_TOKEN未設定）' };
+  return syncSpotLaborToPl_(tk);
+}
+function syncSpotLaborToPl_(tk) {
   var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_スポット人件費');
   var totals = {};   // 'yyyy/MM\t店舗' -> 金額合計
   if (sh) {

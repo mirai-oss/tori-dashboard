@@ -3819,6 +3819,7 @@ function viewPL(){
     ${ctrlHtml}
     ${canUse('plInput')?`<button class="icon-btn primary" onclick="App.openPlInput()">✎ 経費を入力</button>`:''}
     ${canUse('spot')?`<button class="icon-btn" onclick="App.openSpotInput()">＋ スポット人件費</button>`:''}
+    ${canUse('spot')?`<button class="icon-btn" onclick="App.syncSpotPl()" title="スポット人件費の入力・削除をPLへ今すぐ反映します（普段は毎日AM5:00に自動実行）">🔄 スポット人件費をPLへ反映</button>`:''}
     <span class="period-label">損益（${mLabel} ／ ${esc(scopeLabel)}）</span></div>`
     +(multiActive
       ? `<div class="store-pick no-print"><span class="sp-lb">🏪 店舗（個別選択）</span><button class="icon-btn" onclick="App.openPlStorePick()">${multiStores.length}店舗を選択中・変更</button><button class="icon-btn" onclick="App.clearPlStorePick()">選択解除</button></div>`
@@ -6151,6 +6152,20 @@ window.App = {
     S.modal=Object.assign({}, S.modal, { edit:e }); render();
   },
   spotEditCancel(){ S.modal=Object.assign({}, S.modal, { edit:null }); render(); },
+  // スポット人件費→月次PLへ今すぐ反映（2026-08-24追加）。普段は毎日AM5:00に自動実行されるが、
+  // 「今すぐ見たい」ときに画面から手動で叩けるようにしたもの。
+  async syncSpotPl(){
+    if(!S.auth||!S.auth.token) return;
+    toast('スポット人件費をPLへ反映中…');
+    try{
+      const d=await api({ action:'refreshSpotPl', token:S.auth.token });
+      if(!d.ok){ toast(d.error||'反映に失敗しました'); return; }
+      toast('反映しました（'+d.months+'ヶ月分・'+d.stores+'店舗ぶん）');
+      await fetchData(true,{ only:['pl','PL'], partial:true });
+      if(S.useBqDaily) fetchPlBQ();
+      render();
+    }catch(e){ toast('通信エラー: '+e.message); }
+  },
   async saveSpotInput(){
     const msg=$('sp-msg');
     if(!S.auth||!S.auth.token){ msg.textContent='スプレッドシート接続時のみ保存できます'; return; }
