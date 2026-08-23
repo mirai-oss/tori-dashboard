@@ -3920,28 +3920,56 @@ function viewPL(){
     });
     return keys.length;
   };
+  // 区分ごとの「計」行を見出し兼トグルにして、内訳（自動連携＋手入力）はクリックしたときだけ展開する
+  // （2026-08-23追加。それまでは常に内訳が全部開いた状態だった）。F/L/Aは自動連携の内訳が必ずあるので
+  // 常にトグル可能、R/Oは手入力（DB_PL）がある場合だけトグルを出す。
+  const catHasManual=(cat)=>Object.keys(exCur.byCat[cat]).length>0||Object.keys(exPrv.byCat[cat]).length>0||Object.keys(exLyr.byCat[cat]).length>0;
+
   rows.push({name:'売上高', c:cur.sales, p:prv.sales, l:lyr.sales, bold:true});
-  rows.push({name:'仕入（自動連携）', c:-cur.cost, p:-prv.cost, l:-lyr.cost, indent:true});
-  const nF=pushCatItems('F');
-  rows.push({name:'売上原価計（F）', c:-costT, p:-costP, l:-costL, bold:nF>0, line:false});
-  rows.push({name:'売上総利益（粗利）', c:gross, p:prv.sales-costP, l:lyr.sales-costL, bold:true, line:true});
-  if(D.hasLaborSplit){
-    rows.push({name:'人件費（社員給与・賞与）', c:-cur.empBase, p:-prv.empBase, l:-lyr.empBase, indent:true});
-    rows.push({name:'法定福利費（自動連携）', c:-cur.welfare, p:-prv.welfare, l:-lyr.welfare, indent:true});
-    rows.push({name:'通勤手当（自動連携）', c:-cur.commute, p:-prv.commute, l:-lyr.commute, indent:true});
-  } else {
-    rows.push({name:'人件費（社員・自動連携）', c:-cur.emp, p:-prv.emp, l:-lyr.emp, indent:true});
+
+  { // ---- F: 売上原価 ----
+    const key='CAT:F', open=plExpAll||plExpSet.has(key); plAnyHasSub=true;
+    rows.push({name:'売上原価計（F）', c:-costT, p:-costP, l:-costL, bold:true, hasSub:true, subKey:key, isOpen:open});
+    if(open){ rows.push({name:'仕入（自動連携）', c:-cur.cost, p:-prv.cost, l:-lyr.cost, indent:true}); pushCatItems('F'); }
   }
-  rows.push({name:'人件費（アルバイト・自動連携）', c:-cur.pa, p:-prv.pa, l:-lyr.pa, indent:true});
-  pushCatItems('L');
-  rows.push({name:'人件費計（L）', c:-laborT, p:-laborP, l:-laborL, bold:true});
-  rows.push({name:'広告費（DB_広告・自動連携）', c:-adCur, p:-adPrv, l:-adLyr, indent:true});
-  const nA=pushCatItems('A');
-  rows.push({name:'広告宣伝費計（A）', c:-adT, p:-adP, l:-adL, bold:true});
-  const nR=pushCatItems('R');
-  rows.push({name:'家賃計（R）', c:-exCur.catTotal.R, p:-exPrv.catTotal.R, l:-exLyr.catTotal.R, bold:true});
-  const nO=pushCatItems('O');
-  rows.push({name:'その他経費計（O）', c:-exCur.catTotal.O, p:-exPrv.catTotal.O, l:-exLyr.catTotal.O, bold:true});
+  rows.push({name:'売上総利益（粗利）', c:gross, p:prv.sales-costP, l:lyr.sales-costL, bold:true, line:true});
+
+  { // ---- L: 人件費 ----
+    const key='CAT:L', open=plExpAll||plExpSet.has(key); plAnyHasSub=true;
+    rows.push({name:'人件費計（L）', c:-laborT, p:-laborP, l:-laborL, bold:true, hasSub:true, subKey:key, isOpen:open});
+    if(open){
+      if(D.hasLaborSplit){
+        rows.push({name:'人件費（社員給与・賞与）', c:-cur.empBase, p:-prv.empBase, l:-lyr.empBase, indent:true});
+        rows.push({name:'法定福利費（自動連携）', c:-cur.welfare, p:-prv.welfare, l:-lyr.welfare, indent:true});
+        rows.push({name:'通勤手当（自動連携）', c:-cur.commute, p:-prv.commute, l:-lyr.commute, indent:true});
+      } else {
+        rows.push({name:'人件費（社員・自動連携）', c:-cur.emp, p:-prv.emp, l:-lyr.emp, indent:true});
+      }
+      rows.push({name:'人件費（アルバイト・自動連携）', c:-cur.pa, p:-prv.pa, l:-lyr.pa, indent:true});
+      pushCatItems('L');
+    }
+  }
+
+  { // ---- A: 広告宣伝費 ----
+    const key='CAT:A', open=plExpAll||plExpSet.has(key); plAnyHasSub=true;
+    rows.push({name:'広告宣伝費計（A）', c:-adT, p:-adP, l:-adL, bold:true, hasSub:true, subKey:key, isOpen:open});
+    if(open){ rows.push({name:'広告費（DB_広告・自動連携）', c:-adCur, p:-adPrv, l:-adLyr, indent:true}); pushCatItems('A'); }
+  }
+
+  { // ---- R: 家賃（自動連携なし・手入力のみ） ----
+    const key='CAT:R', hasDetail=catHasManual('R'), open=hasDetail&&(plExpAll||plExpSet.has(key));
+    if(hasDetail) plAnyHasSub=true;
+    rows.push({name:'家賃計（R）', c:-exCur.catTotal.R, p:-exPrv.catTotal.R, l:-exLyr.catTotal.R, bold:true, hasSub:hasDetail, subKey:key, isOpen:open});
+    if(open) pushCatItems('R');
+  }
+
+  { // ---- O: その他経費（自動連携なし・手入力のみ） ----
+    const key='CAT:O', hasDetail=catHasManual('O'), open=hasDetail&&(plExpAll||plExpSet.has(key));
+    if(hasDetail) plAnyHasSub=true;
+    rows.push({name:'その他経費計（O）', c:-exCur.catTotal.O, p:-exPrv.catTotal.O, l:-exLyr.catTotal.O, bold:true, hasSub:hasDetail, subKey:key, isOpen:open});
+    if(open) pushCatItems('O');
+  }
+
   rows.push({name:'販管費計（L＋A＋R＋O）', c:-sga, p:-(laborP+adP+exPrv.catTotal.R+exPrv.catTotal.O), l:-(laborL+adL+exLyr.catTotal.R+exLyr.catTotal.O), bold:true, line:true});
   rows.push({name:'営業利益', c:op, p:opPrv, l:opLyr, bold:true, line:true, profit:true});
 
@@ -5226,6 +5254,10 @@ function depTokenize(rows){
  * 年月×店舗の手入力経費を丸ごと編集（差し替え保存）。保存先は
  * ①PL管理システムの「✍ 販管費入力」（手入力の本体） ②ダッシュボードのDB_PL（即時反映用）の両方。
  * 媒体販促費（自動計上）はPL側トリガーが管理するためここでは触らない。 */
+// ダッシュボードのデータ元スプレッドシート（DB_PL・DB_スポット人件費など）。BigQuery/Supabaseへ
+// 完全移行するまではスプレッドシートを直接開いて確認・一括編集したい場面があるため、PL入力系の
+// モーダルにリンクを出す（2026-08-23追加）。
+const DASH_SHEET_URL='https://docs.google.com/spreadsheets/d/1OuaAQBeXHxJZtDXEbQx-V7w56fCWW5jpDmZvBpkfIbQ/edit';
 const PL_ITEM_CAT={
   '役員報酬':'L','法定福利費':'L','通勤手当':'L','旅費交通費':'L','賞与積立':'L','退職金等':'L',
   '家賃':'R','リース料':'R','家賃更新按分':'R','広告宣伝費':'A','販売促進費':'A',
@@ -5281,7 +5313,8 @@ function plInputModal(){
   const items=[...new Set(Object.keys(PL_ITEM_CAT).concat(D.pl.map(r=>r.item)))];
   return `<div class="modal-bg" onclick="if(event.target===this)App.closeModal()"><div class="modal" style="max-width:640px">
     <h3>経費の入力・修正（${y}年${mo}月）</h3>
-    <div class="sub">保存すると<b>この月×この店舗の手入力経費を丸ごと差し替え</b>ます（行を消す＝金額を空欄に）。PL管理システム（✍販管費入力）とダッシュボードのDB_PLの両方に反映されます。媒体販促費（自動）はここでは編集できません。</div>
+    <div class="sub">保存すると<b>この月×この店舗の手入力経費を丸ごと差し替え</b>ます（行を消す＝金額を空欄に）。PL管理システム（✍販管費入力）とダッシュボードのDB_PLの両方に反映されます。媒体販促費（自動）はここでは編集できません。<br>
+      まとめて入力・修正したいときは <a href="${DASH_SHEET_URL}" target="_blank" rel="noopener">📄 スプレッドシート（DB_PL）を直接開く</a> こともできます（保存すると数分以内にこの画面にも反映されます）。</div>
     <div class="form-grid" style="margin-top:10px">
       <div><label>対象月</label><input type="month" id="pli-ym" value="${m.ym}" onchange="App.plSwitch()"></div>
       <div><label>店舗</label><select id="pli-store" onchange="App.plSwitch()">
@@ -5333,7 +5366,8 @@ function spotInputModal(){
   const todayStr=(()=>{ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); })();
   return `<div class="modal-bg" onclick="if(event.target===this)App.closeModal()"><div class="modal" style="max-width:600px">
     <h3>スポット人件費（タイミー等）</h3>
-    <div class="sub">日別の人件費率（PA＋社員＋スポット）と、月次PLの「スポット人件費」に反映されます。</div>
+    <div class="sub">日別の人件費率（PA＋社員＋スポット）と、月次PLの「スポット人件費」に反映されます。<br>
+      <a href="${DASH_SHEET_URL}" target="_blank" rel="noopener">📄 スプレッドシート（DB_スポット人件費）を直接開く</a> こともできます。</div>
     <div class="form-grid" style="margin-top:10px">
       <div><label>対象月（一覧の表示範囲）</label><input type="month" id="sp-ym" value="${ym}" onchange="App.spotSwitch()"></div>
       <div><label>店舗</label><select id="sp-store" onchange="App.spotSwitch()">${stores.map(s=>`<option value="${esc(s)}" ${st===s?'selected':''}>${esc(s)}</option>`).join('')}</select></div>
