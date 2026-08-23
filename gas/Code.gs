@@ -48,7 +48,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'speed-v2', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'speed-v3', time: new Date().toISOString() });
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'detailVsDailyDiag') return out(detailVsDailyDiag(p)); // 明細分析とダッシュボードの売上・客数・組数の差を実測で突合（専用トークン認証・読み取り専用・一時的）
@@ -1347,14 +1347,17 @@ function dataFreshness(p, session) {
     if (sh) {
       var lr = sh.getLastRow();
       if (lr >= 2) {
-        // 全件走査は重い（実測4秒超・7000行超）ため、末尾側だけ見る。同日に複数店舗ぶんの行が
-        // 並ぶ想定でも直近50行あれば十分カバーできる。
-        var scanFrom = Math.max(2, lr - 50);
-        var vals = sh.getRange(scanFrom, 1, lr - scanFrom + 1, 1).getValues();
+        // 全件走査は重い（実測4秒超・7000行超）ため、末尾側だけ見る。ただし月末まで日付欄だけ
+        // 先に埋まっている実績0件のテンプレート行があるため（fix-v72で判明した問題と同根）、
+        // 単に最後の行の日付を見ると未来日を「最新」と誤判定する。A列(日付)に加えP列(客数合計)・
+        // R列(純売上)も読み、実績が入っている行に限定して最大日付を取る。店舗数×残り日数ぶんの
+        // テンプレート行を跨げるよう300行分見る（12店舗×20日超を想定した余裕）。
+        var scanFrom = Math.max(2, lr - 300);
+        var vals = sh.getRange(scanFrom, 1, lr - scanFrom + 1, 18).getValues(); // A:R（date〜net_sales）
         var maxD = null;
         for (var i = 0; i < vals.length; i++) {
-          var v = vals[i][0];
-          if (v instanceof Date && (!maxD || v.getTime() > maxD.getTime())) maxD = v;
+          var v = vals[i][0], guests = Number(vals[i][15] || 0), sales = Number(vals[i][17] || 0);
+          if (v instanceof Date && (guests > 0 || sales > 0) && (!maxD || v.getTime() > maxD.getTime())) maxD = v;
         }
         if (maxD) out.sheetMaxDate = Utilities.formatDate(maxD, 'Asia/Tokyo', 'yyyy-MM-dd');
       }
