@@ -12,6 +12,10 @@ on:
         description: '確認したい店舗名（1つ。空なら全店合計）'
         required: false
         default: ''
+      kind:
+        description: '種別（daily/weekly/monthly）'
+        required: false
+        default: 'daily'
 
 jobs:
   diag:
@@ -29,11 +33,11 @@ jobs:
           IFS=',' read -ra DATES <<< "${{ github.event.inputs.dates }}"
           for d in "${DATES[@]}"; do
             echo "::group::$d"
-            REPORT_DATE="$d" REPORT_STORES="${{ github.event.inputs.store }}" node scripts/lark-report.mjs capture-bq || echo "取得失敗（$d のデータが無い可能性）"
+            REPORT_KIND="${{ github.event.inputs.kind || 'daily' }}" REPORT_DATE="$d" REPORT_STORES="${{ github.event.inputs.store }}" node scripts/lark-report.mjs capture-bq || echo "取得失敗（$d のデータが無い可能性）"
             if [ -f report-meta.json ]; then
               node -e "
                 const d=JSON.parse(require('fs').readFileSync('report-meta.json','utf8'));
-                console.log(JSON.stringify({title:d.title, sub:d.sub, sales:d.tot.sales, guests:d.tot.guests, singleStore:d.singleStore}, null, 2));
+                console.log(JSON.stringify({title:d.title, sub:d.sub, sales:d.tot.sales, guests:d.tot.guests, singleStore:d.singleStore, rows:d.rows}, null, 2));
               "
             fi
             rm -f report-meta.json
