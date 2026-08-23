@@ -48,11 +48,12 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v54', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v55', time: new Date().toISOString() });
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     if (action === 'bqSetupSalesDataset') return out(bqSetupSalesDataset(p)); // salesデータセット作成（初回のみ・専用トークン認証）
     if (action === 'bqSyncSales') return out(bqSyncAllSales(p)); // 分析_日別店舗ほかのBQミラー（専用トークン認証・ログイン不要）
     if (action === 'bqDailyStoreForSync') return out(bqDailyStoreForSync(p)); // dash-sync用の軽量BQ問い合わせ（専用トークン認証・ログイン不要・スプレッドシート不使用）
+    if (action === 'reportDataBQ') return out(reportDataBQ(p)); // Lark/Chatwork自動配信用の軽量レポート数値（専用トークン認証・ログイン不要・スプレッドシート不使用。2026-08-23追加）
     if (action === 'bqReconcileSales') return out(bqReconcileSales(p)); // BQとシートの突合（専用トークン認証・ログイン不要）
     if (action === 'bqSyncPL') return out(bqSyncPL(p)); // PL経費(DB_PL)のBQミラー同期（専用トークン認証・ログイン不要）
     if (action === 'perf') return out(perfDiag(p)); // パフォーマンス計測（専用トークン認証・ログイン不要・数字は返さず時間だけ）
@@ -1426,6 +1427,104 @@ function bqReconcileSales(p) {
   for (var k in diffs) if (Math.abs(diffs[k]) >= threshold) mismatched.push(k);
   return { ok: true, days: days, sinceDate: cutoffStr, sheet: sheetSum, bq: bq, diffs: diffs, mismatched: mismatched };
 }
+
+// ================== 軽量レポート数値（Lark/Chatwork自動配信用・2026-08-23追加） ==================
+// 背景: 媒体別日次シートが21,000件超まで育ち、ログイン→スプレッドシート全読みを待つ
+// 従来方式（Puppeteerでダッシュボードを開いてスクリーンショット）がGAS側の読込待ちで
+// 詰まり、自動配信全体が止まる問題が発生した（2026-08-22）。この方式はログイン・画面描画・
+// スクリーンショットを一切使わず、必要な数字だけをBigQueryから直接返す。
+// 専用トークン認証・ログイン不要（bqDailyStoreForSyncと同じ方針）。
+// ランチ/ディナー内訳・Google口コミはBigQuery未対応のため省略（呼び出し側のbuildText()は
+// これらが無くても正常に動く設計になっている）。
+function reportDataBQ(p) {
+  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+  if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
+  var kind = (p.kind === 'weekly' || p.kind === 'monthly') ? p.kind : 'daily';
+  var storeList = String(p.stores || '').trim() ? String(p.stores).split(',').map(function (s) { return s.trim(); }).filter(Boolean) : [];
+  var single = storeList.length === 1 ? storeList[0] : null;
+  var storeWhere = storeList.length
+    ? " AND store_name IN (" + storeList.map(function (s) { return "'" + s.replace(/'/g, "''") + "'"; }).join(',') + ")"
+    : '';
+
+  // 対象日: 指定が無ければテーブル内の最新日
+  var d0 = String(p.date || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d0)) {
+    var latest = bqRows_('SELECT MAX(date) AS d FROM `' + BQ_PROJECT + '.' + BQ_SALES_DATASET + '.fact_daily_store`');
+    if (!latest || latest.length < 2 || !latest[1][0]) return { ok: false, error: '対象日が見つかりません' };
+    d0 = String(latest[1][0]);
+  }
+  var d0Date = new Date(d0 + 'T00:00:00+09:00');
+  var fmt = function (dt) { return Utilities.formatDate(dt, 'Asia/Tokyo', 'yyyy-MM-dd'); };
+  var addDays = function (dt, n) { return new Date(dt.getTime() + n * 86400000); };
+  var addYears = function (dt, n) { var x = new Date(dt.getTime()); x.setFullYear(x.getFullYear() + n); return x; };
+
+  var periodStart, periodEnd, title, sub, salesLabel;
+  if (kind === 'daily') {
+    periodStart = periodEnd = d0Date;
+    title = '日報'; sub = d0.replace(/-/g, '/'); salesLabel = '本日売上';
+  } else if (kind === 'weekly') {
+    var wd = (d0Date.getUTCDay() + 6) % 7; // 月曜=0
+    periodStart = addDays(d0Date, -wd); periodEnd = addDays(periodStart, 6);
+    title = '週報'; sub = fmt(periodStart).replace(/-/g, '/') + '〜' + fmt(periodEnd).replace(/-/g, '/'); salesLabel = '週間売上';
+  } else {
+    periodStart = new Date(d0Date.getFullYear(), d0Date.getMonth(), 1);
+    periodEnd = new Date(d0Date.getFullYear(), d0Date.getMonth() + 1, 0);
+    title = '月報'; sub = fmt(periodStart).slice(0, 7).replace('-', '/') + '月'; salesLabel = '月間売上';
+  }
+  var prevStart = addYears(periodStart, -1), prevEnd = addYears(periodEnd, -1);
+  var monthStart = new Date(d0Date.getFullYear(), d0Date.getMonth(), 1);
+  var monthPrevStart = addYears(monthStart, -1), monthPrevEnd = addYears(d0Date, -1);
+
+  var T = '`' + BQ_PROJECT + '.' + BQ_SALES_DATASET + '.fact_daily_store`';
+  var rangeWhere = function (a, b) { return "date BETWEEN DATE('" + fmt(a) + "') AND DATE('" + fmt(b) + "')"; };
+  var totSql = 'SELECT SUM(net_sales) sales, SUM(guests_total) guests, SUM(cogs) cogs, SUM(labor_cost_total) labor FROM ' + T +
+    ' WHERE ' + rangeWhere(periodStart, periodEnd) + storeWhere;
+  var prevSql = 'SELECT SUM(net_sales) sales FROM ' + T + ' WHERE ' + rangeWhere(prevStart, prevEnd) + storeWhere;
+  var cumSql = 'SELECT SUM(net_sales) sales FROM ' + T + ' WHERE ' + rangeWhere(monthStart, d0Date) + storeWhere;
+  var cumPrevSql = 'SELECT SUM(net_sales) sales FROM ' + T + ' WHERE ' + rangeWhere(monthPrevStart, monthPrevEnd) + storeWhere;
+  var byStoreSql = 'SELECT store_name, SUM(net_sales) sales FROM ' + T + ' WHERE ' + rangeWhere(periodStart, periodEnd) + storeWhere + ' GROUP BY store_name';
+  var byStorePrevSql = 'SELECT store_name, SUM(net_sales) sales FROM ' + T + ' WHERE ' + rangeWhere(prevStart, prevEnd) + storeWhere + ' GROUP BY store_name';
+
+  var tot = bqRows_(totSql);
+  if (!tot || tot.length < 2) return { ok: false, error: 'BigQueryクエリ失敗' };
+  var prev = bqRows_(prevSql), cum = bqRows_(cumSql), cumPrev = bqRows_(cumPrevSql);
+  var byStore = bqRows_(byStoreSql), byStorePrev = bqRows_(byStorePrevSql);
+
+  var sales = Number(tot[1][0] || 0), guests = Number(tot[1][1] || 0);
+  var cogsV = Number(tot[1][2] || 0), laborV = Number(tot[1][3] || 0);
+  var prevSales = (prev && prev[1] && prev[1][0] != null) ? Number(prev[1][0]) : null;
+  var cumSales = (cum && cum[1] && cum[1][0] != null) ? Number(cum[1][0]) : null;
+  var cumPrevSales = (cumPrev && cumPrev[1] && cumPrev[1][0] != null) ? Number(cumPrev[1][0]) : null;
+
+  var prevByStore = {};
+  if (byStorePrev) for (var i = 1; i < byStorePrev.length; i++) prevByStore[byStorePrev[i][0]] = Number(byStorePrev[i][1] || 0);
+  var rows = [];
+  if (byStore) for (var j = 1; j < byStore.length; j++) {
+    rows.push({ store: byStore[j][0], sales: Number(byStore[j][1] || 0), prevSales: prevByStore[byStore[j][0]] || 0 });
+  }
+  rows.sort(function (a, b) { return b.sales - a.sales; });
+
+  var media = [];
+  if (single) {
+    var mediaSql = 'SELECT media_name, SUM(net_sales) sales FROM `' + BQ_PROJECT + '.' + BQ_SALES_DATASET + '.stg_media` ' +
+      "WHERE store_name = '" + single.replace(/'/g, "''") + "' AND " + rangeWhere(periodStart, periodEnd) +
+      ' GROUP BY media_name ORDER BY sales DESC LIMIT 5';
+    var mrows = bqRows_(mediaSql);
+    if (mrows) for (var k = 1; k < mrows.length; k++) media.push({ media: mrows[k][0], sales: Number(mrows[k][1] || 0) });
+  }
+
+  return {
+    ok: true, title: title, sub: sub, kind: kind, salesLabel: salesLabel, hasDinii: false,
+    singleStore: single, fileKey: (storeList[0] || 'all'),
+    tot: {
+      sales: sales, prevSales: prevSales, guests: guests,
+      fr: sales > 0 ? (cogsV / sales) : null, lr: sales > 0 ? (laborV / sales) : null,
+      cum: cumSales, cumPrev: cumPrevSales
+    },
+    rows: rows, media: media
+  };
+}
+
 // パフォーマンス計測：getData と同じ処理を段階ごとに時間計測して返す（データ本体は返さない）。
 // 認証はBQ投入と同じ専用トークン。ログイン不要なので外部からも計測できる。
 function perfDiag(p) {

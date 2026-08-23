@@ -2,15 +2,26 @@
  * 鳥一代グループ ダッシュボード → Lark/Chatwork 自動日報/週報/月報
  * =====================================================================
  * サブコマンド:
- *   node scripts/lark-report.mjs capture   … ログイン→カード撮影→ report.png + report-meta.json 出力
- *   node scripts/lark-report.mjs send      … report-meta.json から配信先へ送信（CHANNEL_KINDで切替）
+ *   node scripts/lark-report.mjs capture     … ブラウザでログイン→カード撮影→ report.png + report-meta.json 出力
+ *   node scripts/lark-report.mjs capture-bq  … ブラウザ操作なし。GAS(reportDataBQ)から数字だけ取得して
+ *                                                report-meta.json のみ出力（report.pngは作らない）。
+ *                                                2026-08-23追加。媒体別日次の肥大化でcaptureがGASの
+ *                                                データ読込待ちに詰まる問題への根本対応（ログイン・
+ *                                                画面描画・スクリーンショットを一切使わない）。
+ *                                                ランチ/ディナー内訳・Google口コミは無し（buildText側が
+ *                                                無くても正常動作する設計）。画像が無いのでLarkは画像
+ *                                                リンク無し・Chatworkはテキストのみで送られる（sendは
+ *                                                report.png有無を見て自動でその挙動になるため変更不要）。
+ *   node scripts/lark-report.mjs send        … report-meta.json から配信先へ送信（CHANNEL_KINDで切替）
  *
- * GitHub Actions では capture → (Larkのみ)画像をReleaseにアップロード → send の順で実行する。
+ * GitHub Actions では capture(-bq) → (Larkかつ画像ありのみ)画像をReleaseにアップロード → send の順で実行する。
  * Lark: 「要約テキスト＋画像リンクボタン」のカード（Larkのボット機能不要）。
  * Chatwork: 要約テキストをメッセージ送信＋report.pngをそのままファイル添付（Day6③）。
  *
  * 環境変数:
- *   DASH_ID / DASH_PW  : ダッシュボードのログイン
+ *   DASH_ID / DASH_PW  : ダッシュボードのログイン（captureのみ）
+ *   BQ_LOAD_TOKEN      : GAS reportDataBQ の専用トークン認証（capture-bqのみ）
+ *   GAS_URL            : GASウェブアプリのURL（capture-bqのみ。省略時は本番URLを既定値として使用）
  *   REPORT_KIND        : daily | weekly | monthly
  *   SITE_URL           : 省略時 https://mirai-oss.github.io/tori-dashboard/
  *   CHANNEL_KIND        : lark（既定） | chatwork
@@ -23,6 +34,7 @@ import fs from 'node:fs';
 
 const MODE = (process.argv[2] || 'send').trim();
 const SITE_URL = process.env.SITE_URL || 'https://mirai-oss.github.io/tori-dashboard/';
+const GAS_URL = process.env.GAS_URL || 'https://script.google.com/macros/s/AKfycbz9rd37EZa6X8WRMVEBrXobN8DbYWkHRlhFNYU5rd1UZ0V8j0-6shMQjEeoi4HDWZ0B/exec';
 const KIND = (process.env.REPORT_KIND || 'daily').trim();
 const CHANNEL_KIND = (process.env.CHANNEL_KIND || 'lark').trim();
 const WEBHOOK = process.env.LARK_WEBHOOK || '';
@@ -146,6 +158,25 @@ async function capture() {
   } finally { await browser.close(); }
 }
 
+// ---------- capture-bq: ブラウザ操作なし。GASの軽量アクションから数字だけ取得（2026-08-23追加） ----------
+async function captureBQ() {
+  const token = process.env.BQ_LOAD_TOKEN || '';
+  if (!token) { console.error('BQ_LOAD_TOKEN が未設定です'); process.exit(1); }
+  const stores = (process.env.REPORT_STORES || '').trim();   // カンマ区切りで店舗を絞る（空=全店）
+  const dateOverride = (process.env.REPORT_DATE || '').trim(); // 過去日を指定して再送したい時（例 2026-06-15）。空=最新日
+  const qs = new URLSearchParams({ action: 'reportDataBQ', token, kind: KIND });
+  if (stores) qs.set('stores', stores);
+  if (dateOverride) qs.set('date', dateOverride);
+  log('BigQueryから数値を取得中… kind =', KIND, stores ? ('store = ' + stores) : '（全店）');
+  const res = await fetch(GAS_URL + '?' + qs.toString());
+  if (!res.ok) throw new Error('GAS応答エラー: HTTP ' + res.status);
+  const data = await res.json();
+  if (!data || !data.ok) throw new Error('reportDataBQ失敗: ' + (data && data.error));
+  data.gen = new Date().toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  fs.writeFileSync(META, JSON.stringify(data));
+  log('保存: report-meta.json（画像なし・数値のみ）/ メタ:', data.title, data.sub, '/ fileKey:', data.fileKey);
+}
+
 // ---------- 要約テキスト組み立て（Lark/Chatwork共通） ----------
 function buildText(d) {
   const t = d.tot;
@@ -266,6 +297,7 @@ async function send() {
 
 (async () => {
   if (MODE === 'capture') await capture();
+  else if (MODE === 'capture-bq') await captureBQ();
   else if (MODE === 'send') await send();
-  else { console.error('使い方: node lark-report.mjs capture | send'); process.exit(1); }
+  else { console.error('使い方: node lark-report.mjs capture | capture-bq | send'); process.exit(1); }
 })().catch((e) => { console.error('[lark-report] 失敗:', e); process.exit(1); });
