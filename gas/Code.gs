@@ -48,7 +48,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v59', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v60', time: new Date().toISOString() });
     if (action === 'syncSeisanFeeToPl') return out(syncSeisanFeeToPl(p)); // 運営委託費のPL自動連携（専用トークン認証・ログイン不要。2026-08-23追加）
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     if (action === 'bqSetupSalesDataset') return out(bqSetupSalesDataset(p)); // salesデータセット作成（初回のみ・専用トークン認証）
@@ -1402,7 +1402,11 @@ function syncSeisanFeeToPl(p) {
       var j = JSON.parse(res.getContentText());
       if (!j.ok) { errors.push(store + ': ' + (j.error || 'unknown')); return; }
       var r = j.result;
-      if (!r || !r.found || !r.hasSales) { results.push(store + ': データ無し（スキップ）／理由: ' + (r && r.reason || '不明')); return; }
+      if (!r || !r.found || !r.hasSales) {
+        var extra = (r && r.masterNames) ? '／精算システム側の店舗名一覧: ' + r.masterNames.join('、') : '';
+        results.push(store + ': データ無し（スキップ）／理由: ' + (r && r.reason || '不明') + extra);
+        return;
+      }
       byStore[store] = Math.round(r.transferEx);
       results.push(store + ': ¥' + Math.round(r.transferEx).toLocaleString('ja-JP'));
     } catch (e) {
