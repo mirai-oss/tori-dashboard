@@ -318,6 +318,9 @@ function plsMigrateAddSubItemColumn_() {
   try { SpreadsheetApp.getUi().alert('補助科目列を追加', msg, SpreadsheetApp.getUi().ButtonSet.OK); } catch (e) {}
   return msg;
 }
+// ↑ 末尾が「_」の関数はApps Scriptエディタの実行プルダウンに出ない仕様のため、
+// 手動実行用にアンダースコア無しの薄いラッパーを用意する（2026-08-23追加・実地で判明）。
+function runMigrateAddSubItemColumn() { return plsMigrateAddSubItemColumn_(); }
 
 /* ---------- 現在のトリガー確認（デバッグ用） ---------- */
 function plSyncStatus() {
