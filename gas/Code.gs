@@ -48,7 +48,8 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v62', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v63', time: new Date().toISOString() });
+    if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'syncSeisanFeeToPl') return out(syncSeisanFeeToPl(p)); // 運営委託費のPL自動連携（専用トークン認証・ログイン不要。2026-08-23追加）
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     if (action === 'bqSetupSalesDataset') return out(bqSetupSalesDataset(p)); // salesデータセット作成（初回のみ・専用トークン認証）
@@ -1527,6 +1528,22 @@ function bqReconcileSales(p) {
 // 専用トークン認証・ログイン不要（bqDailyStoreForSyncと同じ方針）。
 // ランチ/ディナー内訳・Google口コミはBigQuery未対応のため省略（呼び出し側のbuildText()は
 // これらが無くても正常に動く設計になっている）。
+// 一時的な診断用（2026-08-23）: DB_PLの運営委託費(自動計上)行を年月×店舗ごとに件数と
+// 合計を返す。二重計上が無いか確認するため。読み取り専用（BigQuery stg_plを見るだけ）。
+function plSeisanDiag(p) {
+  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+  if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
+  var ym = String((p || {}).ym || '').trim();
+  var where = "WHERE item = '運営委託費'" + (ym ? " AND year_month = '" + ym.replace(/'/g, "''") + "'" : '');
+  var sql = 'SELECT year_month, store_name, amount, memo, COUNT(*) OVER (PARTITION BY year_month, store_name) as dup_count ' +
+    'FROM `' + BQ_PROJECT + '.' + BQ_SALES_DATASET + '.stg_pl` ' + where + ' ORDER BY year_month, store_name';
+  var rows = bqRows_(sql);
+  if (!rows) return { ok: false, error: 'BigQueryクエリ失敗' };
+  var out = [];
+  for (var i = 1; i < rows.length; i++) out.push(rows[i]);
+  return { ok: true, header: rows[0], rows: out };
+}
+
 function reportDataBQ(p) {
   var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
   if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
