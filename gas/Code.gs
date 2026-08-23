@@ -48,7 +48,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v60', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v61', time: new Date().toISOString() });
     if (action === 'syncSeisanFeeToPl') return out(syncSeisanFeeToPl(p)); // 運営委託費のPL自動連携（専用トークン認証・ログイン不要。2026-08-23追加）
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     if (action === 'bqSetupSalesDataset') return out(bqSetupSalesDataset(p)); // salesデータセット作成（初回のみ・専用トークン認証）
@@ -1377,34 +1377,37 @@ function syncSeisanFeeToPl(p) {
     ym = Utilities.formatDate(d0, 'Asia/Tokyo', 'yyyy-MM');
   }
 
-  // 対象店舗: Supabase store_directory_v から精算対象(seisan_target=true)かつ営業中の店舗名一覧
+  // 対象店舗: Supabase store_directory_v から精算対象(seisan_target=true)の店舗一覧。
+  // seisan_store_name（精算システム側の表記が違う場合の別名。2026-08-23追加）があれば
+  // 精算システムへの問い合わせにはそちらを使い、PLへの書き込みは常にstores.name（正本）を使う。
   var storeRes = UrlFetchApp.fetch(
-    'https://uuvsxzhpxtghojoubjcc.supabase.co/rest/v1/store_directory_v?select=name,seisan_target,is_active',
+    'https://uuvsxzhpxtghojoubjcc.supabase.co/rest/v1/store_directory_v?select=name,seisan_target,seisan_store_name',
     { headers: { apikey: STORE_DIRECTORY_ANON_KEY_, Authorization: 'Bearer ' + STORE_DIRECTORY_ANON_KEY_ }, muteHttpExceptions: true }
   );
   if (storeRes.getResponseCode() !== 200) return { ok: false, error: '店舗一覧の取得に失敗しました' };
+  // is_activeでは絞らない：業務委託店舗はnippo/シフト管理の対象外という意味でis_active=falseに
+  // なっているだけで、精算・PL上は稼働中（2026-08-23の実地テストで判明）。seisan_targetのみで判定。
   var stores = JSON.parse(storeRes.getContentText())
-    // is_activeでは絞らない：業務委託店舗はnippo/シフト管理の対象外という意味でis_active=falseに
-    // なっているだけで、精算・PL上は稼働中（2026-08-23の実地テストで判明。既存4店舗とも
-    // is_active=falseだったため絞ると0件になっていた）。seisan_targetのみで判定する。
     .filter(function (s) { return s.seisan_target; })
-    .map(function (s) { return s.name; });
+    .map(function (s) { return { name: s.name, seisanName: s.seisan_store_name || s.name }; });
   if (!stores.length) return { ok: true, ym: ym, synced: 0, note: '精算対象の店舗がありません' };
+  var storeNames = stores.map(function (s) { return s.name; });
 
   var results = [], errors = [];
   var byStore = {};
-  stores.forEach(function (store) {
+  stores.forEach(function (s) {
+    var store = s.name;
     try {
       var res = UrlFetchApp.fetch(seisanUrl, {
         method: 'post', contentType: 'application/json', muteHttpExceptions: true,
-        payload: JSON.stringify({ fn: 'sd_apiTransferEx', args: [plSyncToken, store, ym] })
+        payload: JSON.stringify({ fn: 'sd_apiTransferEx', args: [plSyncToken, s.seisanName, ym] })
       });
       var j = JSON.parse(res.getContentText());
       if (!j.ok) { errors.push(store + ': ' + (j.error || 'unknown')); return; }
       var r = j.result;
       if (!r || !r.found || !r.hasSales) {
         var extra = (r && r.masterNames) ? '／精算システム側の店舗名一覧: ' + r.masterNames.join('、') : '';
-        results.push(store + ': データ無し（スキップ）／理由: ' + (r && r.reason || '不明') + extra);
+        results.push(store + '（精算システム側の名前: ' + s.seisanName + '）: データ無し（スキップ）／理由: ' + (r && r.reason || '不明') + extra);
         return;
       }
       byStore[store] = Math.round(r.transferEx);
@@ -1424,7 +1427,7 @@ function syncSeisanFeeToPl(p) {
     sh.getRange(2, 1, lastRow - 1, 6).getValues().forEach(function (r) {
       if (r[0] === '' && r[1] === '' && r[2] === '') return;
       var sameMonth = bqPlYm_(r[0]) === ymSlash;
-      var isThisAuto = String(r[5]) === PL_SEISAN_MEMO && stores.indexOf(String(r[1]).trim()) >= 0;
+      var isThisAuto = String(r[5]) === PL_SEISAN_MEMO && storeNames.indexOf(String(r[1]).trim()) >= 0;
       if (sameMonth && isThisAuto) return; // 差し替え対象は捨てる（今回取れなかった店舗の古い行も一掃）
       keep.push(r);
     });
