@@ -48,11 +48,12 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v71', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v72', time: new Date().toISOString() });
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'detailVsDailyDiag') return out(detailVsDailyDiag(p)); // 明細分析とダッシュボードの売上・客数・組数の差を実測で突合（専用トークン認証・読み取り専用・一時的）
     if (action === 'bqPerfDiag') return out(bqPerfDiag(p)); // BQモード各アクションの所要時間計測（専用トークン認証・読み取り専用・一時的）
+    if (action === 'dataKeysDiag') return out(dataKeysDiag(p)); // getData()が実際にどのキーを返すか確認（専用トークン認証・読み取り専用・一時的）
     if (action === 'syncSeisanFeeToPl') return out(syncSeisanFeeToPl(p)); // 運営委託費のPL自動連携（専用トークン認証・ログイン不要。2026-08-23追加）
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     if (action === 'bqSetupSalesDataset') return out(bqSetupSalesDataset(p)); // salesデータセット作成（初回のみ・専用トークン認証）
@@ -1015,9 +1016,12 @@ function bqDetail(p, session) {
         // fact_daily_storeは日次バッチ同期（Mac mini・毎日11時頃）のミラーのため、直近1日以上遅れることがある
         // （同期ホストの再起動等で更に遅れる場合も）。指定期間の終端(to)までデータが揃っていない状態で
         // 実績値に差し替えると、ダッシュボード（シート直読・ほぼリアルタイム）と比べて過少な数字になり、
-        // 「明細分析とダッシュボードの数字が全然違う」という混乱を生む。そのため、ミラーの最新日(MAX(date))が
+        // 「明細分析とダッシュボードの数字が全然違う」という混乱を生む。そのため、ミラーの最新日が
         // 期間の終端(to)以降まで揃っている場合に限り実績値へ差し替える。揃っていなければ従来の推定値のまま。
-        var maxRow = bqRows_("SELECT MAX(date) AS d FROM `" + BQ_PROJECT + "." + BQ_SALES_DATASET + ".fact_daily_store`");
+        // ※単純にMAX(date)を取ると、月末まで日付欄だけ先に埋まっているテンプレート行（実績はまだ0件）を
+        //   拾ってしまい、常に「揃っている」と誤判定してガードが機能しなくなる（2026-08-23発覚・reportDataBQと
+        //   同じ「実績が入っている行に限定」の対策を流用）。
+        var maxRow = bqRows_("SELECT MAX(date) AS d FROM `" + BQ_PROJECT + "." + BQ_SALES_DATASET + ".fact_daily_store` WHERE net_sales > 0 OR guests_total > 0");
         var maxDate = (maxRow && maxRow[1] && maxRow[1][0]) ? String(maxRow[1][0]) : '';
         if (maxDate && maxDate >= to) {
           var realWhere = "WHERE date BETWEEN DATE('" + from + "') AND DATE('" + to + "')";
@@ -1026,13 +1030,28 @@ function bqDetail(p, session) {
           } else if (p.store && p.store !== 'all') {
             realWhere += " AND store_name = '" + String(p.store).replace(/'/g, "''") + "'";
           }
-          var real = bqRows_("SELECT store_name, SUM(guests_total) guests, SUM(parties_total) checks FROM `" + BQ_PROJECT + "." + BQ_SALES_DATASET + ".fact_daily_store` " + realWhere + " GROUP BY store_name");
+          // 純売上(net_sales)は税抜(PLのFL比計算等で使われているのと同じ前提)。税込は概算(×1.1)で埋める。
+          var real = bqRows_("SELECT store_name, SUM(guests_total) guests, SUM(parties_total) checks, SUM(net_sales) sales_excl FROM `" + BQ_PROJECT + "." + BQ_SALES_DATASET + ".fact_daily_store` " + realWhere + " GROUP BY store_name");
           if (real) {
             var realMap = {};
-            for (var ri = 1; ri < real.length; ri++) realMap[real[ri][0]] = { guests: Number(real[ri][1] || 0), checks: Number(real[ri][2] || 0) };
+            for (var ri = 1; ri < real.length; ri++) realMap[real[ri][0]] = { guests: Number(real[ri][1] || 0), checks: Number(real[ri][2] || 0), sales_excl: Number(real[ri][3] || 0) };
             for (var si = 1; si < st.length; si++) {
               var rm = realMap[st[si][0]];
-              if (rm) { st[si][3] = rm.checks; st[si][4] = rm.guests; } // checks(組数)・guests(客数)を実績値に差し替え
+              if (!rm) continue;
+              // 客数・組数は実績値に差し替え
+              st[si][3] = rm.checks; st[si][4] = rm.guests;
+              // 売上も、明細(dinii)の積み上げではなくレジ実績(fact_daily_store)に差し替える
+              // （2026-08-23追加・ユーザーから「客数だけでなく売上もダッシュボードと全然違う」と指摘。
+              // dinii明細は一部の売上しか拾えておらず、店舗によっては実績の6〜7割程度しか積み上がらないと判明）。
+              // ドリンク/フード/カラオケの内訳は明細からしか出せないため、内訳どうしの構成比は維持したまま
+              // 合計が実績の税抜売上に一致するよう比例配分し直す。
+              var oldExcl = Number(st[si][2]) || 0;
+              var scale = oldExcl > 0 ? (rm.sales_excl / oldExcl) : 1;
+              st[si][5] = Math.round((Number(st[si][5]) || 0) * scale); // ドリンク
+              st[si][6] = Math.round((Number(st[si][6]) || 0) * scale); // カラオケ
+              st[si][7] = Math.round((Number(st[si][7]) || 0) * scale); // フード
+              st[si][2] = rm.sales_excl;                                // 売上（税別）
+              st[si][1] = Math.round(rm.sales_excl * 1.1);              // 売上（税込・概算＝税別×1.1）
             }
           }
         }
@@ -1665,6 +1684,26 @@ function bqPerfDiag(p) {
   s = now(); try { var d5 = bqGetMedia({ months: 3 }, sess); T.bqGetMedia_媒体別 = { ms: now() - s, ok: !!(d5 && d5.ok) }; } catch (e) { T.bqGetMedia_媒体別 = { ms: now() - s, error: String(e) }; }
   T.grandTotal_5アクション合計 = now() - t0;
   return { ok: true, timing_ms: T, note: 'いずれも全店・直近13ヶ月分でクライアントと同条件。キャッシュがあれば効いた状態での計測（実利用に近い）。' };
+}
+
+// 一時的な診断用（2026-08-23）: 「広告管理タブが「DB_広告シートを受信できていません」になる」報告を受け、
+// 実際にgetData()（action:'data'）をログイン中のクライアントと同じexclude条件で叩いた時、
+// レスポンスのsheetsに実際どのキーが含まれるか・各キー何行あるかをそのまま返す。読み取り専用。
+// exclude省略可（省略時はBQモードのフェーズ1と同じ既定 = media,deposit,dinii,予約,daily,PL を除外）。
+function dataKeysDiag(p) {
+  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+  if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
+  var exclude = String((p || {}).exclude || 'media,deposit,dinii,予約,daily,PL');
+  var now = function () { return new Date().getTime(); };
+  var s = now();
+  try {
+    var d = getData({ months: Number(p.months) || 13, exclude: exclude }, { stores: '全店' });
+    var keys = {};
+    for (var k in (d.sheets || {})) keys[k] = (d.sheets[k] || []).length;
+    return { ok: true, ms: now() - s, excludeUsed: exclude, receivedKeys: Object.keys(d.sheets || {}), rowsPerKey: keys, storesOk: !!(d.stores && d.stores.length) };
+  } catch (e) {
+    return { ok: false, ms: now() - s, error: String(e && e.message || e) };
+  }
 }
 
 // 一時的な診断用（2026-08-23）: 明細分析(dinii明細集計)とダッシュボード(fact_daily_store=分析_日別店舗の
