@@ -1,0 +1,41 @@
+name: BigQuery診断（fact_daily_store・送信なし）
+# 手動実行専用。reportDataBQを指定日で叩いてreport-meta.jsonの中身を表示するだけ。
+# Lark/Chatworkへの送信は一切行わない（診断専用）。
+on:
+  workflow_dispatch:
+    inputs:
+      dates:
+        description: '確認したい日付（カンマ区切り、YYYY-MM-DD）'
+        required: true
+        default: '2026-08-21,2026-08-22'
+      store:
+        description: '確認したい店舗名（1つ。空なら全店合計）'
+        required: false
+        default: ''
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: 各日付でreportDataBQを叩いて結果を表示
+        env:
+          BQ_LOAD_TOKEN: ${{ secrets.BQ_LOAD_TOKEN }}
+        run: |
+          IFS=',' read -ra DATES <<< "${{ github.event.inputs.dates }}"
+          for d in "${DATES[@]}"; do
+            echo "::group::$d"
+            REPORT_DATE="$d" REPORT_STORES="${{ github.event.inputs.store }}" node scripts/lark-report.mjs capture-bq || echo "取得失敗（$d のデータが無い可能性）"
+            if [ -f report-meta.json ]; then
+              node -e "
+                const d=JSON.parse(require('fs').readFileSync('report-meta.json','utf8'));
+                console.log(JSON.stringify({title:d.title, sub:d.sub, sales:d.tot.sales, guests:d.tot.guests, singleStore:d.singleStore}, null, 2));
+              "
+            fi
+            rm -f report-meta.json
+            echo "::endgroup::"
+          done
