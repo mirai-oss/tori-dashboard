@@ -48,7 +48,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'speed-v4', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'speed-v5', time: new Date().toISOString() });
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'detailVsDailyDiag') return out(detailVsDailyDiag(p)); // 明細分析とダッシュボードの売上・客数・組数の差を実測で突合（専用トークン認証・読み取り専用・一時的）
@@ -940,15 +940,33 @@ function bqCacheKey_(prefix, parts) {
   var raw = prefix + '_' + parts.join('_');
   return raw.length > 200 ? prefix + '_' + md5Hex_(raw) : raw;
 }
+// CacheServiceは1キーあたり100KBまでのため、bqDailyStore/bqGetMedia等の全期間・全店舗結果は
+// 素の1キーだと簡単に超えてしまい、キャッシュがずっと無効なまま気づかない（実測で発覚・2026-08-23）。
+// 長い文字列を複数キーに分割して保存し、読むときに結合する（チャンク数はkey+'_n'に記録）。
 function bqCacheGet_(key) {
   try {
-    var hit = CacheService.getScriptCache().get(key);
-    if (!hit) return null;
-    var o = JSON.parse(hit); o.cached = true; return o;
+    var cache = CacheService.getScriptCache();
+    var n = Number(cache.get(key + '_n'));
+    if (!n) return null;
+    var parts = [];
+    for (var i = 0; i < n; i++) {
+      var part = cache.get(key + '_' + i);
+      if (part == null) return null; // どれか1チャンクでも欠けていたら（TTL境界等）諦めて再取得させる
+      parts.push(part);
+    }
+    var o = JSON.parse(parts.join('')); o.cached = true; return o;
   } catch (e) { return null; }
 }
 function bqCachePut_(key, obj) {
-  try { CacheService.getScriptCache().put(key, JSON.stringify(obj), 600); } catch (e) { /* 100KB超はキャッシュしない（黙って諦める・BQモード自体は動き続ける） */ }
+  try {
+    var s = JSON.stringify(obj);
+    var CHUNK = 90000; // 日本語（UTF-8で1文字最大3バイト）混在でも100KB/キーに収まる保守的な文字数
+    var n = Math.max(1, Math.ceil(s.length / CHUNK));
+    if (n > 20) return; // 20チャンク(=文字数ベースで最大180万字)を超える巨大結果はキャッシュ自体を諦める
+    var puts = {}; for (var i = 0; i < n; i++) puts[key + '_' + i] = s.slice(i * CHUNK, (i + 1) * CHUNK);
+    puts[key + '_n'] = String(n);
+    CacheService.getScriptCache().putAll(puts, 600);
+  } catch (e) { /* キャッシュに失敗してもBQモード自体は動き続ける */ }
 }
 // 明細分析（対話的）：期間 from〜to・店舗で絞り、時間帯別/商品別/店舗別を集計して返す。
 // guests=客数・checks=組数は、店舗別(st)の集計だけレジ実績(fact_daily_store)の実数に差し替える
