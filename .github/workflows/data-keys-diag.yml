@@ -14,6 +14,10 @@ jobs:
       - name: dataKeysDiagを実行
         env:
           BQ_LOAD_TOKEN: ${{ secrets.BQ_LOAD_TOKEN }}
+          EXCLUDE_KEYS: ${{ github.event.inputs.exclude }}
         run: |
-          curl -sL -m 250 "https://script.google.com/macros/s/AKfycbz9rd37EZa6X8WRMVEBrXobN8DbYWkHRlhFNYU5rd1UZ0V8j0-6shMQjEeoi4HDWZ0B/exec?action=dataKeysDiag&token=$BQ_LOAD_TOKEN&exclude=${{ github.event.inputs.exclude }}" \
+          curl -sL -m 250 -G "https://script.google.com/macros/s/AKfycbz9rd37EZa6X8WRMVEBrXobN8DbYWkHRlhFNYU5rd1UZ0V8j0-6shMQjEeoi4HDWZ0B/exec" \
+            --data-urlencode "action=dataKeysDiag" \
+            --data-urlencode "token=$BQ_LOAD_TOKEN" \
+            --data-urlencode "exclude=$EXCLUDE_KEYS" \
             | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.stringify(JSON.parse(d),null,2)));"

@@ -19,6 +19,12 @@ jobs:
       - name: detailVsDailyDiagを実行
         env:
           BQ_LOAD_TOKEN: ${{ secrets.BQ_LOAD_TOKEN }}
+          YM: ${{ github.event.inputs.ym }}
+          STORE: ${{ github.event.inputs.store }}
         run: |
-          curl -sL "https://script.google.com/macros/s/AKfycbz9rd37EZa6X8WRMVEBrXobN8DbYWkHRlhFNYU5rd1UZ0V8j0-6shMQjEeoi4HDWZ0B/exec?action=detailVsDailyDiag&token=$BQ_LOAD_TOKEN&ym=${{ github.event.inputs.ym }}&store=${{ github.event.inputs.store }}" \
+          curl -sL -G "https://script.google.com/macros/s/AKfycbz9rd37EZa6X8WRMVEBrXobN8DbYWkHRlhFNYU5rd1UZ0V8j0-6shMQjEeoi4HDWZ0B/exec" \
+            --data-urlencode "action=detailVsDailyDiag" \
+            --data-urlencode "token=$BQ_LOAD_TOKEN" \
+            --data-urlencode "ym=$YM" \
+            --data-urlencode "store=$STORE" \
             | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.stringify(JSON.parse(d),null,2)));"
