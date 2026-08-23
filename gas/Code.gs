@@ -48,7 +48,8 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v56', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v57', time: new Date().toISOString() });
+    if (action === 'syncSeisanFeeToPl') return out(syncSeisanFeeToPl(p)); // 運営委託費のPL自動連携（専用トークン認証・ログイン不要。2026-08-23追加）
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     if (action === 'bqSetupSalesDataset') return out(bqSetupSalesDataset(p)); // salesデータセット作成（初回のみ・専用トークン認証）
     if (action === 'bqSyncSales') return out(bqSyncAllSales(p)); // 分析_日別店舗ほかのBQミラー（専用トークン認証・ログイン不要）
@@ -1354,7 +1355,82 @@ function bqGetPL(p, session) {
   }
 }
 
-// 入金管理タブ用: 入金DBのBQミラーを読む。bqGetPLと同じ方針（ログイン必須・店舗スコープ制限）で、
+// ================== 運営委託費のPL自動連携（2026-08-23追加） ==================
+// 業務委託（精算対象）の店舗について、精算ダッシュボード（別GASプロジェクト）が計算済みの
+// 「業務委託費（税抜）」を毎月取得し、DB_PLへ自動計上する。既存の広告費自動連携
+// （PL_AUTO_MEMO='媒体販促費（自動計上）'）と同じ考え方で、専用メモでマークした行だけを
+// 差し替える（手入力行・他の自動行には触らない）。対象店舗はnippo店舗管理画面の
+// 「💰精算対象」フラグ（Supabase stores.seisan_target）が正——ここで店舗を追加/除外すれば
+// 次回の同期から自動的に反映される。黒霧屋は元々このフラグがOFFのため自動的に対象外になる。
+var PL_SEISAN_MEMO = '運営委託費（自動計上）';
+function syncSeisanFeeToPl(p) {
+  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+  if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
+  var seisanUrl = PropertiesService.getScriptProperties().getProperty('SEISAN_WEBAPP_URL');
+  var plSyncToken = PropertiesService.getScriptProperties().getProperty('PL_SYNC_TOKEN');
+  if (!seisanUrl || !plSyncToken) return { ok: false, error: 'SEISAN_WEBAPP_URL または PL_SYNC_TOKEN が未設定です（スクリプトプロパティ）' };
+
+  // 対象月: 指定が無ければ先月（精算書は通常、翌月に発行されるため）
+  var ym = String((p || {}).ym || '').trim();
+  if (!/^\d{4}-\d{2}$/.test(ym)) {
+    var d0 = new Date(); d0.setMonth(d0.getMonth() - 1);
+    ym = Utilities.formatDate(d0, 'Asia/Tokyo', 'yyyy-MM');
+  }
+
+  // 対象店舗: Supabase store_directory_v から精算対象(seisan_target=true)かつ営業中の店舗名一覧
+  var storeRes = UrlFetchApp.fetch(
+    'https://uuvsxzhpxtghojoubjcc.supabase.co/rest/v1/store_directory_v?select=name,seisan_target,is_active',
+    { headers: { apikey: STORE_DIRECTORY_ANON_KEY_, Authorization: 'Bearer ' + STORE_DIRECTORY_ANON_KEY_ }, muteHttpExceptions: true }
+  );
+  if (storeRes.getResponseCode() !== 200) return { ok: false, error: '店舗一覧の取得に失敗しました' };
+  var stores = JSON.parse(storeRes.getContentText())
+    .filter(function (s) { return s.seisan_target && s.is_active; })
+    .map(function (s) { return s.name; });
+  if (!stores.length) return { ok: true, ym: ym, synced: 0, note: '精算対象の店舗がありません' };
+
+  var results = [], errors = [];
+  var byStore = {};
+  stores.forEach(function (store) {
+    try {
+      var res = UrlFetchApp.fetch(seisanUrl, {
+        method: 'post', contentType: 'application/json', muteHttpExceptions: true,
+        payload: JSON.stringify({ fn: 'sd_apiTransferEx', args: [plSyncToken, store, ym] })
+      });
+      var j = JSON.parse(res.getContentText());
+      if (!j.ok) { errors.push(store + ': ' + (j.error || 'unknown')); return; }
+      var r = j.result;
+      if (!r || !r.found || !r.hasSales) { results.push(store + ': データ無し（スキップ）'); return; }
+      byStore[store] = Math.round(r.transferEx);
+      results.push(store + ': ¥' + Math.round(r.transferEx).toLocaleString('ja-JP'));
+    } catch (e) {
+      errors.push(store + ': ' + String(e && e.message || e));
+    }
+  });
+
+  // DB_PLへ反映: 対象月×対象店舗×このメモの既存行を削除し、取得できた分だけ入れ直す
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_PL');
+  if (!sh) return { ok: false, error: 'DB_PLシートがありません' };
+  var lastRow = sh.getLastRow();
+  var ymSlash = ym.slice(0, 4) + '/' + ym.slice(5, 7);
+  var keep = [];
+  if (lastRow >= 2) {
+    sh.getRange(2, 1, lastRow - 1, 6).getValues().forEach(function (r) {
+      if (r[0] === '' && r[1] === '' && r[2] === '') return;
+      var sameMonth = bqPlYm_(r[0]) === ymSlash;
+      var isThisAuto = String(r[5]) === PL_SEISAN_MEMO && stores.indexOf(String(r[1]).trim()) >= 0;
+      if (sameMonth && isThisAuto) return; // 差し替え対象は捨てる（今回取れなかった店舗の古い行も一掃）
+      keep.push(r);
+    });
+  }
+  var y = Number(ym.slice(0, 4)), mo = Number(ym.slice(5, 7));
+  Object.keys(byStore).forEach(function (store) {
+    keep.push([new Date(y, mo - 1, 1), store, '運営委託費', 'O', byStore[store], PL_SEISAN_MEMO]);
+  });
+  if (lastRow >= 2) sh.getRange(2, 1, lastRow - 1, 6).clearContent();
+  if (keep.length) { sh.getRange(2, 1, keep.length, 6).setValues(keep); sh.getRange(2, 1, keep.length, 1).setNumberFormat('yyyy/m/d'); }
+
+  return { ok: true, ym: ym, synced: Object.keys(byStore).length, detail: results, errors: errors };
+}
 // 既存のingestDeposit()がそのまま解釈できる形（{sheets:{deposit:[[店舗名,日付,入金額,メモ],...]}}）で返す。
 // 繰越（開始残高）計算のdepositCarry()はこのBQミラーを経由せず、常にローカルシートを直接読む
 // （全期間の累計が必要なため。ここで切り替わるのは「今月の明細」を表示する部分だけ）。
