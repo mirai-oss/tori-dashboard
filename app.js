@@ -1431,7 +1431,10 @@ async function fetchDepositBQ(){
 async function fetchMediaBQ(){
   if(!S.auth||!S.auth.token) return;
   try{
-    const d=await api({ action:'bqGetMedia', token:S.auth.token });
+    // 媒体別日次は「店舗×媒体×日」の粒度で分析_日別店舗より遥かに件数が多いため
+    // （実測21,000件超／5ヶ月）、他のBQ取得と同じmonthsWindow()=13ヶ月ではほぼ絞れない。
+    // ログイン直後の表示に必要な直近3ヶ月だけに絞って高速化する（2026-08-23）。
+    const d=await api({ action:'bqGetMedia', token:S.auth.token, months:3 });
     if(d&&d.ok&&d.sheets){ ingestSheets(d.sheets, true); }
   }catch(e){}
   D.mediaPending=false; render();

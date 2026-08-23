@@ -48,7 +48,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v65', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v66', time: new Date().toISOString() });
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'syncSeisanFeeToPl') return out(syncSeisanFeeToPl(p)); // 運営委託費のPL自動連携（専用トークン認証・ログイン不要。2026-08-23追加）
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
@@ -1504,6 +1504,15 @@ function bqGetMedia(p, session) {
       if (allowNames.length) {
         where = "WHERE store_name IN ('" + allowNames.map(function (n) { return String(n).replace(/'/g, "''"); }).join("','") + "')";
       }
+    }
+    // 全期間(2万件超)を毎回まるごと返すと、BQ結果をApps Script側で1行ずつ配列に組み立てる
+    // 処理自体が重く、シート直読みとあまり変わらない速度になってしまっていた（実地報告で発覚・
+    // 2026-08-23）。bqDailyStoreと同じくmonthsで絞る（クライアント側はmonthsWindow()=既定13ヶ月を渡す）。
+    var months = Number(p.months) || 0;
+    if (months > 0) {
+      var cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - months);
+      var cutoffStr = Utilities.formatDate(cutoff, 'Asia/Tokyo', 'yyyy-MM-dd');
+      where += (where ? ' AND ' : 'WHERE ') + "date >= DATE('" + cutoffStr + "')";
     }
     var sql = 'SELECT store_name, date, media_name, guests, parties, net_sales FROM `' + BQ_PROJECT + '.' + BQ_SALES_DATASET + '.stg_media` ' + where + ' ORDER BY date';
     var rows = bqRows_(sql);
