@@ -48,10 +48,11 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v70', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v71', time: new Date().toISOString() });
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'detailVsDailyDiag') return out(detailVsDailyDiag(p)); // 明細分析とダッシュボードの売上・客数・組数の差を実測で突合（専用トークン認証・読み取り専用・一時的）
+    if (action === 'bqPerfDiag') return out(bqPerfDiag(p)); // BQモード各アクションの所要時間計測（専用トークン認証・読み取り専用・一時的）
     if (action === 'syncSeisanFeeToPl') return out(syncSeisanFeeToPl(p)); // 運営委託費のPL自動連携（専用トークン認証・ログイン不要。2026-08-23追加）
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     if (action === 'bqSetupSalesDataset') return out(bqSetupSalesDataset(p)); // salesデータセット作成（初回のみ・専用トークン認証）
@@ -1643,6 +1644,27 @@ function storeMapDiag(p) {
   var realNames = real ? real.slice(1).map(function (r) { return r[0]; }) : [];
   var unmatched = diniiNames.filter(function (n) { return realNames.indexOf(n) < 0; });
   return { ok: true, diniiNames: diniiNames, realNames: realNames, unmatched: unmatched };
+}
+
+// 一時的な診断用（2026-08-23）: 「ダッシュボード全体が遅い」報告を受け、BQモード(useBqDaily)の各アクション
+// 実体を計測し、ボトルネックが「BigQueryのクエリ実行そのもの」なのか別要因なのかを切り分ける。
+// 読み取り専用・専用トークン認証。実データは返さず時間だけ返す（全店・直近13ヶ月＝クライアントの既定と同条件）。
+function bqPerfDiag(p) {
+  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+  if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
+  var now = function () { return new Date().getTime(); };
+  var sess = { stores: '全店' };
+  var T = {}, t0 = now();
+  var today = Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyy-MM-dd');
+  var monthStart = today.slice(0, 8) + '01';
+  var s;
+  s = now(); try { var d1 = bqDetail({ from: monthStart, to: today, store: 'all' }, sess); T.bqDetail_明細分析 = { ms: now() - s, ok: !!(d1 && d1.ok), rows: d1 ? { hour: (d1.hour || []).length, item: (d1.item || []).length, store: (d1.store || []).length, hourItem: (d1.hourItem || []).length } : null }; } catch (e) { T.bqDetail_明細分析 = { ms: now() - s, error: String(e) }; }
+  s = now(); try { var d2 = bqDailyStore({ months: 13 }, sess); T.bqDailyStore_推移分析 = { ms: now() - s, ok: !!(d2 && d2.ok), rows: d2 && d2.sheets ? d2.sheets.daily.length : null }; } catch (e) { T.bqDailyStore_推移分析 = { ms: now() - s, error: String(e) }; }
+  s = now(); try { var d3 = bqGetPL({}, sess); T.bqGetPL_PLタブ = { ms: now() - s, ok: !!(d3 && d3.ok) }; } catch (e) { T.bqGetPL_PLタブ = { ms: now() - s, error: String(e) }; }
+  s = now(); try { var d4 = bqGetDeposit({ months: 13 }, sess); T.bqGetDeposit_入金管理 = { ms: now() - s, ok: !!(d4 && d4.ok) }; } catch (e) { T.bqGetDeposit_入金管理 = { ms: now() - s, error: String(e) }; }
+  s = now(); try { var d5 = bqGetMedia({ months: 3 }, sess); T.bqGetMedia_媒体別 = { ms: now() - s, ok: !!(d5 && d5.ok) }; } catch (e) { T.bqGetMedia_媒体別 = { ms: now() - s, error: String(e) }; }
+  T.grandTotal_5アクション合計 = now() - t0;
+  return { ok: true, timing_ms: T, note: 'いずれも全店・直近13ヶ月分でクライアントと同条件。キャッシュがあれば効いた状態での計測（実利用に近い）。' };
 }
 
 // 一時的な診断用（2026-08-23）: 明細分析(dinii明細集計)とダッシュボード(fact_daily_store=分析_日別店舗の
