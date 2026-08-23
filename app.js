@@ -1364,21 +1364,24 @@ async function fetchDataFast(){
   // 代わりにfetchDailyBQ()/fetchPlBQ()/fetchDepositBQ()で取得する（2026-08-22追加）
   const excl = S.useBqDaily ? HEAVY_KEYS.concat(['daily','PL']) : HEAVY_KEYS;
   await fetchData(true, { exclude:excl });               // 軽い必須のみ → すぐ表示
-  if(S.useBqDaily){ fetchDailyBQ(); fetchPlBQ(); fetchDepositBQ(); }
+  if(S.useBqDaily){ fetchDailyBQ(); fetchPlBQ(); fetchDepositBQ(); fetchMediaBQ(); }
   render();
   // data は version を返さないので、初回に署名を取得（次の自動更新のムダ取得を防ぐ）
   fetchVersion().then(v=>{ if(v!==null) S.dataVersion=v; });
   // フェーズ2：裏で先読み。優先順＝ダッシュボード関連(口コミ明細・媒体別)→他タブ(入金・予約)
   const myRun=++prefetchRun;
   (async()=>{
-    // BigQueryモード中はdepositをシートから先読みしない（fetchDepositBQ()に任せる。2026-08-22追加）
-    const groups=[['dinii','media'], S.useBqDaily?['予約']:['deposit','予約']];
+    // BigQueryモード中はdeposit/mediaをシートから先読みしない（それぞれfetchDepositBQ()/
+    // fetchMediaBQ()に任せる。媒体別日次シートが21,000件超まで育ち、シート経由の先読みが
+    // ログイン直後・更新(⌘R)のたびにタイムアウトして「同期エラー」になっていた不具合への
+    // 対応。2026-08-22のdeposit対応時に media を一緒に切り替え忘れていた＝2026-08-23追加修正）
+    const groups=S.useBqDaily ? [['dinii'],['予約']] : [['dinii','media'],['deposit','予約']];
     for(const g of groups){
       if(myRun!==prefetchRun) return;                    // 新しい読込が始まったら中断（多重先読み防止）
       try{ await fetchData(true, { only:g, partial:true }); }catch(e){}
       if(g.indexOf('media')>=0){ D.mediaPending=false; render(); }
     }
-    D.mediaPending=false; render();
+    if(!S.useBqDaily){ D.mediaPending=false; render(); }  // BQモードはfetchMediaBQ側でクリアする
   })();
 }
 // 推移分析のデータ元をBigQuery(fact_daily_store)に切り替えているときに呼ぶ。
@@ -1421,6 +1424,17 @@ async function fetchDepositBQ(){
     else{ D.depositBqErr=(d&&d.error)||'取得に失敗しました'; }
   }catch(e){ D.depositBqErr=String(e&&e.message||e); }
   D.depositBqLoading=false; render();
+}
+// 媒体別日次用: 媒体別DBのBQミラーを読む（2026-08-23追加。fetchDepositBQと同じ考え方）。
+// D.mediaPendingはここでクリアする（ログイン処理のDATA_WAITがこのフラグを見ているため、
+// 成功・失敗どちらでも必ずfalseにして固まらないようにする＝他のfetchXxxBQ()と同じ設計）。
+async function fetchMediaBQ(){
+  if(!S.auth||!S.auth.token) return;
+  try{
+    const d=await api({ action:'bqGetMedia', token:S.auth.token });
+    if(d&&d.ok&&d.sheets){ ingestSheets(d.sheets, true); }
+  }catch(e){}
+  D.mediaPending=false; render();
 }
 // 軽量版：まず署名(version)だけ取り、変化があるときだけフル取得
 async function fetchVersion(){

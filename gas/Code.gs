@@ -48,7 +48,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v64', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'fix-v65', time: new Date().toISOString() });
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'syncSeisanFeeToPl') return out(syncSeisanFeeToPl(p)); // 運営委託費のPL自動連携（専用トークン認証・ログイン不要。2026-08-23追加）
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
@@ -81,6 +81,7 @@ function handle(p) {
     if (action === 'bqDailyStore') return out(bqDailyStore(p, session)); // 推移分析：分析_日別店舗のBQミラーを読む（データソース切替フラグ用）
     if (action === 'bqGetPL') return out(bqGetPL(p, session)); // PLタブ：DB_PLのBQミラーを読む（データソース切替フラグ用）
     if (action === 'bqGetDeposit') return out(bqGetDeposit(p, session)); // 入金管理タブ：入金DBのBQミラーを読む（データソース切替フラグ用）
+    if (action === 'bqGetMedia') return out(bqGetMedia(p, session)); // 媒体別日次：媒体別DBのBQミラーを読む（ログイン直後の同期エラー対策・2026-08-23追加）
     if (action === 'accounts') return out(listAccounts(session));
     if (action === 'saveAccount')   return out(saveAccount(p, session));
     if (action === 'deleteAccount') return out(deleteAccount(p, session));
@@ -1484,6 +1485,35 @@ function bqGetDeposit(p, session) {
       out.push([r[0], String(r[1]).replace(/-/g, '/'), Number(r[2] || 0), r[3]]);
     }
     return { ok: true, sheets: { deposit: out } };
+  } catch (e) {
+    return { ok: false, error: String(e && e.message || e) };
+  }
+}
+
+// 媒体別日次タブ用: 媒体別DBのBQミラー(stg_media)を読む。bqGetDepositと同じ方針。
+// 2026-08-23追加: 媒体別日次シートが21,000件超まで育ち、ログイン直後・更新(⌘R)時の
+// 生シート読込がGAS側でタイムアウトし「同期エラー」になる不具合（前日のLark配信と同根の
+// 問題。あちらは自動配信のみ対応し、ダッシュボード本体のログイン処理は未対応だった）への対応。
+function bqGetMedia(p, session) {
+  try {
+    var sessStores = String(session && session.stores || '').trim();
+    var restricted = sessStores && sessStores !== '全店';
+    var where = '';
+    if (restricted) {
+      var allowNames = sessStores.split(/[,、]/).map(function (s) { return s.trim(); }).filter(Boolean);
+      if (allowNames.length) {
+        where = "WHERE store_name IN ('" + allowNames.map(function (n) { return String(n).replace(/'/g, "''"); }).join("','") + "')";
+      }
+    }
+    var sql = 'SELECT store_name, date, media_name, guests, parties, net_sales FROM `' + BQ_PROJECT + '.' + BQ_SALES_DATASET + '.stg_media` ' + where + ' ORDER BY date';
+    var rows = bqRows_(sql);
+    if (!rows) return { ok: false, error: 'BigQueryクエリ失敗' };
+    var out = [['店舗名', '営業日', '媒体名', '客数', '客組数', '純売上']];
+    for (var i = 1; i < rows.length; i++) {
+      var r = rows[i];
+      out.push([r[0], String(r[1]).replace(/-/g, '/'), r[2], Number(r[3] || 0), Number(r[4] || 0), Number(r[5] || 0)]);
+    }
+    return { ok: true, sheets: { media: out } };
   } catch (e) {
     return { ok: false, error: String(e && e.message || e) };
   }
