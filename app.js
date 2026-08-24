@@ -5395,6 +5395,44 @@ function mfBuildPreview(m){
   });
   return out;
 }
+// 現在のDB_PLを「📥 MF取込」と同じCSV形式（勘定科目／補助科目／4月〜3月／決算整理／合計）で書き出す。
+// Excel/スプレッドシートで編集して同じ画面から再アップロードすれば、プレビュー→確定でPLに反映できる
+// （2026-08-24追加。マネーフォワードのCSVに慣れているためあえて同じ形式にした、というユーザー要望）。
+const MF_MONTH_ORDER=[4,5,6,7,8,9,10,11,12,1,2,3];
+function mfExportCsv(){
+  const m=S.modal; if(!m||m.type!=='mfImport') return;
+  const store=m.store, fyStart=m.fyStart;
+  const inRange=(t)=>{ const d=new Date(t), y=d.getFullYear(), mo=d.getMonth()+1; return (mo>=4&&y===fyStart)||(mo<=3&&y===fyStart+1); };
+  const rows=D.pl.filter(r=>{
+    const match = store==='__common__' ? !String(r.store).trim() : normStore(r.store)===normStore(store);
+    return match && inRange(r.t) && r.memo!=='媒体販促費（自動計上）' && r.item!=='媒体販促費（自動）';
+  });
+  if(!rows.length){ toast('この店舗・会計年度のPLデータがありません'); return; }
+  const items={};   // item -> { monthly:{mo:amt}, subs:{subname:{mo:amt}} }
+  rows.forEach(r=>{
+    const mo=new Date(r.t).getMonth()+1;
+    if(!items[r.item]) items[r.item]={ monthly:{}, subs:{} };
+    items[r.item].monthly[mo]=(items[r.item].monthly[mo]||0)+r.amount;
+    if(r.sub){ if(!items[r.item].subs[r.sub]) items[r.item].subs[r.sub]={}; items[r.item].subs[r.sub][mo]=(items[r.item].subs[r.sub][mo]||0)+r.amount; }
+  });
+  const header=['','勘定科目','補助科目',...MF_MONTH_ORDER.map(mo=>mo+'月'),'決算整理','合計'];
+  const lines=[header.map(csvCell).join(',')];
+  Object.keys(items).sort().forEach(item=>{
+    const it=items[item];
+    const mv=MF_MONTH_ORDER.map(mo=>it.monthly[mo]||0);
+    lines.push(['',item,'',...mv,0,mv.reduce((a,b)=>a+b,0)].map(csvCell).join(','));
+    Object.keys(it.subs).sort().forEach(sub=>{
+      const sv=MF_MONTH_ORDER.map(mo=>it.subs[sub][mo]||0);
+      lines.push(['','',sub,...sv,0,sv.reduce((a,b)=>a+b,0)].map(csvCell).join(','));
+    });
+  });
+  const blob=new Blob([new Uint8Array([0xEF,0xBB,0xBF]), lines.join('\n')+'\n'],{type:'text/csv'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+  const d=new Date(), ds=d.getFullYear()+String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0');
+  a.download='PL_'+(store==='__common__'?'全社共通':store)+'_'+fyStart+'年度_'+ds+'.csv';
+  a.click(); URL.revokeObjectURL(a.href);
+  toast('現在のPLをCSVでダウンロードしました。編集後、同じ画面からアップロードしてください');
+}
 function mfImportModal(){
   const m=S.modal;
   const stores=scopeStores();
@@ -5461,7 +5499,8 @@ function mfImportModal(){
   const canConfirm=!!(m.parsed && p.unmapped.length===0 && (p.register.length+p.choose.length)>0);
   return `<div class="modal-bg" onclick="if(event.target===this)App.closeModal()"><div class="modal" style="max-width:820px">
     <h3>📥 マネーフォワード試算表CSV取込</h3>
-    <div class="sub">MF会計の「損益計算書 月次推移」CSVをアップロードすると、既存のPLと突き合わせてプレビューします。内容を確認してから確定してください（確定するまでDB_PLは一切変更されません）。</div>
+    <div class="sub">MF会計の「損益計算書 月次推移」CSVをアップロードすると、既存のPLと突き合わせてプレビューします。内容を確認してから確定してください（確定するまでDB_PLは一切変更されません）。<br>
+    現在のPLを同じ形式のCSVでダウンロードして、Excel/スプレッドシートで編集してからそのままアップロードすることもできます（下の「現在のPLをダウンロード」）。</div>
     <div class="form-grid" style="margin-top:12px">
       <div><label>この試算表の店舗</label>
         <select onchange="App.mfSetField('store',this.value)">
@@ -5470,6 +5509,8 @@ function mfImportModal(){
         </select></div>
       <div><label>会計年度（4月始まり・開始年）</label>
         <input type="number" value="${m.fyStart}" style="width:100px" onchange="App.mfSetField('fyStart',+this.value)"></div>
+      <div><label>&nbsp;</label>
+        <button class="icon-btn" onclick="App.mfExportCsv()">📤 現在のPLをダウンロード</button></div>
       <div><label>CSVファイル</label>
         <input type="file" accept=".csv,text/csv" onchange="App.mfFileChosen(this)" style="width:100%;font-size:12px;padding:6px 0"></div>
     </div>
@@ -6327,6 +6368,7 @@ window.App = {
   mfToggleSub(acc,sub,checked){ const m=S.modal; m.subApprove=m.subApprove||{}; m.subApprove[acc+'\t'+sub]=checked; render(); },
   mfSetRowChoice(key,val){ const m=S.modal; m.rowChoice=m.rowChoice||{}; m.rowChoice[key]=val; render(); },
   mfBulkChoice(val){ const m=S.modal; const p=mfBuildPreview(m); m.rowChoice=m.rowChoice||{}; p.choose.forEach(r=>{ m.rowChoice[r.key]=val; }); render(); },
+  mfExportCsv(){ mfExportCsv(); },
   async mfConfirm(){
     const m=S.modal;
     if(!S.auth||!S.auth.token){ m.msg='スプレッドシート接続時のみ取込できます（デモモードでは不可）'; render(); return; }
