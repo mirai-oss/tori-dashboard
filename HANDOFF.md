@@ -124,6 +124,7 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 | ✅ 完了（A-2・2026-08-24） | BQモード読込中／失敗時のガード表示（`app.js?v=119`）。`D.dailyBqLoading`中は前回の古い/部分dailyのまま壊れた暫定数字が出ていた問題を修正。ダッシュボード・推移分析・目標管理タブ共通で、読込中は「⏳ BigQueryから読み込み中…」、フォールバックも失敗した場合は「⚠️ データ取得に失敗しました。再読み込みしてください」に置き換え。フォールバック成功時（データ取得済み）は従来どおり通常表示。ローカルデモモードで5パターン（読込中/完了後/失敗時/フォールバック成功時/BQモードOFF時）を実機同等の`render()`実行で確認済み。GAS変更なし・GitHub Pages自動デプロイのみ。参照: `ns-portal/docs/実装指示書_BQ表示改善と社員給与按分_2026-08-24.md`タスク1 |
 | 🔶 **展開中（A-3第1段階・2026-08-24）** | BQモードを社長・本部のみ既定ONに（`app.js?v=120`）。ユーザーOK済み。`applyBqDailyRoleDefault_()`でlocalStorage未設定ユーザーのみrole基準の既定値を適用（手動トグル済みユーザーは上書きしない）。**次にやること**: 2営業日（〜2026-08-26頃）様子を見て問題なければ役職条件を広げ全役職へ展開。あわせて`ns-daily-import`の`morning-refresh`（タスク2・Mac miniへ本日git pull済み）が翌朝08:45に実行され09:05頃BQへ前日分が反映されることの実地確認が必要 |
 | ✅ 完了（F-3依頼対応・2026-08-24） | `?embed=1`でヘッダー/ナビ非表示・`?tab=`（無ければ`#tab=`）で初期タブ指定（`app.js?v=121`）。ns-portal統合ポータルシェル（担当F）から依頼のあった深リンク・埋め込み対応。`init()`でURLパラメータをS.embed/S.pendingTabへ保持→`afterLogin()`でmyTabs()の許可リストに含まれる場合のみ適用。ローカルデモモードで4パターン確認済み。**担当Fへの申し送り**: portal.html側でiframe srcに`?embed=1&tab=xxx`を付与すれば深リンクが有効になる（xxxは`dash`/`target`/`analysis`/`detail`/`pl`/`deposit`/`ad`/`review`/`weekly`/`weeklyAdmin`/`ai`/`accounts`。`TAB_LABELS`＝`app.js:38`参照） |
+| ✅ 完了（F実機報告への修正・2026-08-24・`app.js?v=122`） | セッション復元経路（2回目以降のアクセスでlocalStorageの保存済みログイン情報を使う経路）が`afterLogin()`を呼んでおらず、`?tab=`が新規ログイン時にしか効かない不具合を修正。復元経路2分岐とも`afterLogin()`を呼ぶよう変更（pendingTab反映・store初期化・`applyBqDailyRoleDefault_()`を内包）。ローカルでlocalStorageにセッション事前設定→`?tab=ad`でアクセスし`S.tab`が正しく`'ad'`になることを確認 |
 
 ---
 
@@ -147,6 +148,18 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 ---
 
 ## 5. 作業ログ
+
+### 2026-08-24（担当A実行スレッド・続き4）担当Fの実機報告を修正: セッション復元経路で`?tab=`が無視される（`app.js?v=122`）
+
+ユーザーから「担当Fから指示が来ているはずなので実装してほしい」と指示を受け、`ns-portal/WORKLOG.md`のコミット`21ee5c7`（担当F実行スレッド・続き7）を確認・着手。
+
+**担当Fの報告**: ユーザーがportal.htmlの経営管理グループで各項目（経営ダッシュボード/PL管理/広告管理/入金管理）をクリックしても表示が切り替わらない（「バラバラでリンクされていない」）。担当Fがコードを読んで原因を特定済み（`app.js:6953-6958`のログイン情報復元経路が`afterLogin()`を呼んでいない）。
+
+**原因の再確認**: 前回（F-3対応）実装した`?tab=`反映は`afterLogin()`内の1文でのみ行っていた。`afterLogin()`は新規ログイン（`doLogin`/`doSsoLogin`/`trySilentPortalLogin`）でのみ呼ばれており、**ブラウザに保存済みのセッションで自動復元する経路（`init()`内、2回目以降のアクセスで毎回通る）では呼ばれていなかった**ため、`?tab=`は初回ログイン時にしか効かず、2回目以降のアクセス（ポータルのiframeを開き直す・別タブをクリックする等、実際の利用シーンそのもの）では無視されていた。
+
+**修正**: 復元経路の2分岐（`sess.token&&apiUrl()`／`!sess.token&&!apiUrl()`）とも、個別に呼んでいた`applyBqDailyRoleDefault_()`を`afterLogin()`の呼び出しに置き換え（`afterLogin()`が内部で`applyBqDailyRoleDefault_()`も呼ぶため機能低下なし）。
+
+**検証**: ローカルで`localStorage.toriSession`に有効なセッションを事前設定した状態で`?embed=1&tab=ad`へアクセス（＝復元経路を強制的に通す）し、修正前なら`S.tab`が`'dash'`のままになるところ、修正後は`S.tab==='ad'`になることを確認。`node --check`で構文確認。GAS変更なし。
 
 ### 2026-08-24（担当A実行スレッド・続き3）運営委託費「振込済み月のみ」の実機検証を完了
 
