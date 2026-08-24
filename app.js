@@ -5384,9 +5384,12 @@ function mfBuildPreview(m){
       });
     });
     if(ignoredSubs.length){
-      const tot={};
-      ignoredSubs.forEach(s=>{ tot[s.name]=s.amounts.reduce((sum,a)=>sum+a.amt,0); });
-      const list=Object.keys(tot).map(n=>({name:n, total:tot[n]})).filter(x=>x.total!==0);
+      // 年間合計だけでなく月別の内訳（{mo, ym, amt}）も持たせる。プレビュー画面の「表示する月」プルダウンで使う。
+      const list=ignoredSubs.map(s=>({
+        name:s.name,
+        total:s.amounts.reduce((sum,a)=>sum+a.amt,0),
+        monthly:s.amounts.map(a=>({ mo:a.mo, ym:mfMoToYm(a.mo,m.fyStart), amt:a.amt }))
+      })).filter(x=>x.total!==0);
       if(list.length) out.ignoredSubsByAccount[acc.name]=list;
     }
   });
@@ -5410,20 +5413,38 @@ function mfImportModal(){
     if(p.reviewAccounts.length){
       prev+=`<div class="panel" style="padding:12px;margin-bottom:10px"><h4 style="font-size:13px;margin-bottom:6px">🆕 初めて見る科目（内容を確認・修正してください。確定すると次回から自動になります）</h4>`;
       prev+=p.reviewAccounts.map(acc=>{ const d=m.unmapped[acc]||{item:acc,cat:'O',exclude:false};
-        return `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0;padding-bottom:6px;border-bottom:1px solid var(--line)">
+        return `<div class="mf-review-row" data-acc="${esc(acc)}" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0;padding-bottom:6px;border-bottom:1px solid var(--line)">
           <span style="font-size:12.5px;min-width:140px">${esc(acc)}</span>
-          <input value="${esc(d.item)}" style="width:150px;font-size:12.5px;padding:5px 7px" onchange="App.mfSetUnmappedField('${esc(acc).replace(/'/g,"\\'")}','item',this.value)">
-          <select style="font-size:12.5px;padding:5px 4px" onchange="App.mfSetUnmappedField('${esc(acc).replace(/'/g,"\\'")}','cat',this.value)">${catOpt(d.cat)}</select>
-          <label style="font-size:12px;display:flex;align-items:center;gap:4px"><input type="checkbox" ${d.exclude?'checked':''} onchange="App.mfSetUnmappedField('${esc(acc).replace(/'/g,"\\'")}','exclude',this.checked)">取り込まない（既に自動連携済み等）</label>
+          <input class="mf-review-item" value="${esc(d.item)}" style="width:150px;font-size:12.5px;padding:5px 7px" onchange="App.mfSetUnmappedField(this.closest('.mf-review-row').dataset.acc,'item',this.value)">
+          <select class="mf-review-cat" style="font-size:12.5px;padding:5px 4px" onchange="App.mfSetUnmappedField(this.closest('.mf-review-row').dataset.acc,'cat',this.value)">${catOpt(d.cat)}</select>
+          <label style="font-size:12px;display:flex;align-items:center;gap:4px"><input type="checkbox" ${d.exclude?'checked':''} onchange="App.mfSetUnmappedField(this.closest('.mf-review-row').dataset.acc,'exclude',this.checked)">取り込まない（既に自動連携済み等）</label>
         </div>`; }).join('');
       prev+=`</div>`;
     }
     const ignoredAccs=Object.keys(p.ignoredSubsByAccount);
     if(ignoredAccs.length){
-      prev+=`<div class="panel" style="padding:12px;margin-bottom:10px"><h4 style="font-size:13px;margin-bottom:6px">🔍 取り込んでいない内訳（必要なものだけ選んで取り込めます）</h4>`;
-      prev+=ignoredAccs.map(acc=>`<div style="font-size:12.5px;margin:4px 0"><b>${esc(acc)}</b>: `+
-        p.ignoredSubsByAccount[acc].map(s=>`<label style="margin-right:10px"><input type="checkbox" ${m.subApprove&&m.subApprove[acc+'\t'+s.name]?'checked':''} onchange="App.mfToggleSub('${esc(acc).replace(/'/g,"\\'")}','${esc(s.name).replace(/'/g,"\\'")}',this.checked)">${esc(s.name)}(${yen(s.total)})</label>`).join('')
-        +`</div>`).join('');
+      const MONTH_ORDER=[4,5,6,7,8,9,10,11,12,1,2,3];
+      const selMo=m.ignoredMonth||'';
+      prev+=`<div class="panel" style="padding:12px;margin-bottom:10px">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:6px">
+          <h4 style="font-size:13px;margin:0">🔍 取り込んでいない内訳（必要なものだけ選んで取り込めます）</h4>
+          <label style="font-size:12px;display:flex;align-items:center;gap:4px">表示する月:
+            <select onchange="App.mfSetField('ignoredMonth',this.value?+this.value:null)">
+              <option value="" ${selMo===''?'selected':''}>年間合計</option>
+              ${MONTH_ORDER.map(mo=>`<option value="${mo}" ${String(selMo)===String(mo)?'selected':''}>${mo}月</option>`).join('')}
+            </select>
+          </label>
+        </div>`;
+      prev+=ignoredAccs.map(acc=>{
+        const items=p.ignoredSubsByAccount[acc].map(s=>{
+          const amt=m.ignoredMonth ? (s.monthly.find(x=>x.mo===m.ignoredMonth)||{amt:0}).amt : s.total;
+          return { name:s.name, amt };
+        }).filter(x=>x.amt!==0);
+        if(!items.length) return '';
+        return `<div class="mf-ignored-row" data-acc="${esc(acc)}" style="font-size:12.5px;margin:4px 0"><b>${esc(acc)}</b>: `+
+          items.map(s=>`<label class="mf-ignored-item" data-sub="${esc(s.name)}" style="margin-right:10px"><input type="checkbox" ${m.subApprove&&m.subApprove[acc+'\t'+s.name]?'checked':''} onchange="App.mfToggleSub(this.closest('.mf-ignored-row').dataset.acc,this.closest('.mf-ignored-item').dataset.sub,this.checked)">${esc(s.name)}(${yen(s.amt)})</label>`).join('')
+          +`</div>`;
+      }).join('');
       prev+=`</div>`;
     }
     if(p.choose.length){
@@ -5431,9 +5452,9 @@ function mfImportModal(){
         <div style="margin-bottom:6px"><button class="icon-btn sm" onclick="App.mfBulkChoice('overwrite')">すべて上書き</button> <button class="icon-btn sm" onclick="App.mfBulkChoice('keep')">すべて残す</button></div>
         <div class="scroll-x" style="max-height:220px;overflow-y:auto;border:1px solid var(--line2);border-radius:8px">
         <table class="tbl"><thead><tr><th>年月</th><th>科目</th><th>補助科目</th><th>既存</th><th>CSV</th><th>選択</th></tr></thead><tbody>`;
-      prev+=p.choose.map(r=>`<tr><td>${esc(r.ym)}</td><td>${esc(r.item)}</td><td>${esc(r.sub||'—')}</td><td style="text-align:right">${yen(r.prevAmount)}</td><td style="text-align:right">${yen(r.amount)}</td>
-        <td><label style="margin-right:6px"><input type="radio" name="mfch-${esc(r.key)}" ${r.choice==='overwrite'?'checked':''} onchange="App.mfSetRowChoice('${esc(r.key).replace(/'/g,"\\'")}','overwrite')">上書き</label>
-        <label><input type="radio" name="mfch-${esc(r.key)}" ${r.choice==='keep'?'checked':''} onchange="App.mfSetRowChoice('${esc(r.key).replace(/'/g,"\\'")}','keep')">残す</label></td></tr>`).join('');
+      prev+=p.choose.map(r=>`<tr class="mf-choose-row" data-key="${esc(r.key)}"><td>${esc(r.ym)}</td><td>${esc(r.item)}</td><td>${esc(r.sub||'—')}</td><td style="text-align:right">${yen(r.prevAmount)}</td><td style="text-align:right">${yen(r.amount)}</td>
+        <td><label style="margin-right:6px"><input type="radio" name="mfch-${esc(r.key)}" ${r.choice==='overwrite'?'checked':''} onchange="App.mfSetRowChoice(this.closest('.mf-choose-row').dataset.key,'overwrite')">上書き</label>
+        <label><input type="radio" name="mfch-${esc(r.key)}" ${r.choice==='keep'?'checked':''} onchange="App.mfSetRowChoice(this.closest('.mf-choose-row').dataset.key,'keep')">残す</label></td></tr>`).join('');
       prev+=`</tbody></table></div></div>`;
     }
   }
@@ -6278,7 +6299,7 @@ window.App = {
     const stores=scopeStores();
     const now=new Date();
     const fyStart=now.getMonth()>=3?now.getFullYear():now.getFullYear()-1;   // 4月始まり会計年度の既定推定
-    S.modal={ type:'mfImport', store:selStoreName()||stores[0], fyStart, fileName:'', parsed:null, unmapped:{}, subApprove:{}, rowChoice:{}, msg:'' };
+    S.modal={ type:'mfImport', store:selStoreName()||stores[0], fyStart, fileName:'', parsed:null, unmapped:{}, subApprove:{}, rowChoice:{}, ignoredMonth:null, msg:'' };
     render();
   },
   mfSetField(field,val){ S.modal[field]=val; render(); },
