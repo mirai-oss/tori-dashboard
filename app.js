@@ -181,6 +181,7 @@ const S = {
   reportMode:null, invite:null, inviteDone:false, wkWeek:'', wkFStore:'', wkFPos:'', wkFState:'', wkFQ:'',   // {kind:'daily'|'weekly'|'monthly', date:'YYYY-MM-DD'} Lark日報用の1枚カード表示
   accounts:null, accErr:'', modal:null, loginErr:'',
   useBqDaily:(localStorage.getItem(LS.dailyBq)==='1'),   // 推移分析のデータソース切替（既定=false=シート。2026-08-22追加）
+  embed:false, pendingTab:'',   // F-3(ns-portal統合ポータルシェル・2026-08-24追加): ?embed=1でヘッダー/ナビ非表示、?tab=でタブ直接指定
 };
 const D = { daily:[], media:[], deposit:[], review:[], ad:[], adfx:[], tanka:{}, pl:[], dinii:[], diniiCols:[], targets:[], targetsM:[], events:[], extra:{}, storeAlias:{}, storeParent:{}, mediaClass:{}, adMediaMaster:[], adPlanMaster:{}, adStoreMaster:[], subItemMaster:{}, mfCategoryMap:{}, holidays:null, detailData:null, detailKey:'', detailLoading:'', refDate:null, maxDate:null,
   spot:[], spotBqLoading:false, spotBqErr:'',
@@ -1714,6 +1715,8 @@ function applyBqDailyRoleDefault_(){
 function afterLogin(){
   const tabs=myTabs();
   S.tab=tabs[0];
+  // F-3: ?tab=/#tab=で指定されたタブが権限上開けるなら、既定の先頭タブより優先する
+  if(S.pendingTab && tabs.includes(S.pendingTab)) S.tab=S.pendingTab;
   const sc=scopeStores();
   S.store=(sc.length===1)?sc[0]:'all';
   S.loginErr='';
@@ -1796,7 +1799,10 @@ function render(){
   else if(S.tab==='weeklyAdmin') body=viewWeeklyAdmin();
   else if(S.tab==='ai') body=viewAI();
   else if(S.tab==='accounts') body=viewAccounts();
-  root.innerHTML=`<div class="app">${viewHeader()}${diagBanner()}${viewNav()}${body}</div>${ctxBarHtml()}${S.modal?viewModal():''}`;
+  // F-3(ns-portal統合ポータルシェルからのembed依頼・2026-08-24): ?embed=1のときは
+  // 自画面のヘッダー（ロゴ・接続設定・ログアウト等）とタブ切替ナビを隠す
+  // （ポータル側のサイドバーが同じ役割を担うため二重表示を避ける）。
+  root.innerHTML=`<div class="app${S.embed?' embed':''}">${S.embed?'':viewHeader()}${diagBanner()}${S.embed?'':viewNav()}${body}</div>${ctxBarHtml()}${S.modal?viewModal():''}`;
 }
 function renderHeaderOnly(){ /* 軽量更新は全再描画で十分 */ }
 
@@ -6933,6 +6939,14 @@ window.App = {
     const q=new URLSearchParams(location.search);
     if(q.get('report')) S.reportMode={ kind:q.get('report'), date:q.get('date')||'',
       stores:q.get('stores')?q.get('stores').split(',').map(s2=>s2.trim()).filter(Boolean):null, group:q.get('group')||'' };
+  }catch(e){}
+  // F-3(ns-portal統合ポータルシェル・2026-08-24追加): ?embed=1で自画面のヘッダー/ナビを非表示、
+  // ?tab=（無ければ#tab=）でログイン後に開くタブを直接指定（例: ?embed=1&tab=pl）。
+  // ログイン成功時にS.tab=tabs[0]で上書きされるため、実際の適用はafterLogin()側で行う。
+  try{
+    const q=new URLSearchParams(location.search);
+    if(q.get('embed')==='1') S.embed=true;
+    S.pendingTab=q.get('tab')||new URLSearchParams(location.hash.replace(/^#/,'')).get('tab')||'';
   }catch(e){}
   let restored=false;
   try{
