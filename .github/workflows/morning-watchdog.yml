@@ -1,0 +1,119 @@
+name: 朝の見張り番（売上・勤怠の取込確認）
+
+# ns-portal担当D（docs/実装指示書_担当D_勤怠給与監視_2026-08-24.md D-3）。
+# 8/23の「Mac mini停止に半日気づけなかった」障害の再発防止策。GitHub Actions（Mac miniと
+# 独立した場所）から、毎朝「昨日分の売上・勤怠がちゃんと入っているか」を確認し、
+# 入っていない時だけLarkへ警告する（正常時は無送信）。
+#
+# 既存ファイル・app.js・GASは一切変更しない（新規ファイル追加のみ。担当A専任のため）。
+# 売上チェックは既存のGASアクション`reportDataBQ`（bq-diag.ymlと同じ軽量問い合わせパターン）を
+# そのまま流用。勤怠チェックはns-portal側の新規Edge Function`attendance-freshness-check`を、
+# tori-dashboard⇔ns-portal間で既に共有されている`BQ_LOAD_TOKEN`で呼ぶ（新しいシークレットは増やさない）。
+#
+# 発火は他のcron系workflowと同じく外部cron（cron-job.org）からworkflow_dispatch APIを叩く。
+#   POST https://api.github.com/repos/mirai-oss/tori-dashboard/actions/workflows/morning-watchdog.yml/dispatches
+#   body: {"ref":"main"}
+#   Schedule: 毎日 09:30 JST（売上・勤怠とも当日08:00台の同期が終わっている前提の時刻）
+#
+# 手動実行: GitHubの Actions タブ → 本workflow → Run workflow でも実行可能
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: '確認したい日付（YYYY-MM-DD。空欄なら昨日=JST）'
+        required: false
+        default: ''
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 対象日を決定（JST基準の昨日）
+        id: date
+        run: |
+          if [ -n "${{ github.event.inputs.date }}" ]; then
+            TARGET="${{ github.event.inputs.date }}"
+          else
+            TARGET=$(TZ=Asia/Tokyo date -d 'yesterday' +%Y-%m-%d)
+          fi
+          echo "target=$TARGET" >> "$GITHUB_OUTPUT"
+          echo "対象日: $TARGET"
+
+      - name: 売上（fact_daily_store）を確認
+        id: sales
+        env:
+          BQ_LOAD_TOKEN: ${{ secrets.BQ_LOAD_TOKEN }}
+        run: |
+          if [ -z "$BQ_LOAD_TOKEN" ]; then
+            echo "::warning::BQ_LOAD_TOKEN未設定のため売上チェックをスキップ"
+            echo "missing=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          RES=$(curl -s -G "https://script.google.com/macros/s/AKfycbz9rd37EZa6X8WRMVEBrXobN8DbYWkHRlhFNYU5rd1UZ0V8j0-6shMQjEeoi4HDWZ0B/exec" \
+            --data-urlencode "action=reportDataBQ" \
+            --data-urlencode "token=$BQ_LOAD_TOKEN" \
+            --data-urlencode "kind=daily" \
+            --data-urlencode "date=${{ steps.date.outputs.target }}")
+          echo "$RES"
+          OK=$(echo "$RES" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).ok)}catch(e){console.log('false')}})")
+          if [ "$OK" != "true" ]; then
+            echo "::warning::reportDataBQ取得に失敗（判定不能のため異常とはみなさない）"
+            echo "missing=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          ROWS=$(echo "$RES" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log((JSON.parse(d).rows||[]).length)}catch(e){console.log(0)}})")
+          if [ "$ROWS" -eq "0" ]; then
+            echo "missing=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "missing=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 勤怠（labor_cost_daily）を確認
+        id: attendance
+        env:
+          BQ_LOAD_TOKEN: ${{ secrets.BQ_LOAD_TOKEN }}
+        run: |
+          if [ -z "$BQ_LOAD_TOKEN" ]; then
+            echo "::warning::BQ_LOAD_TOKEN未設定のため勤怠チェックをスキップ"
+            echo "missing=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          RES=$(curl -s "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/attendance-freshness-check?token=$BQ_LOAD_TOKEN&date=${{ steps.date.outputs.target }}")
+          echo "$RES"
+          OK=$(echo "$RES" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).ok)}catch(e){console.log('false')}})")
+          if [ "$OK" != "true" ]; then
+            echo "::warning::attendance-freshness-check取得に失敗（判定不能のため異常とはみなさない）"
+            echo "missing=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          HAS=$(echo "$RES" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).hasData)}catch(e){console.log('true')}})")
+          if [ "$HAS" != "true" ]; then
+            echo "missing=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "missing=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Larkへ警告（どちらか欠けている時だけ・正常時は無送信）
+        if: steps.sales.outputs.missing == 'true' || steps.attendance.outputs.missing == 'true'
+        env:
+          LARK_WEBHOOK: ${{ secrets.LARK_WEBHOOK }}
+        run: |
+          if [ -z "$LARK_WEBHOOK" ]; then
+            echo "::error::LARK_WEBHOOK未設定のため警告を送信できません"
+            exit 1
+          fi
+          PARTS=""
+          if [ "${{ steps.sales.outputs.missing }}" = "true" ]; then PARTS="売上"; fi
+          if [ "${{ steps.attendance.outputs.missing }}" = "true" ]; then
+            if [ -n "$PARTS" ]; then PARTS="$PARTS・勤怠"; else PARTS="勤怠"; fi
+          fi
+          TEXT="⚠️ ${{ steps.date.outputs.target }} の取込が確認できません（${PARTS}）。Mac mini停止・cron失敗等の可能性があります。"
+          BODY=$(TEXT="$TEXT" node -e "console.log(JSON.stringify({msg_type:'text', content:{text: process.env.TEXT}}))")
+          RES=$(curl -s -w "\n%{http_code}" -X POST "$LARK_WEBHOOK" -H "Content-Type: application/json" -d "$BODY")
+          echo "$RES"
+          HTTP_CODE=$(echo "$RES" | tail -1)
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::Lark送信に失敗しました（HTTP $HTTP_CODE）"
+            exit 1
+          fi
