@@ -123,6 +123,7 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 | ⏳ **デプロイ済み・実機未検証**（2026-08-24訂正: 本欄は「未デプロイ」のまま放置されていたが`scripts/status.sh`実測で本番ping=`seisan-paid-check-v1`と一致済みと判明） | 運営委託費のPL自動反映を「振込済み（確定）月のみ」に変更（2026-08-24続き8。`ping`=`seisan-paid-check-v1`／精算ダッシュボード側`ping`=`v5.14-plsync-paid`）。詳細は作業ログ参照。8月分を再実行し、振込未済みの店舗がPLから正しく外れることの確認がまだ必要 |
 | ✅ 完了（A-2・2026-08-24） | BQモード読込中／失敗時のガード表示（`app.js?v=119`）。`D.dailyBqLoading`中は前回の古い/部分dailyのまま壊れた暫定数字が出ていた問題を修正。ダッシュボード・推移分析・目標管理タブ共通で、読込中は「⏳ BigQueryから読み込み中…」、フォールバックも失敗した場合は「⚠️ データ取得に失敗しました。再読み込みしてください」に置き換え。フォールバック成功時（データ取得済み）は従来どおり通常表示。ローカルデモモードで5パターン（読込中/完了後/失敗時/フォールバック成功時/BQモードOFF時）を実機同等の`render()`実行で確認済み。GAS変更なし・GitHub Pages自動デプロイのみ。参照: `ns-portal/docs/実装指示書_BQ表示改善と社員給与按分_2026-08-24.md`タスク1 |
 | 🔶 **展開中（A-3第1段階・2026-08-24）** | BQモードを社長・本部のみ既定ONに（`app.js?v=120`）。ユーザーOK済み。`applyBqDailyRoleDefault_()`でlocalStorage未設定ユーザーのみrole基準の既定値を適用（手動トグル済みユーザーは上書きしない）。**次にやること**: 2営業日（〜2026-08-26頃）様子を見て問題なければ役職条件を広げ全役職へ展開。あわせて`ns-daily-import`の`morning-refresh`（タスク2・Mac miniへ本日git pull済み）が翌朝08:45に実行され09:05頃BQへ前日分が反映されることの実地確認が必要 |
+| ✅ 完了（F-3依頼対応・2026-08-24） | `?embed=1`でヘッダー/ナビ非表示・`?tab=`（無ければ`#tab=`）で初期タブ指定（`app.js?v=121`）。ns-portal統合ポータルシェル（担当F）から依頼のあった深リンク・埋め込み対応。`init()`でURLパラメータをS.embed/S.pendingTabへ保持→`afterLogin()`でmyTabs()の許可リストに含まれる場合のみ適用。ローカルデモモードで4パターン確認済み。**担当Fへの申し送り**: portal.html側でiframe srcに`?embed=1&tab=xxx`を付与すれば深リンクが有効になる（xxxは`dash`/`target`/`analysis`/`detail`/`pl`/`deposit`/`ad`/`review`/`weekly`/`weeklyAdmin`/`ai`/`accounts`。`TAB_LABELS`＝`app.js:38`参照） |
 
 ---
 
@@ -146,6 +147,22 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 ---
 
 ## 5. 作業ログ
+
+### 2026-08-24（担当A実行スレッド・続き2）F-3依頼対応: `?embed=1`ヘッダー非表示＋`?tab=`深リンク（`app.js?v=121`）
+
+担当F（ns-portal統合ポータルシェル担当）から`ns-portal/WORKLOG.md`経由で依頼あり。ユーザーから「担当Fの依頼を先に動かしてほしい」と指示を受け着手。
+
+**依頼内容**（`ns-portal/WORKLOG.md`2026-08-24「担当A（tori-dashboard）への依頼」より）: ①起動処理（`init()`、`report=`読み取りの近く）でURLの`tab=`パラメータを読み取り一時変数へ保持 ②`afterLogin()`の`S.tab=tabs[0]`を、保持したタブが`myTabs()`の許可リストに含まれていれば優先。あわせてF-3本来の依頼（`?embed=1`でヘッダー/ナビ非表示）も同時実装
+
+**実装**:
+- `S`に`embed:false, pendingTab:''`を追加
+- `init()`（旧`report=`読み取りのすぐ下）で`?embed=1`→`S.embed=true`、`?tab=`（無ければ`#tab=`）→`S.pendingTab`に保持
+- `afterLogin()`の`S.tab=tabs[0]`直後に、`S.pendingTab`が`tabs`（=`myTabs()`の許可リスト）に含まれていれば`S.tab`をそちらへ上書き。権限外・存在しないキーなら従来どおり既定の先頭タブにフォールバック
+- `render()`の最終`innerHTML`組み立てで`S.embed`のときだけ`viewHeader()`（ロゴ・接続設定・ログアウト等）と`viewNav()`（タブ切替ボタン列）を出力しないよう変更（ポータル側サイドバーとの二重表示を避ける。`diagBanner()`は接続状態の警告のため残す）
+
+**検証**: ローカルデモモード（`?embed=1&tab=pl`でアクセス→ログイン→`afterLogin()`実行）で、embed時に`header.top`/`nav.tabs`が両方DOMに存在しないこと・`S.tab`が`'pl'`になることを確認。通常アクセス（パラメータ無し）では従来どおりヘッダー・ナビとも表示されること、権限外/存在しないタブキーを指定した場合は既定タブへフォールバックすることも確認。`node --check`で構文確認。GAS変更なし。
+
+**担当Fへの申し送り**（`ns-portal/WORKLOG.md`にも記録): portal.htmlのiframe src組み立てで`KEIEI_URL`に`?embed=1&tab=xxx`を付与すれば、深リンク対応が有効になります。xxxは`dash`(経営ダッシュボード)/`target`(目標管理)/`analysis`(推移分析)/`detail`(明細分析)/`pl`(PL損益)/`deposit`(入金管理)/`ad`(広告管理)/`review`(口コミ)/`weekly`(週報)/`weeklyAdmin`(週報管理)/`ai`(AI検索)/`accounts`(アカウント管理)。ログイン前のURLに付けても、SSO自動ログイン（`trySilentPortalLogin`）完了後の`afterLogin()`で適用されます。
 
 ### 2026-08-24（担当A実行スレッド・続き）BQモードを社長・本部のみ既定ONに（A-3第1段階・`app.js?v=120`）
 
