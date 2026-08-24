@@ -768,8 +768,10 @@ function plCatOf(v){
   if(s[0]==='R'||/家賃|賃料/.test(s)) return 'R';
   return 'O';
 }
-function ingestPL(rows){
-  // 見出し行を検出（費目/科目 ＋ 年月/日付 ＋ 金額）。タイトル行が上にあってもズレない
+// DB_PLの行配列 → {store,t,item,cat,amount,memo,sub}の配列へ変換する純粋関数（Dを書き換えない）。
+// MF取込は常にこちらを直接使い、シートから取れた生データをその場でパースする
+// （D.plを経由すると、BigQueryモード中は日次同期しかされない古いミラーを見てしまうため）。
+function parsePLRows(rows){
   let hi=-1;
   for(let i=0;i<Math.min(rows.length,12);i++){
     const line=rows[i].map(x=>String(x==null?'':x)).join(',');
@@ -782,7 +784,7 @@ function ingestPL(rows){
   const iK=colAny(H,['区分','分類','カテゴリ']);   // F/L/A/R/O（無ければ全てO=その他扱い）
   const iMemo=colAny(H,['メモ','備考']);           // 経費入力モーダルでの編集時に保持する
   const iSub=colAny(H,['補助科目']);               // 勘定科目の内訳（2026-08-23追加・任意列）
-  if(iD<0||iI<0||iA<0){ D.diag['PL']='列が見つかりません（必要: 年月・勘定科目・金額）／見出し行: '+H.filter(Boolean).join('|'); return false; }
+  if(iD<0||iI<0||iA<0) return { error:'列が見つかりません（必要: 年月・勘定科目・金額）／見出し行: '+H.filter(Boolean).join('|') };
   const recs=[]; let dateSkipped=0;
   for(let i=hi+1;i<rows.length;i++){
     const c=rows[i];
@@ -792,8 +794,13 @@ function ingestPL(rows){
     const d=new Date(t0);
     recs.push({ store:String(iS>=0?c[iS]||'':'').trim(), t:new Date(d.getFullYear(),d.getMonth(),1).getTime(), item, cat:iK>=0?plCatOf(c[iK]):'O', amount:num(c[iA]), memo:iMemo>=0?String(c[iMemo]||'').trim():'', sub:iSub>=0?String(c[iSub]||'').trim():'' });
   }
-  if(!recs.length){ D.diag['PL']='0件'+(dateSkipped>0?'（'+dateSkipped+'行あるが年月を読めていません）':'（データ行がありません）'); return false; }
-  D.pl=recs; D.diag['PL']='OK '+recs.length+'件'; return true;
+  if(!recs.length) return { error:'0件'+(dateSkipped>0?'（'+dateSkipped+'行あるが年月を読めていません）':'（データ行がありません）') };
+  return { recs };
+}
+function ingestPL(rows){
+  const r=parsePLRows(rows);
+  if(r.error){ D.diag['PL']=r.error; return false; }
+  D.pl=r.recs; D.diag['PL']='OK '+r.recs.length+'件'; return true;
 }
 // DB_スポット人件費（タイミー等の単発人件費）。日付は「日」単位（PLの月単位とは違う）。
 // 日別の人件費率にPA/社員と合算するためstat()から参照される（2026-08-23追加）。
@@ -5343,7 +5350,7 @@ function mfBuildPreview(m){
   if(!m.parsed) return out;
   const store=m.store;
   const existing={};
-  D.pl.forEach(r=>{
+  (m.livePl||[]).forEach(r=>{
     const match = store==='__common__' ? !String(r.store).trim() : normStore(r.store)===normStore(store);
     if(!match) return;
     const d=new Date(r.t);
@@ -5399,15 +5406,32 @@ function mfBuildPreview(m){
   });
   return out;
 }
+// MF取込は必ずスプレッドシート（DB_PL）の「今この瞬間」の値を基準にする。
+// D.plをそのまま使うと、ダッシュボードがBigQueryモード中（🧪データ元切替。推移分析タブ）は
+// 1日1回しか同期されないミラー(stg_pl)を見てしまい、「ダウンロードしてそのままアップロードしても
+// 差額が出る」という不具合になる（2026-08-24実機で発覚）。action='data'（BigQueryを一切経由しない
+// 素のシート読み取り）を毎回明示的に呼び、その結果だけをMF取込画面専用に保持する。
+async function mfFetchLivePl(){
+  if(!S.auth||!S.auth.token) return { error:'ログインが必要です' };
+  try{
+    const d=await api({ action:'data', token:S.auth.token, keys:'PL' });
+    if(!d||!d.ok) return { error:(d&&d.error)||'PLの取得に失敗しました' };
+    const rows=d.sheets&&d.sheets.PL;
+    if(!rows||!rows.length) return { error:'PLデータが見つかりません（DB_PLが空か、まだ何も入力されていません）' };
+    const r=parsePLRows(rows);
+    return r.error?{ error:r.error }:{ recs:r.recs };
+  }catch(e){ return { error:'通信エラー: '+(e&&e.message||e) }; }
+}
 // 現在のDB_PLを「📥 MF取込」と同じCSV形式（勘定科目／補助科目／4月〜3月／決算整理／合計）で書き出す。
 // Excel/スプレッドシートで編集して同じ画面から再アップロードすれば、プレビュー→確定でPLに反映できる
 // （2026-08-24追加。マネーフォワードのCSVに慣れているためあえて同じ形式にした、というユーザー要望）。
 const MF_MONTH_ORDER=[4,5,6,7,8,9,10,11,12,1,2,3];
 function mfExportCsv(){
   const m=S.modal; if(!m||m.type!=='mfImport') return;
+  if(!m.livePl){ toast('PLデータを読み込み中です。少し待ってからもう一度お試しください'); return; }
   const store=m.store, fyStart=m.fyStart;
   const inRange=(t)=>{ const d=new Date(t), y=d.getFullYear(), mo=d.getMonth()+1; return (mo>=4&&y===fyStart)||(mo<=3&&y===fyStart+1); };
-  const rows=D.pl.filter(r=>{
+  const rows=m.livePl.filter(r=>{
     const match = store==='__common__' ? !String(r.store).trim() : normStore(r.store)===normStore(store);
     return match && inRange(r.t) && r.memo!=='媒体販促費（自動計上）' && r.item!=='媒体販促費（自動）';
   });
@@ -5514,7 +5538,7 @@ function mfImportModal(){
       prev+=`</tbody></table></div></div>`;
     }
   }
-  const canConfirm=!!(m.parsed && p.unmapped.length===0 && (p.register.length+p.choose.length)>0);
+  const canConfirm=!!(m.livePl && m.parsed && p.unmapped.length===0 && (p.register.length+p.choose.length)>0);
   return `<div class="modal-bg" onclick="if(event.target===this)App.closeModal()"><div class="modal" style="max-width:820px">
     <h3>📥 マネーフォワード試算表CSV取込</h3>
     <div class="sub">MF会計の「損益計算書 月次推移」CSVをアップロードすると、既存のPLと突き合わせてプレビューします。内容を確認してから確定してください（確定するまでDB_PLは一切変更されません）。<br>
@@ -5528,9 +5552,13 @@ function mfImportModal(){
       <div><label>会計年度（4月始まり・開始年）</label>
         <input type="number" value="${m.fyStart}" style="width:100px" onchange="App.mfSetField('fyStart',+this.value)"></div>
       <div><label>&nbsp;</label>
-        <button class="icon-btn" onclick="App.mfExportCsv()">📤 現在のPLをダウンロード</button></div>
+        <button class="icon-btn" onclick="App.mfExportCsv()" ${m.livePl?'':'disabled'}>📤 現在のPLをダウンロード</button></div>
       <div><label>CSVファイル</label>
         <input type="file" accept=".csv,text/csv" onchange="App.mfFileChosen(this)" style="width:100%;font-size:12px;padding:6px 0"></div>
+    </div>
+    <div style="font-size:11.5px;color:var(--mut2);margin-top:4px">
+      ${m.livePl?`✅ スプレッドシートの最新PLを読込済み（${m.livePl.length}件）`:'⏳ 最新PLを読込中…'}
+      <button class="icon-btn sm" style="margin-left:8px" onclick="App.mfRefreshLivePl()">🔄 最新のPLを再取得</button>
     </div>
     <div id="mf-msg" style="font-size:12px;color:#b5502f;margin:8px 0">${esc(m.msg||'')}</div>
     <div id="mf-preview" style="margin-top:6px">${prev}</div>
@@ -6358,13 +6386,26 @@ window.App = {
     const stores=scopeStores();
     const now=new Date();
     const fyStart=now.getMonth()>=3?now.getFullYear():now.getFullYear()-1;   // 4月始まり会計年度の既定推定
-    S.modal={ type:'mfImport', store:selStoreName()||stores[0], fyStart, fileName:'', parsed:null, unmapped:{}, subApprove:{}, rowChoice:{}, ignoredMonth:null, chooseMonth:null, msg:'' };
+    S.modal={ type:'mfImport', store:selStoreName()||stores[0], fyStart, fileName:'', parsed:null, unmapped:{}, subApprove:{}, rowChoice:{}, ignoredMonth:null, chooseMonth:null, livePl:null, msg:'' };
     render();
+    this.mfRefreshLivePl();
+  },
+  // MF取込の「今の店舗・年度が正しいか」の判断材料になるDB_PLを、BigQueryモードの影響を受けずに
+  // 必ずスプレッドシートから直接取り直す。ダウンロード直前・アップロード比較の前提データなので、
+  // 画面を開いた直後と、ユーザーが明示的に「最新のPLを再取得」した時だけ呼ぶ（毎回叩くと重いため）。
+  async mfRefreshLivePl(){
+    const m=S.modal; if(!m||m.type!=='mfImport') return;
+    m.livePl=null; m.msg='PLデータを読み込み中…'; render();
+    const r=await mfFetchLivePl();
+    if(S.modal!==m) return;   // 読み込み中にモーダルを閉じた/切り替えた場合は反映しない
+    if(r.error){ m.msg=r.error; render(); return; }
+    m.livePl=r.recs; m.msg=''; render();
   },
   mfSetField(field,val){ S.modal[field]=val; render(); },
   async mfFileChosen(inp){
     const m=S.modal; m.msg='';
     const f=inp.files&&inp.files[0]; if(!f) return;
+    if(!m.livePl){ m.msg='PLデータの読み込み中です。少し待ってからもう一度ファイルを選び直してください'; render(); inp.value=''; return; }
     try{
       const buf=await f.arrayBuffer();
       let text=new TextDecoder('utf-8',{fatal:false}).decode(buf);
