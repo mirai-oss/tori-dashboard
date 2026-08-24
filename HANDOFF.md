@@ -17,7 +17,9 @@
 - 本体: `index.html` + `app.js`（フレームワーク無しの素のJS。`app.js`は約6000行の1ファイル）
 - バックエンド: `gas/Code.gs`（Google Apps Script。スプレッドシートがDB）
 - 公開: https://mirai-oss.github.io/tori-dashboard/ （GitHub Pages。mainへpushで自動デプロイ・1〜2分）
-- データ元スプレッドシート: ID `1iIQX6LqbM6rUrygfQZVGRVYtwEhO0O-5a_dvn06pWdA`
+- データ元スプレッドシート: ID `1OuaAQBeXHxJZtDXEbQx-V7w56fCWW5jpDmZvBpkfIbQ`
+  （旧 `1iIQX6LqbM6rUrygfQZVGRVYtwEhO0O-5a_dvn06pWdA` は誤り。ns-portal `実装指示書_データ基盤Day1_保全.md`が
+  「二重ID疑惑の解消」として挙げていた件、2026-08-24に実機デプロイで確定・解消済み）
 
 ---
 
@@ -116,6 +118,8 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 | ✅ 完了 | 「推移分析」タブのデータソース切替フラグ実装（2026-08-22。`ping`=`fix-v49`・`app.js?v=94`。**ユーザーが実際にログインしトグルONで数値一致を確認済み**） |
 | ✅ 完了 | ダッシュボード・目標管理タブも同じトグルで自動的にBigQuery表示に切り替わることを確認（`app.js?v=95`。両タブとも`stat()`/`D.daily`を共有しているため追加コード不要。BQモード中の表示元だけ小さく明示） |
 | ✅ 完了 | PLタブの手入力経費（`DB_PL`）もBigQueryミラー化（`tori-analytics.sales.stg_pl`、`ping`=`fix-v50`・`app.js?v=96`）。合計・件数の完全一致（596件・157,998,380円）を確認済み。入金DB（実際の入金額）は対象外のまま |
+| ✅ 完了 | PL補助科目・スポット人件費（2026-08-24。`ping`=`pl-subitem-v1`・`app.js?v=111`。実機デプロイ・実データでのテスト・不具合修正まで完了。詳細は作業ログ参照） |
+| 💡 未着手 | マネーフォワード試算表CSV取込（設計書あり: `ns-portal/docs/設計書_PL補助科目・スポット人件費・MF取込_2026-08-23.md`の③。CSVサンプル1枚入手済み・仕様補正も反映済みだが実装はまだ） |
 
 ---
 
@@ -139,6 +143,46 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 ---
 
 ## 5. 作業ログ
+
+### 2026-08-24　PL補助科目・スポット人件費：実装・デプロイ・実機テストまで完了
+
+設計書: `ns-portal/docs/設計書_PL補助科目・スポット人件費・MF取込_2026-08-23.md`（①②が対象。③MF取込は未着手）。
+**`ping`=`pl-subitem-v1`・`app.js?v=111`が本番稼働中。ユーザーが実際にログインして動作確認済み。**
+
+**①補助科目**（勘定科目の内訳）
+- `DB_PL`にG列「補助科目」追加（既存シートは列だけ安全に追加）、新シート`DB_補助科目`（マスタ）
+- `stg_pl`に`sub_item`列。PL入力画面で補助科目入力（マスタ連動＋その場追加）
+- PL表の各区分「計」行（`人件費計(L)`等）を開閉式に変更（既定=閉じる）。既存は常に全開だったのをユーザー要望で変更
+
+**②スポット人件費**（タイミー等）
+- 新シート`DB_スポット人件費`・新BQテーブル`stg_spot`（`bqSyncSales`の対象に追加）
+- `saveSpotEntry`/`deleteSpotEntry`（ID一致で更新・保存の都度BQへ即時反映）
+- `stat()`で日別人件費率にPA+社員+スポットを合算（`分析_日別店舗`/`fact_daily_store`は無改変）
+- 月次PLへの自動計上は`.github/workflows/spot-labor-pl-sync.yml`（毎日JST5:00・`syncSeisanFeeToPl`と同方式）に加え、
+  PLタブに「🔄 スポット人件費をPLへ反映」ボタンで**ユーザーが自分で即時実行可能**（`refreshSpotPl`アクション。
+  `BQ_LOAD_TOKEN`はクライアントに渡さずサーバー側で読む設計）
+
+**実機テストで見つけて直した不具合（すべて修正・デプロイ済み）**
+1. `plsMigrateAddSubItemColumn_`が末尾`_`のためApps Scriptの実行プルダウンに出ない
+   → `runMigrateAddSubItemColumn`（アンダースコア無しラッパー）を追加。**教訓: ユーザーが手動実行する関数は`_`禁止**
+2. `syncSeisanFeeToPl`/`syncToDbPl`/`autoPromoToDbPl_`/`readDbPl`が`DB_PL`を6列固定で読み書きしており、
+   G列（補助科目）追加後に他行の補助科目が行ズレするバグ（G列追加前に事前修正）
+3. 店舗ごとのSupabase座標（`weather_lat`/`weather_lon`）を持つ店舗で`wxLocOf()`が全店舗共通の`key:'store'`を
+   返し、`ensureWeather()`がそれをWX_LOCSへ再検索して`undefined.lat`でクラッシュ→**render()全体が失敗**し、
+   「新機能が一瞬表示されてすぐ消える」という紛らわしい症状になっていた。keyを`'store:'+店舗名`でユニーク化し、
+   `ensureWeather()`はWX_LOCSへの再検索をやめてloc オブジェクトを直接使うよう修正（天気機能自体の既存バグ、今回のPL機能とは無関係）
+4. BQモードで`bqGetSpot`にID列を含めておらず、スポット人件費の編集・削除が「idが必要です」で失敗
+5. 手動「BigQuery同期を今すぐ実行」（`bqSyncAllSales`）が`bqGetSpot`の応答キャッシュ（10分TTL）を無効化しておらず、
+   BigQuery側は最新でもアプリ側は古いキャッシュ応答を返し続ける不具合
+6. ダッシュボードタブの「今月」表示は**実績データが確定している日（`データ最新日`）を基準に月次の範囲を区切る**
+   既存仕様があり、当日分のスポット入力がその範囲外になって「反映されていない」ように見えた（バグではなく仕様。
+   PL側の月次PLは暦通りの月末まで見るため、この制限を受けない）
+
+**既知の未対応範囲**（ユーザー承知の上でスコープ外にした）
+- AI検索タブの財務回答（`D.daily`を直接集計する別ロジック）はスポット人件費を未合算
+- CSV一括インポート（③の一部として検討したが、当面はスプレッドシート直接編集で運用する方針にユーザー同意済み）
+
+**次にやること**: ③MF取込に着手する場合は設計書の実装順3を参照。それ以外は特に指定なし（ユーザーに確認してから進めること）。
 
 ### 2026-08-22（続き8）
 **Lark日報のBigQuery新経路配信・完了。データ基盤ロードマップDay5が全項目完了**
