@@ -5507,7 +5507,7 @@ function mfImportModal(){
         <div class="scroll-x" style="max-height:280px;overflow-y:auto;border:1px solid var(--line2);border-radius:8px">
         <table class="tbl"><thead><tr><th>年月</th><th>科目</th><th>補助科目</th><th>既存</th><th>CSV</th><th>差額</th><th>選択</th></tr></thead><tbody>`;
       prev+=chooseShown.map(r=>{ const diff=r.amount-r.prevAmount;
-        return `<tr class="mf-choose-row" data-key="${esc(r.key)}"><td>${esc(r.ym)}</td><td>${esc(r.item)}</td><td>${esc(r.sub||'—')}</td><td style="text-align:right">${yen(r.prevAmount)}</td><td style="text-align:right">${yen(r.amount)}</td>
+        return `<tr class="mf-choose-row" data-key="${esc(r.key)}"><td>${esc(r.ym)}</td><td>${esc(r.item)}</td><td>${r.sub?esc(r.sub):'<span class="mut">（内訳なし・未分類分の合計）</span>'}</td><td style="text-align:right">${yen(r.prevAmount)}</td><td style="text-align:right">${yen(r.amount)}</td>
         <td style="text-align:right;color:${diff>0?'#5f7052':'#b5502f'}">${diff>0?'+':''}${yen(diff)}</td>
         <td><label style="margin-right:6px"><input type="radio" name="mfch-${esc(r.key)}" ${r.choice==='overwrite'?'checked':''} onchange="App.mfSetRowChoice(this.closest('.mf-choose-row').dataset.key,'overwrite')">上書き</label>
         <label><input type="radio" name="mfch-${esc(r.key)}" ${r.choice==='keep'?'checked':''} onchange="App.mfSetRowChoice(this.closest('.mf-choose-row').dataset.key,'keep')">残す</label></td></tr>`; }).join('');
