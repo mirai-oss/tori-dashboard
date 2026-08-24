@@ -1702,12 +1702,22 @@ async function trySilentPortalLogin(){
     fetchDataFast().then(()=>startPolling());
   }catch(e){ S.ssoAuto=''; render(); }
 }
+// 実装指示書_ダッシュボード高速化タスク3(A-3・2026-08-24): BQモードの段階展開。
+// 一度もトグル操作していない(localStorage未設定)ユーザーに限り、役職ベースで既定値を決める。
+// 第1段階(2026-08-24): 社長・本部のみ既定ON。2営業日問題なければ次段階でこの条件を広げるだけで済む設計。
+// 既に🧪トグルでON/OFFを選んだユーザーの選択（切り戻し手段）は上書きしない。
+function applyBqDailyRoleDefault_(){
+  if(localStorage.getItem(LS.dailyBq)!=null) return;
+  const role=S.auth&&S.auth.account&&S.auth.account.role;
+  if(role==='社長'||role==='本部') S.useBqDaily=true;
+}
 function afterLogin(){
   const tabs=myTabs();
   S.tab=tabs[0];
   const sc=scopeStores();
   S.store=(sc.length===1)?sc[0]:'all';
   S.loginErr='';
+  applyBqDailyRoleDefault_();
 }
 function doLogout(msg){
   if(S.auth&&S.auth.token){ api({action:'logout',token:S.auth.token}).catch(()=>{}); }
@@ -6930,8 +6940,8 @@ window.App = {
     if(raw){
       const sess=JSON.parse(raw);
       if(sess&&sess.account){
-        if(sess.token&&apiUrl()){ S.auth=sess; S.connState='connecting'; fetchDataFast(); startPolling(); restored=true; }
-        else if(!sess.token&&!apiUrl()){ S.auth=sess; restored=true; }
+        if(sess.token&&apiUrl()){ S.auth=sess; applyBqDailyRoleDefault_(); S.connState='connecting'; fetchDataFast(); startPolling(); restored=true; }
+        else if(!sess.token&&!apiUrl()){ S.auth=sess; applyBqDailyRoleDefault_(); restored=true; }
       }
     }
   }catch(e){}
