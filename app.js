@@ -5369,8 +5369,12 @@ function mfBuildPreview(m){
     const ignoredSubs=acc.subRows.filter(s=>!knownSubs.has(s.name));
     acc.amounts.forEach((a,idx)=>{
       const ym=mfMoToYm(a.mo, m.fyStart);
-      let rollup=a.amt;
-      realSubs.forEach(s=>{ rollup-=s.amounts[idx].amt; });
+      // ロールアップ額は「勘定科目の合計行(a.amt)から認識済み補助科目を引く」のではなく、
+      // 「未認識の補助科目行そのものの合計」で直接求める。合計行から逆算すると、CSVを手編集して
+      // 補助科目1件だけ金額を変えた（合計行は据え置き）場合に、その差額が謎のロールアップ行として
+      // 出現してしまう不具合があった（2026-08-24実機で発覚）。補助科目行が1つも無い科目だけ、
+      // 合計行(a.amt)をそのまま使う（他に金額の出どころが無いため）。
+      const rollup = acc.subRows.length ? ignoredSubs.reduce((sum,s)=>sum+s.amounts[idx].amt,0) : a.amt;
       const candidates=[];
       if(rollup!==0) candidates.push({ item, sub:'', amount:rollup });
       realSubs.forEach(s=>{ if(s.amounts[idx].amt!==0) candidates.push({ item, sub:s.name, amount:s.amounts[idx].amt }); });
@@ -5486,13 +5490,27 @@ function mfImportModal(){
       prev+=`</div>`;
     }
     if(p.choose.length){
-      prev+=`<div class="panel" style="padding:12px"><h4 style="font-size:13px;margin-bottom:6px">⚠️ 金額が既存と違う行（残す＝既存のまま／上書き＝CSVの金額に更新）</h4>
-        <div style="margin-bottom:6px"><button class="icon-btn sm" onclick="App.mfBulkChoice('overwrite')">すべて上書き</button> <button class="icon-btn sm" onclick="App.mfBulkChoice('keep')">すべて残す</button></div>
-        <div class="scroll-x" style="max-height:220px;overflow-y:auto;border:1px solid var(--line2);border-radius:8px">
-        <table class="tbl"><thead><tr><th>年月</th><th>科目</th><th>補助科目</th><th>既存</th><th>CSV</th><th>選択</th></tr></thead><tbody>`;
-      prev+=p.choose.map(r=>`<tr class="mf-choose-row" data-key="${esc(r.key)}"><td>${esc(r.ym)}</td><td>${esc(r.item)}</td><td>${esc(r.sub||'—')}</td><td style="text-align:right">${yen(r.prevAmount)}</td><td style="text-align:right">${yen(r.amount)}</td>
+      const chooseMonths=[...new Set(p.choose.map(r=>r.ym))].sort();
+      const selYm=m.chooseMonth||'';
+      const chooseShown=selYm?p.choose.filter(r=>r.ym===selYm):p.choose;
+      prev+=`<div class="panel" style="padding:12px">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:6px">
+          <h4 style="font-size:13px;margin:0">⚠️ 金額が既存と違う行（${p.choose.length}件。残す＝既存のまま／上書き＝CSVの金額に更新）</h4>
+          <label style="font-size:12px;display:flex;align-items:center;gap:4px">表示する月:
+            <select onchange="App.mfSetField('chooseMonth',this.value||null)">
+              <option value="" ${selYm===''?'selected':''}>すべて（${p.choose.length}件）</option>
+              ${chooseMonths.map(ym=>`<option value="${ym}" ${selYm===ym?'selected':''}>${ym}（${p.choose.filter(r=>r.ym===ym).length}件）</option>`).join('')}
+            </select>
+          </label>
+        </div>
+        <div style="margin-bottom:6px"><button class="icon-btn sm" onclick="App.mfBulkChoice('overwrite')">表示中をすべて上書き</button> <button class="icon-btn sm" onclick="App.mfBulkChoice('keep')">表示中をすべて残す</button></div>
+        <div class="scroll-x" style="max-height:280px;overflow-y:auto;border:1px solid var(--line2);border-radius:8px">
+        <table class="tbl"><thead><tr><th>年月</th><th>科目</th><th>補助科目</th><th>既存</th><th>CSV</th><th>差額</th><th>選択</th></tr></thead><tbody>`;
+      prev+=chooseShown.map(r=>{ const diff=r.amount-r.prevAmount;
+        return `<tr class="mf-choose-row" data-key="${esc(r.key)}"><td>${esc(r.ym)}</td><td>${esc(r.item)}</td><td>${esc(r.sub||'—')}</td><td style="text-align:right">${yen(r.prevAmount)}</td><td style="text-align:right">${yen(r.amount)}</td>
+        <td style="text-align:right;color:${diff>0?'#5f7052':'#b5502f'}">${diff>0?'+':''}${yen(diff)}</td>
         <td><label style="margin-right:6px"><input type="radio" name="mfch-${esc(r.key)}" ${r.choice==='overwrite'?'checked':''} onchange="App.mfSetRowChoice(this.closest('.mf-choose-row').dataset.key,'overwrite')">上書き</label>
-        <label><input type="radio" name="mfch-${esc(r.key)}" ${r.choice==='keep'?'checked':''} onchange="App.mfSetRowChoice(this.closest('.mf-choose-row').dataset.key,'keep')">残す</label></td></tr>`).join('');
+        <label><input type="radio" name="mfch-${esc(r.key)}" ${r.choice==='keep'?'checked':''} onchange="App.mfSetRowChoice(this.closest('.mf-choose-row').dataset.key,'keep')">残す</label></td></tr>`; }).join('');
       prev+=`</tbody></table></div></div>`;
     }
   }
@@ -6340,7 +6358,7 @@ window.App = {
     const stores=scopeStores();
     const now=new Date();
     const fyStart=now.getMonth()>=3?now.getFullYear():now.getFullYear()-1;   // 4月始まり会計年度の既定推定
-    S.modal={ type:'mfImport', store:selStoreName()||stores[0], fyStart, fileName:'', parsed:null, unmapped:{}, subApprove:{}, rowChoice:{}, ignoredMonth:null, msg:'' };
+    S.modal={ type:'mfImport', store:selStoreName()||stores[0], fyStart, fileName:'', parsed:null, unmapped:{}, subApprove:{}, rowChoice:{}, ignoredMonth:null, chooseMonth:null, msg:'' };
     render();
   },
   mfSetField(field,val){ S.modal[field]=val; render(); },
@@ -6367,7 +6385,9 @@ window.App = {
   mfSetUnmappedField(acc,field,val){ const m=S.modal; if(!m.unmapped[acc])return; m.unmapped[acc][field]=val; render(); },
   mfToggleSub(acc,sub,checked){ const m=S.modal; m.subApprove=m.subApprove||{}; m.subApprove[acc+'\t'+sub]=checked; render(); },
   mfSetRowChoice(key,val){ const m=S.modal; m.rowChoice=m.rowChoice||{}; m.rowChoice[key]=val; render(); },
-  mfBulkChoice(val){ const m=S.modal; const p=mfBuildPreview(m); m.rowChoice=m.rowChoice||{}; p.choose.forEach(r=>{ m.rowChoice[r.key]=val; }); render(); },
+  mfBulkChoice(val){ const m=S.modal; const p=mfBuildPreview(m); m.rowChoice=m.rowChoice||{};
+    const target=m.chooseMonth?p.choose.filter(r=>r.ym===m.chooseMonth):p.choose;
+    target.forEach(r=>{ m.rowChoice[r.key]=val; }); render(); },
   mfExportCsv(){ mfExportCsv(); },
   async mfConfirm(){
     const m=S.modal;
