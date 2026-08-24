@@ -48,7 +48,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'seisan-plsys-sync-v1', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'seisan-paid-check-v1', time: new Date().toISOString() });
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'detailVsDailyDiag') return out(detailVsDailyDiag(p)); // 明細分析とダッシュボードの売上・客数・組数の差を実測で突合（専用トークン認証・読み取り専用・一時的）
@@ -1866,7 +1866,9 @@ function syncSeisanFeeToPl(p) {
       var j = JSON.parse(res.getContentText());
       if (!j.ok) { errors.push(store + ': ' + (j.error || 'unknown')); return; }
       var r = j.result;
-      if (!r || !r.found || !r.hasSales) {
+      // paid===false: 精算はあるが未振込（未確定）。確定額ではないのでPLに反映しない
+      // （2026-08-24追加。振込前の金額を毎回反映すると、修正が入るたびPLの数字がブレるため）。
+      if (!r || !r.found || !r.hasSales || r.paid === false) {
         var extra = (r && r.masterNames) ? '／精算システム側の店舗名一覧: ' + r.masterNames.join('、') : '';
         results.push(store + '（精算システム側の名前: ' + s.seisanName + '）: データ無し（スキップ）／理由: ' + (r && r.reason || '不明') + extra);
         return;
