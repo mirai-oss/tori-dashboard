@@ -1764,7 +1764,16 @@ function render(){
   const tabs=myTabs();
   if(!tabs.includes(S.tab)) S.tab=tabs[0];
   let body='';
-  if(S.tab==='partner') body=viewPartner();
+  // 実装指示書_BQ表示改善と社員給与按分_2026-08-24 タスク1: BQモード読込中／失敗時に
+  // 前回の古い/部分的なdailyデータのまま壊れた暫定数字（例: 人件費率116%）が出ないよう、
+  // D.daily依存の3タブ（ダッシュボード・推移分析・目標管理）はこの間プレースホルダにする。
+  const bqGateTabs=(S.tab==='dash'||S.tab==='analysis'||S.tab==='target');
+  if(bqGateTabs && S.useBqDaily && D.dailyBqLoading){
+    body=`<div class="panel" style="text-align:center;padding:60px 20px;color:#8c8375">⏳ BigQueryから読み込み中…</div>`;
+  } else if(bqGateTabs && S.useBqDaily && D.dailyBqErr && !D.daily.length){
+    body=`<div class="panel" style="text-align:center;padding:60px 20px;color:#b5502f">⚠️ データ取得に失敗しました。再読み込みしてください</div>`;
+  }
+  else if(S.tab==='partner') body=viewPartner();
   else if(S.tab==='dash') body=viewDash();
   else if(S.tab==='target') body=viewTarget();
   else if(S.tab==='detail') body=viewDetail();
