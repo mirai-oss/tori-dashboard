@@ -48,7 +48,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'mf-import-v1', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'seisan-plsys-sync-v1', time: new Date().toISOString() });
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'detailVsDailyDiag') return out(detailVsDailyDiag(p)); // 明細分析とダッシュボードの売上・客数・組数の差を実測で突合（専用トークン認証・読み取り専用・一時的）
@@ -1768,8 +1768,42 @@ function syncSpotLaborToPl_(tk) {
   });
   if (dlast >= 2) dp.getRange(2, 1, dlast - 1, dlastCol).clearContent();
   if (keep.length) { dp.getRange(2, 1, keep.length, 7).setValues(keep); dp.getRange(2, 1, keep.length, 1).setNumberFormat('yyyy/m/d'); }
+
+  // ② PL管理システム ✍販管費入力：DB_PLと同じキー（年月×店舗×スポット人件費）で差し替える。
+  // syncSeisanFeeToPlと同じ理由で抜けていた（2026-08-24発覚・対応）。
+  var plsysSpot = '';
+  try {
+    var pshSp = SpreadsheetApp.openById(PL_SYSTEM_ID).getSheetByName(PL_INPUT_SHEET);
+    if (pshSp) {
+      var lastRSp = pshSp.getLastRow(), nRSp = Math.max(lastRSp - 2, 0);
+      var ASp = nRSp > 0 ? pshSp.getRange(3, 1, nRSp, 3).getValues() : [];
+      var ESp = nRSp > 0 ? pshSp.getRange(3, 5, nRSp, 2).getValues() : [];
+      var GSp = nRSp > 0 ? pshSp.getRange(3, 7, nRSp, 1).getValues() : [];
+      var monthsSp = {};
+      Object.keys(totals).forEach(function (k) { monthsSp[k.split('\t')[0]] = true; });
+      for (var iSp0 = 0; iSp0 < nRSp; iSp0++) { if (String(ESp[iSp0][1]) === PL_SPOT_MEMO) monthsSp[bqPlYm_(ASp[iSp0][0])] = true; }
+      var keepPSp = [];
+      for (var iSp = 0; iSp < nRSp; iSp++) {
+        if (String(ASp[iSp][0]) === '' && String(ASp[iSp][2]) === '') continue;
+        if (monthsSp[bqPlYm_(ASp[iSp][0])] && String(ESp[iSp][1]) === PL_SPOT_MEMO) continue;   // 差し替え対象は捨てる
+        keepPSp.push([ASp[iSp][0], ASp[iSp][1], ASp[iSp][2], ESp[iSp][0], ESp[iSp][1], GSp[iSp][0]]);
+      }
+      Object.keys(totals).forEach(function (k) {
+        var partsSp = k.split('\t'), ymSp = partsSp[0], storeSp = partsSp[1];
+        keepPSp.push([ymSp, storeSp, 'スポット人件費', totals[k], PL_SPOT_MEMO, '']);
+      });
+      if (nRSp > 0) { pshSp.getRange(3, 1, nRSp, 3).clearContent(); pshSp.getRange(3, 5, nRSp, 2).clearContent(); pshSp.getRange(3, 7, nRSp, 1).clearContent(); }
+      if (keepPSp.length) {
+        pshSp.getRange(3, 1, keepPSp.length, 3).setValues(keepPSp.map(function (r) { return [r[0], r[1], r[2]]; }));
+        pshSp.getRange(3, 5, keepPSp.length, 2).setValues(keepPSp.map(function (r) { return [r[3], r[4]]; }));
+        pshSp.getRange(3, 7, keepPSp.length, 1).setValues(keepPSp.map(function (r) { return [r[5]]; }));
+      }
+      plsysSpot = 'PL管理システムにも反映しました';
+    } else plsysSpot = 'PL管理システムに「' + PL_INPUT_SHEET + '」シートが見つかりません（DB_PLのみ反映）';
+  } catch (eSp) { plsysSpot = 'PL管理システムへの反映に失敗（DB_PLのみ反映）: ' + String(eSp && eSp.message || eSp); }
+
   var bqSync = bqSyncPL({ token: tk });
-  return { ok: true, months: Object.keys(months).length, stores: Object.keys(totals).length, bqSync: bqSync };
+  return { ok: true, months: Object.keys(months).length, stores: Object.keys(totals).length, plsys: plsysSpot, bqSync: bqSync };
 }
 
 // ================== 運営委託費のPL自動連携（2026-08-23追加） ==================
@@ -1872,12 +1906,47 @@ function syncSeisanFeeToPl(p) {
   if (lastRow >= 2) sh.getRange(2, 1, lastRow - 1, lastColSeisan).clearContent();
   if (keep.length) { sh.getRange(2, 1, keep.length, 7).setValues(keep); sh.getRange(2, 1, keep.length, 1).setNumberFormat('yyyy/m/d'); }
 
+  // ② PL管理システム ✍販管費入力：DB_PLと同じキー（年月×対象店舗×運営委託費）で差し替える。
+  // 今まではDB_PL・BigQueryだけ更新しており、PL管理システム側の「月次PL」画面には一切
+  // 反映されていなかった（ダッシュボードとPL管理システムで運営委託費の数字が食い違う不具合。
+  // 2026-08-24発覚・対応。他の自動連携＝savePlEntries/savePlBulk/mfConfirmImportは元から
+  // 両方へ書いていたが、このsyncSeisanFeeToPlだけDB_PL側の反映のみで抜けていた）。
+  var plsysSeisan = '';
+  try {
+    var pshS = SpreadsheetApp.openById(PL_SYSTEM_ID).getSheetByName(PL_INPUT_SHEET);
+    if (pshS) {
+      var lastRS = pshS.getLastRow(), nRS = Math.max(lastRS - 2, 0);
+      var AS = nRS > 0 ? pshS.getRange(3, 1, nRS, 3).getValues() : [];
+      var ES = nRS > 0 ? pshS.getRange(3, 5, nRS, 2).getValues() : [];
+      var GS = nRS > 0 ? pshS.getRange(3, 7, nRS, 1).getValues() : [];
+      var keepPS = [];
+      for (var iS = 0; iS < nRS; iS++) {
+        if (String(AS[iS][0]) === '' && String(AS[iS][2]) === '') continue;
+        var sameMonthS = bqPlYm_(AS[iS][0]) === ymSlash;
+        var isMyAutoS = String(ES[iS][1]) === PL_SEISAN_MEMO && storeNames.indexOf(String(AS[iS][1]).trim()) >= 0;
+        var isOldManualS = String(AS[iS][2]).trim() === '運営委託費' && String(ES[iS][1]) !== PL_SEISAN_MEMO && cleanupNames[String(AS[iS][1]).trim()];
+        if (sameMonthS && (isMyAutoS || isOldManualS)) continue;
+        keepPS.push([AS[iS][0], AS[iS][1], AS[iS][2], ES[iS][0], ES[iS][1], GS[iS][0]]);
+      }
+      Object.keys(byStore).forEach(function (store) {
+        keepPS.push([ymSlash, store, '運営委託費', byStore[store], PL_SEISAN_MEMO, '']);
+      });
+      if (nRS > 0) { pshS.getRange(3, 1, nRS, 3).clearContent(); pshS.getRange(3, 5, nRS, 2).clearContent(); pshS.getRange(3, 7, nRS, 1).clearContent(); }
+      if (keepPS.length) {
+        pshS.getRange(3, 1, keepPS.length, 3).setValues(keepPS.map(function (r) { return [r[0], r[1], r[2]]; }));
+        pshS.getRange(3, 5, keepPS.length, 2).setValues(keepPS.map(function (r) { return [r[3], r[4]]; }));
+        pshS.getRange(3, 7, keepPS.length, 1).setValues(keepPS.map(function (r) { return [r[5]]; }));
+      }
+      plsysSeisan = 'PL管理システムにも反映しました';
+    } else plsysSeisan = 'PL管理システムに「' + PL_INPUT_SHEET + '」シートが見つかりません（DB_PLのみ反映）';
+  } catch (eS) { plsysSeisan = 'PL管理システムへの反映に失敗（DB_PLのみ反映）: ' + String(eS && eS.message || eS); }
+
   // DB_PL（シート）を更新しただけではPLタブのBigQueryモードに反映されない
   // （bqSyncPLで別途ミラーする設計のため）。書き忘れると「反映されない」に見えるので、
   // ここで自動的にBQミラーも同期する（2026-08-23発覚・修正）。
   var bqSync = bqSyncPL({ token: tk });
 
-  return { ok: true, ym: ym, synced: Object.keys(byStore).length, detail: results, errors: errors, bqSync: bqSync };
+  return { ok: true, ym: ym, synced: Object.keys(byStore).length, detail: results, errors: errors, plsys: plsysSeisan, bqSync: bqSync };
 }
 // 既存のingestDeposit()がそのまま解釈できる形（{sheets:{deposit:[[店舗名,日付,入金額,メモ],...]}}）で返す。
 // 繰越（開始残高）計算のdepositCarry()はこのBQミラーを経由せず、常にローカルシートを直接読む
