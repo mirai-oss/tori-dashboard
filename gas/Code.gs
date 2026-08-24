@@ -48,7 +48,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'pl-subitem-v1', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'mf-import-v1', time: new Date().toISOString() });
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'detailVsDailyDiag') return out(detailVsDailyDiag(p)); // 明細分析とダッシュボードの売上・客数・組数の差を実測で突合（専用トークン認証・読み取り専用・一時的）
@@ -102,6 +102,7 @@ function handle(p) {
     if (action === 'importDeposits') return out(importDeposits(p, session)); // 口座CSVの入金取込（入金管理タブ）
     if (action === 'savePlEntries') return out(savePlEntries(p, session)); // PL経費の手入力（PL管理システム＋DB_PL両反映）
     if (action === 'savePlBulk') return out(savePlBulk(p, session)); // PL経費の期間一括計上（例: 家賃を12ヶ月分）
+    if (action === 'mfConfirmImport') return out(mfConfirmImport(p, session)); // MF取込：プレビューで確定した行をDB_PLへ反映
     if (action === 'saveAdFee') return out(saveAdFee(p, session)); // 広告費の手入力（管理シート💾広告費DBへupsert）
     if (action === 'saveAdSales') return out(saveAdSales(p, session)); // 売上・反響の手入力（管理シート💾売上DBへupsert）
     if (action === 'importReservations') return out(importReservations(p, session)); // 予約CSV取込（管理シート💾予約DBへ追記）
@@ -308,6 +309,27 @@ function setupIfNeeded() {
     );
     subSh.setFrozenRows(1);
     subSh.setColumnWidths(1, 4, 150);
+  }
+
+  // MF科目対応マスタ（DB_科目対応）。無ければ雛形を自動作成（2026-08-24追加・MF取込用）。
+  // 列: MF勘定科目／MF補助科目／内部勘定科目／内部補助科目／区分／取込対象外。
+  // MF補助科目が空欄の行＝その勘定科目の「その他一括（内訳を追わない）」の既定マッピング。
+  // MF取込プレビューで未対応科目を解決すると、この一覧に自動で追加される（mfConfirmImport参照）。
+  var mfCatSh = ss.getSheetByName('DB_科目対応');
+  if (!mfCatSh) {
+    mfCatSh = ss.insertSheet('DB_科目対応');
+    mfCatSh.getRange(1, 1, 1, 6).setValues([['MF勘定科目', 'MF補助科目', '内部勘定科目', '内部補助科目', '区分', '取込対象外']])
+      .setFontWeight('bold').setBackground('#efe9dd');
+    mfCatSh.getRange('A1').setNote(
+      'マネーフォワード試算表CSV取込（📥 MF取込）が科目名を解決するためのマスタです。\n' +
+      '・MF勘定科目／MF補助科目: CSVそのままの表記（MF補助科目が空欄＝取引先名や部門コード等を無視して勘定科目に一括計上する既定行）\n' +
+      '・内部勘定科目／内部補助科目: ダッシュボードのDB_PLに書き込む科目名\n' +
+      '・区分: F=仕入れ / L=人件費 / A=広告 / R=家賃 / O=他\n' +
+      '・取込対象外: TRUEにすると、この科目は取込時に無視されます（人件費・売上等、既に自動連携済みの科目に使用）\n' +
+      '※取込プレビュー画面で未対応科目を解決すると、この一覧に自動で追加されます。'
+    );
+    mfCatSh.setFrozenRows(1);
+    mfCatSh.setColumnWidths(1, 6, 150);
   }
 
   // 祝日シート（DB_祝日）。無ければ雛形を作成。
@@ -2871,6 +2893,132 @@ function savePlBulk(p, session) {
     if (tkPl2) bqSyncPL({ token: tkPl2 });
   } catch (eSync2) { /* BQ同期に失敗してもシート保存自体は成功として扱う（次回同期で追いつく） */ }
   return { ok: true, months: n, deleted: amount <= 0, plsys: plsys };
+}
+
+// MF取込マスタの新規マッピングをDB_科目対応へ反映（キー=MF勘定科目×MF補助科目。既存キーは上書き・無ければ追加）。
+// mappings=[[mfItem, mfSub, item, sub, cat, exclude], ...]
+function mfEnsureCategoryMap_(mappings) {
+  if (!mappings || !mappings.length) return;
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_科目対応');
+  if (!sh) return;
+  var last = sh.getLastRow();
+  var rowByKey = {};
+  if (last >= 2) {
+    sh.getRange(2, 1, last - 1, 6).getValues().forEach(function (r, i) {
+      rowByKey[String(r[0]).trim() + '\t' + String(r[1]).trim()] = i + 2;
+    });
+  }
+  var toAppend = [];
+  mappings.forEach(function (m) {
+    var mfItem = String(m[0] || '').trim(), mfSub = String(m[1] || '').trim();
+    if (!mfItem) return;
+    var item = String(m[2] || '').trim().slice(0, 60);
+    var sub = String(m[3] || '').trim().slice(0, 60);
+    var cat = String(m[4] || 'O').trim().toUpperCase();
+    if (['S', 'F', 'L', 'A', 'R', 'O', 'X'].indexOf(cat) < 0) cat = 'O';
+    var exclude = !!m[5];
+    var key = mfItem + '\t' + mfSub;
+    var row = [mfItem, mfSub, item, sub, cat, exclude];
+    if (rowByKey[key]) sh.getRange(rowByKey[key], 1, 1, 6).setValues([row]);
+    else toAppend.push(row);
+  });
+  if (toAppend.length) sh.getRange(sh.getLastRow() + 1, 1, toAppend.length, 6).setValues(toAppend);
+}
+
+// MF取込の確定処理（2026-08-24追加）。プレビューでユーザーが確定した行をDB_PL（＋PL管理システム）へ書き込み、
+// 未対応科目の解決結果をDB_科目対応へ・新しい補助科目をDB_補助科目へ学習させる。
+// entries=[[ym(YYYY-MM), item, cat, amount, sub], ...]（同一store・複数月・複数科目が混在してよい）
+// newMappings=[[mfItem, mfSub, item, sub, cat, exclude], ...] newSubItems=[[item, sub], ...]
+function mfConfirmImport(p, session) {
+  var isCommon = String(p.store) === '__common__';
+  if (isCommon && !isAdmin(session)) return { ok: false, error: '全社共通経費は社長・本部のみ入力できます' };
+  var store = isCommon ? '' : String(p.store || '').trim();
+  if (!isCommon) {
+    if (!store) return { ok: false, error: '店舗が未指定です' };
+    if (!scopeAllows_(session, store)) return { ok: false, error: 'この店舗の経費を編集する権限がありません' };
+  }
+  var entries; try { entries = JSON.parse(p.entries || '[]'); } catch (e) { entries = []; }
+  var newMappings; try { newMappings = JSON.parse(p.newMappings || '[]'); } catch (e2) { newMappings = []; }
+  var newSubItems; try { newSubItems = JSON.parse(p.newSubItems || '[]'); } catch (e3) { newSubItems = []; }
+
+  var clean = [], keySet = {}, monthSet = {};
+  entries.forEach(function (a) {
+    var ym = String(a[0] || '').trim();
+    if (!/^\d{4}-\d{2}$/.test(ym)) return;
+    var item = String(a[1] || '').trim().slice(0, 60);
+    var cat = String(a[2] || 'O').trim().toUpperCase();
+    if (['S', 'F', 'L', 'A', 'R', 'O', 'X'].indexOf(cat) < 0) cat = 'O';
+    var amt = Number(a[3]) || 0;
+    var sub = String(a[4] || '').trim().slice(0, 60);
+    if (!item) return;
+    var ymSlash = ym.slice(0, 4) + '/' + ym.slice(5, 7);
+    monthSet[ymSlash] = 1;
+    keySet[ymSlash + '\t' + item + '\t' + sub] = 1;
+    if (amt > 0) clean.push([ymSlash, item, cat, amt, sub]);
+  });
+  if (clean.length > 500) return { ok: false, error: '一度に確定できるのは500行までです（月・科目を分けて取り込んでください）' };
+  if (!clean.length) return { ok: false, error: '確定する行がありません' };
+
+  var todayStr = Utilities.formatDate(new Date(), Session.getScriptTimeZone() || 'Asia/Tokyo', 'yyyy-MM-dd');
+  var memoTag = '[MF取込 ' + todayStr + ']';
+
+  // ① DB_PL：対象キー（年月×店舗×科目×補助科目）に一致する既存行を除去 → 確定分を追加
+  var dp = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_PL');
+  if (!dp) return { ok: false, error: 'DB_PLシートがありません' };
+  var dlast = dp.getLastRow(), keep = [];
+  var dlastCol = Math.max(dp.getLastColumn(), 7);
+  if (dlast >= 2) {
+    dp.getRange(2, 1, dlast - 1, dlastCol).getValues().forEach(function (r) {
+      if (r[0] === '' && r[1] === '' && r[2] === '') return;
+      var key = ymOf_(r[0]) + '\t' + String(r[2]).trim() + '\t' + String(r[6] || '').trim();
+      if (String(r[1]).trim() === store && keySet[key] && String(r[5]) !== PL_AUTO_MEMO) return;
+      keep.push(r);
+    });
+  }
+  var out = keep.concat(clean.map(function (a) {
+    var y = +a[0].slice(0, 4), mo = +a[0].slice(5, 7);
+    return [new Date(y, mo - 1, 1), store, a[1], a[2], a[3], memoTag, a[4]];
+  }));
+  if (dlast >= 2) dp.getRange(2, 1, dlast - 1, dlastCol).clearContent();
+  if (out.length) { dp.getRange(2, 1, out.length, 7).setValues(out); dp.getRange(2, 1, out.length, 1).setNumberFormat('yyyy/m/d'); }
+  ensureSubItemMaster_(newSubItems);
+
+  // ② PL管理システム ✍販管費入力：同じキーで差し替え（D列の区分式は触らない）
+  var plsys = '';
+  try {
+    var psh = SpreadsheetApp.openById(PL_SYSTEM_ID).getSheetByName(PL_INPUT_SHEET);
+    if (psh) {
+      var plStore = isCommon ? '本社・共通' : store;
+      var lastR = psh.getLastRow(), nR = Math.max(lastR - 2, 0);
+      var A = nR > 0 ? psh.getRange(3, 1, nR, 3).getValues() : [];
+      var E = nR > 0 ? psh.getRange(3, 5, nR, 2).getValues() : [];
+      var G = nR > 0 ? psh.getRange(3, 7, nR, 1).getValues() : [];
+      var keepP = [];
+      for (var i = 0; i < nR; i++) {
+        if (String(A[i][0]) === '' && String(A[i][2]) === '') continue;
+        var keyP = ymOf_(A[i][0]) + '\t' + String(A[i][2]).trim() + '\t' + String(G[i][0] || '').trim();
+        if (String(A[i][1]).trim() === plStore && keySet[keyP]) continue;
+        keepP.push([A[i][0], A[i][1], A[i][2], E[i][0], E[i][1], G[i][0]]);
+      }
+      clean.forEach(function (a) { keepP.push([a[0], plStore, a[1], a[3], memoTag, a[4]]); });
+      if (nR > 0) { psh.getRange(3, 1, nR, 3).clearContent(); psh.getRange(3, 5, nR, 2).clearContent(); psh.getRange(3, 7, nR, 1).clearContent(); }
+      if (keepP.length) {
+        psh.getRange(3, 1, keepP.length, 3).setValues(keepP.map(function (r) { return [r[0], r[1], r[2]]; }));
+        psh.getRange(3, 5, keepP.length, 2).setValues(keepP.map(function (r) { return [r[3], r[4]]; }));
+        psh.getRange(3, 7, keepP.length, 1).setValues(keepP.map(function (r) { return [r[5]]; }));
+      }
+      plsys = 'PL管理システムにも反映しました';
+    } else plsys = 'PL管理システムに「' + PL_INPUT_SHEET + '」シートが見つかりません（DB_PLのみ反映）';
+  } catch (e) { plsys = 'PL管理システムへの反映に失敗（DB_PLのみ反映）: ' + String(e && e.message || e); }
+
+  mfEnsureCategoryMap_(newMappings);
+
+  try {
+    var tkPl3 = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+    if (tkPl3) bqSyncPL({ token: tkPl3 });
+  } catch (eSync3) { /* BQ同期に失敗してもシート保存自体は成功として扱う（次回同期で追いつく） */ }
+
+  return { ok: true, saved: clean.length, months: Object.keys(monthSet).length, plsys: plsys };
 }
 
 // 売上・反響の保存：管理シートの💾売上DBへ upsert（キー＝年月×店舗×媒体・同一キーは上書き）。

@@ -182,7 +182,7 @@ const S = {
   accounts:null, accErr:'', modal:null, loginErr:'',
   useBqDaily:(localStorage.getItem(LS.dailyBq)==='1'),   // 推移分析のデータソース切替（既定=false=シート。2026-08-22追加）
 };
-const D = { daily:[], media:[], deposit:[], review:[], ad:[], adfx:[], tanka:{}, pl:[], dinii:[], diniiCols:[], targets:[], targetsM:[], events:[], extra:{}, storeAlias:{}, storeParent:{}, mediaClass:{}, adMediaMaster:[], adPlanMaster:{}, adStoreMaster:[], subItemMaster:{}, holidays:null, detailData:null, detailKey:'', detailLoading:'', refDate:null, maxDate:null,
+const D = { daily:[], media:[], deposit:[], review:[], ad:[], adfx:[], tanka:{}, pl:[], dinii:[], diniiCols:[], targets:[], targetsM:[], events:[], extra:{}, storeAlias:{}, storeParent:{}, mediaClass:{}, adMediaMaster:[], adPlanMaster:{}, adStoreMaster:[], subItemMaster:{}, mfCategoryMap:{}, holidays:null, detailData:null, detailKey:'', detailLoading:'', refDate:null, maxDate:null,
   spot:[], spotBqLoading:false, spotBqErr:'',
   wkTpl:{}, wkRep:[], wkAns:{}, wkFb:{}, roleDef:{}, depNote:{}, dailyBqLoading:false, dailyBqErr:'', plBqLoading:false, plBqErr:'', storeDirectory:null,
   freshness:null, freshnessAt:0, bqFallback:{} };
@@ -896,6 +896,26 @@ function ingestSubItemMaster(rows){
   D.subItemMaster=map;
   D.diag['補助科目']='OK '+Object.keys(map).length+'勘定科目 / '+Object.values(map).reduce((s,v)=>s+v.length,0)+'件'; return true;
 }
+// DB_科目対応：MF勘定科目／MF補助科目 → 内部勘定科目／内部補助科目／区分／取込対象外。
+// MF補助科目が空欄＝その勘定科目の既定マッピング（内訳を追わずロールアップ）。MF取込（📥 MF取込）が使う（2026-08-24追加）。
+function ingestMfCategoryMap(rows){
+  const hi=findHeaderExact(rows,['MF勘定科目','MF補助科目']);
+  if(hi<0){ D.diag['科目対応']='見出し行（MF勘定科目・MF補助科目）が見つかりません'; return false; }
+  const H=rows[hi].map(h=>String(h).trim());
+  const iMI=colPick(H,'MF勘定科目',0), iMS=colPick(H,'MF補助科目',1), iI=colPick(H,'内部勘定科目',2),
+        iS=colPick(H,'内部補助科目',3), iC=colPick(H,'区分',4), iX=colPick(H,'取込対象外',5);
+  const map={};
+  for(let i=hi+1;i<rows.length;i++){
+    const r=rows[i]||[];
+    const mi=String(r[iMI]||'').trim(); if(!mi)continue;
+    const ms=String(r[iMS]||'').trim();
+    const excludeV=String(r[iX]||'').trim().toUpperCase();
+    map[mi+'\t'+ms]={ item:String(r[iI]||'').trim(), sub:String(r[iS]||'').trim(),
+      cat:(String(r[iC]||'O').trim().toUpperCase())||'O', exclude:excludeV==='TRUE'||excludeV==='1' };
+  }
+  D.mfCategoryMap=map;
+  D.diag['科目対応']='OK '+Object.keys(map).length+'件'; return true;
+}
 // ⚙️店舗マスタ（管理シート）：B=店舗ID / C=店舗名 / D=エリア。広告側の店舗名（匠味（新横浜）等）を
 // 広告費・売上入力のプルダウン候補にする。売上側に無い広告専用の店舗もここから選べるようになる。
 function ingestAdStoreMaster(rows){
@@ -1083,7 +1103,7 @@ function ingestStoreParent(rows){
   return map;
 }
 function ingestSheets(sheets, partial){
-  if(!partial){ D.extra={}; D.diag={}; D.receivedKeys=Object.keys(sheets); D.ad=[]; D.adSrc=''; D.adfx=[]; D.tanka={}; D.rsv=[]; D.pl=[]; D.spot=[]; D.dinii=[]; D.targets=[]; D.targetsM=[]; D.events=[]; D.storeAlias={}; D.storeParent={}; D.adMediaMaster=[]; D.adPlanMaster={}; D.adStoreMaster=[]; D.subItemMaster={}; }  // 広告・PL・スポット人件費・ダイニー・目標・対応表・親子・補助科目マスタはフル受信のたびに入れ替え
+  if(!partial){ D.extra={}; D.diag={}; D.receivedKeys=Object.keys(sheets); D.ad=[]; D.adSrc=''; D.adfx=[]; D.tanka={}; D.rsv=[]; D.pl=[]; D.spot=[]; D.dinii=[]; D.targets=[]; D.targetsM=[]; D.events=[]; D.storeAlias={}; D.storeParent={}; D.adMediaMaster=[]; D.adPlanMaster={}; D.adStoreMaster=[]; D.subItemMaster={}; D.mfCategoryMap={}; }  // 広告・PL・スポット人件費・ダイニー・目標・対応表・親子・補助科目/MF科目対応マスタはフル受信のたびに入れ替え
   else { D.receivedKeys=(D.receivedKeys||[]).concat(Object.keys(sheets)); }
   const known=['daily','media','deposit','review','ad','広告'];
   if(!partial){ known.forEach(k=>{ if(!(k in sheets)) D.diag[k]='シート未受信（接続設定のシート名を確認）'; }); }
@@ -1109,6 +1129,7 @@ function ingestSheets(sheets, partial){
     else if(key==='媒体マスタ') ingestMediaMaster(rows);
     else if(key==='プランマスタ') ingestPlanMaster(rows);
     else if(key==='補助科目') ingestSubItemMaster(rows);
+    else if(key==='科目対応') ingestMfCategoryMap(rows);
     else if(key==='広告店舗マスタ') ingestAdStoreMaster(rows);
     else if(isStoreParentKey(key)){ D.storeParent=ingestStoreParent(rows); D.diag[key]='OK '+Object.keys(D.storeParent).length+'件の親子'; }
     else if(isStoreMapKey(key)){ D.storeAlias=ingestStoreMap(rows); D.diag[key]='OK '+Object.keys(D.storeAlias).length+'件の対応'; }
@@ -3818,6 +3839,7 @@ function viewPL(){
     <div class="seg">${[['month','月次'],['year','年間'],['custom','期間指定']].map(([k,l])=>`<button class="${P===k?'on':''}" onclick="App.set('plPeriod','${k}')">${l}</button>`).join('')}</div>
     ${ctrlHtml}
     ${canUse('plInput')?`<button class="icon-btn primary" onclick="App.openPlInput()">✎ 経費を入力</button>`:''}
+    ${canUse('plInput')?`<button class="icon-btn" onclick="App.openMfImport()">📥 MF取込</button>`:''}
     ${canUse('spot')?`<button class="icon-btn" onclick="App.openSpotInput()">＋ スポット人件費</button>`:''}
     ${canUse('spot')?`<button class="icon-btn" onclick="App.syncSpotPl()" title="スポット人件費の入力・削除をPLへ今すぐ反映します（普段は毎日AM5:00に自動実行）">🔄 スポット人件費をPLへ反映</button>`:''}
     <span class="period-label">損益（${mLabel} ／ ${esc(scopeLabel)}）</span></div>`
@@ -5023,6 +5045,7 @@ function viewModal(){
   if(S.modal&&S.modal.type==='target') return targetModal();
   if(S.modal&&S.modal.type==='targetDay') return targetDayModal();
   if(S.modal&&S.modal.type==='depImport') return depImportModal();
+  if(S.modal&&S.modal.type==='mfImport') return mfImportModal();
   if(S.modal&&S.modal.type==='depNote') return depNoteModal();
   if(S.modal&&S.modal.type==='plInput') return plInputModal();
   if(S.modal&&S.modal.type==='adInput') return adInputModal();
@@ -5256,6 +5279,187 @@ function depTokenize(rows){
     return Object.assign({}, r, { token });
   });
 }
+
+/* ---- MF取込（マネーフォワード試算表CSV取込・2026-08-24追加） ----
+ * 設計: ns-portal/docs/設計書_PL補助科目・スポット人件費・MF取込_2026-08-23.md §3
+ * マネーフォワードの「損益計算書 月次推移」CSV（法人×店舗ごとに1枚出力・部門列は無い実物確認済み）を
+ * 解析する。文字コードはCP932（Shift_JIS系）。1行目見出し: 勘定科目／補助科目／4月〜3月／決算整理／合計。
+ * 行の階層は3段: ①勘定科目行（列2=科目名・その月の科目合計） ②補助科目行（列3=値。真の補助科目／
+ * 取引先名／部門コード「01/本店」等が混在） ③「○○合計」等の集計行（列1に文字列・スキップ）。
+ * 補助科目行の金額は必ず親の勘定科目行に含まれる内訳なので、両方取り込むと二重計上になる。
+ * → 「DB_補助科目マスタに既に登録されている値だけを補助科目として取り込み、それ以外は勘定科目へ
+ *   ロールアップする」という設計書§3の安全側の方式を採用（取引先名・部門コードを個別に判定する
+ *   正規表現ヒューリスティックより単純で確実）。
+ */
+function mfParseCsv(text){
+  const rows=csvToRows(text);
+  let hi=-1;
+  for(let i=0;i<Math.min(rows.length,10);i++){
+    const cells=(rows[i]||[]).map(c=>String(c==null?'':c).trim());
+    if(cells.includes('勘定科目')&&cells.includes('補助科目')){ hi=i; break; }
+  }
+  if(hi<0) return { error:'見出し行（勘定科目・補助科目）が見つかりません。マネーフォワードの「損益計算書 月次推移」CSVか確認してください。' };
+  const H=rows[hi].map(h=>String(h==null?'':h).trim());
+  const iAcc=H.indexOf('勘定科目'), iSub=H.indexOf('補助科目');
+  const monthCols=[];
+  for(let c=Math.max(iAcc,iSub)+1;c<H.length;c++){ if(/^\d{1,2}月$/.test(H[c])) monthCols.push({col:c, mo:parseInt(H[c],10)}); }
+  if(monthCols.length!==12) return { error:'月の列（4月〜3月）が12ヶ月ぶん見つかりませんでした（'+monthCols.length+'列検出）。見出し: '+H.join(' / ') };
+  const iSettle=H.indexOf('決算整理');
+  const toInt=(v)=>{ const n=parseInt(String(v==null?'':v).replace(/[,"\s]/g,''),10); return isNaN(n)?0:n; };
+  const accounts=[]; let cur=null; const settleWarn=[];
+  for(let i=hi+1;i<rows.length;i++){
+    const r=rows[i]||[]; if(!r.length) continue;
+    const c0=String(r[0]==null?'':r[0]).trim();
+    const cAcc=String(r[iAcc]==null?'':r[iAcc]).trim();
+    const cSub=String(r[iSub]==null?'':r[iSub]).trim();
+    const hasAmt=monthCols.some(mc=>String(r[mc.col]==null?'':r[mc.col]).trim()!=='');
+    if(!c0&&!cAcc&&!cSub&&!hasAmt) continue;
+    if(c0){ cur=null; continue; }   // 「○○合計」／大区分見出し行はスキップ（金額があっても集計済みなので不要）
+    if(cAcc&&!cSub){
+      const amounts=monthCols.map(mc=>({mo:mc.mo, amt:toInt(r[mc.col])}));
+      const settleAmt=iSettle>=0?toInt(r[iSettle]):0;
+      if(settleAmt!==0) settleWarn.push(cAcc);
+      cur={ name:cAcc, amounts, subRows:[] };
+      accounts.push(cur);
+      continue;
+    }
+    if(!cAcc&&cSub&&cur){
+      cur.subRows.push({ name:cSub, amounts:monthCols.map(mc=>({mo:mc.mo, amt:toInt(r[mc.col])})) });
+    }
+  }
+  if(!accounts.length) return { error:'勘定科目の行が見つかりませんでした' };
+  return { accounts, settleWarn:[...new Set(settleWarn)] };
+}
+// 「4月」始まりの会計年度と月番号(4〜3)から実際の年月(YYYY-MM)へ変換
+function mfMoToYm(mo, fyStart){ const y=mo>=4?fyStart:fyStart+1; return y+'-'+String(mo).padStart(2,'0'); }
+// プレビューの分類（登録／除外＝取込済み／要選択／未対応）を、現在のS.modal状態から組み立てる。
+// D.pl（既存DB_PL）・D.mfCategoryMap（DB_科目対応）・D.subItemMaster（DB_補助科目）を突き合わせる。
+function mfBuildPreview(m){
+  // unmapped=まだ何も分かっていない科目（ドラフトすら無い・確定不可）。
+  // reviewAccounts=今回初めて見る科目だが、下書き（m.unmapped[科目名]）で内部科目・区分・除外を
+  // 仮決定済み＝確定ボタンは押せる状態（プレビューにも編集フォーム付きで表示され、そのまま確定すると
+  // DB_科目対応に学習される）。既にDB_科目対応にある科目は無条件でreviewAccountsに入れない。
+  const out={ register:[], excludeAlready:[], choose:[], unmapped:[], reviewAccounts:[], excludedByMap:[], ignoredSubsByAccount:{}, settleWarn:(m.parsed&&m.parsed.settleWarn)||[] };
+  if(!m.parsed) return out;
+  const store=m.store;
+  const existing={};
+  D.pl.forEach(r=>{
+    const match = store==='__common__' ? !String(r.store).trim() : normStore(r.store)===normStore(store);
+    if(!match) return;
+    const d=new Date(r.t);
+    const ym=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+    existing[ym+'\t'+r.item+'\t'+(r.sub||'')]=r.amount;
+  });
+  (m.parsed.accounts||[]).forEach(acc=>{
+    const known=D.mfCategoryMap[acc.name+'\t'];
+    const draft=m.unmapped&&m.unmapped[acc.name];
+    const mapping=known || (draft?{ item:draft.item, sub:'', cat:draft.cat, exclude:draft.exclude }:null);
+    if(!mapping){
+      out.unmapped.push({ account:acc.name, subNames:[...new Set(acc.subRows.map(s=>s.name))] });
+      return;
+    }
+    if(!known) out.reviewAccounts.push(acc.name);   // 確定時にDB_科目対応へ新規保存する対象
+    if(mapping.exclude){ out.excludedByMap.push(acc.name); return; }
+    const item=mapping.item||acc.name, cat=mapping.cat||'O';
+    const knownSubs=new Set((D.subItemMaster[item]||[]).map(s=>s.name));
+    Object.keys(m.subApprove||{}).forEach(k=>{
+      if(m.subApprove[k] && k.indexOf(acc.name+'\t')===0) knownSubs.add(k.slice(acc.name.length+1));
+    });
+    const realSubs=acc.subRows.filter(s=>knownSubs.has(s.name));
+    const ignoredSubs=acc.subRows.filter(s=>!knownSubs.has(s.name));
+    acc.amounts.forEach((a,idx)=>{
+      const ym=mfMoToYm(a.mo, m.fyStart);
+      let rollup=a.amt;
+      realSubs.forEach(s=>{ rollup-=s.amounts[idx].amt; });
+      const candidates=[];
+      if(rollup!==0) candidates.push({ item, sub:'', amount:rollup });
+      realSubs.forEach(s=>{ if(s.amounts[idx].amt!==0) candidates.push({ item, sub:s.name, amount:s.amounts[idx].amt }); });
+      candidates.forEach(row=>{
+        const key=ym+'\t'+row.item+'\t'+row.sub;
+        const prevAmt=existing[key];
+        const entry={ ym, item:row.item, cat, sub:row.sub, amount:row.amount, account:acc.name, key };
+        if(prevAmt==null) out.register.push(entry);
+        else if(prevAmt===row.amount) out.excludeAlready.push(entry);
+        else out.choose.push(Object.assign(entry,{ prevAmount:prevAmt, choice:(m.rowChoice&&m.rowChoice[key])||'overwrite' }));
+      });
+    });
+    if(ignoredSubs.length){
+      const tot={};
+      ignoredSubs.forEach(s=>{ tot[s.name]=s.amounts.reduce((sum,a)=>sum+a.amt,0); });
+      const list=Object.keys(tot).map(n=>({name:n, total:tot[n]})).filter(x=>x.total!==0);
+      if(list.length) out.ignoredSubsByAccount[acc.name]=list;
+    }
+  });
+  return out;
+}
+function mfImportModal(){
+  const m=S.modal;
+  const stores=scopeStores();
+  const canCommon=S.auth&&(S.auth.account.role==='社長'||S.auth.account.role==='本部');
+  const p=mfBuildPreview(m);
+  const catOpt=(v)=>[['F','F 仕入'],['L','L 人件費'],['A','A 広告'],['R','R 家賃'],['O','O 他'],['S','S 売上'],['X','X PL外']]
+    .map(c=>`<option value="${c[0]}" ${v===c[0]?'selected':''}>${c[1]}</option>`).join('');
+  let prev=`<div class="empty" style="padding:14px;font-size:12.5px">CSVファイルを選択してください（マネーフォワードの「損益計算書 月次推移」形式）</div>`;
+  if(m.parsed){
+    prev='';
+    if(p.settleWarn.length) prev+=`<div class="card" style="border-color:#b58a00;padding:10px;margin-bottom:8px;font-size:12.5px">⚠️ 「決算整理」列に金額がある科目は取込対象外です（このダッシュボードの年月には対応しないため）: ${p.settleWarn.map(esc).join('、')}</div>`;
+    prev+=`<div style="font-size:12.5px;font-weight:700;color:#3d5163;margin-bottom:8px">登録 ${p.register.length}件／除外(取込済み) ${p.excludeAlready.length}件／要選択 ${p.choose.length}件／未対応 ${p.unmapped.length}件（対象外科目 ${p.excludedByMap.length}件）</div>`;
+    if(p.unmapped.length){
+      prev+=`<div class="card" style="border-color:#b5502f;padding:10px;margin-bottom:8px;font-size:12.5px">解決できなかった科目があります。もう一度ファイルを選び直してください: ${p.unmapped.map(u=>esc(u.account)).join('、')}</div>`;
+    }
+    if(p.reviewAccounts.length){
+      prev+=`<div class="panel" style="padding:12px;margin-bottom:10px"><h4 style="font-size:13px;margin-bottom:6px">🆕 初めて見る科目（内容を確認・修正してください。確定すると次回から自動になります）</h4>`;
+      prev+=p.reviewAccounts.map(acc=>{ const d=m.unmapped[acc]||{item:acc,cat:'O',exclude:false};
+        return `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0;padding-bottom:6px;border-bottom:1px solid var(--line)">
+          <span style="font-size:12.5px;min-width:140px">${esc(acc)}</span>
+          <input value="${esc(d.item)}" style="width:150px;font-size:12.5px;padding:5px 7px" onchange="App.mfSetUnmappedField('${esc(acc).replace(/'/g,"\\'")}','item',this.value)">
+          <select style="font-size:12.5px;padding:5px 4px" onchange="App.mfSetUnmappedField('${esc(acc).replace(/'/g,"\\'")}','cat',this.value)">${catOpt(d.cat)}</select>
+          <label style="font-size:12px;display:flex;align-items:center;gap:4px"><input type="checkbox" ${d.exclude?'checked':''} onchange="App.mfSetUnmappedField('${esc(acc).replace(/'/g,"\\'")}','exclude',this.checked)">取り込まない（既に自動連携済み等）</label>
+        </div>`; }).join('');
+      prev+=`</div>`;
+    }
+    const ignoredAccs=Object.keys(p.ignoredSubsByAccount);
+    if(ignoredAccs.length){
+      prev+=`<div class="panel" style="padding:12px;margin-bottom:10px"><h4 style="font-size:13px;margin-bottom:6px">🔍 取り込んでいない内訳（必要なものだけ選んで取り込めます）</h4>`;
+      prev+=ignoredAccs.map(acc=>`<div style="font-size:12.5px;margin:4px 0"><b>${esc(acc)}</b>: `+
+        p.ignoredSubsByAccount[acc].map(s=>`<label style="margin-right:10px"><input type="checkbox" ${m.subApprove&&m.subApprove[acc+'\t'+s.name]?'checked':''} onchange="App.mfToggleSub('${esc(acc).replace(/'/g,"\\'")}','${esc(s.name).replace(/'/g,"\\'")}',this.checked)">${esc(s.name)}(${yen(s.total)})</label>`).join('')
+        +`</div>`).join('');
+      prev+=`</div>`;
+    }
+    if(p.choose.length){
+      prev+=`<div class="panel" style="padding:12px"><h4 style="font-size:13px;margin-bottom:6px">⚠️ 金額が既存と違う行（残す＝既存のまま／上書き＝CSVの金額に更新）</h4>
+        <div style="margin-bottom:6px"><button class="icon-btn sm" onclick="App.mfBulkChoice('overwrite')">すべて上書き</button> <button class="icon-btn sm" onclick="App.mfBulkChoice('keep')">すべて残す</button></div>
+        <div class="scroll-x" style="max-height:220px;overflow-y:auto;border:1px solid var(--line2);border-radius:8px">
+        <table class="tbl"><thead><tr><th>年月</th><th>科目</th><th>補助科目</th><th>既存</th><th>CSV</th><th>選択</th></tr></thead><tbody>`;
+      prev+=p.choose.map(r=>`<tr><td>${esc(r.ym)}</td><td>${esc(r.item)}</td><td>${esc(r.sub||'—')}</td><td style="text-align:right">${yen(r.prevAmount)}</td><td style="text-align:right">${yen(r.amount)}</td>
+        <td><label style="margin-right:6px"><input type="radio" name="mfch-${esc(r.key)}" ${r.choice==='overwrite'?'checked':''} onchange="App.mfSetRowChoice('${esc(r.key).replace(/'/g,"\\'")}','overwrite')">上書き</label>
+        <label><input type="radio" name="mfch-${esc(r.key)}" ${r.choice==='keep'?'checked':''} onchange="App.mfSetRowChoice('${esc(r.key).replace(/'/g,"\\'")}','keep')">残す</label></td></tr>`).join('');
+      prev+=`</tbody></table></div></div>`;
+    }
+  }
+  const canConfirm=!!(m.parsed && p.unmapped.length===0 && (p.register.length+p.choose.length)>0);
+  return `<div class="modal-bg" onclick="if(event.target===this)App.closeModal()"><div class="modal" style="max-width:820px">
+    <h3>📥 マネーフォワード試算表CSV取込</h3>
+    <div class="sub">MF会計の「損益計算書 月次推移」CSVをアップロードすると、既存のPLと突き合わせてプレビューします。内容を確認してから確定してください（確定するまでDB_PLは一切変更されません）。</div>
+    <div class="form-grid" style="margin-top:12px">
+      <div><label>この試算表の店舗</label>
+        <select onchange="App.mfSetField('store',this.value)">
+          ${canCommon?`<option value="__common__" ${m.store==='__common__'?'selected':''}>全社共通</option>`:''}
+          ${stores.map(s=>`<option value="${esc(s)}" ${s===m.store?'selected':''}>${esc(s)}</option>`).join('')}
+        </select></div>
+      <div><label>会計年度（4月始まり・開始年）</label>
+        <input type="number" value="${m.fyStart}" style="width:100px" onchange="App.mfSetField('fyStart',+this.value)"></div>
+      <div><label>CSVファイル</label>
+        <input type="file" accept=".csv,text/csv" onchange="App.mfFileChosen(this)" style="width:100%;font-size:12px;padding:6px 0"></div>
+    </div>
+    <div id="mf-msg" style="font-size:12px;color:#b5502f;margin:8px 0">${esc(m.msg||'')}</div>
+    <div id="mf-preview" style="margin-top:6px">${prev}</div>
+    <div class="modal-btns">
+      <button class="icon-btn primary" onclick="App.mfConfirm()" ${canConfirm?'':'disabled'}>確定して取り込む</button>
+      <button class="icon-btn" onclick="App.closeModal()">キャンセル</button>
+    </div>
+  </div></div>`;
+}
 /* ---- PL経費入力モーダル ----
  * 年月×店舗の手入力経費を丸ごと編集（差し替え保存）。保存先は
  * ①PL管理システムの「✍ 販管費入力」（手入力の本体） ②ダッシュボードのDB_PL（即時反映用）の両方。
@@ -5270,6 +5474,16 @@ const PL_ITEM_CAT={
   '水道光熱費':'O','通信費':'O','消耗品・備品費':'O','修繕費':'O','衛生管理費':'O','カード手数料':'O','支払手数料':'O','支払報酬料':'O','採用教育費':'O','接待交際費':'O','会議費':'O','慶弔見舞費':'O','保険料':'O','租税公課':'O','減価償却費':'O','福利厚生費':'O','諸会費':'O','雑費':'O','本部経費（按分）':'O',
   'その他売上':'S','銀行返済':'X','仕入（食材・飲料）':'F'
 };
+// MF取込：初めて見る科目の区分(F/L/A/R/O/S)を推測する（PL_ITEM_CATに無ければ科目名のキーワードで判定）
+function mfGuessCat(name){
+  if(PL_ITEM_CAT[name]) return PL_ITEM_CAT[name];
+  if(/給料|雑給|人件費|法定福利|通勤/.test(name)) return 'L';
+  if(/広告|販促/.test(name)) return 'A';
+  if(/家賃|賃料/.test(name)) return 'R';
+  if(/仕入/.test(name)) return 'F';
+  if(/売上/.test(name)) return 'S';
+  return 'O';
+}
 // 勘定科目→補助科目の候補（DB_補助科目マスタ＋実データに既にある値の合成）。plRowHtmlの行ごとdatalistで使う。
 function plSubOptions(item){
   const fromMaster=(D.subItemMaster[String(item||'').trim()]||[]).map(s=>s.name);
@@ -6058,6 +6272,68 @@ window.App = {
   // 店舗別比較テーブルの行クリック→その1店舗のPLへ。複数選択中だった場合は解除する
   // （選んだ組み合わせを無視して1店舗だけ表示してしまうのを防ぐ）。
   plDrillStore(n){ S.plStores=null; S.store=n; render(); },
+  /* ---- MF取込（2026-08-24追加） ---- */
+  openMfImport(){
+    if(!requireFeature('plInput'))return;
+    const stores=scopeStores();
+    const now=new Date();
+    const fyStart=now.getMonth()>=3?now.getFullYear():now.getFullYear()-1;   // 4月始まり会計年度の既定推定
+    S.modal={ type:'mfImport', store:selStoreName()||stores[0], fyStart, fileName:'', parsed:null, unmapped:{}, subApprove:{}, rowChoice:{}, msg:'' };
+    render();
+  },
+  mfSetField(field,val){ S.modal[field]=val; render(); },
+  async mfFileChosen(inp){
+    const m=S.modal; m.msg='';
+    const f=inp.files&&inp.files[0]; if(!f) return;
+    try{
+      const buf=await f.arrayBuffer();
+      let text=new TextDecoder('utf-8',{fatal:false}).decode(buf);
+      if(text.indexOf('�')>=0) text=new TextDecoder('shift-jis').decode(buf);   // MF会計のCSVはShift_JIS(CP932)系
+      const r=mfParseCsv(text);
+      if(r.error){ m.parsed=null; m.msg=r.error; render(); return; }
+      m.fileName=f.name; m.parsed=r; m.unmapped={}; m.subApprove={}; m.rowChoice={};
+      // 初めて見る科目は賢い既定値で下書きしておく（そのまま確定も、編集も可能）。
+      // 人件費・売上・仕入等は既に自動連携済みのため既定で「取り込まない」にする（設計書§3の二重計上ガード）。
+      const dupDefault=['給料手当','雑給','法定福利費','通勤手当','飲食売上','仕入高','売上高'];
+      r.accounts.forEach(acc=>{
+        if(D.mfCategoryMap[acc.name+'\t']) return;
+        m.unmapped[acc.name]={ item:acc.name, cat:mfGuessCat(acc.name), exclude:dupDefault.includes(acc.name) };
+      });
+      render();
+    }catch(e){ m.msg='ファイルを読み込めませんでした: '+e.message; render(); }
+  },
+  mfSetUnmappedField(acc,field,val){ const m=S.modal; if(!m.unmapped[acc])return; m.unmapped[acc][field]=val; render(); },
+  mfToggleSub(acc,sub,checked){ const m=S.modal; m.subApprove=m.subApprove||{}; m.subApprove[acc+'\t'+sub]=checked; render(); },
+  mfSetRowChoice(key,val){ const m=S.modal; m.rowChoice=m.rowChoice||{}; m.rowChoice[key]=val; render(); },
+  mfBulkChoice(val){ const m=S.modal; const p=mfBuildPreview(m); m.rowChoice=m.rowChoice||{}; p.choose.forEach(r=>{ m.rowChoice[r.key]=val; }); render(); },
+  async mfConfirm(){
+    const m=S.modal;
+    if(!S.auth||!S.auth.token){ m.msg='スプレッドシート接続時のみ取込できます（デモモードでは不可）'; render(); return; }
+    const p=mfBuildPreview(m);
+    if(p.unmapped.length){ m.msg='未解決の科目があります'; render(); return; }
+    const entries=[];
+    p.register.forEach(r=>entries.push([r.ym,r.item,r.cat,r.amount,r.sub]));
+    p.choose.forEach(r=>{ if(((m.rowChoice&&m.rowChoice[r.key])||'overwrite')!=='keep') entries.push([r.ym,r.item,r.cat,r.amount,r.sub]); });
+    if(!entries.length){ m.msg='確定する行がありません（すべて除外・取込済み・残すが選択されています）'; render(); return; }
+    const newMappings=p.reviewAccounts.map(acc=>{ const d=m.unmapped[acc]; return [acc,'',d.item,'',d.cat,d.exclude]; });
+    const newSubItems=[];
+    Object.keys(m.subApprove||{}).forEach(k=>{
+      if(!m.subApprove[k]) return;
+      const idx=k.indexOf('\t'); const acc=k.slice(0,idx), sub=k.slice(idx+1);
+      const known=D.mfCategoryMap[acc+'\t']; const draft=m.unmapped[acc];
+      const item=(known&&known.item)||(draft&&draft.item)||acc;
+      newSubItems.push([item,sub]);
+    });
+    m.msg='取込中…'; render();
+    try{
+      const d=await api({ action:'mfConfirmImport', token:S.auth.token, store:m.store,
+        entries:JSON.stringify(entries), newMappings:JSON.stringify(newMappings), newSubItems:JSON.stringify(newSubItems) });
+      if(!d.ok){ m.msg=d.error||'取込に失敗しました'; render(); return; }
+      S.modal=null; render();
+      toast(`MF取込が完了しました（${d.saved}件・${d.months}ヶ月ぶん）`+(d.plsys&&d.plsys.indexOf('失敗')>=0?'／'+d.plsys:''));
+      fetchData(true,{ only:['pl','PL','科目対応','補助科目'], partial:true });
+    }catch(e){ m.msg='通信エラー: '+e.message; render(); }
+  },
   /* ---- PL経費入力 ---- */
   openPlInput(){
     if(!requireFeature('plInput'))return;
