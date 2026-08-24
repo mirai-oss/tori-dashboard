@@ -6954,8 +6954,12 @@ window.App = {
     if(raw){
       const sess=JSON.parse(raw);
       if(sess&&sess.account){
-        if(sess.token&&apiUrl()){ S.auth=sess; applyBqDailyRoleDefault_(); S.connState='connecting'; fetchDataFast(); startPolling(); restored=true; }
-        else if(!sess.token&&!apiUrl()){ S.auth=sess; applyBqDailyRoleDefault_(); restored=true; }
+        // 担当F報告（2026-08-24）: この復元経路はafterLogin()を呼んでいなかったため、
+        // ?tab=（S.pendingTab）が2回目以降のアクセス（=ログイン情報復元）で適用されず無視されていた
+        // （新規ログイン時のみ効いていた）。afterLogin()を呼んで解消（tab反映・store初期化・
+        // applyBqDailyRoleDefault_()も内包）。
+        if(sess.token&&apiUrl()){ S.auth=sess; afterLogin(); S.connState='connecting'; fetchDataFast(); startPolling(); restored=true; }
+        else if(!sess.token&&!apiUrl()){ S.auth=sess; afterLogin(); restored=true; }
       }
     }
   }catch(e){}
