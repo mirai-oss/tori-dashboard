@@ -5504,12 +5504,18 @@ function mfImportModal(){
       prev+=ignoredAccs.map(acc=>{
         const items=p.ignoredSubsByAccount[acc].map(s=>{
           const amt=m.ignoredMonth ? (s.monthly.find(x=>x.mo===m.ignoredMonth)||{amt:0}).amt : s.total;
-          return { name:s.name, amt };
+          return { name:s.name, amt, on:!!(m.subApprove&&m.subApprove[acc+'\t'+s.name]) };
         }).filter(x=>x.amt!==0);
         if(!items.length) return '';
-        return `<div class="mf-ignored-row" data-acc="${esc(acc)}" style="font-size:12.5px;margin:4px 0"><b>${esc(acc)}</b>: `+
-          items.map(s=>`<label class="mf-ignored-item" data-sub="${esc(s.name)}" style="margin-right:10px"><input type="checkbox" ${m.subApprove&&m.subApprove[acc+'\t'+s.name]?'checked':''} onchange="App.mfToggleSub(this.closest('.mf-ignored-row').dataset.acc,this.closest('.mf-ignored-item').dataset.sub,this.checked)">${esc(s.name)}(${yen(s.amt)})</label>`).join('')
-          +`</div>`;
+        const allOn=items.every(s=>s.on);
+        return `<div class="mf-ignored-row" data-acc="${esc(acc)}" style="font-size:12.5px;margin:8px 0;padding-bottom:8px;border-bottom:1px solid var(--line)">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px">
+            <b>${esc(acc)}</b>
+            <button class="icon-btn sm" onclick="App.mfPromoteAllSubs(this.closest('.mf-ignored-row').dataset.acc,${allOn?'false':'true'})">${allOn?'↺ すべて取り消す':'↳ この内訳をすべて補助科目として取り込む'}</button>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px">`+
+          items.map(s=>`<button type="button" class="mf-ignored-item ${s.on?'primary':''} icon-btn sm" data-sub="${esc(s.name)}" onclick="App.mfToggleSub(this.closest('.mf-ignored-row').dataset.acc,this.dataset.sub,!this.classList.contains('primary'))">${s.on?'✓ ':''}${esc(s.name)}（${yen(s.amt)}）</button>`).join('')
+          +`</div></div>`;
       }).join('');
       prev+=`</div>`;
     }
@@ -6425,6 +6431,13 @@ window.App = {
   },
   mfSetUnmappedField(acc,field,val){ const m=S.modal; if(!m.unmapped[acc])return; m.unmapped[acc][field]=val; render(); },
   mfToggleSub(acc,sub,checked){ const m=S.modal; m.subApprove=m.subApprove||{}; m.subApprove[acc+'\t'+sub]=checked; render(); },
+  // 1件ずつのチェックが分かりにくい/効かないという指摘（2026-08-24）を受けて追加した一括版。
+  // 個別トグル(mfToggleSub)と同じ状態(m.subApprove)を、その勘定科目の未認識補助科目ぶんまとめて更新する。
+  mfPromoteAllSubs(acc,on){
+    const m=S.modal; const p=mfBuildPreview(m); m.subApprove=m.subApprove||{};
+    (p.ignoredSubsByAccount[acc]||[]).forEach(s=>{ m.subApprove[acc+'\t'+s.name]=on; });
+    render();
+  },
   mfSetRowChoice(key,val){ const m=S.modal; m.rowChoice=m.rowChoice||{}; m.rowChoice[key]=val; render(); },
   mfBulkChoice(val){ const m=S.modal; const p=mfBuildPreview(m); m.rowChoice=m.rowChoice||{};
     const target=m.chooseMonth?p.choose.filter(r=>r.ym===m.chooseMonth):p.choose;
