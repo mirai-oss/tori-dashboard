@@ -1,0 +1,86 @@
+name: LINE送信数の見張り番
+
+# 担当Cからの依頼（docs/設計書_労務ワークフロー_労働条件通知書自動発行_2026-08-24.md §6・
+# ns-portal/WORKLOG.md「担当Cへ: LINE送信数のモニタリング…」）。
+#
+# LINE公式アカウントは月5000通まで送信可能（有料プラン化済み）だが、シフトリマインド
+# （nippo）・朝の見張り番（D-3）・今後の労務ワークフロー等、全LINE送信機能が同一アカウント枠を
+# 共有している。合算で上限に近づいたら気づけるよう、D-3（morning-watchdog.yml）と同型の
+# 仕組みで日次チェックする（新規ワークフローファイル1個のみ・既存ファイル/app.js/GAS無変更）。
+#
+# しきい値: 80%到達=注意喚起／95%到達=強い警告（2段階・設計書§6.2の案どおり。
+# 変更したい場合は下のLEVEL1/LEVEL2環境変数を書き換える）。
+#
+# データ取得はns-portal側の新規Edge Function `line-quota-check` を、D-3と同じBQ_LOAD_TOKENで
+# 呼ぶだけ（新しいシークレットは増やさない）。
+#
+# 発火は他のcron系workflowと同じく外部cron（cron-job.org）からworkflow_dispatch APIを叩く。
+#   POST https://api.github.com/repos/mirai-oss/tori-dashboard/actions/workflows/line-quota-watchdog.yml/dispatches
+#   body: {"ref":"main"}
+#   Schedule: 毎日 09:30 JST 目安（D-3の朝の見張り番と同じ時間帯でよい）
+on:
+  workflow_dispatch:
+
+env:
+  LEVEL1_RATIO: "0.80"
+  LEVEL2_RATIO: "0.95"
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: LINE送信数を確認
+        id: quota
+        env:
+          BQ_LOAD_TOKEN: ${{ secrets.BQ_LOAD_TOKEN }}
+        run: |
+          if [ -z "$BQ_LOAD_TOKEN" ]; then
+            echo "::error::BQ_LOAD_TOKEN が未設定です"
+            exit 1
+          fi
+          RES=$(curl -s "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/line-quota-check?token=$BQ_LOAD_TOKEN")
+          echo "$RES"
+          OK=$(echo "$RES" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).ok)}catch(e){console.log('false')}})")
+          if [ "$OK" != "true" ]; then
+            echo "::warning::line-quota-check取得に失敗（判定不能のため無送信）"
+            echo "level=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          RATIO=$(echo "$RES" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d);console.log(j.ratio==null?'':j.ratio)}catch(e){console.log('')}})")
+          USED=$(echo "$RES" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).used)}catch(e){console.log(0)}})")
+          LIMIT=$(echo "$RES" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).limit)}catch(e){console.log('')}})")
+          echo "used=$USED" >> "$GITHUB_OUTPUT"
+          echo "limit=$LIMIT" >> "$GITHUB_OUTPUT"
+          if [ -z "$RATIO" ]; then
+            echo "level=0" >> "$GITHUB_OUTPUT"
+          else
+            LEVEL=$(node -e "console.log(Number('$RATIO')>=Number('$LEVEL2_RATIO')?2:(Number('$RATIO')>=Number('$LEVEL1_RATIO')?1:0))")
+            echo "level=$LEVEL" >> "$GITHUB_OUTPUT"
+            PCT=$(node -e "console.log((Number('$RATIO')*100).toFixed(1))")
+            echo "pct=$PCT" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Larkへ警告（しきい値以上の時だけ・正常時は無送信）
+        if: steps.quota.outputs.level != '0'
+        env:
+          LARK_WEBHOOK: ${{ secrets.LARK_WEBHOOK }}
+        run: |
+          if [ -z "$LARK_WEBHOOK" ]; then
+            echo "::error::LARK_WEBHOOK未設定のため警告を送信できません"
+            exit 1
+          fi
+          if [ "${{ steps.quota.outputs.level }}" = "2" ]; then
+            PREFIX="🚨 【強い警告】"
+          else
+            PREFIX="⚠️"
+          fi
+          TEXT="${PREFIX} LINE公式アカウントの今月の送信数が${{ steps.quota.outputs.used }}/${{ steps.quota.outputs.limit }}通（${{ steps.quota.outputs.pct }}%）に達しています。上限に注意してください。"
+          BODY=$(TEXT="$TEXT" node -e "console.log(JSON.stringify({msg_type:'text', content:{text: process.env.TEXT}}))")
+          RES=$(curl -s -w "\n%{http_code}" -X POST "$LARK_WEBHOOK" -H "Content-Type: application/json" -d "$BODY")
+          echo "$RES"
+          HTTP_CODE=$(echo "$RES" | tail -1)
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::Lark送信に失敗しました（HTTP $HTTP_CODE）"
+            exit 1
+          fi
