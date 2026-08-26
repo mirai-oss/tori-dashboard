@@ -125,6 +125,7 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 | 🔶 **展開中（A-3第1段階・2026-08-24）** | BQモードを社長・本部のみ既定ONに（`app.js?v=120`）。ユーザーOK済み。`applyBqDailyRoleDefault_()`でlocalStorage未設定ユーザーのみrole基準の既定値を適用（手動トグル済みユーザーは上書きしない）。**次にやること**: 2営業日（〜2026-08-26頃）様子を見て問題なければ役職条件を広げ全役職へ展開。あわせて`ns-daily-import`の`morning-refresh`（タスク2・Mac miniへ本日git pull済み）が翌朝08:45に実行され09:05頃BQへ前日分が反映されることの実地確認が必要 |
 | ✅ 完了（F-3依頼対応・2026-08-24） | `?embed=1`でヘッダー/ナビ非表示・`?tab=`（無ければ`#tab=`）で初期タブ指定（`app.js?v=121`）。ns-portal統合ポータルシェル（担当F）から依頼のあった深リンク・埋め込み対応。`init()`でURLパラメータをS.embed/S.pendingTabへ保持→`afterLogin()`でmyTabs()の許可リストに含まれる場合のみ適用。ローカルデモモードで4パターン確認済み。**担当Fへの申し送り**: portal.html側でiframe srcに`?embed=1&tab=xxx`を付与すれば深リンクが有効になる（xxxは`dash`/`target`/`analysis`/`detail`/`pl`/`deposit`/`ad`/`review`/`weekly`/`weeklyAdmin`/`ai`/`accounts`。`TAB_LABELS`＝`app.js:38`参照） |
 | ✅ 完了（F実機報告への修正・2026-08-24・`app.js?v=122`） | セッション復元経路（2回目以降のアクセスでlocalStorageの保存済みログイン情報を使う経路）が`afterLogin()`を呼んでおらず、`?tab=`が新規ログイン時にしか効かない不具合を修正。復元経路2分岐とも`afterLogin()`を呼ぶよう変更（pendingTab反映・store初期化・`applyBqDailyRoleDefault_()`を内包）。ローカルでlocalStorageにセッション事前設定→`?tab=ad`でアクセスし`S.tab`が正しく`'ad'`になることを確認 |
+| ⏳ **コード実装済み・GAS未デプロイ（A-5・2026-08-26）** | 銀行利息・元金のPL反映＋簡易キャッシュフロー（`ping`=`loan-pl-v1`・`app.js?v=123`）。ns-portal「実装指示書_ラウンド3」A-5。F-8（ns-info-system）の返済データAPIから毎日同期し、①支払利息をDB_PLへ自動計上②返済元金は専用シートDB_借入返済元金に集計しPLタブに「簡易キャッシュフロー」セクションを新設。**デプロイ手順は下記作業ログ参照**。GASデプロイ後、Script Propertiesに`LOAN_REPAYMENT_FEED_TOKEN`（ns-info-systemの返済データAPI用トークン。ユーザーがVercel環境変数から把握）を追加しないと同期は失敗する（未設定時はエラーメッセージで即分かる設計） |
 
 ---
 
@@ -148,6 +149,36 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 ---
 
 ## 5. 作業ログ
+
+### 2026-08-26（担当A実行スレッド）A-5 銀行利息・元金のPL反映＋簡易キャッシュフロー（`ping`=`loan-pl-v1`・`app.js?v=123`・実装完了/デプロイ待ち）
+
+`ns-portal/docs/実装指示書_ラウンド3_2026-08-26.md`のA-5。Sync3（F-8完了。`ns-portal/WORKLOG.md`2026-08-26付「担当F実行スレッド」で宣言済み）を確認してから着手。
+
+**設計判断の要点**:
+- 返済元金をDB_PLへ書かなかった理由: PL科目マスタ（`gas/pl-system/pl_system.gs`）にはX区分（`X01 銀行返済`＝「PL外（財務CF）。販管費には含まれません」と既にコメント付きで予約済み）があるが、**tori-dashboardのフロント（`app.js`の`plAgg()`）はF/L/A/R以外を一律O区分に丸めてしまう**ため、Xのつもりで書いても販管費計・営業利益に混ざってしまう。この地雷を踏まないよう、元金は最初からDB_PLに触れず専用シート`DB_借入返済元金`に隔離した
+- 店舗名解決: F-8のフィード（ns-info-system `info.stores`由来の`storeName`）とこのダッシュボードの内部店舗名（`stores.name`/`store_directory_v`）は別マスタで、2026-08-26に発覚した「店舗・法人マスタ統一」課題がまだ未解消（`ns-portal/docs/調査レポート_店舗法人マスタ統一_2026-08-26.md`）。完全一致→別名(aliases, kind='name')→不一致は「全社共通」（空欄）にフォールバックする設計にし、名前が合わなくても金額を握りつぶさないようにした
+- 法人税率はPL管理システム側の`⚙設定`シートを再利用せず、tori-dashboard独自のScript Property（`PL_TAX_RATE`）にした（別プロジェクトのスプレッドシートに触れるリスクを避け、完全に自分の管轄内で完結させるため）。既定0.34・PLタブの管理者向けリンクから変更可能
+
+**実装**:
+- GAS: `syncBankLoanToPl`/`syncBankLoanToPl_`（`BQ_LOAD_TOKEN`認証。F-8の`/api/loan-repayment-feed`を呼び、利息はDB_PL「自動｜支払利息」（O区分）へ`syncSpotLaborToPl_`と同じ「対象月×メモの行だけ差し替え」方式でupsert＋PL管理システム`✍販管費入力`にも同時反映。元金は`DB_借入返済元金`へ毎回全件差し替え）
+- BQミラー: `BQ_STG_LOAN_SCHEMA`／`stg_loan_principal`を`bqSalesTargets_()`に追加、`bqGetLoanPrincipal`（`bqGetSpot`と同じ店舗権限フィルタ・キャッシュパターン）、`bqSyncLoanNow_()`（保存直後の即時ミラー）
+- `getData()`に`taxRate`フィールドを追加（`plTaxRate_()`）。`setPlTaxRate`（社長・本部のみ・0〜1範囲チェック）
+- app.js: `D.loanPrincipal`／`ingestLoanPrincipal()`／`loanPrincipalAgg()`（`plAgg()`と同じスコープ絞り込み。全社共通は単一店舗表示では除外）／`fetchLoanBQ()`（BQモード時に他の`fetchXxxBQ()`と並行取得）／`viewPL()`の営業利益カードの直下に「簡易キャッシュフロー」パネル新設／`App.editPlTaxRate()`（管理者向け、`prompt()`で税率%を入力）
+- `.github/workflows/bank-loan-pl-sync.yml`新規（毎日UTC20:00=JST翌5:00。`seisan-fee-sync.yml`/`spot-labor-pl-sync.yml`と同じ設計・同時刻）
+
+**検証（ローカルデモモードのみ・実データでの検証はデプロイ後）**:
+- `sample-data.js`の実データで営業利益が黒字の月を再現し、法人税等＝営業利益×34%（四捨五入）・税引後キャッシュ＝営業利益－税＋減価償却費・CF＝税引後キャッシュ－返済元金、の計算式が正しいことを確認
+- 営業利益が赤字の月（合成データ）では法人税等が0円になることを確認
+- 単一店舗を選択した表示では、全社共通（店舗欄が空欄）の減価償却費・返済元金がCF計算から除外され、その旨の注記が出ることを確認
+- `node --check`でapp.js・Code.gs（`.gs`→`.js`にコピーして）の構文確認
+
+**次にやる人向け・デプロイ手順**:
+1. [ダッシュボードのスプレッドシート](https://docs.google.com/spreadsheets/d/1OuaAQBeXHxJZtDXEbQx-V7w56fCWW5jpDmZvBpkfIbQ/edit) → 拡張機能 → Apps Script で`gas/Code.gs`を上書き→新バージョンとして再デプロイ（`?action=ping`で`ver`が`loan-pl-v1`になったことを確認）
+2. スクリプトプロパティに`LOAN_REPAYMENT_FEED_TOKEN`（ns-info-systemの返済データAPI用トークン。ユーザーがVercel環境変数から把握・`ns-portal/WORKLOG.md`2026-08-26「F-8」参照）を追加
+3. 初回アクセス時に`DB_借入返済元金`シートが自動生成される（既存シートには影響なし）
+4. `app.js`は既にGitHub Pagesへ反映済み（`?v=123`）
+5. 動作確認: `gh workflow run bank-loan-pl-sync.yml -R mirai-oss/tori-dashboard`で手動実行→ログで`ok:true`・支払利息/返済元金の件数を確認→PLタブで「支払利息」科目と「簡易キャッシュフロー」パネルの数値を確認
+6. **ユーザー作業**: cron-job.org等の外部スケジューラは不要（GitHub Actionsの`schedule`で毎日自動実行される。他の`*-pl-sync.yml`と同じ運用）
 
 ### 2026-08-24（担当A実行スレッド・続き4）担当Fの実機報告を修正: セッション復元経路で`?tab=`が無視される（`app.js?v=122`）
 
