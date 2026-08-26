@@ -126,6 +126,7 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 | ✅ 完了（F-3依頼対応・2026-08-24） | `?embed=1`でヘッダー/ナビ非表示・`?tab=`（無ければ`#tab=`）で初期タブ指定（`app.js?v=121`）。ns-portal統合ポータルシェル（担当F）から依頼のあった深リンク・埋め込み対応。`init()`でURLパラメータをS.embed/S.pendingTabへ保持→`afterLogin()`でmyTabs()の許可リストに含まれる場合のみ適用。ローカルデモモードで4パターン確認済み。**担当Fへの申し送り**: portal.html側でiframe srcに`?embed=1&tab=xxx`を付与すれば深リンクが有効になる（xxxは`dash`/`target`/`analysis`/`detail`/`pl`/`deposit`/`ad`/`review`/`weekly`/`weeklyAdmin`/`ai`/`accounts`。`TAB_LABELS`＝`app.js:38`参照） |
 | ✅ 完了（F実機報告への修正・2026-08-24・`app.js?v=122`） | セッション復元経路（2回目以降のアクセスでlocalStorageの保存済みログイン情報を使う経路）が`afterLogin()`を呼んでおらず、`?tab=`が新規ログイン時にしか効かない不具合を修正。復元経路2分岐とも`afterLogin()`を呼ぶよう変更（pendingTab反映・store初期化・`applyBqDailyRoleDefault_()`を内包）。ローカルでlocalStorageにセッション事前設定→`?tab=ad`でアクセスし`S.tab`が正しく`'ad'`になることを確認 |
 | ⏳ **コード実装済み・GAS未デプロイ（A-5・2026-08-26）** | 銀行利息・元金のPL反映＋簡易キャッシュフロー（`ping`=`loan-pl-v1`・`app.js?v=123`）。ns-portal「実装指示書_ラウンド3」A-5。F-8（ns-info-system）の返済データAPIから毎日同期し、①支払利息をDB_PLへ自動計上②返済元金は専用シートDB_借入返済元金に集計しPLタブに「簡易キャッシュフロー」セクションを新設。**デプロイ手順は下記作業ログ参照**。GASデプロイ後、Script Propertiesに`LOAN_REPAYMENT_FEED_TOKEN`（ns-info-systemの返済データAPI用トークン。ユーザーがVercel環境変数から把握）を追加しないと同期は失敗する（未設定時はエラーメッセージで即分かる設計） |
+| 🔎 **調査中・GAS未デプロイ（担当D依頼・2026-08-26）** | 「媒体別 売上」パネルの前年比が全行「前年 ―」になる不具合。仮説＝`D.media`（媒体別日次のBQミラー`stg_media`）に前年同期間のデータがそもそも存在しない（他の売上・客数KPIは前年比が正常に出ているため）。一時診断action`mediaDateRangeDiag`を追加済み（A-5と同じ未デプロイバッチに同梱）。**デプロイ後**`gh workflow run`不要・`curl`で直接叩いて`stg_media`の最古/最新日付を確認してから対応方針（データ不足の表示改善 or ロジック側のバグ修正）を決める。詳細は`ns-portal/WORKLOG.md`「担当D実行スレッド・続き」参照 |
 
 ---
 
