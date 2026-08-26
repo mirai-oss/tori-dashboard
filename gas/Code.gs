@@ -48,7 +48,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'spot-bq-warn-v1', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-empty-truncate-v1', time: new Date().toISOString() });
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'detailVsDailyDiag') return out(detailVsDailyDiag(p)); // 明細分析とダッシュボードの売上・客数・組数の差を実測で突合（専用トークン認証・読み取り専用・一時的）
@@ -1443,13 +1443,18 @@ function bqCsvCell_(v, type) {
 // 1シート分をLoad Job投入（毎回WRITE_TRUNCATE=全置換。シート自体が毎回全件洗い替えのため、
 // これが最も単純で安全＝初回実行がそのまま全履歴バックフィルを兼ねる）
 function bqLoadSheetToTable_(csv, table, schema) {
-  if (!csv) return { ok: true, table: table, rows: 0, note: 'シートにデータ行が無いためスキップ' };
+  // 2026-08-26修正（担当F実機報告→担当A調査）: 以前はcsvが空（シートのデータ行が0件）のとき
+  // ここで即returnしてBigQuery側を一切更新せずスキップしていた。そのため「シートの最後の1件を
+  // 削除して0件にした」場合、WRITE_TRUNCATEが一度も走らずBQ側にだけ削除済みのはずの古い行が
+  // 残り続けるバグになっていた（スポット人件費の削除がダッシュボードに反映されない不具合の
+  // 真因の一つと判明）。空でもロードジョブ自体は実行してテーブルを実際に空にする
+  // （schemaを明示しているため空データでも正常にテーブル作成/空化できる）。
   var job = { configuration: { load: {
     destinationTable: { projectId: BQ_PROJECT, datasetId: BQ_SALES_DATASET, tableId: table },
     sourceFormat: 'CSV', skipLeadingRows: 0, allowQuotedNewlines: true,
     writeDisposition: 'WRITE_TRUNCATE', maxBadRecords: 0, schema: { fields: schema }
   }}};
-  var blob = Utilities.newBlob(csv, 'application/octet-stream', table + '.csv');
+  var blob = Utilities.newBlob(csv || '', 'application/octet-stream', table + '.csv');
   var ins = BigQuery.Jobs.insert(job, BQ_PROJECT, blob);
   var jobId = ins.jobReference.jobId;
   var loc = (ins.jobReference && ins.jobReference.location) || 'asia-northeast1';
