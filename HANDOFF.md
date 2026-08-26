@@ -127,6 +127,7 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 | ✅ 完了（F実機報告への修正・2026-08-24・`app.js?v=122`） | セッション復元経路（2回目以降のアクセスでlocalStorageの保存済みログイン情報を使う経路）が`afterLogin()`を呼んでおらず、`?tab=`が新規ログイン時にしか効かない不具合を修正。復元経路2分岐とも`afterLogin()`を呼ぶよう変更（pendingTab反映・store初期化・`applyBqDailyRoleDefault_()`を内包）。ローカルでlocalStorageにセッション事前設定→`?tab=ad`でアクセスし`S.tab`が正しく`'ad'`になることを確認 |
 | ✅ 完了・デプロイ済み（A-5・2026-08-26） | 銀行利息・元金のPL反映＋簡易キャッシュフロー（`app.js?v=123`）。F-8（ns-info-system）の返済データAPIから毎日同期し、①支払利息をDB_PLへ自動計上②返済元金は専用シートDB_借入返済元金に集計しPLタブに「簡易キャッシュフロー」セクションを新設。GASデプロイ・`LOAN_REPAYMENT_FEED_TOKEN`のScript Properties登録・`gh workflow run bank-loan-pl-sync.yml`を2回実行して冪等性（重複しないこと）まで確認済み（`interestStores:37`・`stg_pl:551行`が2回とも一致）。デプロイ直後に一度Web AppのURLが404になる事象があったが、「新しいデプロイ」ではなく「編集→新バージョン」で正しくデプロイし直して解消 |
 | ✅ 完了・デプロイ済み（担当D依頼・2026-08-26・`ping`=`media-yoy-v1`・`app.js?v=124`） | 「媒体別 売上」パネルの前年比が全行「前年 ―」になる不具合。`mediaDateRangeDiag`で`stg_media`は2023-11-15から3年弱のデータがあると確認でき、当初の「データ不足」仮説は誤りと判明。**真因はBQモードの`fetchMediaBQ()`が直近3ヶ月しか取得しておらず前年同期間が常に0件だったこと**（2026-08-23にパフォーマンス対策として3ヶ月制限を追加した際の副作用。A-3でBQモードが社長・本部の既定になったことで顕在化）。`bqGetMedia`に`alsoPriorYear`オプションを追加し、直近3ヶ月＋ちょうど1年前の同じ3ヶ月をOR条件で取得するよう修正。GASデプロイ済み。**実機確認（PLタブ/ダッシュボードの媒体別パネルで前年比が数値化されるか）はユーザー側で確認中** |
+| ⏳ **コード実装済み・GAS未デプロイ（担当F実機報告・2026-08-26・`ping`=`bq-empty-truncate-v1`・`app.js?v=125`）** | スポット人件費を削除しても経営ダッシュボードの画面（BQモード）に残り続ける不具合。担当Fの調査（`saveSpotEntry`/`deleteSpotEntry`直後のBQ即時ミラー失敗が画面に一切伝わらない設計）を受けて調査・修正。①`bqSyncSpotNow_()`の結果を呼び出し元へ返しフロントで`bqWarn`をトースト表示するよう変更②`gh workflow run manual-bq-sync.yml`で実地検証したところ**より根本的な原因を発見**: `bqLoadSheetToTable_`はシートのデータ行が0件（=csvが空文字列）だと「シートにデータ行が無いためスキップ」と判定しBigQuery側を一切更新しない設計だった。DB_スポット人件費が実際に0件になっていたため、削除済みの古い行がBigQuery側にそのまま残っていた（fact_daily_store/stg_deposit/stg_spot/stg_loan_principal共通のバグ）。空でもWRITE_TRUNCATEのロードジョブを実行しテーブルを実際に空にするよう修正③`.github/workflows/manual-bq-sync.yml`に毎日16:00 JSTの保険同期を追加（Mac mini非依存）・タイムアウトも5分→10分に延長（実行したら8テーブルの同期に5分超かかりタイムアウトしていたため）。**デプロイ後**`gh workflow run manual-bq-sync.yml`で`stg_spot`が実際に0件（ロード成功・スキップではない）になることを確認する予定 |
 
 ---
 
@@ -150,6 +151,22 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 ---
 
 ## 5. 作業ログ
+
+### 2026-08-26（担当A実行スレッド・続き5）担当F実機報告: スポット人件費の削除がBQに反映されない不具合を調査・修正（`ping`=`bq-empty-truncate-v1`・GASデプロイ待ち）
+
+ユーザーから「担当Fから指示が来ているはず」と指示を受け、`ns-portal/WORKLOG.md`のコミット`06c1ed9`（担当F実行スレッド・続き3）を確認・着手。
+
+**担当Fの調査結果（申し送り）**: ユーザーがスポット人件費を削除→「削除しました」と表示・シート上も消えている→しかし経営ダッシュボードの画面（BQモード）には残ったまま。原因候補として`bqSyncSpotNow_()`が失敗を握りつぶし呼び出し元へ一切伝えていない設計を指摘。
+
+**対応①（表面化）**: `bqSyncSpotNow_()`の戻り値をそのまま返すよう変更。`saveSpotEntry`/`deleteSpotEntry`は失敗時に`bqWarn`を含めて返す（保存/削除自体は成功のまま・シートが正のため）。`app.js`はトーストで警告表示し、BQモード時は成功直後に`fetchSpotBQ()`を呼んで即座に反映するよう変更。
+
+**対応②（Mac mini非依存の保険）**: `.github/workflows/manual-bq-sync.yml`に毎日16:00 JSTのスケジュール実行を追加（それまでは`workflow_dispatch`のみで、実質Mac miniの`ns-daily-import`(11:00)だけが頼りだった）。
+
+**実地検証で判明したより根本的な原因**: 対応①②をpush後、`gh workflow run manual-bq-sync.yml`で実際に動かして検証したところ、まず`timeout-minutes: 5`では8テーブル（新規追加の`stg_loan_principal`含む）の同期が終わらず強制打ち切りになることが判明（10分に延長し再実行して解消）。再実行の結果、`stg_spot`が`{"rows":0,"note":"シートにデータ行が無いためスキップ"}`という応答だったことから、**`bqLoadSheetToTable_`はシートのデータ行が0件（csvが空文字列）だと即returnしBigQueryを一切更新しない設計**だったと判明。DB_スポット人件費は実際に0件になっていたため、削除済みのはずの古い行がBigQuery側にそのまま残り続けていた——これがユーザーの報告した症状の直接の原因だった可能性が高い。
+
+**対応③（根本修正）**: `bqLoadSheetToTable_`の早期return（スキップ）を削除し、csvが空でもWRITE_TRUNCATEのロードジョブを実行してテーブルを実際に空にするよう変更（schemaを明示しているため空データでも正常動作する想定）。この関数は`fact_daily_store`/`stg_payment`/`stg_media`/`stg_siire`/`stg_jinken`/`stg_deposit`/`stg_spot`/`stg_loan_principal`すべての共通処理のため、同種のバグを横断的に解消する。
+
+**未検証（デプロイ後に確認予定）**: デプロイ後`gh workflow run manual-bq-sync.yml`を実行し、`stg_spot`の応答が`{"note":"シートにデータ行が無いためスキップ"}`ではなく実際のロード成功（`rows:0`だが`note`無し）になることを確認する。
 
 ### 2026-08-26（担当A実行スレッド・続き）自動ループの自己レビューで重複バグを発見・修正（GAS未デプロイのため実害なし）
 
