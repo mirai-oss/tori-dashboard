@@ -1,0 +1,18 @@
+name: 媒体別日次(stg_media)の日付範囲を確認（送信なし・一時的）
+# 担当D依頼「媒体別売上パネルの前年比が全行前年比較不可」の調査用。読み取り専用。
+# 用が済んだら削除してよい（HANDOFF.md 2026-08-26付「調査中・GAS未デプロイ」参照）。
+on:
+  workflow_dispatch: {}
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: mediaDateRangeDiagを実行
+        env:
+          BQ_LOAD_TOKEN: ${{ secrets.BQ_LOAD_TOKEN }}
+        run: |
+          curl -sL -G "https://script.google.com/macros/s/AKfycbz9rd37EZa6X8WRMVEBrXobN8DbYWkHRlhFNYU5rd1UZ0V8j0-6shMQjEeoi4HDWZ0B/exec" \
+            --data-urlencode "action=mediaDateRangeDiag" \
+            --data-urlencode "token=$BQ_LOAD_TOKEN" \
+            | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.stringify(JSON.parse(d),null,2)));"
