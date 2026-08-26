@@ -1578,7 +1578,10 @@ async function fetchMediaBQ(){
     // 媒体別日次は「店舗×媒体×日」の粒度で分析_日別店舗より遥かに件数が多いため
     // （実測21,000件超／5ヶ月）、他のBQ取得と同じmonthsWindow()=13ヶ月ではほぼ絞れない。
     // ログイン直後の表示に必要な直近3ヶ月だけに絞って高速化する（2026-08-23）。
-    const d=await api({ action:'bqGetMedia', token:S.auth.token, months:3 });
+    // alsoPriorYear=1（2026-08-26追加）: 「媒体別 売上」パネルの前年比（mediaTableRows()）が
+    // 直近3ヶ月しか無いD.mediaでは常に「前年 ―」になっていた不具合の修正。ちょうど1年前の
+    // 同じ3ヶ月分もあわせて取得する（全期間を取るより遥かに軽い）。
+    const d=await api({ action:'bqGetMedia', token:S.auth.token, months:3, alsoPriorYear:1 });
     if(d&&d.ok&&d.sheets){ ingestSheets(d.sheets, true); D.bqFallback.media=false; }
     else{ await bqFallbackToSheet_('media'); }
   }catch(e){ await bqFallbackToSheet_('media'); }

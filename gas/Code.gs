@@ -48,7 +48,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'loan-pl-v1', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'media-yoy-v1', time: new Date().toISOString() });
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'detailVsDailyDiag') return out(detailVsDailyDiag(p)); // 明細分析とダッシュボードの売上・客数・組数の差を実測で突合（専用トークン認証・読み取り専用・一時的）
@@ -2243,12 +2243,26 @@ function bqGetMedia(p, session) {
     // 処理自体が重く、シート直読みとあまり変わらない速度になってしまっていた（実地報告で発覚・
     // 2026-08-23）。bqDailyStoreと同じくmonthsで絞る（クライアント側はmonthsWindow()=既定13ヶ月を渡す）。
     var months = Number(p.months) || 0;
+    // 2026-08-26修正（担当D依頼）: 上のmonths絞り込みだけだと「媒体別 売上」パネルの前年比が
+    // 常に「前年 ―」になっていた（stg_media自体は2023-11から3年弱のデータがあるのに、フロントが
+    // 直近3ヶ月しか受け取らないため前年同期間が1件も無かった＝データ不足ではなくこの絞り込みが原因と
+    // mediaDateRangeDiagで確定）。前年比を必要とするmediaTableRows()のために、直近months分に加えて
+    // 「ちょうど1年前の同じ幅」の期間もOR条件で一緒に返す（p.alsoPriorYearが真の時のみ・
+    // 呼び出し元がmonthsWindow()の全期間を要求する場合は不要なので明示オプトインにしてある）。
     if (months > 0) {
       var cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - months);
       var cutoffStr = Utilities.formatDate(cutoff, 'Asia/Tokyo', 'yyyy-MM-dd');
-      where += (where ? ' AND ' : 'WHERE ') + "date >= DATE('" + cutoffStr + "')";
+      var dateCond = "date >= DATE('" + cutoffStr + "')";
+      if (p.alsoPriorYear) {
+        var priorEnd = new Date(); priorEnd.setFullYear(priorEnd.getFullYear() - 1);
+        var priorStart = new Date(priorEnd); priorStart.setMonth(priorStart.getMonth() - months);
+        var priorEndStr = Utilities.formatDate(priorEnd, 'Asia/Tokyo', 'yyyy-MM-dd');
+        var priorStartStr = Utilities.formatDate(priorStart, 'Asia/Tokyo', 'yyyy-MM-dd');
+        dateCond = '(' + dateCond + " OR (date >= DATE('" + priorStartStr + "') AND date <= DATE('" + priorEndStr + "')))";
+      }
+      where += (where ? ' AND ' : 'WHERE ') + dateCond;
     }
-    var ck = bqCacheKey_('media', [months, restricted && allowNames.length ? allowNames.slice().sort().join('.') : 'all']);
+    var ck = bqCacheKey_('media', [months, p.alsoPriorYear ? 1 : 0, restricted && allowNames.length ? allowNames.slice().sort().join('.') : 'all']);
     var cached = bqCacheGet_(ck);
     if (cached) return cached;
     var sql = 'SELECT store_name, date, media_name, guests, parties, net_sales FROM `' + BQ_PROJECT + '.' + BQ_SALES_DATASET + '.stg_media` ' + where + ' ORDER BY date';
