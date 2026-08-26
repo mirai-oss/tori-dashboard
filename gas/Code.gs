@@ -2086,7 +2086,11 @@ function syncBankLoanToPl_(tk) {
     var interest = Math.round(Number(r.interestAmount || 0));
     var principal = Math.round(Number(r.principalAmount || 0));
     if (interest) {
-      var ik = ym + '\t' + store;
+      // キーはymOf_()と同じ'yyyy/MM'（スラッシュ）形式にする。ym('yyyy-MM')のままだと
+      // 下の「対象月×メモの行だけ差し替え」判定（ymOf_(r[0])で作るmonths）と形式が食い違い、
+      // 既存の自動計上行が二度と「今回の対象月」と認識されず、実行のたびに重複が積み上がる
+      // （syncSpotLaborToPl_のtotalsキーがyyyy/MM形式なのはこのため。自己レビューで発見・修正）。
+      var ik = ym.replace('-', '/') + '\t' + store;
       interestByYmStore[ik] = (interestByYmStore[ik] || 0) + interest;
     }
     if (principal) {
