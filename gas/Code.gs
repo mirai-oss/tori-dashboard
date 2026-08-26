@@ -22,7 +22,12 @@
  *   管理シートにデータがあればそちらを優先し、無ければローカルのDB_シートを使います。
  */
 
-var TOKEN_HOURS = 12; // ログイントークンの有効時間
+// ログイントークンの有効時間。使うたびにこの時間ぶん延長される（sessionGet参照）ので、
+// 実質「最後にアクセスしてからこの時間操作が無いとログアウトされる」の意味。
+// 2026-08-26: ユーザー報告「定期的にログアウトされる」を受けて12→336時間（14日）に延長
+// （内部の業務用ツールでID/PW認証もあるため、利便性を優先。セキュリティ上の懸念があれば
+// 短縮を検討）。
+var TOKEN_HOURS = 336;
 
 // 統合アカウント（N-Styleポータル / 日報Supabase）でのログイン用。
 // キーは公開用publishableキー（秘密情報ではない）。トークン検証はSupabase側で行う。
@@ -48,7 +53,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'bq-empty-truncate-v1', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1', time: new Date().toISOString() });
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'detailVsDailyDiag') return out(detailVsDailyDiag(p)); // 明細分析とダッシュボードの売上・客数・組数の差を実測で突合（専用トークン認証・読み取り専用・一時的）

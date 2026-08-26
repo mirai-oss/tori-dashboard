@@ -7048,6 +7048,19 @@ window.App = {
     if(q.get('embed')==='1') S.embed=true;
     S.pendingTab=q.get('tab')||new URLSearchParams(location.hash.replace(/^#/,'')).get('tab')||'';
   }catch(e){}
+  // F-3拡張（2026-08-26・ユーザー要望「ポータルからページを切り替えるたびに毎回読み込みが
+  // 入って遅い」対応）: portal.html側がiframeを毎回作り直さず1つ保持したまま、postMessageで
+  // タブ切替だけ指示できるようにする受け口。埋め込み元（?embed=1でロードされている前提）が
+  // {type:'nsPortalSetTab', tab:'pl'}を送ってくると、ページ全体を再読み込みせずS.tabだけ
+  // 切り替える（ログイン未完了・SSO自動ログイン中ならpendingTabに保持し、afterLogin()で
+  // 適用される既存の仕組みにそのまま乗る）。送信元は既知のポータルドメインのみ許可。
+  window.addEventListener('message', (ev)=>{
+    if(ev.origin!=='https://mirai-oss.github.io') return;
+    const data=ev.data;
+    if(!data||data.type!=='nsPortalSetTab'||typeof data.tab!=='string') return;
+    if(S.auth){ if(myTabs().includes(data.tab)){ S.tab=data.tab; render(); } }
+    else S.pendingTab=data.tab;
+  });
   let restored=false;
   try{
     const raw=localStorage.getItem(LS.sess);
