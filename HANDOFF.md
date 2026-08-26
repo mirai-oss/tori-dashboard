@@ -127,7 +127,8 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 | ✅ 完了（F実機報告への修正・2026-08-24・`app.js?v=122`） | セッション復元経路（2回目以降のアクセスでlocalStorageの保存済みログイン情報を使う経路）が`afterLogin()`を呼んでおらず、`?tab=`が新規ログイン時にしか効かない不具合を修正。復元経路2分岐とも`afterLogin()`を呼ぶよう変更（pendingTab反映・store初期化・`applyBqDailyRoleDefault_()`を内包）。ローカルでlocalStorageにセッション事前設定→`?tab=ad`でアクセスし`S.tab`が正しく`'ad'`になることを確認 |
 | ✅ 完了・デプロイ済み（A-5・2026-08-26） | 銀行利息・元金のPL反映＋簡易キャッシュフロー（`app.js?v=123`）。F-8（ns-info-system）の返済データAPIから毎日同期し、①支払利息をDB_PLへ自動計上②返済元金は専用シートDB_借入返済元金に集計しPLタブに「簡易キャッシュフロー」セクションを新設。GASデプロイ・`LOAN_REPAYMENT_FEED_TOKEN`のScript Properties登録・`gh workflow run bank-loan-pl-sync.yml`を2回実行して冪等性（重複しないこと）まで確認済み（`interestStores:37`・`stg_pl:551行`が2回とも一致）。デプロイ直後に一度Web AppのURLが404になる事象があったが、「新しいデプロイ」ではなく「編集→新バージョン」で正しくデプロイし直して解消 |
 | ✅ 完了・デプロイ済み（担当D依頼・2026-08-26・`ping`=`media-yoy-v1`・`app.js?v=124`） | 「媒体別 売上」パネルの前年比が全行「前年 ―」になる不具合。`mediaDateRangeDiag`で`stg_media`は2023-11-15から3年弱のデータがあると確認でき、当初の「データ不足」仮説は誤りと判明。**真因はBQモードの`fetchMediaBQ()`が直近3ヶ月しか取得しておらず前年同期間が常に0件だったこと**（2026-08-23にパフォーマンス対策として3ヶ月制限を追加した際の副作用。A-3でBQモードが社長・本部の既定になったことで顕在化）。`bqGetMedia`に`alsoPriorYear`オプションを追加し、直近3ヶ月＋ちょうど1年前の同じ3ヶ月をOR条件で取得するよう修正。GASデプロイ済み。**実機確認（PLタブ/ダッシュボードの媒体別パネルで前年比が数値化されるか）はユーザー側で確認中** |
-| ⏳ **コード実装済み・GAS未デプロイ（担当F実機報告・2026-08-26・`ping`=`bq-empty-truncate-v1`・`app.js?v=125`）** | スポット人件費を削除しても経営ダッシュボードの画面（BQモード）に残り続ける不具合。担当Fの調査（`saveSpotEntry`/`deleteSpotEntry`直後のBQ即時ミラー失敗が画面に一切伝わらない設計）を受けて調査・修正。①`bqSyncSpotNow_()`の結果を呼び出し元へ返しフロントで`bqWarn`をトースト表示するよう変更②`gh workflow run manual-bq-sync.yml`で実地検証したところ**より根本的な原因を発見**: `bqLoadSheetToTable_`はシートのデータ行が0件（=csvが空文字列）だと「シートにデータ行が無いためスキップ」と判定しBigQuery側を一切更新しない設計だった。DB_スポット人件費が実際に0件になっていたため、削除済みの古い行がBigQuery側にそのまま残っていた（fact_daily_store/stg_deposit/stg_spot/stg_loan_principal共通のバグ）。空でもWRITE_TRUNCATEのロードジョブを実行しテーブルを実際に空にするよう修正③`.github/workflows/manual-bq-sync.yml`に毎日16:00 JSTの保険同期を追加（Mac mini非依存）・タイムアウトも5分→10分に延長（実行したら8テーブルの同期に5分超かかりタイムアウトしていたため）。**デプロイ後**`gh workflow run manual-bq-sync.yml`で`stg_spot`が実際に0件（ロード成功・スキップではない）になることを確認する予定 |
+| ✅ 完了・デプロイ・実地確認済み（担当F実機報告・2026-08-26・`ping`=`bq-empty-truncate-v1`） | スポット人件費を削除しても経営ダッシュボードの画面（BQモード）に残り続ける不具合。①`bqSyncSpotNow_()`の結果を呼び出し元へ返しフロントで`bqWarn`をトースト表示②**根本原因**: `bqLoadSheetToTable_`はシートのデータ行が0件だと「シートにデータ行が無いためスキップ」と判定しBigQuery側を一切更新しない設計だった（fact_daily_store/stg_deposit/stg_spot/stg_loan_principal共通のバグ）→空でもWRITE_TRUNCATEを実行するよう修正③`.github/workflows/manual-bq-sync.yml`に毎日16:00 JSTの保険同期を追加（Mac mini非依存）・タイムアウトも5分→10分に延長。デプロイ後`gh workflow run manual-bq-sync.yml`で`stg_spot`が`{"ok":true,"rows":0}`（スキップされず実際にロード成功）になることを確認済み |
+| ✅ 完了・デプロイ済み（ユーザー要望・2026-08-26・`ping`=`token-336h-v1`・`app.js?v=126`） | ①ポータル経由で経営ダッシュボードの各項目を開くたびに毎回フルリロードして遅い→原因はportal.html側が毎回iframeを作り直すため（BQ/Supabase移行では解決しないアーキテクチャの問題）。app.js側に`postMessage`受け口（`{type:'nsPortalSetTab',tab}`）を追加・デプロイ済み。**portal.html側（担当F）の対応が別途必要**（`ns-portal/WORKLOG.md`に依頼済み・未対応）②定期的にログアウトされる→`TOKEN_HOURS`を12時間→336時間(14日)に延長 |
 
 ---
 
@@ -151,6 +152,22 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 ---
 
 ## 5. 作業ログ
+
+### 2026-08-26（担当A実行スレッド・続き6）ユーザー新規要望2件（画面切替の遅さ・ログアウト頻度）対応（`ping`=`token-336h-v1`・`app.js?v=126`）
+
+デプロイ確認（`stg_spot`が実際に空ロード成功することを確認）後、ユーザーから「①ポータルから経営ダッシュボードを1ページずつ開くと毎回読み込みが入って遅い②定期的にログアウトされる③データ整理を完全に終えてBQ/Supabaseに整えたら速くなるか、含めて改善してほしい」と依頼。
+
+**①の原因**: `ns-portal/portal.html`の`openItem()`が経営ダッシュボードの12項目（`sysKey:"keiei"`）のどれをクリックしても`area.innerHTML`ごとiframeを作り直しており、切替のたびに完全なフルリロード（SSO再認証・全データ再取得）が発生していた。**BQ/Supabase移行では解決しない**（データ取得速度ではなくiframe再構築というアーキテクチャの問題）。
+
+**①の対応（このリポジトリ側）**: `app.js`に`window.addEventListener('message', ...)`を追加し、`{type:'nsPortalSetTab', tab:'xxx'}`を受け取ったら（送信元originを`https://mirai-oss.github.io`に限定）ページ再読み込みなしに`S.tab`だけ切り替えるようにした（ログイン未完了時は既存の`S.pendingTab`機構に乗る）。ローカルで`dispatchEvent(new MessageEvent('message',{origin,data}))`を使い、正規origin・不正origin・未ログイン時の3パターンを確認。
+
+**①の残作業**: `portal.html`（担当F管轄）が今も毎回iframeを作り直す実装のままだと、この受け口は一切呼ばれず効果が出ない。`ns-portal/WORKLOG.md`に担当Fへの具体的な依頼（該当行番号・実装方法）を記録済み。
+
+**②の対応**: `TOKEN_HOURS`（ログイントークン有効期限。使うたびに延長される「最後の操作からこの時間」方式）を12時間→336時間（14日）に延長。内部の業務用ツールでID/PW認証もあるため利便性を優先した。
+
+**③への回答**: ①はアーキテクチャの問題のためBQ/Supabase移行だけでは直らない旨をユーザーに回答済み。②はGAS側の設定変更のみで解決（BQ/Supabase移行とは無関係）。
+
+デプロイ・GitHub Pages反映とも確認済み。
 
 ### 2026-08-26（担当A実行スレッド・続き5）担当F実機報告: スポット人件費の削除がBQに反映されない不具合を調査・修正（`ping`=`bq-empty-truncate-v1`・GASデプロイ待ち）
 
