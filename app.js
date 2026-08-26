@@ -6711,9 +6711,13 @@ window.App = {
     try{
       const d=await api({ action:'saveSpotEntry', token:S.auth.token, id, store, date, kind, amount, headcount, memo });
       if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'保存に失敗しました'; return; }
-      toast('スポット人件費を保存しました');
+      // 2026-08-26修正（担当F実機報告・担当Aへの依頼）: 保存・削除直後のBigQuery即時ミラー
+      // （bqSyncSpotNow_）が失敗しても従来は画面に一切伝わらず「保存しました」のまま古いBQデータが
+      // 残り続けた。GAS側でbqWarnを返すようにしたので、失敗時は成功トーストとは別に警告も出す。
+      toast(d.bqWarn?'保存しました。ただし '+d.bqWarn:'スポット人件費を保存しました');
       S.modal=Object.assign({}, S.modal, { edit:null });
       await fetchData(true,{ only:['スポット人件費'], partial:true });
+      if(S.useBqDaily && !d.bqWarn) fetchSpotBQ();   // BQモードの画面にも即座に反映（キャッシュ世代はGAS側で既に更新済み）
       render();
     }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
   },
@@ -6723,8 +6727,9 @@ window.App = {
     try{
       const d=await api({ action:'deleteSpotEntry', token:S.auth.token, id });
       if(!d.ok){ toast(d.error||'削除に失敗しました'); return; }
-      toast('削除しました');
+      toast(d.bqWarn?'削除しました。ただし '+d.bqWarn:'削除しました');
       await fetchData(true,{ only:['スポット人件費'], partial:true });
+      if(S.useBqDaily && !d.bqWarn) fetchSpotBQ();
       render();
     }catch(e){ toast('通信エラー: '+e.message); }
   },

@@ -48,7 +48,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'media-yoy-v1', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'spot-bq-warn-v1', time: new Date().toISOString() });
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'detailVsDailyDiag') return out(detailVsDailyDiag(p)); // 明細分析とダッシュボードの売上・客数・組数の差を実測で突合（専用トークン認証・読み取り専用・一時的）
@@ -1645,17 +1645,23 @@ function bqGetPL(p, session) {
 // L区分でDB_PLへ集計upsert）の2系統に反映する。
 
 // 保存済みの内容をすぐBQへミラー（savePlEntries等と同じ理由：翌朝の定期同期まで待たせない）。
-// 失敗しても保存自体は成功として扱う（次のbqSyncSales定期同期で追いつく）。
+// 失敗してもシート側の保存・削除自体は成功として扱う（シートが正・戻り値でok/errorを返し、
+// 呼び出し元(saveSpotEntry/deleteSpotEntry)が画面へ警告表示できるようにする。2026-08-26修正:
+// 以前はここで例外を握りつぶし呼び出し元へ一切伝えていなかったため、「削除しました」と表示された
+// のにBigQuery側（BQモードで見ている社長・本部の画面）には古いデータが残り続ける不具合があった
+// （担当Fが実機報告から原因調査・担当Aへ依頼）。次のbqSyncSales定期同期でも追いつくが、それまでの
+// 間「反映が遅れている可能性」をユーザーに知らせられるようにする）。
 function bqSyncSpotNow_() {
   try {
     var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
-    if (!tk) return;
+    if (!tk) return { ok: false, error: 'BQ_LOAD_TOKEN未設定' };
     var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_スポット人件費');
-    if (!sh) return;
+    if (!sh) return { ok: false, error: 'シートが見つかりません' };
     var csv = bqSheetToCsv_(sh, BQ_STG_SPOT_SCHEMA, 2);
     var res = bqLoadSheetToTable_(csv, 'stg_spot', BQ_STG_SPOT_SCHEMA);
     if (res && res.ok) bqCacheGenBump_('spot');
-  } catch (e) { /* 即時同期失敗は無視（次回定期同期で追いつく） */ }
+    return res;
+  } catch (e) { return { ok: false, error: String(e && e.message || e) }; }
 }
 // ダッシュボード初期表示（BQモード）用: stg_spotを店舗権限フィルタ付きで読む。bqGetPLと同じ方針。
 function bqGetSpot(p, session) {
@@ -1767,8 +1773,10 @@ function saveSpotEntry(p, session) {
   var target = found > 0 ? found : last + 1;
   sh.getRange(target, 1, 1, 9).setValues([row]);
   sh.getRange(target, 1).setNumberFormat('yyyy/m/d');
-  bqSyncSpotNow_();
-  return { ok: true, id: id };
+  var bqRes = bqSyncSpotNow_();
+  var out = { ok: true, id: id };
+  if (!bqRes || !bqRes.ok) out.bqWarn = 'BigQueryへの反映に失敗した可能性があります（' + ((bqRes && bqRes.error) || '不明') + '）。数分後にもう一度確認してください';
+  return out;
 }
 function deleteSpotEntry(p, session) {
   var id = String(p.id || '').trim(); if (!id) return { ok: false, error: 'idが必要です' };
@@ -1782,8 +1790,10 @@ function deleteSpotEntry(p, session) {
         var store = String(vals[i][1]).trim();
         if (store && !scopeAllows_(session, store)) return { ok: false, error: 'この店舗の削除権限がありません' };
         sh.deleteRow(i + 2);
-        bqSyncSpotNow_();
-        return { ok: true };
+        var bqRes = bqSyncSpotNow_();
+        var out = { ok: true };
+        if (!bqRes || !bqRes.ok) out.bqWarn = 'BigQueryへの反映に失敗した可能性があります（' + ((bqRes && bqRes.error) || '不明') + '）。数分後にもう一度確認してください';
+        return out;
       }
     }
   }

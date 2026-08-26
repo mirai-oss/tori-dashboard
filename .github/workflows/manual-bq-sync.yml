@@ -1,8 +1,14 @@
-name: BigQuery同期を今すぐ実行（手動）
+name: BigQuery同期を今すぐ実行（手動＋毎日の保険）
 # 通常はMac mini側のns-daily-import（毎日11:00・bq-sales-reconcileタスク）が自動実行する。
 # 全置換(WRITE_TRUNCATE)・冪等なので、いつ・何回実行しても安全（実装指示書_ダッシュボード高速化にも明記）。
-# 動作確認や、朝イチで最新化したいときの手動実行用。
+# 動作確認や、朝イチで最新化したいときの手動実行用に加え、2026-08-26からMac mini非依存の
+# 保険として毎日16:00 JSTにも自動実行するようにした（担当Fの実機報告調査がきっかけ:
+# saveSpotEntry/deleteSpotEntry直後のBQ即時ミラーが稀に失敗すると、それに気づく手段が無いまま
+# Mac mini側の日次バッチだけが頼りになっていた。このワークフローはこのリポジトリのGitHub Secrets
+# だけで完結するため、Mac miniが止まっていても独立して効く）。
 on:
+  schedule:
+    - cron: '0 7 * * *'   # 毎日 UTC7:00 = JST16:00（Mac miniの11:00とは別の時間帯にずらした保険）
   workflow_dispatch:
 jobs:
   sync:
