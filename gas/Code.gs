@@ -48,7 +48,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'seisan-paid-check-v1', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'loan-pl-v1', time: new Date().toISOString() });
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'detailVsDailyDiag') return out(detailVsDailyDiag(p)); // 明細分析とダッシュボードの売上・客数・組数の差を実測で突合（専用トークン認証・読み取り専用・一時的）
@@ -56,6 +56,7 @@ function handle(p) {
     if (action === 'dataKeysDiag') return out(dataKeysDiag(p)); // getData()が実際にどのキーを返すか確認（専用トークン認証・読み取り専用・一時的）
     if (action === 'syncSeisanFeeToPl') return out(syncSeisanFeeToPl(p)); // 運営委託費のPL自動連携（専用トークン認証・ログイン不要。2026-08-23追加）
     if (action === 'syncSpotLaborToPl') return out(syncSpotLaborToPl(p)); // スポット人件費の月次PL自動連携（専用トークン認証・ログイン不要。2026-08-23追加）
+    if (action === 'syncBankLoanToPl') return out(syncBankLoanToPl(p)); // 銀行借入 利息・元金のPL自動連携（専用トークン認証・ログイン不要。2026-08-26追加・A-5）
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
     if (action === 'bqSetupSalesDataset') return out(bqSetupSalesDataset(p)); // salesデータセット作成（初回のみ・専用トークン認証）
     if (action === 'bqSyncSales') return out(bqSyncAllSales(p)); // 分析_日別店舗ほかのBQミラー（専用トークン認証・ログイン不要）
@@ -86,6 +87,7 @@ function handle(p) {
     if (action === 'bqDailyStore') return out(bqDailyStore(p, session)); // 推移分析：分析_日別店舗のBQミラーを読む（データソース切替フラグ用）
     if (action === 'bqGetPL') return out(bqGetPL(p, session)); // PLタブ：DB_PLのBQミラーを読む（データソース切替フラグ用）
     if (action === 'bqGetSpot') return out(bqGetSpot(p, session)); // スポット人件費：DB_スポット人件費のBQミラーを読む（2026-08-23追加）
+    if (action === 'bqGetLoanPrincipal') return out(bqGetLoanPrincipal(p, session)); // 簡易キャッシュフロー：DB_借入返済元金のBQミラーを読む（2026-08-26追加・A-5）
     if (action === 'saveSpotEntry') return out(saveSpotEntry(p, session)); // スポット人件費の保存（ID一致なら更新・無ければ追加）
     if (action === 'deleteSpotEntry') return out(deleteSpotEntry(p, session)); // スポット人件費の削除
     if (action === 'refreshSpotPl') return out(refreshSpotPl(p, session)); // スポット人件費→月次PLへ今すぐ反映（画面の更新ボタン用）
@@ -107,6 +109,7 @@ function handle(p) {
     if (action === 'saveAdSales') return out(saveAdSales(p, session)); // 売上・反響の手入力（管理シート💾売上DBへupsert）
     if (action === 'importReservations') return out(importReservations(p, session)); // 予約CSV取込（管理シート💾予約DBへ追記）
     if (action === 'saveDepNote') return out(saveDepNote(p, session)); // 入金備考の保存（社長・本部のみ）
+    if (action === 'setPlTaxRate') return out(setPlTaxRate(p, session)); // 簡易キャッシュフローの法人税率設定（社長・本部のみ。2026-08-26追加・A-5）
     if (action === 'saveWeekly')   return out(saveWeekly(p, session));   // 週報の提出・更新
     if (action === 'saveFeedback') return out(saveFeedback(p, session)); // 週報へのフィードバック
     if (action === 'createInvite') return out(createInvite(p, session)); // 招待リンク発行（社長・本部）
@@ -289,6 +292,23 @@ function setupIfNeeded() {
     );
     spotSh.setFrozenRows(1);
     spotSh.setColumnWidths(1, 9, 120);
+  }
+
+  // 借入返済元金（DB_借入返済元金）。無ければ雛形を自動作成（2026-08-26追加・A-5）。
+  // ns-info-system（F-8）の返済データビューから毎日自動同期される（syncBankLoanToPl_）。
+  // 手入力欄ではない（画面から編集する機能は無い・DB_PLへは書かず、簡易キャッシュフロー
+  // セクションの表示計算だけに使う。元金をPL費用に含めない設計のため専用シートに分離）。
+  var loanSh = ss.getSheetByName('DB_借入返済元金');
+  if (!loanSh) {
+    loanSh = ss.insertSheet('DB_借入返済元金');
+    loanSh.getRange(1, 1, 1, 5).setValues([['年月', '店舗', '法人', '元金額', 'メモ']])
+      .setFontWeight('bold').setBackground('#efe9dd');
+    loanSh.getRange('A1').setNote(
+      '銀行借入の返済元金を年月×店舗で記録します（ns-info-systemの返済データから毎日自動同期・手入力不可）。\n' +
+      '・年月: YYYY-MM形式\n・店舗: 空欄=全社共通\n・法人: 借入している法人名\n・元金額: 数値（円）'
+    );
+    loanSh.setFrozenRows(1);
+    loanSh.setColumnWidths(1, 5, 130);
   }
 
   // 補助科目マスタ（DB_補助科目）。無ければ雛形を自動作成（2026-08-23追加）。
@@ -838,7 +858,8 @@ function getData(p, session) {
     updated: new Date().toISOString(),
     account: session,
     sheets: sheets,
-    stores: fetchStoreDirectory_() // Day6②: Supabase店舗マスタ（表示順・看板・別名・天気地点等）。取得失敗時はnull＝フロントが現行定数にフォールバック
+    stores: fetchStoreDirectory_(), // Day6②: Supabase店舗マスタ（表示順・看板・別名・天気地点等）。取得失敗時はnull＝フロントが現行定数にフォールバック
+    taxRate: plTaxRate_() // 簡易キャッシュフロー用の法人税率（既定0.34・PLタブから変更可。2026-08-26追加・A-5）
   };
 }
 
@@ -1363,6 +1384,12 @@ var BQ_STG_SPOT_SCHEMA = [
   { name: 'entered_by', type: 'STRING' }, { name: 'entered_at', type: 'STRING' },
   { name: 'id', type: 'STRING' }   // I列。2026-08-24追加: BQモードで編集・削除するのに必須（元は含めておらずIDが取れない不具合があった）
 ];
+// 銀行借入 返済元金（簡易キャッシュフロー用。2026-08-26追加・A-5）。DB_借入返済元金のA〜E列と1対1対応。
+var BQ_STG_LOAN_SCHEMA = [
+  { name: 'year_month', type: 'STRING' }, { name: 'store_name', type: 'STRING' },
+  { name: 'corp_name', type: 'STRING' }, { name: 'principal_amount', type: 'NUMERIC' },
+  { name: 'memo', type: 'STRING' }
+];
 
 // ミラー対象一覧（src='local'はこのプロジェクトの自分のスプレッドシート。それ以外はopenByIdで開く）
 function bqSalesTargets_() {
@@ -1379,7 +1406,9 @@ function bqSalesTargets_() {
     // 空行が入った」事故の影響が残っており、2行目が本当のヘッダー・3行目からがデータのため）
     { src: 'local',     sheet: '入金DB',        table: 'stg_deposit',      schema: BQ_STG_DEPOSIT_SCHEMA,      startRow: 3 },
     // スポット人件費はこのプロジェクトのローカルシート・1行目がヘッダーなので2行目から（分析_日別店舗と同じ構造）
-    { src: 'local',     sheet: 'DB_スポット人件費', table: 'stg_spot',    schema: BQ_STG_SPOT_SCHEMA,        startRow: 2 }
+    { src: 'local',     sheet: 'DB_スポット人件費', table: 'stg_spot',    schema: BQ_STG_SPOT_SCHEMA,        startRow: 2 },
+    // 借入返済元金も同じくローカルシート・1行目ヘッダーなので2行目から（2026-08-26追加・A-5）
+    { src: 'local',     sheet: 'DB_借入返済元金', table: 'stg_loan_principal', schema: BQ_STG_LOAN_SCHEMA, startRow: 2 }
   ];
 }
 // シートのstartRow行目以降(schemaの列数分)をCSV文字列に変換
@@ -1462,6 +1491,7 @@ function bqSyncAllSales(p) {
       // これが漏れていると、手動同期でBigQuery側は最新でも、アプリ側は古いキャッシュ応答
       // （IDが無い旧スキーマ時代のもの等）を最大10分間返し続けてしまう（2026-08-24実地判明）。
       if (loadRes && loadRes.ok && t.table === 'stg_spot') bqCacheGenBump_('spot');
+      if (loadRes && loadRes.ok && t.table === 'stg_loan_principal') bqCacheGenBump_('loan');
     } catch (e) {
       results.push({ ok: false, table: t.table, error: String(e && e.message || e) });
     }
@@ -1651,6 +1681,52 @@ function bqGetSpot(p, session) {
       out.push([r[0], r[1], r[2], Number(r[3] || 0), r[4] == null ? '' : Number(r[4]), r[5], r[6], r[7], r[8]]);
     }
     var res = { ok: true, sheets: { 'スポット人件費': out } };
+    bqCachePut_(ck, res);
+    return res;
+  } catch (e) {
+    return { ok: false, error: String(e && e.message || e) };
+  }
+}
+
+// ================== 借入返済元金（2026-08-26追加・A-5） ==================
+// bqSyncSpotNow_/bqGetSpotと同じ考え方。syncBankLoanToPl_の保存直後に呼んで翌朝の定期同期を待たせない。
+function bqSyncLoanNow_() {
+  try {
+    var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+    if (!tk) return;
+    var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_借入返済元金');
+    if (!sh) return;
+    var csv = bqSheetToCsv_(sh, BQ_STG_LOAN_SCHEMA, 2);
+    var res = bqLoadSheetToTable_(csv, 'stg_loan_principal', BQ_STG_LOAN_SCHEMA);
+    if (res && res.ok) bqCacheGenBump_('loan');
+  } catch (e) { /* 即時同期失敗は無視（次回定期同期で追いつく） */ }
+}
+// 簡易キャッシュフロー（PLタブ）用: stg_loan_principalを店舗権限フィルタ付きで読む。bqGetSpotと同じ方針。
+// 全社共通行（store_name=''）は店舗が絞られていても常に含める（bqGetPLの空欄店舗の扱いと同じ）。
+function bqGetLoanPrincipal(p, session) {
+  try {
+    var sessStores = String(session && session.stores || '').trim();
+    var restricted = sessStores && sessStores !== '全店';
+    var allowNames = [], where = '';
+    if (restricted) {
+      allowNames = sessStores.split(/[,、]/).map(function (s) { return s.trim(); }).filter(Boolean);
+      if (allowNames.length) {
+        where = "WHERE (store_name IN ('" + allowNames.map(function (n) { return String(n).replace(/'/g, "''"); }).join("','") + "') OR store_name = '')";
+      }
+    }
+    var ck = bqCacheKey_('loan', [bqCacheGen_('loan'), restricted && allowNames.length ? allowNames.slice().sort().join('.') : 'all']);
+    var cached = bqCacheGet_(ck);
+    if (cached) return cached;
+    var sql = 'SELECT year_month, store_name, corp_name, principal_amount, memo FROM `' +
+      BQ_PROJECT + '.' + BQ_SALES_DATASET + '.stg_loan_principal` ' + where + ' ORDER BY year_month';
+    var rows = bqRows_(sql);
+    if (!rows) return { ok: false, error: 'BigQueryクエリ失敗' };
+    var out = [['年月', '店舗', '法人', '元金額', 'メモ']];
+    for (var i = 1; i < rows.length; i++) {
+      var r = rows[i];
+      out.push([r[0], r[1], r[2], Number(r[3] || 0), r[4]]);
+    }
+    var res = { ok: true, sheets: { '借入返済元金': out } };
     bqCachePut_(ck, res);
     return res;
   } catch (e) {
@@ -1950,6 +2026,165 @@ function syncSeisanFeeToPl(p) {
 
   return { ok: true, ym: ym, synced: Object.keys(byStore).length, detail: results, errors: errors, plsys: plsysSeisan, bqSync: bqSync };
 }
+
+// ================== 銀行借入 利息・元金のPL自動連携（2026-08-26追加・A-5） ==================
+// ns-portal/docs/実装指示書_ラウンド3_2026-08-26.md A-5（ユーザー確定版）:
+// ①支払利息＝DB_PLへ「自動｜支払利息」（O区分）として店舗按分どおりに費用計上
+// ②返済元金＝DB_PLには入れず（勘定科目区分Xは「PL外（財務CF）」の意味で既に予約済み。
+//   フロント側のplCatOf()/plAgg()はF/L/A/R以外を一律Oへ丸めてしまうため、Xのつもりで
+//   書いてもO区分の費用として販管費計・営業利益に混ざってしまう＝書いてはいけない）、
+//   専用シートDB_借入返済元金に集計して置くだけにする。PLタブの「簡易キャッシュフロー」
+//   セクションが営業利益からこの元金を差し引いて表示する（app.js側）。
+// データ源: ns-info-system（F-8）の返済データ共有ビューAPI（トークン認証・GET）。
+var LOAN_INTEREST_MEMO = '自動｜支払利息';
+function syncBankLoanToPl(p) {
+  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+  if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
+  return syncBankLoanToPl_(tk);
+}
+function syncBankLoanToPl_(tk) {
+  var feedToken = PropertiesService.getScriptProperties().getProperty('LOAN_REPAYMENT_FEED_TOKEN');
+  if (!feedToken) return { ok: false, error: 'LOAN_REPAYMENT_FEED_TOKEN が未設定です（スクリプトプロパティ。ns-info-systemの返済データAPI用トークン）' };
+
+  var feedRes = UrlFetchApp.fetch('https://ns-info-system.vercel.app/api/loan-repayment-feed', {
+    headers: { Authorization: 'Bearer ' + feedToken }, muteHttpExceptions: true
+  });
+  if (feedRes.getResponseCode() !== 200) return { ok: false, error: '返済データ取得に失敗しました（HTTP ' + feedRes.getResponseCode() + '）' };
+  var feed = JSON.parse(feedRes.getContentText());
+  var feedRows = feed.rows || [];
+
+  // 店舗名解決: F-8のstoreName（ns-info-system info.stores由来）→ このダッシュボードの内部店舗名。
+  // 2システム間の店舗マスタが完全には一致していない既知の問題があるため（2026-08-26調査レポート参照）、
+  // 完全一致→store_directory_vの別名(kind='name')→どちらも不一致なら「全社共通」（空欄）に
+  // フォールバックする（黙って捨てない・数値自体は必ずどこかの行に残す設計）。
+  var nameSet = {}, aliasMap = {};
+  try {
+    var storeRes = UrlFetchApp.fetch(STORE_DIRECTORY_URL_, {
+      headers: { apikey: STORE_DIRECTORY_ANON_KEY_, Authorization: 'Bearer ' + STORE_DIRECTORY_ANON_KEY_ }, muteHttpExceptions: true
+    });
+    if (storeRes.getResponseCode() === 200) {
+      JSON.parse(storeRes.getContentText()).forEach(function (s) {
+        nameSet[s.name] = true;
+        (s.aliases || []).forEach(function (a) { if (a.kind === 'name') aliasMap[a.alias] = s.name; });
+      });
+    }
+  } catch (eDir) { /* 店舗マスタ取得失敗時は全件「全社共通」寄りになるが致命的ではないので続行 */ }
+  function resolveLoanStore_(name) {
+    if (!name) return '';
+    if (nameSet[name]) return name;
+    if (aliasMap[name]) return aliasMap[name];
+    return ''; // 不一致は全社共通行として扱う（数値を捨てない）
+  }
+
+  // 年月×店舗で集計（利息・元金は別々の行き先に反映するので個別に合計する）
+  var interestByYmStore = {}, principalRows = [];
+  feedRows.forEach(function (r) {
+    var ym = String(r.yearMonth || '').slice(0, 7);
+    if (!/^\d{4}-\d{2}$/.test(ym)) return;
+    var store = resolveLoanStore_(r.storeName);
+    var interest = Math.round(Number(r.interestAmount || 0));
+    var principal = Math.round(Number(r.principalAmount || 0));
+    if (interest) {
+      var ik = ym + '\t' + store;
+      interestByYmStore[ik] = (interestByYmStore[ik] || 0) + interest;
+    }
+    if (principal) {
+      principalRows.push([ym, store, String(r.corporationName || ''), principal, '']);
+    }
+  });
+
+  // ① 支払利息 → DB_PL（自動｜支払利息, O区分）。syncSpotLaborToPl_と同じ「対象月×このメモの行だけ差し替え」方式。
+  var dp = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_PL');
+  if (!dp) return { ok: false, error: 'DB_PLシートがありません' };
+  var dlast = dp.getLastRow();
+  var dlastCol = Math.max(dp.getLastColumn(), 7);
+  var allRows = dlast >= 2 ? dp.getRange(2, 1, dlast - 1, dlastCol).getValues() : [];
+  var months = {};
+  Object.keys(interestByYmStore).forEach(function (k) { months[k.split('\t')[0]] = true; });
+  allRows.forEach(function (r) { if (String(r[5]) === LOAN_INTEREST_MEMO) months[ymOf_(r[0])] = true; });
+  var keep = [];
+  allRows.forEach(function (r) {
+    if (r[0] === '' && r[1] === '' && r[2] === '') return;
+    var ym = ymOf_(r[0]);
+    if (months[ym] && String(r[5]) === LOAN_INTEREST_MEMO) return;   // 差し替え対象は捨てる
+    keep.push(r);
+  });
+  Object.keys(interestByYmStore).forEach(function (k) {
+    var parts = k.split('\t'), ym = parts[0], store = parts[1];
+    var y = +ym.slice(0, 4), mo = +ym.slice(5, 7);
+    keep.push([new Date(y, mo - 1, 1), store, '支払利息', 'O', interestByYmStore[k], LOAN_INTEREST_MEMO, '']);
+  });
+  if (dlast >= 2) dp.getRange(2, 1, dlast - 1, dlastCol).clearContent();
+  if (keep.length) { dp.getRange(2, 1, keep.length, 7).setValues(keep); dp.getRange(2, 1, keep.length, 1).setNumberFormat('yyyy/m/d'); }
+
+  // ② PL管理システム ✍販管費入力：DB_PLと同じキー（年月×店舗×支払利息）で差し替える
+  // （syncSeisanFeeToPl/syncSpotLaborToPl_と同じ理由。ここを忘れるとダッシュボードとPL管理システムの数字が食い違う）。
+  var plsysLoan = '';
+  try {
+    var pshL = SpreadsheetApp.openById(PL_SYSTEM_ID).getSheetByName(PL_INPUT_SHEET);
+    if (pshL) {
+      var lastRL = pshL.getLastRow(), nRL = Math.max(lastRL - 2, 0);
+      var AL = nRL > 0 ? pshL.getRange(3, 1, nRL, 3).getValues() : [];
+      var EL = nRL > 0 ? pshL.getRange(3, 5, nRL, 2).getValues() : [];
+      var GL = nRL > 0 ? pshL.getRange(3, 7, nRL, 1).getValues() : [];
+      var monthsL = {};
+      Object.keys(interestByYmStore).forEach(function (k) { monthsL[k.split('\t')[0]] = true; });
+      for (var iL0 = 0; iL0 < nRL; iL0++) { if (String(EL[iL0][1]) === LOAN_INTEREST_MEMO) monthsL[bqPlYm_(AL[iL0][0])] = true; }
+      var keepPL = [];
+      for (var iL = 0; iL < nRL; iL++) {
+        if (String(AL[iL][0]) === '' && String(AL[iL][2]) === '') continue;
+        if (monthsL[bqPlYm_(AL[iL][0])] && String(EL[iL][1]) === LOAN_INTEREST_MEMO) continue;   // 差し替え対象は捨てる
+        keepPL.push([AL[iL][0], AL[iL][1], AL[iL][2], EL[iL][0], EL[iL][1], GL[iL][0]]);
+      }
+      Object.keys(interestByYmStore).forEach(function (k) {
+        var partsL = k.split('\t'), ymL = partsL[0], storeL = partsL[1];
+        keepPL.push([ymL, storeL, '支払利息', interestByYmStore[k], LOAN_INTEREST_MEMO, '']);
+      });
+      if (nRL > 0) { pshL.getRange(3, 1, nRL, 3).clearContent(); pshL.getRange(3, 5, nRL, 2).clearContent(); pshL.getRange(3, 7, nRL, 1).clearContent(); }
+      if (keepPL.length) {
+        pshL.getRange(3, 1, keepPL.length, 3).setValues(keepPL.map(function (r) { return [r[0], r[1], r[2]]; }));
+        pshL.getRange(3, 5, keepPL.length, 2).setValues(keepPL.map(function (r) { return [r[3], r[4]]; }));
+        pshL.getRange(3, 7, keepPL.length, 1).setValues(keepPL.map(function (r) { return [r[5]]; }));
+      }
+      plsysLoan = 'PL管理システムにも反映しました';
+    } else plsysLoan = 'PL管理システムに「' + PL_INPUT_SHEET + '」シートが見つかりません（DB_PLのみ反映）';
+  } catch (eL) { plsysLoan = 'PL管理システムへの反映に失敗（DB_PLのみ反映）: ' + String(eL && eL.message || eL); }
+
+  // ③ 返済元金 → DB_借入返済元金（毎回全件差し替え。このシートは他の入力と混在しないため単純上書きでよい）
+  var loanSh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_借入返済元金');
+  if (!loanSh) {
+    loanSh = SpreadsheetApp.getActiveSpreadsheet().insertSheet('DB_借入返済元金');
+    loanSh.getRange(1, 1, 1, 5).setValues([['年月', '店舗', '法人', '元金額', 'メモ']]).setFontWeight('bold').setBackground('#efe9dd');
+    loanSh.setFrozenRows(1);
+  }
+  var loanLast = loanSh.getLastRow();
+  if (loanLast >= 2) loanSh.getRange(2, 1, loanLast - 1, 5).clearContent();
+  if (principalRows.length) loanSh.getRange(2, 1, principalRows.length, 5).setValues(principalRows);
+
+  // BQミラー（両方とも即時反映。翌朝の定期同期を待たせない）
+  var bqSyncLoan = bqSyncPL({ token: tk });
+  bqSyncLoanNow_();
+
+  return {
+    ok: true, generatedAt: feed.generatedAt, interestMonths: Object.keys(months).length,
+    interestStores: Object.keys(interestByYmStore).length, principalRows: principalRows.length,
+    plsys: plsysLoan, bqSync: bqSyncLoan
+  };
+}
+
+// 簡易キャッシュフローの法人税率設定（既定34%・PL_TAX_RATEスクリプトプロパティ。2026-08-26追加・A-5）。
+function plTaxRate_() {
+  var v = Number(PropertiesService.getScriptProperties().getProperty('PL_TAX_RATE'));
+  return (v > 0 && v < 1) ? v : 0.34;
+}
+function setPlTaxRate(p, session) {
+  if (!(session.role === '社長' || session.role === '本部')) return { ok: false, error: '権限がありません' };
+  var v = Number(p.rate);
+  if (!(v >= 0 && v < 1)) return { ok: false, error: '税率は0〜1の範囲で指定してください（例: 0.34 = 34%）' };
+  PropertiesService.getScriptProperties().setProperty('PL_TAX_RATE', String(v));
+  return { ok: true, rate: v };
+}
+
 // 既存のingestDeposit()がそのまま解釈できる形（{sheets:{deposit:[[店舗名,日付,入金額,メモ],...]}}）で返す。
 // 繰越（開始残高）計算のdepositCarry()はこのBQミラーを経由せず、常にローカルシートを直接読む
 // （全期間の累計が必要なため。ここで切り替わるのは「今月の明細」を表示する部分だけ）。

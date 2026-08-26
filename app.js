@@ -185,6 +185,7 @@ const S = {
 };
 const D = { daily:[], media:[], deposit:[], review:[], ad:[], adfx:[], tanka:{}, pl:[], dinii:[], diniiCols:[], targets:[], targetsM:[], events:[], extra:{}, storeAlias:{}, storeParent:{}, mediaClass:{}, adMediaMaster:[], adPlanMaster:{}, adStoreMaster:[], subItemMaster:{}, mfCategoryMap:{}, holidays:null, detailData:null, detailKey:'', detailLoading:'', refDate:null, maxDate:null,
   spot:[], spotBqLoading:false, spotBqErr:'',
+  loanPrincipal:[], loanBqLoading:false, loanBqErr:'', taxRate:0.34,   // A-5(2026-08-26追加): 簡易キャッシュフロー用
   wkTpl:{}, wkRep:[], wkAns:{}, wkFb:{}, roleDef:{}, depNote:{}, dailyBqLoading:false, dailyBqErr:'', plBqLoading:false, plBqErr:'', storeDirectory:null,
   freshness:null, freshnessAt:0, bqFallback:{} };
 let EXPORT = [];      // 現在タブのCSVエクスポート対象 [{title,headers,rows}]
@@ -830,6 +831,29 @@ function ingestSpot(rows){
   }
   D.spot=recs; D.diag['スポット人件費']='OK '+recs.length+'件'; return true;
 }
+// DB_借入返済元金（A-5・2026-08-26追加）。年月単位（日付ではなくYYYY-MM文字列）。
+// ns-info-system（F-8）から毎日自動同期される専用シートで手入力は無い。PLタブの
+// 「簡易キャッシュフロー」セクションでのみ使う（DB_PLの費用行には一切含まれない）。
+function ingestLoanPrincipal(rows){
+  let hi=-1;
+  for(let i=0;i<Math.min(rows.length,5);i++){
+    const line=rows[i].map(x=>String(x==null?'':x)).join(',');
+    if(/年月/.test(line) && /店舗/.test(line)){ hi=i; break; }
+  }
+  if(hi<0) hi=0;
+  const H=rows[hi].map(h=>String(h).trim());
+  const iY=colAny(H,['年月']), iS=colAny(H,['店舗']), iC=colAny(H,['法人']), iA=colAny(H,['元金額']), iMemo=colAny(H,['メモ']);
+  if(iY<0||iA<0){ D.diag['借入返済元金']='列が見つかりません（必要: 年月・元金額）／見出し行: '+H.filter(Boolean).join('|'); return false; }
+  const recs=[];
+  for(let i=hi+1;i<rows.length;i++){
+    const c=rows[i];
+    const m=String(c[iY]||'').trim().match(/^(\d{4})-(\d{2})$/); if(!m) continue;
+    const amount=num(c[iA]); if(!amount) continue;
+    recs.push({ t:dayMs(new Date(+m[1],+m[2]-1,1)), store:iS>=0?String(c[iS]||'').trim():'',
+      corp:iC>=0?String(c[iC]||'').trim():'', amount, memo:iMemo>=0?String(c[iMemo]||'').trim():'' });
+  }
+  D.loanPrincipal=recs; D.diag['借入返済元金']='OK '+recs.length+'件'; return true;
+}
 // 広告費用対効果_管理シートの ⚙️媒体マスタ / ⚙️プランマスタ。
 // 広告費入力モーダルのプルダウン候補（マスタに行を足せばそのまま選択肢が増える）
 // 見出し行の検出：指定した列名が「セル単体で」存在する行を探す。
@@ -1111,7 +1135,7 @@ function ingestStoreParent(rows){
   return map;
 }
 function ingestSheets(sheets, partial){
-  if(!partial){ D.extra={}; D.diag={}; D.receivedKeys=Object.keys(sheets); D.ad=[]; D.adSrc=''; D.adfx=[]; D.tanka={}; D.rsv=[]; D.pl=[]; D.spot=[]; D.dinii=[]; D.targets=[]; D.targetsM=[]; D.events=[]; D.storeAlias={}; D.storeParent={}; D.adMediaMaster=[]; D.adPlanMaster={}; D.adStoreMaster=[]; D.subItemMaster={}; D.mfCategoryMap={}; }  // 広告・PL・スポット人件費・ダイニー・目標・対応表・親子・補助科目/MF科目対応マスタはフル受信のたびに入れ替え
+  if(!partial){ D.extra={}; D.diag={}; D.receivedKeys=Object.keys(sheets); D.ad=[]; D.adSrc=''; D.adfx=[]; D.tanka={}; D.rsv=[]; D.pl=[]; D.spot=[]; D.loanPrincipal=[]; D.dinii=[]; D.targets=[]; D.targetsM=[]; D.events=[]; D.storeAlias={}; D.storeParent={}; D.adMediaMaster=[]; D.adPlanMaster={}; D.adStoreMaster=[]; D.subItemMaster={}; D.mfCategoryMap={}; }  // 広告・PL・スポット人件費・借入返済元金・ダイニー・目標・対応表・親子・補助科目/MF科目対応マスタはフル受信のたびに入れ替え
   else { D.receivedKeys=(D.receivedKeys||[]).concat(Object.keys(sheets)); }
   const known=['daily','media','deposit','review','ad','広告'];
   if(!partial){ known.forEach(k=>{ if(!(k in sheets)) D.diag[k]='シート未受信（接続設定のシート名を確認）'; }); }
@@ -1128,6 +1152,7 @@ function ingestSheets(sheets, partial){
     else if(isRsvKey(key)) ingestRsv(rows);
     else if(isPLKey(key)) ingestPL(rows);
     else if(key==='スポット人件費') ingestSpot(rows);
+    else if(key==='借入返済元金') ingestLoanPrincipal(rows);
     else if(isDiniiKey(key)) ingestDinii(rows);
     else if(isMediaClassKey(key)) ingestMediaClass(rows);
     else if(isTargetMKey(key)) ingestTargetsM(rows);
@@ -1435,6 +1460,7 @@ async function fetchData(silent, opts){
     }
     ingestSheets(d.sheets||{}, !!opts.partial);
     if(d.stores && d.stores.length){ D.storeDirectory=d.stores; logReviewChildrenDiff_(); }
+    if(d.taxRate!=null) D.taxRate=Number(d.taxRate)||0.34;   // A-5(2026-08-26): 簡易キャッシュフロー用の法人税率
     if(d.version) S.dataVersion=d.version;
     // daily を含む読込のときだけ接続状態を判定（媒体別だけの追い読みでは変えない）
     if(!opts.only || opts.only.indexOf('daily')>=0){
@@ -1457,9 +1483,9 @@ async function fetchDataFast(){
   D.mediaPending=true; D.media=[];                       // サンプル媒体データを一旦クリア
   // BigQueryモード中は、シート側のdaily/PL/depositを毎回上書きしないよう除外し、
   // 代わりにfetchDailyBQ()/fetchPlBQ()/fetchDepositBQ()で取得する（2026-08-22追加）
-  const excl = S.useBqDaily ? HEAVY_KEYS.concat(['daily','PL','スポット人件費']) : HEAVY_KEYS;
+  const excl = S.useBqDaily ? HEAVY_KEYS.concat(['daily','PL','スポット人件費','借入返済元金']) : HEAVY_KEYS;
   await fetchData(true, { exclude:excl });               // 軽い必須のみ → すぐ表示
-  if(S.useBqDaily){ fetchDailyBQ(); fetchPlBQ(); fetchDepositBQ(); fetchMediaBQ(); fetchSpotBQ(); }
+  if(S.useBqDaily){ fetchDailyBQ(); fetchPlBQ(); fetchDepositBQ(); fetchMediaBQ(); fetchSpotBQ(); fetchLoanBQ(); }
   fetchFreshness();                                       // データ鮮度表示（5分キャッシュ・下のfetchFreshness参照）
   render();
   // data は version を返さないので、初回に署名を取得（次の自動更新のムダ取得を防ぐ）
@@ -1519,6 +1545,17 @@ async function fetchSpotBQ(){
     else{ D.spotBqErr=(d&&d.error)||'取得に失敗しました'; await bqFallbackToSheet_('スポット人件費'); }
   }catch(e){ D.spotBqErr=String(e&&e.message||e); await bqFallbackToSheet_('スポット人件費'); }
   D.spotBqLoading=false; render();
+}
+// 借入返済元金タブ用: DB_借入返済元金のBQミラーを読む（A-5・2026-08-26追加。fetchSpotBQと同じ考え方）
+async function fetchLoanBQ(){
+  if(!S.auth||!S.auth.token) return;
+  D.loanBqLoading=true; render();
+  try{
+    const d=await api({ action:'bqGetLoanPrincipal', token:S.auth.token });
+    if(d&&d.ok&&d.sheets){ ingestSheets(d.sheets, true); D.loanBqErr=''; D.bqFallback['借入返済元金']=false; }
+    else{ D.loanBqErr=(d&&d.error)||'取得に失敗しました'; await bqFallbackToSheet_('借入返済元金'); }
+  }catch(e){ D.loanBqErr=String(e&&e.message||e); await bqFallbackToSheet_('借入返済元金'); }
+  D.loanBqLoading=false; render();
 }
 // 入金管理タブ用: 入金DBのBQミラーを読む（2026-08-22追加。fetchPlBQと同じ考え方。
 // 繰越〔開始残高〕は別途fetchDepCarryがサーバー全期間計算で常に取得するため、ここでは影響しない）
@@ -3794,6 +3831,25 @@ function plAgg(scopeSet, selN, a, b){
   }
   return { byCat, catTotal, total, common, unmatched, bySub };
 }
+// 借入返済元金の集計（A-5・2026-08-26追加）。plAggと同じスコープ絞り込み方式だが、
+// PL費用ではない（勘定科目・区分を持たない）ので合計金額だけを返す簡易版。
+function loanPrincipalAgg(scopeSet, selN, a, b){
+  let total=0, common=0;
+  const rc={};
+  for(const r of D.loanPrincipal){
+    if(r.t<a||r.t>b) continue;
+    if(!r.store){
+      if(selN) continue;                       // 店舗選択時は全社共通元金を含めない（減価償却費と同じ扱い）
+      total+=r.amount; common+=r.amount;
+      continue;
+    }
+    const res=(r.store in rc)?rc[r.store]:(rc[r.store]=resolveStoreEx(r.store));
+    if(!res) continue;                          // 店舗名が解決できない行は無視（数値上は目立たないが集計対象外）
+    if(!scopeSet.has(res.parent)) continue;
+    total+=r.amount;
+  }
+  return { total, common };
+}
 function plMonthDate(){
   if(S.plMonth){ const p=S.plMonth.split('-'); return new Date(+p[0],+p[1]-1,1); }
   const ref=D.refDate||new Date(); return new Date(ref.getFullYear(),ref.getMonth(),1);
@@ -3879,7 +3935,7 @@ function viewPL(){
       ? `<div class="store-pick no-print"><span class="sp-lb">🏪 店舗（個別選択）</span><button class="icon-btn" onclick="App.openPlStorePick()">${multiStores.length}店舗を選択中・変更</button><button class="icon-btn" onclick="App.clearPlStorePick()">選択解除</button></div>`
       : storeSegHtml()+`<div class="store-pick no-print"><button class="icon-btn" onclick="App.openPlStorePick()">🏪 複数店舗を選んで合算</button></div>`);
   // 2026-08-22追加: 売上/原価/人件費(stat())とDB_PL手入力経費(plAgg())の両方がBQトグルの対象
-  if(isAdminRole()&&S.useBqDaily) h+=`<div class="mut" style="font-size:11px;margin:2px 0 8px">🧪 データ元: BigQuery（推移分析タブのトグルで切替）${D.plBqLoading?' ・PL読込中…':''}${D.plBqErr?` ・PL取得エラー: ${esc(D.plBqErr)}`:''}</div>`;
+  if(isAdminRole()&&S.useBqDaily) h+=`<div class="mut" style="font-size:11px;margin:2px 0 8px">🧪 データ元: BigQuery（推移分析タブのトグルで切替）${D.plBqLoading?' ・PL読込中…':''}${D.plBqErr?` ・PL取得エラー: ${esc(D.plBqErr)}`:''}${D.loanBqLoading?' ・返済元金読込中…':''}${D.loanBqErr?` ・返済元金取得エラー: ${esc(D.loanBqErr)}`:''}</div>`;
   h+=bqFallbackNote_('PL');
 
   // KPIカード
@@ -3888,6 +3944,28 @@ function viewPL(){
     <div class="kpi"><div class="lb">売上総利益（粗利）</div><div class="vl">${yen(gross)}</div><div class="yy">${pct(gross)}</div></div>
     <div class="kpi"><div class="lb">販管費計（人件費＋広告＋家賃＋他）</div><div class="vl">${yen(sga)}</div><div class="yy">${pct(sga)}</div></div>
     <div class="kpi"><div class="lb">営業利益</div><div class="vl" style="color:${op>=0?'#4c7d5c':'#b5502f'}">${yen(op)}</div><div class="yy ${mom(op,opPrv).cls}">${pct(op)} ／ ${mom(op,opPrv).t}</div></div>
+  </div>`;
+
+  // 簡易キャッシュフロー（A-5・2026-08-26追加。実装指示書_ラウンド3のユーザー確定式:
+  // 営業利益－法人税等(既定34%・設定変更可)＋減価償却費＝税引後キャッシュ－返済元金＝CF）。
+  // 返済元金はPL費用（DB_PL）には一切含めていない（勘定科目区分がF/L/A/R以外だと
+  // plAgg()で一律O区分に丸められ販管費計・営業利益を汚してしまうため、専用シートに分離）。
+  const depCur=exCur.byCat.O['減価償却費']||0;
+  const principalCur=loanPrincipalAgg(scopeSet,plAggFlag,mS,mE).total;
+  const taxCur=op>0?op*D.taxRate:0;
+  const afterTaxCash=op-taxCur+depCur;
+  const cf=afterTaxCash-principalCur;
+  h+=`<div class="panel">
+    <div class="panel-head"><div><h3>簡易キャッシュフロー</h3><div class="sub">営業利益－法人税等(${(D.taxRate*100).toFixed(1)}%)＋減価償却費－返済元金${isAdminRole()?` ・<a href="javascript:void(0)" onclick="App.editPlTaxRate()">税率を変更</a>`:''}</div></div></div>
+    <div class="scroll-x"><table class="tbl"><tbody>
+      <tr><td>営業利益</td><td style="text-align:right">${yen(op)}</td></tr>
+      <tr><td>− 法人税等（${(D.taxRate*100).toFixed(1)}%）</td><td style="text-align:right">${yen(taxCur)}</td></tr>
+      <tr><td>＋ 減価償却費</td><td style="text-align:right">${yen(depCur)}</td></tr>
+      <tr style="font-weight:700;border-top:1px solid #e3dccb"><td>＝ 税引後キャッシュ</td><td style="text-align:right">${yen(afterTaxCash)}</td></tr>
+      <tr><td>− 返済元金</td><td style="text-align:right">${yen(principalCur)}</td></tr>
+      <tr style="font-weight:700;border-top:1px solid #e3dccb"><td>＝ CF（キャッシュフロー）</td><td style="text-align:right;color:${cf>=0?'#4c7d5c':'#b5502f'}">${yen(cf)}</td></tr>
+    </tbody></table></div>
+    ${plAggFlag?'<div class="mut" style="font-size:11px;padding:4px 12px 8px">※全社共通の減価償却費・返済元金はこの店舗別表示には含まれていません</div>':''}
   </div>`;
 
   // DB_PL未接続/当月データなしの案内（未受信か・受信したが取り込めないかを明示）
@@ -6602,6 +6680,20 @@ window.App = {
       await fetchData(true,{ only:['pl','PL'], partial:true });
       if(S.useBqDaily) fetchPlBQ();
       render();
+    }catch(e){ toast('通信エラー: '+e.message); }
+  },
+  // 簡易キャッシュフローの法人税率変更（A-5・2026-08-26追加。社長・本部のみ表示のリンクから呼ばれる）
+  async editPlTaxRate(){
+    if(!S.auth||!S.auth.token) return;
+    const cur=(D.taxRate*100).toFixed(1);
+    const input=prompt('法人税等の税率を%で入力してください（例: 34）', cur);
+    if(input==null) return;
+    const rate=Number(input)/100;
+    if(!(rate>=0&&rate<1)){ toast('0〜99.9の範囲で入力してください'); return; }
+    try{
+      const d=await api({ action:'setPlTaxRate', token:S.auth.token, rate });
+      if(!d.ok){ toast(d.error||'変更に失敗しました'); return; }
+      D.taxRate=d.rate; toast('税率を'+(d.rate*100).toFixed(1)+'%に変更しました'); render();
     }catch(e){ toast('通信エラー: '+e.message); }
   },
   async saveSpotInput(){

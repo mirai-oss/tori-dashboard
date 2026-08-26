@@ -1,0 +1,30 @@
+name: 銀行借入 利息・元金のPL自動連携（F-8→PL・簡易キャッシュフロー）
+
+# ns-info-system（F-8）の返済データ共有ビューAPIを毎日呼び、①支払利息を経営ダッシュボードの
+# PL（DB_PL）へ「自動｜支払利息」（O区分・店舗按分どおり）として自動反映②返済元金を専用シート
+# DB_借入返済元金へ集計し、PLタブの「簡易キャッシュフロー」セクションの計算に使う。
+#
+# syncSeisanFeeToPl/syncSpotLaborToPl（同フォルダの他ワークフロー）と同じ設計思想:
+# syncBankLoanToPlは「対象月×このメモの行だけ差し替え」方式（利息）と「毎回全件差し替え」方式
+# （元金・他の入力と混在しないシートのため）を組み合わせており、何度実行しても安全。
+# 対象月の指定は不要（F-8のAPI既定範囲＝前12ヶ月〜先24ヶ月をまるごと毎回対象にする）。
+#
+# ns-info-system側のAPIトークン（LOAN_REPAYMENT_FEED_TOKEN）はGAS Script Propertiesにのみ保存
+# （GitHub Secretsには置かない。GASがns-info-systemへ問い合わせる際に使うだけで、このワークフロー
+# 自体はBQ_LOAD_TOKENでGASを呼ぶだけなので不要）。
+on:
+  schedule:
+    - cron: '0 20 * * *'   # 毎日 UTC20:00 = JST翌5:00（08:45の朝の反映前倒しより前に済ませる。他のPL自動連携と同じ時刻）
+  workflow_dispatch: {}
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: syncBankLoanToPlを実行
+        env:
+          BQ_LOAD_TOKEN: ${{ secrets.BQ_LOAD_TOKEN }}
+        run: |
+          curl -sL "https://script.google.com/macros/s/AKfycbz9rd37EZa6X8WRMVEBrXobN8DbYWkHRlhFNYU5rd1UZ0V8j0-6shMQjEeoi4HDWZ0B/exec?action=syncBankLoanToPl&token=$BQ_LOAD_TOKEN" \
+            | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{const j=JSON.parse(d);console.log(JSON.stringify(j,null,2));if(!j.ok)process.exit(1);});"
