@@ -1747,10 +1747,13 @@ async function trySilentPortalLogin(){
 // 一度もトグル操作していない(localStorage未設定)ユーザーに限り、役職ベースで既定値を決める。
 // 第1段階(2026-08-24): 社長・本部のみ既定ON。2営業日問題なければ次段階でこの条件を広げるだけで済む設計。
 // 既に🧪トグルでON/OFFを選んだユーザーの選択（切り戻し手段）は上書きしない。
+// 実装指示書_ダッシュボード高速化タスク3(A-3)・第2段階(2026-08-27ユーザー承認):
+// 2026-08-24〜26の2営業日、社長・本部限定で様子見したが問題報告なし。全役職へ展開する
+// （第1段階は`role==='社長'||role==='本部'`の条件を課していたが、既定を反転する最終形として
+// 撤去。既に🧪トグルでON/OFFを選んだユーザーの選択は引き続き上書きしない）。
 function applyBqDailyRoleDefault_(){
   if(localStorage.getItem(LS.dailyBq)!=null) return;
-  const role=S.auth&&S.auth.account&&S.auth.account.role;
-  if(role==='社長'||role==='本部') S.useBqDaily=true;
+  S.useBqDaily=true;
 }
 function afterLogin(){
   const tabs=myTabs();
