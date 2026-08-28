@@ -3922,7 +3922,11 @@ async function fetchSeatMaster(){
         const hours={};
         d.sheets.rsvStoreHours.slice(1).forEach(r=>{
           const store=String(r[0]||''), spec=String(r[1]||'').trim(), period=String(r[2]||'').trim();
-          const open=hhmm(r[3]), close=hhmm(r[4]);
+          const open=hhmm(r[3]); let close=hhmm(r[4]);
+          // 閉店が「0:00」「1:00」のように開店より小さい数字で入力されていたら翌日とみなし+24する
+          // （日をまたぐ場合は本来26:00等で入力する案内だったが、0:00と書いてしまうのが自然なため
+          // 2026-08-28修正: 自動判定に変更。ユーザー報告「営業区分プルダウンが出ない」の原因）。
+          if(open!=null&&close!=null&&close<=open) close+=24;
           if(store && open!=null && close!=null && close>open) (hours[store]=hours[store]||[]).push({ spec, period, open, close });
         });
         D.rsvHours=hours;
@@ -3971,10 +3975,11 @@ function resolveStoreHours_(store,dateStr,periodSel){
 }
 function todayStr_(){ const d=D.refDate||new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
 function rsvDate_(){ return S.rsvDate||todayStr_(); }
-function rsvShiftDate_(days){
-  const p=rsvDate_().split('-').map(Number); const d=new Date(p[0],p[1]-1,p[2]+days);
+function shiftDateStr_(dateStr,days){
+  const p=dateStr.split('-').map(Number); const d=new Date(p[0],p[1]-1,p[2]+days);
   return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
 }
+function rsvShiftDate_(days){ return shiftDateStr_(rsvDate_(),days); }
 function hashStr_(s){ let h=0; s=String(s||''); for(let i=0;i<s.length;i++) h=(h*31+s.charCodeAt(i))|0; return h; }
 
 function viewReservation(){
@@ -4014,8 +4019,9 @@ function rsvBookHtml_(){
     <div class="seg">${[['timeline','タイムライン'],['calendar','カレンダー'],['list','リスト']].map(([k,l])=>`<button class="${view===k?'on':''}" onclick="App.set('rsvView','${k}')">${l}</button>`).join('')}</div>
     ${periodOpts.length?`<select onchange="App.set('rsvPeriod',this.value)">${periodOpts.map(o=>`<option ${((S.rsvPeriod||'全体')===o)?'selected':''}>${esc(o)}</option>`).join('')}</select>`:''}
     <span class="period-label">${dLabel}</span></div>`;
+  const periodSel=periodOpts.length&&(S.rsvPeriod||'全体')!=='全体'?S.rsvPeriod:'';
   const scoped=selN?D.rsvBq.filter(r=>r.store===selN):D.rsvBq;
-  const dayRows=scoped.filter(r=>r.dateStr===date && !r.isCancelled);
+  const dayRows=selN?rsvDayRowsForStore_(selN,date,periodSel):scoped.filter(r=>r.dateStr===date && !r.isCancelled);
   const ppl=dayRows.reduce((a,r)=>a+r.partySize,0);
   const walk=dayRows.filter(r=>/ウォークイン|walk-?in/i.test(r.channelNorm||r.channelRaw)).length;
   h+=`<div class="kpi-grid">
@@ -4024,11 +4030,24 @@ function rsvBookHtml_(){
     <div class="kpi"><div class="lb">ウォークイン</div><div class="vl">${cnt(walk)}</div></div>
     <div class="kpi"><div class="lb">対象店舗</div><div class="vl">${cnt(new Set(dayRows.map(r=>r.store)).size)}</div></div>
   </div>`;
-  const periodSel=periodOpts.length&&(S.rsvPeriod||'全体')!=='全体'?S.rsvPeriod:'';
   if(view==='calendar') h+=rsvCalendarHtml_(date,scoped);
   else if(view==='timeline') h+=rsvTimelineHtml_(dayRows,date,selN,periodSel);
   else h+=rsvListHtml_(dayRows);
   return h;
+}
+// 1店舗の「営業日」ぶんの予約を集める。営業時間が24時を超える（例: うお蔵は翌5:00=close29）
+// 深夜営業の場合、日付が変わった直後の予約（0:00〜close-24時）は前日の営業の続きとみなし、
+// 表示上の日付・並び順ともこの日（date）の分として扱う（hhを+24して当日の続きとして位置づける）。
+// 2026-08-28追加: ユーザー要望「深夜の予約が次の日になっては困る。営業時間内はその日の営業として」。
+function rsvDayRowsForStore_(store,date,periodSel){
+  const base=D.rsvBq.filter(r=>r.store===store && !r.isCancelled && r.dateStr===date);
+  const hours=resolveStoreHours_(store,date,periodSel);
+  if(!hours||hours.close<=24) return base;
+  const spillLimit=hours.close-24; // 例: close=29なら翌5:00まで
+  const nextDate=shiftDateStr_(date,1);
+  const spill=D.rsvBq.filter(r=>r.store===store && !r.isCancelled && r.dateStr===nextDate && r.hh>=0 && r.hh<spillLimit)
+    .map(r=>({ ...r, hh:r.hh+24 }));
+  return base.concat(spill);
 }
 // selN（特定の1店舗を選択中）があれば卓（テーブル）ごとの行に、無ければ（全店表示）店舗ごとの行にする。
 // 1店舗選択時は、DB_席マスタにその店舗の卓一覧があれば「予約が無い卓（空席）」も行として表示する

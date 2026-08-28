@@ -60,7 +60,6 @@ function handle(p) {
     if (action === 'bqPerfDiag') return out(bqPerfDiag(p)); // BQモード各アクションの所要時間計測（専用トークン認証・読み取り専用・一時的）
     if (action === 'dataKeysDiag') return out(dataKeysDiag(p)); // getData()が実際にどのキーを返すか確認（専用トークン認証・読み取り専用・一時的）
     if (action === 'mediaDateRangeDiag') return out(mediaDateRangeDiag(p)); // stg_media（媒体別日次）の最古/最新日付を確認（担当D依頼の前年比調査用・専用トークン認証・読み取り専用・一時的）
-    if (action === 'rsvHoursDiag') return out(rsvHoursDiag(p)); // DB_営業時間の実際の中身を確認（ユーザー報告「営業区分プルダウンが出ない」調査用・専用トークン認証・読み取り専用・一時的）
     if (action === 'syncSeisanFeeToPl') return out(syncSeisanFeeToPl(p)); // 運営委託費のPL自動連携（専用トークン認証・ログイン不要。2026-08-23追加）
     if (action === 'syncSpotLaborToPl') return out(syncSpotLaborToPl(p)); // スポット人件費の月次PL自動連携（専用トークン認証・ログイン不要。2026-08-23追加）
     if (action === 'syncBankLoanToPl') return out(syncBankLoanToPl(p)); // 銀行借入 利息・元金のPL自動連携（専用トークン認証・ログイン不要。2026-08-26追加・A-5）
@@ -1625,19 +1624,21 @@ function storeHoursSheet_() {
   }
   return sh;
 }
-// 一時的な診断用（専用トークン認証・読み取り専用）: DB_営業時間の実際のヘッダー・データ行をそのまま返す。
-// 「営業区分プルダウンが出ない」調査用。原因の見当がついたら削除する。
-function rsvHoursDiag(p) {
-  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
-  if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
-  try {
-    var sh = storeHoursSheet_();
-    var lastRow = sh.getLastRow(), lastCol = sh.getLastColumn();
-    var values = lastRow >= 1 ? sh.getRange(1, 1, lastRow, lastCol).getValues() : [];
-    return { ok: true, sheetName: sh.getName(), lastRow: lastRow, lastCol: lastCol, rows: values };
-  } catch (e) {
-    return { ok: false, error: String(e && e.message || e) };
+// 開店/閉店時刻セルの読み取り用。「11:30」のように入力すると、Googleスプレッドシートが自動で
+// 「時刻」型（内部的には1899-12-30基準の日付オブジェクト）に変換してしまい、素の String(v) では
+// "Sat Dec 30 1899 11:30:00 GMT+0900"のような形になって呼び出し側の正規表現でも不安定だった
+// （2026-08-28 ユーザー報告「営業区分プルダウンが出ない」の原因）。GAS実行環境のタイムゾーン
+// （スプレッドシートに合わせてAsia/Tokyo）でgetDate/getHours/getMinutesを読み、日付が基準の30日
+// より進んでいたら（=日をまたぐ時刻）その日数分だけ24時間を加算した「HH:mm」文字列にする。
+function rsvTimeCell_(v) {
+  if (v === '' || v === null || v === undefined) return '';
+  if (Object.prototype.toString.call(v) === '[object Date]') {
+    var extraDays = Math.max(0, v.getDate() - 30);
+    var hh = v.getHours() + extraDays * 24;
+    var mm = v.getMinutes();
+    return hh + ':' + (mm < 10 ? '0' + mm : String(mm));
   }
+  return String(v);
 }
 // ログイン必須・店舗スコープ制限（bqGetReservationと同じ方針）。BQを使わずシートを直接読むだけなので軽量。
 // 席マスタと営業時間の両方をまとめて返す（同じタイミングで使うため1リクエストにまとめている）。
@@ -1670,7 +1671,7 @@ function bqGetSeatMaster(p, session) {
         var hStore = String(hValues[j][0] || '').trim();
         if (!hStore) continue;
         if (allowNames && allowNames.indexOf(hStore) < 0) continue;
-        hours.push([hStore, String(hValues[j][1] || ''), String(hValues[j][2] || ''), String(hValues[j][3] || ''), String(hValues[j][4] || '')]);
+        hours.push([hStore, String(hValues[j][1] || ''), String(hValues[j][2] || ''), rsvTimeCell_(hValues[j][3]), rsvTimeCell_(hValues[j][4])]);
       }
     }
 
