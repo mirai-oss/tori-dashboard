@@ -1541,7 +1541,17 @@ function bqGetReservation(p, session) {
       where.push("store_account NOT IN ('" + EXCLUDE_ACCOUNTS.map(function (n) { return n.replace(/'/g, "''"); }).join("','") + "')");
     }
     var whereSql = where.length ? 'WHERE ' + where.join(' AND ') : '';
-    var sql = 'SELECT ' + cols.join(', ') + ' FROM `' + BQ_PROJECT + '.' + BQ_SALES_DATASET + '.stg_reservation` ' +
+    // created_at_source/cancel_atはTIMESTAMP型のため、素のままSELECTするとBigQuery REST APIが
+    // エポック秒の数値文字列（例:"1774607400"）を返してしまい、クライアント側の日付解析が全く
+    // 効かない（2026-08-28 ユーザー報告「当日予約が常に0」の原因＝当日判定が一度も成立しなかった）。
+    // FORMAT_TIMESTAMPで明示的に読める日時文字列に変換してから返す。
+    var selectCols = cols.map(function (c) {
+      if (c === 'created_at_source' || c === 'cancel_at') {
+        return "FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%S', " + c + ", 'Asia/Tokyo') AS " + c;
+      }
+      return c;
+    });
+    var sql = 'SELECT ' + selectCols.join(', ') + ' FROM `' + BQ_PROJECT + '.' + BQ_SALES_DATASET + '.stg_reservation` ' +
       whereSql + ' ORDER BY visit_date, visit_time';
     var rows = bqRows_(sql);
     if (!rows) return { ok: false, error: 'BigQueryクエリ失敗' };
