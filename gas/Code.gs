@@ -1527,14 +1527,15 @@ function bqGetReservation(p, session) {
     var where = [];
     if (restricted) where.push("store_id IN ('" + allowIds.map(function (id) { return String(id).replace(/'/g, "''"); }).join("','") + "')");
     if (!includeCancelled) where.push("status_normalized NOT LIKE 'cancelled%'");
-    // 一時的な措置（2026-08-28・ユーザー確認済み）: サブブランド分（匠味・うお蔵）は本ブランドと
-    // 別々に取得したデータが同じ物理店舗（store_id）へ合算される構造のため、同一予約が両方に
-    // 記録されている可能性がある（設計書§8.8 R1「初回突合必須」がまだ未実施）。突合が済むまでは
-    // メインブランドのみに絞る。突合完了後はこの制限を外し、必要ならp.includeSubBrand='true'で
-    // 一時的に含める切替を追加する想定。
-    var SUB_BRAND_ACCOUNTS = ['匠味 川崎', '匠味 新横浜', 'うお蔵 新横浜'];
+    // 一時的な措置（2026-08-28・ユーザー確認済み）: 別々に取得したデータが同じ物理店舗（store_id）へ
+    // 合算される構造のため、同一予約が両方に記録されている可能性がある（設計書§8.8 R1「初回突合必須」
+    // がまだ未実施）。突合が済むまでは予約帳の運用上メインの表記（匠味川崎/匠味新横浜/うお蔵新横浜）
+    // 側を残し、鶏武者川崎店/鶏武者新横浜/黒霧屋新横浜側を除外する（2026-08-28ユーザー訂正: 当初逆に
+    // 実装していた）。突合完了後はこの制限を外し、必要ならp.includeSubBrand='true'で一時的に含める
+    // 切替を追加する想定。
+    var EXCLUDE_ACCOUNTS = ['鶏武者 川崎店', '鶏武者 新横浜', '黒霧屋 新横浜'];
     if (String(p.includeSubBrand) !== 'true') {
-      where.push("store_account NOT IN ('" + SUB_BRAND_ACCOUNTS.map(function (n) { return n.replace(/'/g, "''"); }).join("','") + "')");
+      where.push("store_account NOT IN ('" + EXCLUDE_ACCOUNTS.map(function (n) { return n.replace(/'/g, "''"); }).join("','") + "')");
     }
     var whereSql = where.length ? 'WHERE ' + where.join(' AND ') : '';
     var sql = 'SELECT ' + cols.join(', ') + ' FROM `' + BQ_PROJECT + '.' + BQ_SALES_DATASET + '.stg_reservation` ' +
