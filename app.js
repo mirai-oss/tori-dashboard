@@ -3921,9 +3921,9 @@ async function fetchSeatMaster(){
         const hhmm=(v)=>{ const m=String(v==null?'':v).match(/(\d{1,3}):(\d{2})/); return m?(+m[1]+(+m[2])/60):null; };
         const hours={};
         d.sheets.rsvStoreHours.slice(1).forEach(r=>{
-          const store=String(r[0]||''), spec=String(r[1]||'').trim();
-          const open=hhmm(r[2]), close=hhmm(r[3]);
-          if(store && open!=null && close!=null && close>open) (hours[store]=hours[store]||[]).push({ spec, open, close });
+          const store=String(r[0]||''), spec=String(r[1]||'').trim(), period=String(r[2]||'').trim();
+          const open=hhmm(r[3]), close=hhmm(r[4]);
+          if(store && open!=null && close!=null && close>open) (hours[store]=hours[store]||[]).push({ spec, period, open, close });
         });
         D.rsvHours=hours;
       }
@@ -3931,13 +3931,12 @@ async function fetchSeatMaster(){
   }catch(e){ /* 席マスタ・営業時間は無くても既定値で動くため黙って諦める */ }
   render();
 }
-// 店舗×日付で当てはまる営業時間パターンを解決する。曜日区分が具体的な行ほど優先（祝/個別曜日 ＞
-// 平日・土日・土日祝 ＞ 空欄=既定）。祝日判定は既存のisJpHoliday()（内蔵カレンダー＋DB_祝日）を流用。
-// 同じ優先度の行が複数（例:「平日」でランチ11:30-14:30とディナー17:00-24:00の2行）当てはまる場合は
-// 昼のみに絞らず、その日の全時間帯が収まるようopen=最早／close=最遅で合算する
-// （2026-08-28修正: ランチ行だけが選ばれてディナーの予約が表示範囲外になっていた不具合対応）。
-function resolveStoreHours_(store,dateStr){
-  const rows=D.rsvHours[store]; if(!rows||!rows.length) return null;
+// 店舗×日付で当てはまる営業時間の行を全部返す（曜日区分が具体的な行ほど優先。祝/個別曜日 ＞
+// 平日・土日・土日祝 ＞ 空欄=既定）。同じ優先度の行が複数（昼の部・夜の部など）あれば全部そのまま返す
+// （合算はせず、呼び出し側=resolveStoreHours_が選択中の営業区分に応じて絞る）。
+// 祝日判定は既存のisJpHoliday()（内蔵カレンダー＋DB_祝日）を流用。
+function resolveStoreHoursPeriods_(store,dateStr){
+  const rows=D.rsvHours[store]; if(!rows||!rows.length) return [];
   const p=dateStr.split('-').map(Number); const dt=new Date(p[0],p[1]-1,p[2]);
   const dow=dt.getDay(), isHol=isJpHoliday(dt);
   const dayNames=['日','月','火','水','木','金','土'];
@@ -3957,9 +3956,17 @@ function resolveStoreHours_(store,dateStr){
     }
     return {r,score};
   }).filter(x=>x.score>=0);
-  if(!scored.length) return null;
+  if(!scored.length) return [];
   const topScore=Math.max.apply(null,scored.map(x=>x.score));
-  const top=scored.filter(x=>x.score===topScore).map(x=>x.r);
+  return scored.filter(x=>x.score===topScore).map(x=>x.r).sort((a,b)=>a.open-b.open);
+}
+// 表示に使う営業時間を1つ選ぶ。periodSel（S.rsvPeriod）が指定されて一致する行があればそれを、
+// 無ければ（未選択・複数営業区分の「全体」表示・該当行なし）全行をopen=最早／close=最遅で合算する
+// （2026-08-28修正: 昼だけ選ばれて夜の予約が表示範囲外になっていた不具合の合算対応を踏襲）。
+function resolveStoreHours_(store,dateStr,periodSel){
+  const top=resolveStoreHoursPeriods_(store,dateStr);
+  if(!top.length) return null;
+  if(periodSel){ const hit=top.find(r=>(r.period||'（未設定）')===periodSel); if(hit) return {open:hit.open,close:hit.close}; }
   return { open:Math.min.apply(null,top.map(r=>r.open)), close:Math.max.apply(null,top.map(r=>r.close)) };
 }
 function todayStr_(){ const d=D.refDate||new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
@@ -3995,14 +4002,18 @@ function rsvBookHtml_(){
   const date=rsvDate_();
   const p=date.split('-').map(Number);
   const dLabel=p[0]+'年'+p[1]+'月'+p[2]+'日（'+['日','月','火','水','木','金','土'][new Date(p[0],p[1]-1,p[2]).getDay()]+'）';
+  const selN=selStoreName();
+  // 営業区分（昼の部/夜の部等）が複数当てはまる日は絞り込みプルダウンを出す（2026-08-28追加）
+  const periods=selN?resolveStoreHoursPeriods_(selN,date):[];
+  const periodOpts=periods.length>1?['全体'].concat(periods.map(r=>r.period||'（未設定）')):[];
   let h=`<div class="ctrl-bar no-print">
     <button class="icon-btn" onclick="App.set('rsvDate','${rsvShiftDate_(-1)}')">‹ 前日</button>
     <input type="date" value="${date}" onchange="App.set('rsvDate',this.value)">
     <button class="icon-btn" onclick="App.set('rsvDate','${rsvShiftDate_(1)}')">翌日 ›</button>
     <button class="icon-btn" onclick="App.set('rsvDate','${todayStr_()}')">今日</button>
     <div class="seg">${[['timeline','タイムライン'],['calendar','カレンダー'],['list','リスト']].map(([k,l])=>`<button class="${view===k?'on':''}" onclick="App.set('rsvView','${k}')">${l}</button>`).join('')}</div>
+    ${periodOpts.length?`<select onchange="App.set('rsvPeriod',this.value)">${periodOpts.map(o=>`<option ${((S.rsvPeriod||'全体')===o)?'selected':''}>${esc(o)}</option>`).join('')}</select>`:''}
     <span class="period-label">${dLabel}</span></div>`;
-  const selN=selStoreName();
   const scoped=selN?D.rsvBq.filter(r=>r.store===selN):D.rsvBq;
   const dayRows=scoped.filter(r=>r.dateStr===date && !r.isCancelled);
   const ppl=dayRows.reduce((a,r)=>a+r.partySize,0);
@@ -4013,8 +4024,9 @@ function rsvBookHtml_(){
     <div class="kpi"><div class="lb">ウォークイン</div><div class="vl">${cnt(walk)}</div></div>
     <div class="kpi"><div class="lb">対象店舗</div><div class="vl">${cnt(new Set(dayRows.map(r=>r.store)).size)}</div></div>
   </div>`;
+  const periodSel=periodOpts.length&&(S.rsvPeriod||'全体')!=='全体'?S.rsvPeriod:'';
   if(view==='calendar') h+=rsvCalendarHtml_(date,scoped);
-  else if(view==='timeline') h+=rsvTimelineHtml_(dayRows,date,selN);
+  else if(view==='timeline') h+=rsvTimelineHtml_(dayRows,date,selN,periodSel);
   else h+=rsvListHtml_(dayRows);
   return h;
 }
@@ -4029,7 +4041,7 @@ const rsvSplitTables_=(tableNo)=>{
   const parts=s.split(/[,、\/\s]+|[+＋]/).map(t=>t.trim()).filter(Boolean);
   return parts.length?parts:[s];
 };
-function rsvTimelineHtml_(dayRows,date,selN){
+function rsvTimelineHtml_(dayRows,date,selN,periodSel){
   const byRow={};
   const byTable=!!selN;
   dayRows.forEach(r=>{
@@ -4052,7 +4064,7 @@ function rsvTimelineHtml_(dayRows,date,selN){
 
   const seatCap={}, seatTags={}; storeSeats.forEach(s=>{ seatCap[s.tableNo]=s.capacity; seatTags[s.tableNo]=s.tags||[]; });
   // 営業時間: 1店舗選択時はDB_営業時間の設定があればそれを使う。無ければ既定10:00〜24:00
-  const custHours=byTable?resolveStoreHours_(selN,date):null;
+  const custHours=byTable?resolveStoreHours_(selN,date,periodSel):null;
   const lo=custHours?custHours.open:10, hiH=custHours?custHours.close:24;
   const hourMarks=[]; for(let hh=Math.ceil(lo/2)*2; hh<=hiH; hh+=2) hourMarks.push(hh);
   const seatNote=byTable && !storeSeats.length
