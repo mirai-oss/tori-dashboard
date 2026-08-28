@@ -1456,6 +1456,27 @@ function bqFetchReservationRows_() {
   }
   return all;
 }
+// 予約のstore_idはSupabase `stores`テーブル（id/name列）の物理店舗UUID（設計書§8.4・I-1実装済み）。
+// dinii.orders用の`bqStoreMap_()`（GASのDB_店舗ID対応シート）とは別のID体系のため流用できない
+// （2026-08-28 ユーザー報告「店舗を選ぶとカレンダーに何も出ない」で発覚・混同していたバグを修正）。
+// サブブランド（うお蔵→黒霧屋新横浜等）はstoresテーブル側で既に物理店舗に解決済みのため、
+// ここでの店舗名対応表への追加対応は不要。
+function rsvStoreMap_() {
+  var map = {};
+  var supaUrl = PropertiesService.getScriptProperties().getProperty('SUPABASE_URL');
+  var supaKey = PropertiesService.getScriptProperties().getProperty('SUPABASE_SERVICE_KEY');
+  if (!supaUrl || !supaKey) return map;
+  try {
+    var res = UrlFetchApp.fetch(supaUrl + '/rest/v1/stores?select=id,name', {
+      headers: { apikey: supaKey, Authorization: 'Bearer ' + supaKey }, muteHttpExceptions: true
+    });
+    if (res.getResponseCode() === 200) {
+      var rows = JSON.parse(res.getContentText() || '[]');
+      rows.forEach(function (r) { map[r.id] = r.name; });
+    }
+  } catch (e) { /* 取得失敗時はstore_idをそのまま表示（bqGetReservation側のフォールバック） */ }
+  return map;
+}
 // 書き込み: token認証・ログイン不要（bqSyncSales等と同じ）。ns-daily-import側の日次スケジュールから
 // 予約取込の後に呼んでもらう想定（担当Dへの依頼。WORKLOG該当エントリ参照）。
 function bqSyncReservation(p) {
@@ -1473,14 +1494,14 @@ function bqSyncReservation(p) {
     return { ok: false, error: String(e && e.message || e) };
   }
 }
-// 読み取り: ログイン必須・店舗スコープ制限。stg_reservationのstore_idはdinii.orders等と同じ店舗マスタ
-// （DB_店舗ID対応）を共有しているため、bqDetailSheets_の「明細店舗」と同じbqStoreMap_で店舗名に変換する。
+// 読み取り: ログイン必須・店舗スコープ制限。stg_reservationのstore_idはSupabase `stores`テーブルのUUID
+// のため、rsvStoreMap_()（Supabase直参照）で店舗名に変換する（bqStoreMap_ではない。上部コメント参照）。
 // 既定はキャンセル系ステータス(status_normalizedがcancelled_*)を除外（p.includeCancelled='true'で分析用に全件）。
 function bqGetReservation(p, session) {
   try {
     var sessStores = String(session && session.stores || '').trim();
     var restricted = sessStores && sessStores !== '全店';
-    var storeMap = bqStoreMap_();
+    var storeMap = rsvStoreMap_();
     var allowIds = [];
     if (restricted) {
       var allowNames = sessStores.split(/[,、]/).map(function (s) { return s.trim(); }).filter(Boolean);
