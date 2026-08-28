@@ -56,6 +56,7 @@ function handle(p) {
     if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-rsv', time: new Date().toISOString() }); // rsv=A-6予約タブ用アクション追加（2026-08-28）のデプロイ確認用に更新
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
+    if (action === 'storeNameAudit') return out(storeNameAudit(p)); // BQミラー全8テーブルの店舗名をstore_aliasesと突合し未登録表記を洗い出す（専用トークン認証・読み取り専用。2026-08-28追加）
     if (action === 'detailVsDailyDiag') return out(detailVsDailyDiag(p)); // 明細分析とダッシュボードの売上・客数・組数の差を実測で突合（専用トークン認証・読み取り専用・一時的）
     if (action === 'bqPerfDiag') return out(bqPerfDiag(p)); // BQモード各アクションの所要時間計測（専用トークン認証・読み取り専用・一時的）
     if (action === 'dataKeysDiag') return out(dataKeysDiag(p)); // getData()が実際にどのキーを返すか確認（専用トークン認証・読み取り専用・一時的）
@@ -1711,15 +1712,47 @@ function bqSalesTargets_() {
     { src: 'local',     sheet: 'DB_借入返済元金', table: 'stg_loan_principal', schema: BQ_STG_LOAN_SCHEMA, startRow: 2 }
   ];
 }
-// シートのstartRow行目以降(schemaの列数分)をCSV文字列に変換
-function bqSheetToCsv_(sheet, schema, startRow) {
+// 店舗名の表記ゆれをBQミラーへ書く直前に正規化する（2026-08-28追加）。
+// 「じんべえ 新横浜店」「横濱ホルモン会館　エース　本厚木店」等の売上シート生表記のまま
+// fact_daily_store（BQ）へ入り、正式名（じんべぇ 新横浜／エース 本厚木等）で検索する
+// Chatwork/Lark配信・store_aliasesベースの各種照合から見つからなくなっていた不具合の対応
+// （担当D実機調査で判明。3店舗とも既にSupabase store_aliasesにkind='name'source='売上シート'で
+// 登録済みだった＝resolveAdStore_と同じ仕組みでそのまま解決できる）。
+// fetchStoreDirectory_()は10分キャッシュ済みなので、索引は同期1回につき1回だけ作れば十分速い。
+function bqStoreNameIndex_() {
+  var dir = fetchStoreDirectory_();
+  if (!dir) return null; // 取得失敗時は正規化をスキップ（今までどおり生表記のまま。既存動作より悪化はしない）
+  var idx = {};
+  for (var i = 0; i < dir.length; i++) {
+    var aliases = dir[i].aliases || [];
+    for (var j = 0; j < aliases.length; j++) {
+      var k = storeKey_(aliases[j].alias);
+      if (k) idx[k] = dir[i].name; // 正準名も自分自身のエイリアス(source:'正準')として登録済みなので、
+    }                              // 既に正しい表記の行はキー一致→同じ名前が返り無害（冪等）
+  }
+  return idx;
+}
+function bqResolveStoreName_(idx, name) {
+  var cur = String(name == null ? '' : name).trim();
+  if (!idx || !cur) return cur;
+  var hit = idx[storeKey_(cur)];
+  return hit || cur; // 未登録の表記はこれまでどおりトリムのみ（無理に推測して誤爆させない）
+}
+// シートのstartRow行目以降(schemaの列数分)をCSV文字列に変換。
+// storeIndex（bqStoreNameIndex_の戻り値）を渡すと、schema中の'store_name'列だけ正規化してから書き出す。
+function bqSheetToCsv_(sheet, schema, startRow, storeIndex) {
   var lastRow = sheet.getLastRow();
   if (lastRow < startRow) return '';
   var values = sheet.getRange(startRow, 1, lastRow - startRow + 1, schema.length).getValues();
+  var storeCol = -1;
+  if (storeIndex) { for (var k = 0; k < schema.length; k++) if (schema[k].name === 'store_name') { storeCol = k; break; } }
   var lines = [];
   for (var r = 0; r < values.length; r++) {
     var cells = [];
-    for (var c = 0; c < schema.length; c++) cells.push(bqCsvCell_(values[r][c], schema[c].type));
+    for (var c = 0; c < schema.length; c++) {
+      var v = (c === storeCol) ? bqResolveStoreName_(storeIndex, values[r][c]) : values[r][c];
+      cells.push(bqCsvCell_(v, schema[c].type));
+    }
     lines.push(cells.join(','));
   }
   return lines.join('\n');
@@ -1783,13 +1816,14 @@ function bqSyncAllSales(p) {
   var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
   if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
   var targets = bqSalesTargets_(), results = [];
+  var storeIdx = bqStoreNameIndex_(); // 全ターゲット共通の店舗名索引（1回だけ作る。2026-08-28追加）
   for (var i = 0; i < targets.length; i++) {
     var t = targets[i];
     try {
       var sh = (t.src === 'local') ? SpreadsheetApp.getActiveSpreadsheet().getSheetByName(t.sheet)
                                     : SpreadsheetApp.openById(t.src).getSheetByName(t.sheet);
       if (!sh) { results.push({ ok: false, table: t.table, error: 'シートが見つかりません: ' + t.sheet }); continue; }
-      var csv = bqSheetToCsv_(sh, t.schema, t.startRow);
+      var csv = bqSheetToCsv_(sh, t.schema, t.startRow, storeIdx);
       var loadRes = bqLoadSheetToTable_(csv, t.table, t.schema);
       results.push(loadRes);
       // stg_spotが更新できたらbqGetSpotの応答キャッシュ(10分)を無効化する。
@@ -1961,7 +1995,7 @@ function bqSyncSpotNow_() {
     if (!tk) return { ok: false, error: 'BQ_LOAD_TOKEN未設定' };
     var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_スポット人件費');
     if (!sh) return { ok: false, error: 'シートが見つかりません' };
-    var csv = bqSheetToCsv_(sh, BQ_STG_SPOT_SCHEMA, 2);
+    var csv = bqSheetToCsv_(sh, BQ_STG_SPOT_SCHEMA, 2, bqStoreNameIndex_());
     var res = bqLoadSheetToTable_(csv, 'stg_spot', BQ_STG_SPOT_SCHEMA);
     if (res && res.ok) bqCacheGenBump_('spot');
     return res;
@@ -2007,7 +2041,7 @@ function bqSyncLoanNow_() {
     if (!tk) return;
     var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_借入返済元金');
     if (!sh) return;
-    var csv = bqSheetToCsv_(sh, BQ_STG_LOAN_SCHEMA, 2);
+    var csv = bqSheetToCsv_(sh, BQ_STG_LOAN_SCHEMA, 2, bqStoreNameIndex_());
     var res = bqLoadSheetToTable_(csv, 'stg_loan_principal', BQ_STG_LOAN_SCHEMA);
     if (res && res.ok) bqCacheGenBump_('loan');
   } catch (e) { /* 即時同期失敗は無視（次回定期同期で追いつく） */ }
@@ -2674,6 +2708,40 @@ function storeMapDiag(p) {
   var realNames = real ? real.slice(1).map(function (r) { return r[0]; }) : [];
   var unmatched = diniiNames.filter(function (n) { return realNames.indexOf(n) < 0; });
   return { ok: true, diniiNames: diniiNames, realNames: realNames, unmatched: unmatched };
+}
+
+// 診断用（2026-08-28追加）: 分析_日別店舗ほかBQミラー対象8テーブルのDISTINCT store_nameを、
+// Supabase store_aliases（bqStoreNameIndex_・store_directory_vのaliases）と突き合わせ、
+// どのエイリアスにも一致しない（＝表記ゆれ未登録の可能性がある）店舗名だけを一覧で返す。
+// じんべぇ 川崎／じんべぇ 新横浜／エース 本厚木の3件がBQ側で売上シートの生表記のまま入っており
+// Chatwork/Lark配信から見つからなくなっていた不具合（2026-08-28担当D実機調査）を踏まえ、
+// 「取込むCSVによって今後も同種の表記ゆれが起こり得る」という指摘への恒常チェック手段として新設。
+// 読み取り専用・専用トークン認証。使い方: ?action=storeNameAudit&token=<BQ_LOAD_TOKEN>
+function storeNameAudit(p) {
+  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+  if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
+  var idx = bqStoreNameIndex_();
+  if (!idx) return { ok: false, error: '店舗マスタ（Supabase store_directory_v）の取得に失敗しました' };
+  var tables = ['fact_daily_store', 'stg_payment', 'stg_media', 'stg_siire', 'stg_jinken', 'stg_deposit', 'stg_spot', 'stg_loan_principal'];
+  var out = {};
+  for (var i = 0; i < tables.length; i++) {
+    var t = tables[i];
+    try {
+      var rows = bqRows_('SELECT DISTINCT store_name FROM `' + BQ_PROJECT + '.' + BQ_SALES_DATASET + '.' + t +
+        '` WHERE store_name IS NOT NULL AND store_name != \'\' ORDER BY store_name');
+      var names = rows ? rows.slice(1).map(function (r) { return r[0]; }) : [];
+      var unmatched = names.filter(function (n) { return !idx[storeKey_(n)]; });
+      if (unmatched.length) out[t] = unmatched;
+    } catch (e) {
+      out[t] = { error: String(e && e.message || e) };
+    }
+  }
+  var clean = Object.keys(out).length === 0;
+  return {
+    ok: true, clean: clean, unmatched_by_table: out,
+    note: clean ? '全テーブルで未登録の店舗名表記は見つかりませんでした'
+      : '下記の店舗名はSupabase store_aliasesのどのエイリアスにも一致しません。新しい表記ゆれ・新規店舗・入力ミスのいずれかの可能性があるため確認してください（一致すればbqSyncSales側は自動で正規化されます。エイリアス登録はstore_aliasesテーブルへの追加のみで対応可能）'
+  };
 }
 
 // 一時的な診断用（2026-08-23）: 「ダッシュボード全体が遅い」報告を受け、BQモード(useBqDaily)の各アクション
