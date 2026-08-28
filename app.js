@@ -3915,9 +3915,10 @@ function hashStr_(s){ let h=0; s=String(s||''); for(let i=0;i<s.length;i++) h=(h
 function viewReservation(){
   fetchReservationBQ();
   const sub=S.rsvSubTab||'book';
-  let h=`<div class="ctrl-bar no-print">
+  const selN=selStoreName();
+  let h=storeSegHtml()+`<div class="ctrl-bar no-print">
     <div class="seg">${[['book','予約帳'],['analysis','予約分析']].map(([k,l])=>`<button class="${sub===k?'on':''}" onclick="App.set('rsvSubTab','${k}')">${l}</button>`).join('')}</div>
-    <span class="period-label">予約管理${D.rsvBqLoading?'（読込中…）':''}</span></div>`;
+    <span class="period-label">予約管理${selN?'（'+esc(selN)+'）':''}${D.rsvBqLoading?'（読込中…）':''}</span></div>`;
   if(D.rsvBqErr) h+=`<div class="panel no-print"><div class="panel-head"><div><h3 style="color:#b5502f">取得エラー</h3><div class="sub">${esc(D.rsvBqErr)}</div></div></div></div>`;
   if(!D.rsvBqLoaded && !D.rsvBqErr){
     h+=`<div class="panel no-print"><div class="panel-head"><div><h3>予約データを読み込み中…</h3></div></div></div>`;
@@ -3942,7 +3943,9 @@ function rsvBookHtml_(){
     <button class="icon-btn" onclick="App.set('rsvDate','${todayStr_()}')">今日</button>
     <div class="seg">${[['timeline','タイムライン'],['calendar','カレンダー'],['list','リスト']].map(([k,l])=>`<button class="${view===k?'on':''}" onclick="App.set('rsvView','${k}')">${l}</button>`).join('')}</div>
     <span class="period-label">${dLabel}</span></div>`;
-  const dayRows=D.rsvBq.filter(r=>r.dateStr===date && !r.isCancelled);
+  const selN=selStoreName();
+  const scoped=selN?D.rsvBq.filter(r=>r.store===selN):D.rsvBq;
+  const dayRows=scoped.filter(r=>r.dateStr===date && !r.isCancelled);
   const ppl=dayRows.reduce((a,r)=>a+r.partySize,0);
   const walk=dayRows.filter(r=>/ウォークイン|walk-?in/i.test(r.channelNorm||r.channelRaw)).length;
   h+=`<div class="kpi-grid">
@@ -3951,7 +3954,7 @@ function rsvBookHtml_(){
     <div class="kpi"><div class="lb">ウォークイン</div><div class="vl">${cnt(walk)}</div></div>
     <div class="kpi"><div class="lb">対象店舗</div><div class="vl">${cnt(new Set(dayRows.map(r=>r.store)).size)}</div></div>
   </div>`;
-  if(view==='calendar') h+=rsvCalendarHtml_(date);
+  if(view==='calendar') h+=rsvCalendarHtml_(date,scoped);
   else if(view==='timeline') h+=rsvTimelineHtml_(dayRows,date);
   else h+=rsvListHtml_(dayRows);
   return h;
@@ -3986,13 +3989,13 @@ function rsvTimelineHtml_(dayRows,date){
   h+=`</div></div>`;
   return h;
 }
-function rsvCalendarHtml_(date){
+function rsvCalendarHtml_(date,rows){
   const p=date.split('-').map(Number); const y=p[0], m=p[1];
   const first=new Date(y,m-1,1), startWd=first.getDay();
   const daysInMonth=new Date(y,m,0).getDate();
   const ymPrefix=y+'-'+String(m).padStart(2,'0');
   const byDate={};
-  D.rsvBq.forEach(r=>{
+  (rows||D.rsvBq).forEach(r=>{
     if(r.isCancelled||!r.dateStr||r.dateStr.slice(0,7)!==ymPrefix) return;
     const o=byDate[r.dateStr]=byDate[r.dateStr]||{grp:0,ppl:0}; o.grp++; o.ppl+=r.partySize;
   });
@@ -4034,8 +4037,9 @@ function rsvAnalysisHtml_(){
   const ym=(S.rsvMonth||defMonth).split('-'); const yy=+ym[0], mm=+ym[1]-1;
   const mS=new Date(yy,mm,1).getTime(), mE=new Date(yy,mm+1,0).getTime();
   const mLabel=yy+'年'+(mm+1)+'月';
-  let h=`<div class="ctrl-bar no-print">${ymSelect('rsvMonth',yy,mm)}<span class="period-label">予約分析（${mLabel}）</span></div>`;
-  const rsv=D.rsvBq.filter(r=>r.t>=mS&&r.t<=mE);
+  const selN=selStoreName();
+  let h=`<div class="ctrl-bar no-print">${ymSelect('rsvMonth',yy,mm)}<span class="period-label">予約分析（${mLabel}${selN?' ／ '+esc(selN):''}）</span></div>`;
+  const rsv=D.rsvBq.filter(r=>r.t>=mS&&r.t<=mE&&(!selN||r.store===selN));
   if(!rsv.length){ h+=`<div class="panel no-print"><div class="panel-head"><div><h3>予約分析（${mLabel}：データなし）</h3></div></div></div>`; return h; }
   const wnames=['日','月','火','水','木','金','土'];
   const wd=Array.from({length:7},()=>({grp:0,ppl:0,net:0,same:0,cxl:0}));
@@ -4060,7 +4064,7 @@ function rsvAnalysisHtml_(){
   });
   const pc=(x,z)=>z>0?(x/z*100).toFixed(0)+'%':'—';
   const maxGrp=Math.max.apply(null,wd.map(o=>o.grp).concat([1]));
-  h+=`<div class="panel"><div class="panel-head"><div><h3>予約分析：曜日別（${mLabel}）</h3>
+  h+=`<div class="panel"><div class="panel-head"><div><h3>予約分析：曜日別（${mLabel}${selN?' ／ '+esc(selN):''}）</h3>
     <div class="sub">出典：BigQuery stg_reservation（I-1自動取込）全${cnt(rsv.length)}件 ／ 当日予約率 ${pc(tSame,Math.max(tGrp-tCxl-tWalk,0))}（ウォークイン・キャンセル除く）／ キャンセル率 ${pc(tCxl,tGrp)}</div></div></div>
   <div class="scroll-x"><table class="tbl"><thead><tr><th>曜日</th><th>予約組数</th><th></th><th>人数</th><th>ネット予約</th><th>当日予約</th><th>キャンセル</th><th>キャンセル率</th></tr></thead><tbody>`;
   const expW=[];
