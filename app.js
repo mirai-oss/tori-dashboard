@@ -3931,15 +3931,17 @@ async function fetchSeatMaster(){
   }catch(e){ /* 席マスタ・営業時間は無くても既定値で動くため黙って諦める */ }
   render();
 }
-// 店舗×日付で当てはまる営業時間パターンを1つ選ぶ。曜日区分が具体的な行ほど優先（祝/個別曜日 ＞
+// 店舗×日付で当てはまる営業時間パターンを解決する。曜日区分が具体的な行ほど優先（祝/個別曜日 ＞
 // 平日・土日・土日祝 ＞ 空欄=既定）。祝日判定は既存のisJpHoliday()（内蔵カレンダー＋DB_祝日）を流用。
+// 同じ優先度の行が複数（例:「平日」でランチ11:30-14:30とディナー17:00-24:00の2行）当てはまる場合は
+// 昼のみに絞らず、その日の全時間帯が収まるようopen=最早／close=最遅で合算する
+// （2026-08-28修正: ランチ行だけが選ばれてディナーの予約が表示範囲外になっていた不具合対応）。
 function resolveStoreHours_(store,dateStr){
   const rows=D.rsvHours[store]; if(!rows||!rows.length) return null;
   const p=dateStr.split('-').map(Number); const dt=new Date(p[0],p[1]-1,p[2]);
   const dow=dt.getDay(), isHol=isJpHoliday(dt);
   const dayNames=['日','月','火','水','木','金','土'];
-  let best=null, bestScore=-1;
-  rows.forEach(r=>{
+  const scored=rows.map(r=>{
     const spec=r.spec;
     let score=-1;
     if(!spec) score=0; // 空欄＝既定（最低優先度で常に候補になる）
@@ -3953,9 +3955,12 @@ function resolveStoreHours_(store,dateStr){
         else if(dayNames.includes(t)){ if(dayNames[dow]===t) score=Math.max(score,3); }
       });
     }
-    if(score>bestScore){ bestScore=score; best=r; }
-  });
-  return bestScore>=0?{open:best.open,close:best.close}:null;
+    return {r,score};
+  }).filter(x=>x.score>=0);
+  if(!scored.length) return null;
+  const topScore=Math.max.apply(null,scored.map(x=>x.score));
+  const top=scored.filter(x=>x.score===topScore).map(x=>x.r);
+  return { open:Math.min.apply(null,top.map(r=>r.open)), close:Math.max.apply(null,top.map(r=>r.close)) };
 }
 function todayStr_(){ const d=D.refDate||new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
 function rsvDate_(){ return S.rsvDate||todayStr_(); }
