@@ -101,6 +101,7 @@ function handle(p) {
     if (action === 'bqGetDeposit') return out(bqGetDeposit(p, session)); // 入金管理タブ：入金DBのBQミラーを読む（データソース切替フラグ用）
     if (action === 'bqGetMedia') return out(bqGetMedia(p, session)); // 媒体別日次：媒体別DBのBQミラーを読む（ログイン直後の同期エラー対策・2026-08-23追加）
     if (action === 'bqGetReservation') return out(bqGetReservation(p, session)); // 予約タブ：stg_reservationのBQミラーを読む（2026-08-28追加・A-6）
+    if (action === 'bqGetSeatMaster') return out(bqGetSeatMaster(p, session)); // 予約タブ：店舗ごとの卓一覧（DB_席マスタ）を読む（2026-08-28追加・A-6）
     if (action === 'dataFreshness') return out(dataFreshness(p, session)); // データ最新日・BQ同期時刻の表示用（実装指示書_ダッシュボード高速化タスク1・2026-08-23追加）
     if (action === 'accounts') return out(listAccounts(session));
     if (action === 'saveAccount')   return out(saveAccount(p, session));
@@ -140,6 +141,7 @@ function setupIfNeeded() {
   weeklyTemplateSheet_();   // 週報フォーマット（社長が編集する場所）
   roleDefSheet_();          // 役職・権限ごとの既定（表示タブ・使える機能）
   depNoteSheet_();          // 入金備考
+  seatMasterSheet_();       // 予約タブ：店舗ごとの卓（テーブル）一覧（2026-08-28追加・A-6）
 
   // アカウントシート
   var acc = ss.getSheetByName('アカウント');
@@ -1561,6 +1563,41 @@ function bqGetReservation(p, session) {
     var res = { ok: true, sheets: { reservationBq: out } };
     bqCachePut_(ck, res);
     return res;
+  } catch (e) {
+    return { ok: false, error: String(e && e.message || e) };
+  }
+}
+
+// 予約タブの日別タイムライン用: 店舗ごとの卓（テーブル）一覧（2026-08-28追加・A-6）。
+// rsv_reservations/stg_reservationには「その日実際に使われた卓番号」しか無く、空席（その日
+// 予約が無い卓）を含めた店舗の卓構成そのものはどこにも無いため、ユーザーが直接入力するシートを新設。
+function seatMasterSheet_() {
+  return sheetOrCreate_('DB_席マスタ', ['店舗', '卓番号', '席数', 'エリア', '表示順'],
+    '予約タブの日別タイムラインに、その日予約が無い卓（空席）も含めて表示するための一覧です。1行=1卓。\n' +
+    '「店舗」はダッシュボードの店舗名と完全に一致させてください（例: 鶏武者 新横浜）。\n' +
+    '「エリア」「表示順」は空欄でも構いません（表示順が空の行は卓番号順で並びます）。\n' +
+    'このシートに行が無い店舗は、従来どおり「その日予約がある卓だけ」表示されます。');
+}
+// ログイン必須・店舗スコープ制限（bqGetReservationと同じ方針）。BQを使わずシートを直接読むだけなので軽量。
+function bqGetSeatMaster(p, session) {
+  try {
+    var sessStores = String(session && session.stores || '').trim();
+    var restricted = sessStores && sessStores !== '全店';
+    var allowNames = restricted ? sessStores.split(/[,、]/).map(function (s) { return s.trim(); }).filter(Boolean) : null;
+    var sh = seatMasterSheet_();
+    var lastRow = sh.getLastRow();
+    var out = [['店舗', '卓番号', '席数', 'エリア', '表示順']];
+    if (lastRow >= 2) {
+      var values = sh.getRange(2, 1, lastRow - 1, 5).getValues();
+      for (var i = 0; i < values.length; i++) {
+        var store = String(values[i][0] || '').trim();
+        var tableNo = String(values[i][1] || '').trim();
+        if (!store || !tableNo) continue;
+        if (allowNames && allowNames.indexOf(store) < 0) continue;
+        out.push([store, tableNo, values[i][2] === '' ? '' : Number(values[i][2]), String(values[i][3] || ''), values[i][4] === '' ? '' : Number(values[i][4])]);
+      }
+    }
+    return { ok: true, sheets: { rsvSeatMaster: out } };
   } catch (e) {
     return { ok: false, error: String(e && e.message || e) };
   }

@@ -189,7 +189,8 @@ const D = { daily:[], media:[], deposit:[], review:[], ad:[], adfx:[], tanka:{},
   loanPrincipal:[], loanBqLoading:false, loanBqErr:'', taxRate:0.34,   // A-5(2026-08-26追加): 簡易キャッシュフロー用
   wkTpl:{}, wkRep:[], wkAns:{}, wkFb:{}, roleDef:{}, depNote:{}, dailyBqLoading:false, dailyBqErr:'', plBqLoading:false, plBqErr:'', storeDirectory:null,
   freshness:null, freshnessAt:0, bqFallback:{},
-  rsvBq:[], rsvBqLoading:false, rsvBqErr:'' };  // 予約タブ（2026-08-28追加・A-6。stg_reservationのBQミラー。D.rsv（旧・管理シート💾予約DB手動貼付け）とは別物として並行保持
+  rsvBq:[], rsvBqLoading:false, rsvBqErr:'',    // 予約タブ（2026-08-28追加・A-6。stg_reservationのBQミラー。D.rsv（旧・管理シート💾予約DB手動貼付け）とは別物として並行保持
+  rsvSeats:[], rsvSeatsLoaded:false };          // 予約タブ：店舗ごとの卓一覧（DB_席マスタ）
 let EXPORT = [];      // 現在タブのCSVエクスポート対象 [{title,headers,rows}]
 let pollTimer = null;
 
@@ -3904,6 +3905,20 @@ function ingestReservationBq_(rows){
   }
   D.rsvBq=recs;
 }
+// 店舗ごとの卓一覧（DB_席マスタ）を一度だけ取得。予約が無い卓（空席）もタイムラインに表示するため
+async function fetchSeatMaster(){
+  if(!S.auth||!S.auth.token) return;
+  if(D.rsvSeatsLoaded) return;
+  D.rsvSeatsLoaded=true; // 失敗時も再取得ループしないよう先に立てる（シート未整備の店舗があるのは正常なケースのため）
+  try{
+    const d=await api({ action:'bqGetSeatMaster', token:S.auth.token });
+    if(d&&d.ok&&d.sheets&&d.sheets.rsvSeatMaster){
+      const rows=d.sheets.rsvSeatMaster;
+      D.rsvSeats=rows.slice(1).map(r=>({ store:String(r[0]||''), tableNo:String(r[1]||''), capacity:r[2]===''?null:Number(r[2]), area:String(r[3]||''), order:r[4]===''?null:Number(r[4]) }));
+    }
+  }catch(e){ /* 席マスタは無くても従来どおり動くため黙って諦める */ }
+  render();
+}
 function todayStr_(){ const d=D.refDate||new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
 function rsvDate_(){ return S.rsvDate||todayStr_(); }
 function rsvShiftDate_(days){
@@ -3914,6 +3929,7 @@ function hashStr_(s){ let h=0; s=String(s||''); for(let i=0;i<s.length;i++) h=(h
 
 function viewReservation(){
   fetchReservationBQ();
+  fetchSeatMaster();
   const sub=S.rsvSubTab||'book';
   const selN=selStoreName();
   let h=storeSegHtml()+`<div class="ctrl-bar no-print">
@@ -3959,24 +3975,45 @@ function rsvBookHtml_(){
   else h+=rsvListHtml_(dayRows);
   return h;
 }
-// selN（特定の1店舗を選択中）があれば卓（テーブル）ごとの行に、無ければ（全店表示）店舗ごとの行にする
+// selN（特定の1店舗を選択中）があれば卓（テーブル）ごとの行に、無ければ（全店表示）店舗ごとの行にする。
+// 1店舗選択時は、DB_席マスタにその店舗の卓一覧があれば「予約が無い卓（空席）」も行として表示する
+// （2026-08-28追加・A-6: ユーザー要望「空いている席が分からない」対応）。
 function rsvTimelineHtml_(dayRows,date,selN){
-  if(!dayRows.length) return `<div class="panel no-print"><div class="panel-head"><div><h3>この日の予約はありません</h3></div></div></div>`;
   const byRow={};
   const byTable=!!selN;
   dayRows.forEach(r=>{ const k=byTable?(r.tableNo||'卓未指定'):r.store; (byRow[k]=byRow[k]||[]).push(r); });
-  const rowKeys=Object.keys(byRow).sort((a,b)=>a.localeCompare(b,'ja'));
+
+  const storeSeats=byTable?D.rsvSeats.filter(s=>s.store===selN):[];
+  let rowKeys;
+  if(byTable && storeSeats.length){
+    // 席マスタの並び（表示順→卓番号）を正として使い、予約はあるが席マスタに無い卓は末尾に追加
+    const known=storeSeats.slice().sort((a,b)=>(a.order??999)-(b.order??999)||a.tableNo.localeCompare(b.tableNo,'ja')).map(s=>s.tableNo);
+    const extra=Object.keys(byRow).filter(k=>!known.includes(k)).sort((a,b)=>a.localeCompare(b,'ja'));
+    rowKeys=known.concat(extra);
+    known.forEach(k=>{ if(!byRow[k]) byRow[k]=[]; }); // 空席も行として残す
+  } else {
+    rowKeys=Object.keys(byRow).sort((a,b)=>a.localeCompare(b,'ja'));
+  }
+  if(!rowKeys.length) return `<div class="panel no-print"><div class="panel-head"><div><h3>この日の予約はありません</h3></div></div></div>`;
+
+  const seatCap={}; storeSeats.forEach(s=>{ seatCap[s.tableNo]=s.capacity; });
   const lo=10, hiH=24;   // 表示範囲 10:00〜24:00固定（Phase1）
   const hourMarks=[]; for(let hh=lo; hh<=hiH; hh+=2) hourMarks.push(hh);
+  const seatNote=byTable && !storeSeats.length
+    ? '　⚠この店舗の卓一覧（DB_席マスタ）が未登録のため、予約がある卓だけ表示しています'
+    : '';
   let h=`<div class="panel"><div class="panel-head"><div><h3>日別タイムライン（${esc(date)}）</h3>
-    <div class="sub">表示範囲 ${lo}:00〜${hiH}:00 ／ 滞在時間が不明な予約は90分として表示 ／ 色は受付窓口ごと ／ ${byTable?'卓（テーブル）ごと':'店舗ごと（1店舗に絞ると卓ごとの表示になります）'}</div></div></div>
+    <div class="sub">表示範囲 ${lo}:00〜${hiH}:00 ／ 滞在時間が不明な予約は90分として表示 ／ 色は受付窓口ごと ／ ${byTable?'卓（テーブル）ごと':'店舗ごと（1店舗に絞ると卓ごとの表示になります）'}${esc(seatNote)}</div></div></div>
     <div style="padding:8px 4px">
       <div style="display:flex;font-size:11px;color:var(--mut2,#8a7f6f);margin-left:120px">${hourMarks.map(hh=>`<div style="flex:1">${hh}時</div>`).join('')}</div>`;
   rowKeys.forEach(st=>{
-    const rows=byRow[st].slice().sort((a,b)=>a.hh-b.hh);
+    const rows=(byRow[st]||[]).slice().sort((a,b)=>a.hh-b.hh);
+    const cap=seatCap[st];
+    const empty=byTable && !rows.length;
     h+=`<div style="display:flex;align-items:center;border-top:1px solid var(--bd,#e5ddd0);padding:6px 0">
-      <div style="width:120px;flex:none;font-weight:700;font-size:12px">${esc(st)}</div>
-      <div style="position:relative;flex:1;height:28px;background:var(--bg2,#f4efe6);border-radius:4px">`;
+      <div style="width:120px;flex:none;font-weight:700;font-size:12px">${esc(st)}${cap?`<div class="mut" style="font-weight:400;font-size:10px">${cap}席</div>`:''}</div>
+      <div style="position:relative;flex:1;height:28px;background:${empty?'var(--success-bg,#eef2e6)':'var(--bg2,#f4efe6)'};border-radius:4px">`;
+    if(empty) h+=`<div style="position:absolute;inset:0;display:flex;align-items:center;padding:0 8px;font-size:10px;color:#4c7d5c">空席</div>`;
     rows.forEach(r=>{
       if(r.hh<0) return;
       const left=Math.max(0,Math.min(100,(r.hh-lo)/(hiH-lo)*100));
