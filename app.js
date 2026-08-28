@@ -3955,23 +3955,25 @@ function rsvBookHtml_(){
     <div class="kpi"><div class="lb">対象店舗</div><div class="vl">${cnt(new Set(dayRows.map(r=>r.store)).size)}</div></div>
   </div>`;
   if(view==='calendar') h+=rsvCalendarHtml_(date,scoped);
-  else if(view==='timeline') h+=rsvTimelineHtml_(dayRows,date);
+  else if(view==='timeline') h+=rsvTimelineHtml_(dayRows,date,selN);
   else h+=rsvListHtml_(dayRows);
   return h;
 }
-function rsvTimelineHtml_(dayRows,date){
+// selN（特定の1店舗を選択中）があれば卓（テーブル）ごとの行に、無ければ（全店表示）店舗ごとの行にする
+function rsvTimelineHtml_(dayRows,date,selN){
   if(!dayRows.length) return `<div class="panel no-print"><div class="panel-head"><div><h3>この日の予約はありません</h3></div></div></div>`;
-  const byStore={};
-  dayRows.forEach(r=>{ (byStore[r.store]=byStore[r.store]||[]).push(r); });
-  const stores=Object.keys(byStore).sort();
+  const byRow={};
+  const byTable=!!selN;
+  dayRows.forEach(r=>{ const k=byTable?(r.tableNo||'卓未指定'):r.store; (byRow[k]=byRow[k]||[]).push(r); });
+  const rowKeys=Object.keys(byRow).sort((a,b)=>a.localeCompare(b,'ja'));
   const lo=10, hiH=24;   // 表示範囲 10:00〜24:00固定（Phase1）
   const hourMarks=[]; for(let hh=lo; hh<=hiH; hh+=2) hourMarks.push(hh);
   let h=`<div class="panel"><div class="panel-head"><div><h3>日別タイムライン（${esc(date)}）</h3>
-    <div class="sub">表示範囲 ${lo}:00〜${hiH}:00 ／ 滞在時間が不明な予約は90分として表示 ／ 色は受付窓口ごと</div></div></div>
+    <div class="sub">表示範囲 ${lo}:00〜${hiH}:00 ／ 滞在時間が不明な予約は90分として表示 ／ 色は受付窓口ごと ／ ${byTable?'卓（テーブル）ごと':'店舗ごと（1店舗に絞ると卓ごとの表示になります）'}</div></div></div>
     <div style="padding:8px 4px">
       <div style="display:flex;font-size:11px;color:var(--mut2,#8a7f6f);margin-left:120px">${hourMarks.map(hh=>`<div style="flex:1">${hh}時</div>`).join('')}</div>`;
-  stores.forEach(st=>{
-    const rows=byStore[st].slice().sort((a,b)=>a.hh-b.hh);
+  rowKeys.forEach(st=>{
+    const rows=byRow[st].slice().sort((a,b)=>a.hh-b.hh);
     h+=`<div style="display:flex;align-items:center;border-top:1px solid var(--bd,#e5ddd0);padding:6px 0">
       <div style="width:120px;flex:none;font-weight:700;font-size:12px">${esc(st)}</div>
       <div style="position:relative;flex:1;height:28px;background:var(--bg2,#f4efe6);border-radius:4px">`;
