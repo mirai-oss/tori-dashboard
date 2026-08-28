@@ -190,7 +190,7 @@ const D = { daily:[], media:[], deposit:[], review:[], ad:[], adfx:[], tanka:{},
   wkTpl:{}, wkRep:[], wkAns:{}, wkFb:{}, roleDef:{}, depNote:{}, dailyBqLoading:false, dailyBqErr:'', plBqLoading:false, plBqErr:'', storeDirectory:null,
   freshness:null, freshnessAt:0, bqFallback:{},
   rsvBq:[], rsvBqLoading:false, rsvBqErr:'',    // 予約タブ（2026-08-28追加・A-6。stg_reservationのBQミラー。D.rsv（旧・管理シート💾予約DB手動貼付け）とは別物として並行保持
-  rsvSeats:[], rsvSeatsLoaded:false };          // 予約タブ：店舗ごとの卓一覧（DB_席マスタ）
+  rsvSeats:[], rsvSeatsLoaded:false, rsvHours:{} };  // 予約タブ：店舗ごとの卓一覧（DB_席マスタ）・営業時間（DB_営業時間、店舗名→{open,close}decimal時）
 let EXPORT = [];      // 現在タブのCSVエクスポート対象 [{title,headers,rows}]
 let pollTimer = null;
 
@@ -3912,11 +3912,22 @@ async function fetchSeatMaster(){
   D.rsvSeatsLoaded=true; // 失敗時も再取得ループしないよう先に立てる（シート未整備の店舗があるのは正常なケースのため）
   try{
     const d=await api({ action:'bqGetSeatMaster', token:S.auth.token });
-    if(d&&d.ok&&d.sheets&&d.sheets.rsvSeatMaster){
-      const rows=d.sheets.rsvSeatMaster;
-      D.rsvSeats=rows.slice(1).map(r=>({ store:String(r[0]||''), tableNo:String(r[1]||''), capacity:r[2]===''?null:Number(r[2]), area:String(r[3]||''), order:r[4]===''?null:Number(r[4]) }));
+    if(d&&d.ok&&d.sheets){
+      if(d.sheets.rsvSeatMaster){
+        const rows=d.sheets.rsvSeatMaster;
+        D.rsvSeats=rows.slice(1).map(r=>({ store:String(r[0]||''), tableNo:String(r[1]||''), capacity:r[2]===''?null:Number(r[2]), area:String(r[3]||''), order:r[4]===''?null:Number(r[4]), tags:String(r[5]||'').split(/[,、]/).map(s=>s.trim()).filter(Boolean) }));
+      }
+      if(d.sheets.rsvStoreHours){
+        const hhmm=(v)=>{ const m=String(v==null?'':v).match(/(\d{1,3}):(\d{2})/); return m?(+m[1]+(+m[2])/60):null; };
+        const hours={};
+        d.sheets.rsvStoreHours.slice(1).forEach(r=>{
+          const store=String(r[0]||''); const open=hhmm(r[1]), close=hhmm(r[2]);
+          if(store && open!=null && close!=null && close>open) hours[store]={open,close};
+        });
+        D.rsvHours=hours;
+      }
     }
-  }catch(e){ /* 席マスタは無くても従来どおり動くため黙って諦める */ }
+  }catch(e){ /* 席マスタ・営業時間は無くても既定値で動くため黙って諦める */ }
   render();
 }
 function todayStr_(){ const d=D.refDate||new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
@@ -3996,22 +4007,28 @@ function rsvTimelineHtml_(dayRows,date,selN){
   }
   if(!rowKeys.length) return `<div class="panel no-print"><div class="panel-head"><div><h3>この日の予約はありません</h3></div></div></div>`;
 
-  const seatCap={}; storeSeats.forEach(s=>{ seatCap[s.tableNo]=s.capacity; });
-  const lo=10, hiH=24;   // 表示範囲 10:00〜24:00固定（Phase1）
-  const hourMarks=[]; for(let hh=lo; hh<=hiH; hh+=2) hourMarks.push(hh);
+  const seatCap={}, seatTags={}; storeSeats.forEach(s=>{ seatCap[s.tableNo]=s.capacity; seatTags[s.tableNo]=s.tags||[]; });
+  // 営業時間: 1店舗選択時はDB_営業時間の設定があればそれを使う。無ければ既定10:00〜24:00
+  const custHours=byTable?D.rsvHours[selN]:null;
+  const lo=custHours?custHours.open:10, hiH=custHours?custHours.close:24;
+  const hourMarks=[]; for(let hh=Math.ceil(lo/2)*2; hh<=hiH; hh+=2) hourMarks.push(hh);
   const seatNote=byTable && !storeSeats.length
     ? '　⚠この店舗の卓一覧（DB_席マスタ）が未登録のため、予約がある卓だけ表示しています'
     : '';
+  const hoursNote=byTable && !custHours ? '　（営業時間未設定のため既定10:00〜24:00で表示）' : '';
+  const fmtH=(v)=>{ const h2=Math.floor(v), m2=Math.round((v-h2)*60); return h2+(m2?':'+String(m2).padStart(2,'0'):':00'); };
   let h=`<div class="panel"><div class="panel-head"><div><h3>日別タイムライン（${esc(date)}）</h3>
-    <div class="sub">表示範囲 ${lo}:00〜${hiH}:00 ／ 滞在時間が不明な予約は90分として表示 ／ 色は受付窓口ごと ／ ${byTable?'卓（テーブル）ごと':'店舗ごと（1店舗に絞ると卓ごとの表示になります）'}${esc(seatNote)}</div></div></div>
+    <div class="sub">表示範囲 ${fmtH(lo)}〜${fmtH(hiH)} ／ 滞在時間が不明な予約は90分として表示 ／ 色は受付窓口ごと ／ ${byTable?'卓（テーブル）ごと':'店舗ごと（1店舗に絞ると卓ごとの表示になります）'}${esc(seatNote)}${esc(hoursNote)}</div></div></div>
     <div style="padding:8px 4px">
-      <div style="display:flex;font-size:11px;color:var(--mut2,#8a7f6f);margin-left:120px">${hourMarks.map(hh=>`<div style="flex:1">${hh}時</div>`).join('')}</div>`;
+      <div style="display:flex;font-size:11px;color:var(--mut2,#8a7f6f);margin-left:140px">${hourMarks.map(hh=>`<div style="flex:1">${fmtH(hh)}</div>`).join('')}</div>`;
   rowKeys.forEach(st=>{
     const rows=(byRow[st]||[]).slice().sort((a,b)=>a.hh-b.hh);
     const cap=seatCap[st];
+    const tags=seatTags[st]||[];
     const empty=byTable && !rows.length;
+    const tagsHtml=tags.length?`<div style="display:flex;flex-wrap:wrap;gap:2px;margin-top:2px">${tags.map(t=>`<span style="font-size:9px;background:var(--bg2,#f4efe6);border:1px solid var(--bd,#e5ddd0);border-radius:3px;padding:0 4px;color:var(--mut2,#8a7f6f)">${esc(t)}</span>`).join('')}</div>`:'';
     h+=`<div style="display:flex;align-items:center;border-top:1px solid var(--bd,#e5ddd0);padding:6px 0">
-      <div style="width:120px;flex:none;font-weight:700;font-size:12px">${esc(st)}${cap?`<div class="mut" style="font-weight:400;font-size:10px">${cap}席</div>`:''}</div>
+      <div style="width:140px;flex:none;font-weight:700;font-size:12px">${esc(st)}${cap?`<span class="mut" style="font-weight:400;font-size:10px">　${cap}席</span>`:''}${tagsHtml}</div>
       <div style="position:relative;flex:1;height:28px;background:${empty?'var(--success-bg,#eef2e6)':'var(--bg2,#f4efe6)'};border-radius:4px">`;
     if(empty) h+=`<div style="position:absolute;inset:0;display:flex;align-items:center;padding:0 8px;font-size:10px;color:#4c7d5c">空席</div>`;
     rows.forEach(r=>{

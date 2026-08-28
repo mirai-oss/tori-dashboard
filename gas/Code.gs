@@ -142,6 +142,7 @@ function setupIfNeeded() {
   roleDefSheet_();          // 役職・権限ごとの既定（表示タブ・使える機能）
   depNoteSheet_();          // 入金備考
   seatMasterSheet_();       // 予約タブ：店舗ごとの卓（テーブル）一覧（2026-08-28追加・A-6）
+  storeHoursSheet_();       // 予約タブ：店舗ごとの営業時間（2026-08-28追加・A-6）
 
   // アカウントシート
   var acc = ss.getSheetByName('アカウント');
@@ -1572,32 +1573,67 @@ function bqGetReservation(p, session) {
 // rsv_reservations/stg_reservationには「その日実際に使われた卓番号」しか無く、空席（その日
 // 予約が無い卓）を含めた店舗の卓構成そのものはどこにも無いため、ユーザーが直接入力するシートを新設。
 function seatMasterSheet_() {
-  return sheetOrCreate_('DB_席マスタ', ['店舗', '卓番号', '席数', 'エリア', '表示順'],
+  var sh = sheetOrCreate_('DB_席マスタ', ['店舗', '卓番号', '席数', 'エリア', '表示順', '属性'],
     '予約タブの日別タイムラインに、その日予約が無い卓（空席）も含めて表示するための一覧です。1行=1卓。\n' +
     '「店舗」はダッシュボードの店舗名と完全に一致させてください（例: 鶏武者 新横浜）。\n' +
-    '「エリア」「表示順」は空欄でも構いません（表示順が空の行は卓番号順で並びます）。\n' +
+    '「エリア」「表示順」「属性」は空欄でも構いません（表示順が空の行は卓番号順で並びます）。\n' +
+    '「属性」は個室・禁煙・喫煙・座敷・テラス等をカンマ区切りで（例: 個室,禁煙）。バッジとして表示されます。\n' +
     'このシートに行が無い店舗は、従来どおり「その日予約がある卓だけ」表示されます。');
+  // 2026-08-28追記: 既に運用中のシートに「属性」列が無ければ末尾に追加（新規作成時は上のsheetOrCreate_で入っている）
+  var lastCol = sh.getLastColumn();
+  if (lastCol >= 1) {
+    var headers = sh.getRange(1, 1, 1, lastCol).getValues()[0].map(function (v) { return String(v); });
+    if (headers.indexOf('属性') < 0) {
+      sh.getRange(1, lastCol + 1).setValue('属性').setFontWeight('bold').setBackground('#efe9dd');
+      sh.setColumnWidth(lastCol + 1, 160);
+    }
+  }
+  return sh;
+}
+// 店舗ごとの営業時間（2026-08-28追加・A-6）。予約タブのタイムライン表示範囲を店舗ごとに変える。
+function storeHoursSheet_() {
+  return sheetOrCreate_('DB_営業時間', ['店舗', '開店時刻', '閉店時刻', 'メモ'],
+    '予約タブの日別タイムラインで、店舗ごとに表示する時間帯を設定します。1行=1店舗。\n' +
+    '「開店時刻」「閉店時刻」は「17:00」のように24時間表記で入力してください。\n' +
+    '閉店が日をまたぐ場合は24を超える数字で（例: 翌2:00なら「26:00」）。\n' +
+    'この店舗の行が無ければ既定の「10:00〜24:00」で表示されます。');
 }
 // ログイン必須・店舗スコープ制限（bqGetReservationと同じ方針）。BQを使わずシートを直接読むだけなので軽量。
+// 席マスタと営業時間の両方をまとめて返す（同じタイミングで使うため1リクエストにまとめている）。
 function bqGetSeatMaster(p, session) {
   try {
     var sessStores = String(session && session.stores || '').trim();
     var restricted = sessStores && sessStores !== '全店';
     var allowNames = restricted ? sessStores.split(/[,、]/).map(function (s) { return s.trim(); }).filter(Boolean) : null;
+
     var sh = seatMasterSheet_();
     var lastRow = sh.getLastRow();
-    var out = [['店舗', '卓番号', '席数', 'エリア', '表示順']];
+    var seats = [['店舗', '卓番号', '席数', 'エリア', '表示順', '属性']];
     if (lastRow >= 2) {
-      var values = sh.getRange(2, 1, lastRow - 1, 5).getValues();
+      var values = sh.getRange(2, 1, lastRow - 1, 6).getValues();
       for (var i = 0; i < values.length; i++) {
         var store = String(values[i][0] || '').trim();
         var tableNo = String(values[i][1] || '').trim();
         if (!store || !tableNo) continue;
         if (allowNames && allowNames.indexOf(store) < 0) continue;
-        out.push([store, tableNo, values[i][2] === '' ? '' : Number(values[i][2]), String(values[i][3] || ''), values[i][4] === '' ? '' : Number(values[i][4])]);
+        seats.push([store, tableNo, values[i][2] === '' ? '' : Number(values[i][2]), String(values[i][3] || ''), values[i][4] === '' ? '' : Number(values[i][4]), String(values[i][5] || '')]);
       }
     }
-    return { ok: true, sheets: { rsvSeatMaster: out } };
+
+    var hSh = storeHoursSheet_();
+    var hLastRow = hSh.getLastRow();
+    var hours = [['店舗', '開店時刻', '閉店時刻']];
+    if (hLastRow >= 2) {
+      var hValues = hSh.getRange(2, 1, hLastRow - 1, 3).getValues();
+      for (var j = 0; j < hValues.length; j++) {
+        var hStore = String(hValues[j][0] || '').trim();
+        if (!hStore) continue;
+        if (allowNames && allowNames.indexOf(hStore) < 0) continue;
+        hours.push([hStore, String(hValues[j][1] || ''), String(hValues[j][2] || '')]);
+      }
+    }
+
+    return { ok: true, sheets: { rsvSeatMaster: seats, rsvStoreHours: hours } };
   } catch (e) {
     return { ok: false, error: String(e && e.message || e) };
   }
