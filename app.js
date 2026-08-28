@@ -4016,10 +4016,21 @@ function rsvBookHtml_(){
 // selN（特定の1店舗を選択中）があれば卓（テーブル）ごとの行に、無ければ（全店表示）店舗ごとの行にする。
 // 1店舗選択時は、DB_席マスタにその店舗の卓一覧があれば「予約が無い卓（空席）」も行として表示する
 // （2026-08-28追加・A-6: ユーザー要望「空いている席が分からない」対応）。
+// 「T2,T3」のように複数の卓をつなげて使う予約は、カンマ等区切りで分解して両方の卓の行に
+// 出す（連結した組合せ専用の行を新たに作らない。2026-08-28追加: ユーザー報告「2重で見づらい」対応）
+const rsvSplitTables_=(tableNo)=>{
+  const s=String(tableNo||'').trim();
+  if(!s) return ['卓未指定'];
+  const parts=s.split(/[,、\/\s]+|[+＋]/).map(t=>t.trim()).filter(Boolean);
+  return parts.length?parts:[s];
+};
 function rsvTimelineHtml_(dayRows,date,selN){
   const byRow={};
   const byTable=!!selN;
-  dayRows.forEach(r=>{ const k=byTable?(r.tableNo||'卓未指定'):r.store; (byRow[k]=byRow[k]||[]).push(r); });
+  dayRows.forEach(r=>{
+    if(byTable) rsvSplitTables_(r.tableNo).forEach(k=>{ (byRow[k]=byRow[k]||[]).push(r); });
+    else (byRow[r.store]=byRow[r.store]||[]).push(r);
+  });
 
   const storeSeats=byTable?D.rsvSeats.filter(s=>s.store===selN):[];
   let rowKeys;
@@ -4064,8 +4075,9 @@ function rsvTimelineHtml_(dayRows,date,selN){
       const stay=r.stayMin||90;
       const width=Math.max(2,Math.min(100-left,stay/60/(hiH-lo)*100));
       const color=PALETTE[Math.abs(hashStr_(r.channelNorm||r.channelRaw))%PALETTE.length];
-      const label=esc(r.timeStr)+' '+esc(r.partySize)+'名 '+esc(r.channelNorm||r.channelRaw)+' '+esc(r.course||'');
-      h+=`<div title="${label}" style="position:absolute;left:${left}%;width:${width}%;top:2px;bottom:2px;background:${color};border-radius:3px;overflow:hidden;font-size:10px;color:#fff;padding:0 4px;white-space:nowrap">${esc(r.timeStr)} ${cnt(r.partySize)}名</div>`;
+      const joined=byTable && rsvSplitTables_(r.tableNo).length>1; // 複数卓を連結した予約か
+      const label=esc(r.timeStr)+' '+esc(r.partySize)+'名 '+esc(r.channelNorm||r.channelRaw)+' '+esc(r.course||'')+(joined?'（'+esc(r.tableNo)+'を連結利用）':'');
+      h+=`<div title="${label}" style="position:absolute;left:${left}%;width:${width}%;top:2px;bottom:2px;background:${color};border-radius:3px;overflow:hidden;font-size:10px;color:#fff;padding:0 4px;white-space:nowrap">${esc(r.timeStr)} ${cnt(r.partySize)}名${joined?' 🔗':''}</div>`;
     });
     h+=`</div></div>`;
   });
