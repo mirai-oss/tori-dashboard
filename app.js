@@ -190,7 +190,7 @@ const D = { daily:[], media:[], deposit:[], review:[], ad:[], adfx:[], tanka:{},
   wkTpl:{}, wkRep:[], wkAns:{}, wkFb:{}, roleDef:{}, depNote:{}, dailyBqLoading:false, dailyBqErr:'', plBqLoading:false, plBqErr:'', storeDirectory:null,
   freshness:null, freshnessAt:0, bqFallback:{},
   rsvBq:[], rsvBqLoading:false, rsvBqErr:'',    // 予約タブ（2026-08-28追加・A-6。stg_reservationのBQミラー。D.rsv（旧・管理シート💾予約DB手動貼付け）とは別物として並行保持
-  rsvSeats:[], rsvSeatsLoaded:false, rsvHours:{} };  // 予約タブ：店舗ごとの卓一覧（DB_席マスタ）・営業時間（DB_営業時間、店舗名→{open,close}decimal時）
+  rsvSeats:[], rsvSeatsLoaded:false, rsvHours:{} };  // 予約タブ：店舗ごとの卓一覧（DB_席マスタ）・営業時間（DB_営業時間、店舗名→[{spec,open,close}]の配列。resolveStoreHours_で日付ごとに1件選ぶ）
 let EXPORT = [];      // 現在タブのCSVエクスポート対象 [{title,headers,rows}]
 let pollTimer = null;
 
@@ -3921,14 +3921,41 @@ async function fetchSeatMaster(){
         const hhmm=(v)=>{ const m=String(v==null?'':v).match(/(\d{1,3}):(\d{2})/); return m?(+m[1]+(+m[2])/60):null; };
         const hours={};
         d.sheets.rsvStoreHours.slice(1).forEach(r=>{
-          const store=String(r[0]||''); const open=hhmm(r[1]), close=hhmm(r[2]);
-          if(store && open!=null && close!=null && close>open) hours[store]={open,close};
+          const store=String(r[0]||''), spec=String(r[1]||'').trim();
+          const open=hhmm(r[2]), close=hhmm(r[3]);
+          if(store && open!=null && close!=null && close>open) (hours[store]=hours[store]||[]).push({ spec, open, close });
         });
         D.rsvHours=hours;
       }
     }
   }catch(e){ /* 席マスタ・営業時間は無くても既定値で動くため黙って諦める */ }
   render();
+}
+// 店舗×日付で当てはまる営業時間パターンを1つ選ぶ。曜日区分が具体的な行ほど優先（祝/個別曜日 ＞
+// 平日・土日・土日祝 ＞ 空欄=既定）。祝日判定は既存のisJpHoliday()（内蔵カレンダー＋DB_祝日）を流用。
+function resolveStoreHours_(store,dateStr){
+  const rows=D.rsvHours[store]; if(!rows||!rows.length) return null;
+  const p=dateStr.split('-').map(Number); const dt=new Date(p[0],p[1]-1,p[2]);
+  const dow=dt.getDay(), isHol=isJpHoliday(dt);
+  const dayNames=['日','月','火','水','木','金','土'];
+  let best=null, bestScore=-1;
+  rows.forEach(r=>{
+    const spec=r.spec;
+    let score=-1;
+    if(!spec) score=0; // 空欄＝既定（最低優先度で常に候補になる）
+    else{
+      const tokens=spec.split(/[,、\/\s]+/).map(t=>t.trim()).filter(Boolean);
+      tokens.forEach(t=>{
+        if(t==='祝'){ if(isHol) score=Math.max(score,3); }
+        else if(t==='平日'){ if(dow>=1&&dow<=5&&!isHol) score=Math.max(score,2); }
+        else if(t==='土日'||t==='週末'){ if(dow===0||dow===6) score=Math.max(score,2); }
+        else if(t==='土日祝'){ if(dow===0||dow===6||isHol) score=Math.max(score,2); }
+        else if(dayNames.includes(t)){ if(dayNames[dow]===t) score=Math.max(score,3); }
+      });
+    }
+    if(score>bestScore){ bestScore=score; best=r; }
+  });
+  return bestScore>=0?{open:best.open,close:best.close}:null;
 }
 function todayStr_(){ const d=D.refDate||new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
 function rsvDate_(){ return S.rsvDate||todayStr_(); }
@@ -4009,7 +4036,7 @@ function rsvTimelineHtml_(dayRows,date,selN){
 
   const seatCap={}, seatTags={}; storeSeats.forEach(s=>{ seatCap[s.tableNo]=s.capacity; seatTags[s.tableNo]=s.tags||[]; });
   // 営業時間: 1店舗選択時はDB_営業時間の設定があればそれを使う。無ければ既定10:00〜24:00
-  const custHours=byTable?D.rsvHours[selN]:null;
+  const custHours=byTable?resolveStoreHours_(selN,date):null;
   const lo=custHours?custHours.open:10, hiH=custHours?custHours.close:24;
   const hourMarks=[]; for(let hh=Math.ceil(lo/2)*2; hh<=hiH; hh+=2) hourMarks.push(hh);
   const seatNote=byTable && !storeSeats.length

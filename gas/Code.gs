@@ -1592,11 +1592,28 @@ function seatMasterSheet_() {
 }
 // 店舗ごとの営業時間（2026-08-28追加・A-6）。予約タブのタイムライン表示範囲を店舗ごとに変える。
 function storeHoursSheet_() {
-  return sheetOrCreate_('DB_営業時間', ['店舗', '開店時刻', '閉店時刻', 'メモ'],
-    '予約タブの日別タイムラインで、店舗ごとに表示する時間帯を設定します。1行=1店舗。\n' +
+  var sh = sheetOrCreate_('DB_営業時間', ['店舗', '曜日区分', '開店時刻', '閉店時刻', 'メモ'],
+    '予約タブの日別タイムラインで、店舗ごとに表示する時間帯を設定します。同じ店舗で曜日によって\n' +
+    '時間が違う場合は、行を分けて入力してください（1行=1パターン）。\n' +
+    '「曜日区分」は 平日／土日／土日祝／祝／月・火・水・木・金・土・日 のいずれか（空欄=他のどの行にも\n' +
+    '当てはまらない日の既定値）。カンマ区切りで複数指定も可（例: 土,日）。祝日は内蔵の祝日カレンダーで\n' +
+    '自動判定するので個別入力は不要です。複数の行が同じ日に当てはまる場合は、より具体的な指定\n' +
+    '（個別の曜日や祝＞平日/土日祝＞空欄の順）が優先されます。\n' +
     '「開店時刻」「閉店時刻」は「17:00」のように24時間表記で入力してください。\n' +
     '閉店が日をまたぐ場合は24を超える数字で（例: 翌2:00なら「26:00」）。\n' +
     'この店舗の行が無ければ既定の「10:00〜24:00」で表示されます。');
+  // 2026-08-28追記: 「曜日区分」列が無い旧レイアウト（店舗/開店時刻/閉店時刻/メモ）で運用中の場合、
+  // 2列目に挿入して移行する（新規作成時は上のsheetOrCreate_で既に入っている）。
+  var lastCol = sh.getLastColumn();
+  if (lastCol >= 1) {
+    var headers = sh.getRange(1, 1, 1, lastCol).getValues()[0].map(function (v) { return String(v); });
+    if (headers.indexOf('曜日区分') < 0) {
+      sh.insertColumnAfter(1);
+      sh.getRange(1, 2).setValue('曜日区分').setFontWeight('bold').setBackground('#efe9dd');
+      sh.setColumnWidth(2, 110);
+    }
+  }
+  return sh;
 }
 // ログイン必須・店舗スコープ制限（bqGetReservationと同じ方針）。BQを使わずシートを直接読むだけなので軽量。
 // 席マスタと営業時間の両方をまとめて返す（同じタイミングで使うため1リクエストにまとめている）。
@@ -1622,14 +1639,14 @@ function bqGetSeatMaster(p, session) {
 
     var hSh = storeHoursSheet_();
     var hLastRow = hSh.getLastRow();
-    var hours = [['店舗', '開店時刻', '閉店時刻']];
+    var hours = [['店舗', '曜日区分', '開店時刻', '閉店時刻']];
     if (hLastRow >= 2) {
-      var hValues = hSh.getRange(2, 1, hLastRow - 1, 3).getValues();
+      var hValues = hSh.getRange(2, 1, hLastRow - 1, 4).getValues();
       for (var j = 0; j < hValues.length; j++) {
         var hStore = String(hValues[j][0] || '').trim();
         if (!hStore) continue;
         if (allowNames && allowNames.indexOf(hStore) < 0) continue;
-        hours.push([hStore, String(hValues[j][1] || ''), String(hValues[j][2] || '')]);
+        hours.push([hStore, String(hValues[j][1] || ''), String(hValues[j][2] || ''), String(hValues[j][3] || '')]);
       }
     }
 
