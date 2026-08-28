@@ -4173,20 +4173,23 @@ function rsvAnalysisHtml_(){
   const rsv=D.rsvBq.filter(r=>r.t>=mS&&r.t<=mE&&(!selN||r.store===selN));
   if(!rsv.length){ h+=`<div class="panel no-print"><div class="panel-head"><div><h3>予約分析（${mLabel}：データなし）</h3></div></div></div>`; return h; }
   const wnames=['日','月','火','水','木','金','土'];
-  const wd=Array.from({length:7},()=>({grp:0,ppl:0,net:0,same:0,cxl:0}));
-  let tGrp=0,tPpl=0,tNet=0,tSame=0,tCxl=0,tWalk=0;
+  const wd=Array.from({length:7},()=>({grp:0,ppl:0,net:0,same:0,samePpl:0,cxl:0}));
+  const daily={}; // dateStr -> {grp,ppl,same,samePpl}（2026-08-28追加: 日別の当日予約分析用）
+  let tGrp=0,tPpl=0,tNet=0,tSame=0,tSamePpl=0,tCxl=0,tWalk=0;
   const hist=new Array(24).fill(0); const sameWin={};
   rsv.forEach(r=>{
     const w=new Date(r.t).getDay(); const o=wd[w]; const cx=r.isCancelled;
     const walk=/ウォークイン|walk-?in/i.test(r.channelNorm||r.channelRaw);
-    o.grp++; tGrp++;
-    if(!cx){ o.ppl+=r.partySize; tPpl+=r.partySize; }
+    const d=daily[r.dateStr]=daily[r.dateStr]||{grp:0,ppl:0,same:0,samePpl:0};
+    o.grp++; tGrp++; d.grp++;
+    if(!cx){ o.ppl+=r.partySize; tPpl+=r.partySize; d.ppl+=r.partySize; }
     if(cx){ o.cxl++; tCxl++; }
     if(/ネット|net/i.test(r.channelNorm||r.channelRaw)){ o.net++; tNet++; }
     if(walk) tWalk++;
     const ct=r.createdAt?parseDateStr(r.createdAt):0;
     if(!cx&&!walk&&ct&&ct===r.t){
-      o.same++; tSame++;
+      o.same++; tSame++; o.samePpl+=r.partySize; tSamePpl+=r.partySize;
+      d.same++; d.samePpl+=r.partySize;
       const mch=String(r.createdAt||'').match(/T(\d{1,2}):(\d{2})/);
       const chHH=mch?(+mch[1]+(+mch[2])/60):-1;
       if(chHH>=0&&chHH<24) hist[Math.floor(chHH)]++;
@@ -4197,15 +4200,32 @@ function rsvAnalysisHtml_(){
   const maxGrp=Math.max.apply(null,wd.map(o=>o.grp).concat([1]));
   h+=`<div class="panel"><div class="panel-head"><div><h3>予約分析：曜日別（${mLabel}${selN?' ／ '+esc(selN):''}）</h3>
     <div class="sub">出典：BigQuery stg_reservation（I-1自動取込）全${cnt(rsv.length)}件 ／ 当日予約率 ${pc(tSame,Math.max(tGrp-tCxl-tWalk,0))}（ウォークイン・キャンセル除く）／ キャンセル率 ${pc(tCxl,tGrp)}</div></div></div>
-  <div class="scroll-x"><table class="tbl"><thead><tr><th>曜日</th><th>予約組数</th><th></th><th>人数</th><th>ネット予約</th><th>当日予約</th><th>キャンセル</th><th>キャンセル率</th></tr></thead><tbody>`;
+  <div class="scroll-x"><table class="tbl"><thead><tr><th>曜日</th><th>予約組数</th><th></th><th>人数</th><th>ネット予約</th><th>当日予約(組)</th><th>当日予約(人)</th><th>キャンセル</th><th>キャンセル率</th></tr></thead><tbody>`;
   const expW=[];
   [1,2,3,4,5,6,0].forEach(w=>{
     const o=wd[w];
-    h+=`<tr><td>${wnames[w]}</td><td>${cnt(o.grp)}</td><td style="min-width:120px"><div style="background:#4c7d5c;height:10px;border-radius:3px;width:${Math.round(o.grp/maxGrp*100)}%"></div></td><td>${cnt(o.ppl)}</td><td>${cnt(o.net)}</td><td>${cnt(o.same)}</td><td>${cnt(o.cxl)}</td><td>${pc(o.cxl,o.grp)}</td></tr>`;
-    expW.push([wnames[w],o.grp,o.ppl,o.net,o.same,o.cxl,o.grp>0?(o.cxl/o.grp*100).toFixed(1)+'%':'']);
+    h+=`<tr><td>${wnames[w]}</td><td>${cnt(o.grp)}</td><td style="min-width:120px"><div style="background:#4c7d5c;height:10px;border-radius:3px;width:${Math.round(o.grp/maxGrp*100)}%"></div></td><td>${cnt(o.ppl)}</td><td>${cnt(o.net)}</td><td>${cnt(o.same)}</td><td>${cnt(o.samePpl)}</td><td>${cnt(o.cxl)}</td><td>${pc(o.cxl,o.grp)}</td></tr>`;
+    expW.push([wnames[w],o.grp,o.ppl,o.net,o.same,o.samePpl,o.cxl,o.grp>0?(o.cxl/o.grp*100).toFixed(1)+'%':'']);
   });
-  h+=`<tr class="total"><td>合計</td><td>${cnt(tGrp)}</td><td></td><td>${cnt(tPpl)}</td><td>${cnt(tNet)}</td><td>${cnt(tSame)}</td><td>${cnt(tCxl)}</td><td>${pc(tCxl,tGrp)}</td></tr></tbody></table></div></div>`;
-  EXPORT.push({ title:'予約分析 曜日別（'+mLabel+'）', headers:['曜日','予約組数','人数','ネット予約','当日予約','キャンセル','キャンセル率'], rows:expW });
+  h+=`<tr class="total"><td>合計</td><td>${cnt(tGrp)}</td><td></td><td>${cnt(tPpl)}</td><td>${cnt(tNet)}</td><td>${cnt(tSame)}</td><td>${cnt(tSamePpl)}</td><td>${cnt(tCxl)}</td><td>${pc(tCxl,tGrp)}</td></tr></tbody></table></div></div>`;
+  EXPORT.push({ title:'予約分析 曜日別（'+mLabel+'）', headers:['曜日','予約組数','人数','ネット予約','当日予約(組)','当日予約(人)','キャンセル','キャンセル率'], rows:expW });
+
+  // 当日予約：日別（2026-08-28追加。曜日集計だけでは「特に多かった日」が分からないため）
+  const dailyKeys=Object.keys(daily).sort();
+  if(dailyKeys.length){
+    h+=`<div class="panel"><div class="panel-head"><div><h3>当日予約：日別（${mLabel}${selN?' ／ '+esc(selN):''}）</h3>
+      <div class="sub">日ごとの当日予約（組数・人数）。ウォークイン・キャンセルは除く</div></div></div>
+    <div class="scroll-x"><table class="tbl"><thead><tr><th>日付</th><th>曜日</th><th>予約組数</th><th>当日予約(組)</th><th>当日予約(人)</th><th>当日予約率</th></tr></thead><tbody>`;
+    const expD=[];
+    dailyKeys.forEach(ds=>{
+      const d=daily[ds]; const dt=new Date(ds+'T00:00:00'); const wname=wnames[dt.getDay()];
+      const mdLabel=(dt.getMonth()+1)+'/'+dt.getDate();
+      h+=`<tr><td>${mdLabel}</td><td>${wname}</td><td>${cnt(d.grp)}</td><td>${cnt(d.same)}</td><td>${cnt(d.samePpl)}</td><td>${pc(d.same,d.grp)}</td></tr>`;
+      expD.push([ds,wname,d.grp,d.same,d.samePpl,d.grp>0?(d.same/d.grp*100).toFixed(1)+'%':'']);
+    });
+    h+=`</tbody></table></div></div>`;
+    EXPORT.push({ title:'当日予約 日別（'+mLabel+'）', headers:['日付','曜日','予約組数','当日予約(組)','当日予約(人)','当日予約率'], rows:expD });
+  }
   const hmax=Math.max.apply(null,hist.concat([1])), hTot=hist.reduce((a,b)=>a+b,0);
   if(hTot>0){
     let lo=hist.findIndex(v=>v>0), hi2=23; while(hi2>0&&!hist[hi2])hi2--;
