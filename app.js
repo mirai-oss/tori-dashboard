@@ -27,15 +27,16 @@ const PALETTE = ['#3d5163','#b5502f','#5f7052','#c9a86a','#7d8b6f','#2a6f8f','#9
 const C_NOW='#3d5163', C_PREV='#c9b7a0', C_MID='#7d8b6f';
 const LS = { api:'toriApiUrl', sess:'toriSession', acc:'toriDemoAccounts', poll:'toriPollSec', months:'toriMonths', dailyBq:'toriDailySourceBq' };
 const ROLE_TABS = {
-  '社長':       ['dash','target','analysis','detail','pl','deposit','ad','review','weekly','weeklyAdmin','ai','accounts'],
-  '本部':       ['dash','target','analysis','detail','pl','deposit','ad','review','weekly','weeklyAdmin','ai','accounts'],
-  'マネージャー':['dash','target','analysis','detail','pl','deposit','ad','review','weekly','weeklyAdmin','ai'],
-  '店舗':       ['dash','target','analysis','detail','deposit','review','weekly','ai'],   // PL・広告管理は既定で非表示（アカウントごとの「表示タブ」で変更可）
+  '社長':       ['dash','target','analysis','detail','pl','deposit','ad','reservation','review','weekly','weeklyAdmin','ai','accounts'],
+  '本部':       ['dash','target','analysis','detail','pl','deposit','ad','reservation','review','weekly','weeklyAdmin','ai','accounts'],
+  'マネージャー':['dash','target','analysis','detail','pl','deposit','ad','reservation','review','weekly','weeklyAdmin','ai'],
+  '店舗':       ['dash','target','analysis','detail','deposit','reservation','review','weekly','ai'],   // PL・広告管理は既定で非表示（アカウントごとの「表示タブ」で変更可）
   // 外販先（Ring-style・いちご屋など）に売上を確認してもらうためのアカウント。
   // 自分の担当媒体の売上だけを見せ、他の数字は一切見せない。担当媒体はアカウントシートのK列。
   '外販':       ['partner'],
 };
-const TAB_LABELS = { partner:'媒体売上', dash:'ダッシュボード', target:'目標管理', analysis:'推移分析', detail:'明細分析', pl:'PL（損益）', deposit:'入金管理', ad:'広告管理', review:'口コミ', weekly:'週報', weeklyAdmin:'週報管理', ai:'AI検索', accounts:'アカウント管理' };
+// reservation='予約'（2026-08-28追加・A-6。Sync4後。stg_reservationのBQミラーを表示）
+const TAB_LABELS = { partner:'媒体売上', dash:'ダッシュボード', target:'目標管理', analysis:'推移分析', detail:'明細分析', pl:'PL（損益）', deposit:'入金管理', ad:'広告管理', reservation:'予約', review:'口コミ', weekly:'週報', weeklyAdmin:'週報管理', ai:'AI検索', accounts:'アカウント管理' };
 // 入力・取込系の機能権限。閲覧は「表示タブ」で、データを書き込む操作はこちらで制御する。
 // 既定は権限ごとの ROLE_FEATURES、アカウントごとに上書きしたい場合は「アカウント」シートのI列に保存する。
 const FEATURE_LABELS = {
@@ -187,7 +188,8 @@ const D = { daily:[], media:[], deposit:[], review:[], ad:[], adfx:[], tanka:{},
   spot:[], spotBqLoading:false, spotBqErr:'',
   loanPrincipal:[], loanBqLoading:false, loanBqErr:'', taxRate:0.34,   // A-5(2026-08-26追加): 簡易キャッシュフロー用
   wkTpl:{}, wkRep:[], wkAns:{}, wkFb:{}, roleDef:{}, depNote:{}, dailyBqLoading:false, dailyBqErr:'', plBqLoading:false, plBqErr:'', storeDirectory:null,
-  freshness:null, freshnessAt:0, bqFallback:{} };
+  freshness:null, freshnessAt:0, bqFallback:{},
+  rsvBq:[], rsvBqLoading:false, rsvBqErr:'' };  // 予約タブ（2026-08-28追加・A-6。stg_reservationのBQミラー。D.rsv（旧・管理シート💾予約DB手動貼付け）とは別物として並行保持
 let EXPORT = [];      // 現在タブのCSVエクスポート対象 [{title,headers,rows}]
 let pollTimer = null;
 
@@ -1837,6 +1839,7 @@ function render(){
   else if(S.tab==='deposit') body=viewDeposit();
   else if(S.tab==='pl') body=viewPL();
   else if(S.tab==='ad') body=viewAd();
+  else if(S.tab==='reservation') body=viewReservation();
   else if(S.tab==='review') body=viewReview();
   else if(S.tab==='weekly') body=viewWeekly();
   else if(S.tab==='weeklyAdmin') body=viewWeeklyAdmin();
@@ -3519,6 +3522,10 @@ function viewAd(){
       ※GAS（Code.gs）を最新版に更新してください。ダッシュボード側の <code>DB_広告効果</code>／<code>DB_単価設定</code> は予備の入力先として残ります。</div></div>`;
   }
   // 予約分析（曜日別×当日予約の申込時刻）— 管理シート「💾予約DB」（予約一覧CSV貼り付け）
+  // 2026-08-28追加（A-6）: 新設「予約」タブでBigQuery自動取込データ（stg_reservation）による同じ分析・
+  // 予約帳（タイムライン/カレンダー/リスト）が見られる。数字を突き合わせて確認できるまでは、
+  // このブロック（旧・手動CSV取込データ）はそのまま残す（設計書§8.9・並行稼働の方針）。
+  h+=`<div class="note-box no-print" style="margin-bottom:12px">🆕 新しい「予約」タブでも、自動取込データ（BigQuery）を使った予約帳・予約分析が見られます（比較確認中）。</div>`;
   if((D.rsv||[]).length){
     const rsv=D.rsv.filter(r=>{
       if(r.t<mS||r.t>mE) return false;
@@ -3860,6 +3867,227 @@ function plMonthDate(){
   if(S.plMonth){ const p=S.plMonth.split('-'); return new Date(+p[0],+p[1]-1,1); }
   const ref=D.refDate||new Date(); return new Date(ref.getFullYear(),ref.getMonth(),1);
 }
+
+// ================== 予約タブ（2026-08-28追加・A-6。Sync4後） ==================
+// データ源: BigQuery stg_reservation（GAS action bqGetReservation。店舗権限は既にサーバー側で絞り込み済み）。
+// 既存の「予約分析」（viewAd内・D.rsv・管理シート💾予約DB手動貼付け）とは別データとして並行保持する
+// （設計書§8.9: 数字を突き合わせて確認できてから、旧ブロックの扱いをユーザーに確認して整理する。
+// 手動CSV取込モーダル・GASメニュー④は今回いっさい変更しない）。
+async function fetchReservationBQ(){
+  if(!S.auth||!S.auth.token) return;
+  if(D.rsvBqLoading||D.rsvBqLoaded) return;   // 一度読めば十分（全件ミラー・軽量。データ更新はbqSyncReservation側のキャッシュ世代で検知）
+  D.rsvBqLoading=true;
+  try{
+    const d=await api({ action:'bqGetReservation', token:S.auth.token, includeCancelled:'true' });
+    if(d&&d.ok&&d.sheets&&d.sheets.reservationBq){ ingestReservationBq_(d.sheets.reservationBq); D.rsvBqErr=''; D.rsvBqLoaded=true; }
+    else{ D.rsvBqErr=(d&&d.error)||'取得に失敗しました'; }
+  }catch(e){ D.rsvBqErr=String(e&&e.message||e); }
+  D.rsvBqLoading=false; render();
+}
+// bqGetReservationの[[見出し],[行...]]をD.rsvBq（オブジェクト配列）へ変換。列順はGAS側のHEADERSと対応。
+function ingestReservationBq_(rows){
+  if(!rows||rows.length<2){ D.rsvBq=[]; return; }
+  const hhmm=(v)=>{ const m=String(v==null?'':v).match(/(\d{1,2}):(\d{2})/); return m?(+m[1]+(+m[2])/60):-1; };
+  const recs=[];
+  for(let i=1;i<rows.length;i++){
+    const c=rows[i]; const t=parseDateStr(c[4]); if(!t) continue;
+    const statusNorm=String(c[10]||'');
+    recs.push({ key:c[0], storeId:c[1], store:String(c[2]||''), source:c[3],
+      t, dateStr:String(c[4]||'').slice(0,10), timeStr:String(c[5]||''), hh:hhmm(c[5]),
+      stayMin:(c[6]===''||c[6]==null)?null:Number(c[6]),
+      partySize:(c[7]===''||c[7]==null)?0:Number(c[7]), childCount:(c[8]===''||c[8]==null)?0:Number(c[8]),
+      statusRaw:String(c[9]||''), statusNorm, isCancelled:/^cancelled/.test(statusNorm),
+      channelRaw:String(c[11]||''), channelNorm:String(c[12]||c[11]||''),
+      tableNo:String(c[13]||''), course:String(c[14]||''), menu:String(c[15]||''),
+      attribute:String(c[16]||''), tag:String(c[17]||''), customerNo:String(c[18]||''),
+      createdAt:c[19]||'', cancelAt:c[20]||'' });
+  }
+  D.rsvBq=recs;
+}
+function todayStr_(){ const d=D.refDate||new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+function rsvDate_(){ return S.rsvDate||todayStr_(); }
+function rsvShiftDate_(days){
+  const p=rsvDate_().split('-').map(Number); const d=new Date(p[0],p[1]-1,p[2]+days);
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+}
+function hashStr_(s){ let h=0; s=String(s||''); for(let i=0;i<s.length;i++) h=(h*31+s.charCodeAt(i))|0; return h; }
+
+function viewReservation(){
+  fetchReservationBQ();
+  const sub=S.rsvSubTab||'book';
+  let h=`<div class="ctrl-bar no-print">
+    <div class="seg">${[['book','予約帳'],['analysis','予約分析']].map(([k,l])=>`<button class="${sub===k?'on':''}" onclick="App.set('rsvSubTab','${k}')">${l}</button>`).join('')}</div>
+    <span class="period-label">予約管理${D.rsvBqLoading?'（読込中…）':''}</span></div>`;
+  if(D.rsvBqErr) h+=`<div class="panel no-print"><div class="panel-head"><div><h3 style="color:#b5502f">取得エラー</h3><div class="sub">${esc(D.rsvBqErr)}</div></div></div></div>`;
+  if(!D.rsvBqLoaded && !D.rsvBqErr){
+    h+=`<div class="panel no-print"><div class="panel-head"><div><h3>予約データを読み込み中…</h3></div></div></div>`;
+    return h;
+  }
+  if(D.rsvBqLoaded && !D.rsvBq.length){
+    h+=`<div class="note-box">予約データがまだありません（権限のある店舗の予約が0件、またはI-1の日次取込がまだ反映されていない可能性があります）。</div>`;
+    return h;
+  }
+  h += sub==='analysis' ? rsvAnalysisHtml_() : rsvBookHtml_();
+  return h;
+}
+function rsvBookHtml_(){
+  const view=S.rsvView||'list';
+  const date=rsvDate_();
+  const p=date.split('-').map(Number);
+  const dLabel=p[0]+'年'+p[1]+'月'+p[2]+'日（'+['日','月','火','水','木','金','土'][new Date(p[0],p[1]-1,p[2]).getDay()]+'）';
+  let h=`<div class="ctrl-bar no-print">
+    <button class="icon-btn" onclick="App.set('rsvDate','${rsvShiftDate_(-1)}')">‹ 前日</button>
+    <input type="date" value="${date}" onchange="App.set('rsvDate',this.value)">
+    <button class="icon-btn" onclick="App.set('rsvDate','${rsvShiftDate_(1)}')">翌日 ›</button>
+    <button class="icon-btn" onclick="App.set('rsvDate','${todayStr_()}')">今日</button>
+    <div class="seg">${[['timeline','タイムライン'],['calendar','カレンダー'],['list','リスト']].map(([k,l])=>`<button class="${view===k?'on':''}" onclick="App.set('rsvView','${k}')">${l}</button>`).join('')}</div>
+    <span class="period-label">${dLabel}</span></div>`;
+  const dayRows=D.rsvBq.filter(r=>r.dateStr===date && !r.isCancelled);
+  const ppl=dayRows.reduce((a,r)=>a+r.partySize,0);
+  const walk=dayRows.filter(r=>/ウォークイン|walk-?in/i.test(r.channelNorm||r.channelRaw)).length;
+  h+=`<div class="kpi-grid">
+    <div class="kpi"><div class="lb">予約組数</div><div class="vl">${cnt(dayRows.length)}</div></div>
+    <div class="kpi"><div class="lb">予約人数</div><div class="vl">${cnt(ppl)}</div></div>
+    <div class="kpi"><div class="lb">ウォークイン</div><div class="vl">${cnt(walk)}</div></div>
+    <div class="kpi"><div class="lb">対象店舗</div><div class="vl">${cnt(new Set(dayRows.map(r=>r.store)).size)}</div></div>
+  </div>`;
+  if(view==='calendar') h+=rsvCalendarHtml_(date);
+  else if(view==='timeline') h+=rsvTimelineHtml_(dayRows,date);
+  else h+=rsvListHtml_(dayRows);
+  return h;
+}
+function rsvTimelineHtml_(dayRows,date){
+  if(!dayRows.length) return `<div class="panel no-print"><div class="panel-head"><div><h3>この日の予約はありません</h3></div></div></div>`;
+  const byStore={};
+  dayRows.forEach(r=>{ (byStore[r.store]=byStore[r.store]||[]).push(r); });
+  const stores=Object.keys(byStore).sort();
+  const lo=10, hiH=24;   // 表示範囲 10:00〜24:00固定（Phase1）
+  const hourMarks=[]; for(let hh=lo; hh<=hiH; hh+=2) hourMarks.push(hh);
+  let h=`<div class="panel"><div class="panel-head"><div><h3>日別タイムライン（${esc(date)}）</h3>
+    <div class="sub">表示範囲 ${lo}:00〜${hiH}:00 ／ 滞在時間が不明な予約は90分として表示 ／ 色は受付窓口ごと</div></div></div>
+    <div style="padding:8px 4px">
+      <div style="display:flex;font-size:11px;color:var(--mut2,#8a7f6f);margin-left:120px">${hourMarks.map(hh=>`<div style="flex:1">${hh}時</div>`).join('')}</div>`;
+  stores.forEach(st=>{
+    const rows=byStore[st].slice().sort((a,b)=>a.hh-b.hh);
+    h+=`<div style="display:flex;align-items:center;border-top:1px solid var(--bd,#e5ddd0);padding:6px 0">
+      <div style="width:120px;flex:none;font-weight:700;font-size:12px">${esc(st)}</div>
+      <div style="position:relative;flex:1;height:28px;background:var(--bg2,#f4efe6);border-radius:4px">`;
+    rows.forEach(r=>{
+      if(r.hh<0) return;
+      const left=Math.max(0,Math.min(100,(r.hh-lo)/(hiH-lo)*100));
+      const stay=r.stayMin||90;
+      const width=Math.max(2,Math.min(100-left,stay/60/(hiH-lo)*100));
+      const color=PALETTE[Math.abs(hashStr_(r.channelNorm||r.channelRaw))%PALETTE.length];
+      const label=esc(r.timeStr)+' '+esc(r.partySize)+'名 '+esc(r.channelNorm||r.channelRaw)+' '+esc(r.course||'');
+      h+=`<div title="${label}" style="position:absolute;left:${left}%;width:${width}%;top:2px;bottom:2px;background:${color};border-radius:3px;overflow:hidden;font-size:10px;color:#fff;padding:0 4px;white-space:nowrap">${esc(r.timeStr)} ${cnt(r.partySize)}名</div>`;
+    });
+    h+=`</div></div>`;
+  });
+  h+=`</div></div>`;
+  return h;
+}
+function rsvCalendarHtml_(date){
+  const p=date.split('-').map(Number); const y=p[0], m=p[1];
+  const first=new Date(y,m-1,1), startWd=first.getDay();
+  const daysInMonth=new Date(y,m,0).getDate();
+  const ymPrefix=y+'-'+String(m).padStart(2,'0');
+  const byDate={};
+  D.rsvBq.forEach(r=>{
+    if(r.isCancelled||!r.dateStr||r.dateStr.slice(0,7)!==ymPrefix) return;
+    const o=byDate[r.dateStr]=byDate[r.dateStr]||{grp:0,ppl:0}; o.grp++; o.ppl+=r.partySize;
+  });
+  let h=`<div class="panel"><div class="panel-head"><div><h3>${y}年${m}月</h3><div class="sub">日付をクリックするとその日のタイムライン・リストに切り替わります</div></div></div>
+    <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px;font-size:11px;text-align:center;color:var(--mut2,#8a7f6f)">${['日','月','火','水','木','金','土'].map(w=>`<div>${w}</div>`).join('')}</div>
+    <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-top:4px">`;
+  for(let i=0;i<startWd;i++) h+=`<div></div>`;
+  for(let d=1;d<=daysInMonth;d++){
+    const ds=ymPrefix+'-'+String(d).padStart(2,'0');
+    const o=byDate[ds];
+    const isToday=ds===todayStr_(), isSel=ds===date;
+    h+=`<div onclick="App.set('rsvDate','${ds}')" style="cursor:pointer;border:1px solid ${isToday?'#4c7d5c':'var(--bd,#e5ddd0)'};border-radius:4px;padding:4px;min-height:52px;${isSel?'background:var(--bg2,#f4efe6)':''}">
+      <div style="font-weight:700;font-size:12px">${d}</div>
+      ${o?`<div style="font-size:10px;color:#4c7d5c">${o.grp}組</div><div style="font-size:10px;color:var(--mut2,#8a7f6f)">${o.ppl}名</div>`:''}
+    </div>`;
+  }
+  h+=`</div></div>`;
+  return h;
+}
+function rsvListHtml_(dayRows){
+  const rows=dayRows.slice().sort((a,b)=>a.hh-b.hh);
+  if(!rows.length) return `<div class="panel no-print"><div class="panel-head"><div><h3>この日の予約はありません</h3></div></div></div>`;
+  let h=`<div class="panel"><div class="panel-head"><div><h3>予約リスト</h3></div></div>
+    <div class="scroll-x"><table class="tbl"><thead><tr><th>時刻</th><th>店舗</th><th>人数</th><th>受付窓口</th><th>コース</th><th>卓</th><th>ステータス</th></tr></thead><tbody>`;
+  const exp=[];
+  rows.forEach(r=>{
+    h+=`<tr><td>${esc(r.timeStr)}</td><td>${esc(r.store)}</td><td>${cnt(r.partySize)}${r.childCount?'（子'+r.childCount+'）':''}</td><td>${esc(r.channelNorm||r.channelRaw)}</td><td>${esc(r.course||'')}</td><td>${esc(r.tableNo||'')}</td><td>${esc(r.statusRaw)}</td></tr>`;
+    exp.push([r.timeStr,r.store,r.partySize,r.channelNorm||r.channelRaw,r.course||'',r.tableNo||'',r.statusRaw]);
+  });
+  h+=`</tbody></table></div></div>`;
+  EXPORT.push({ title:'予約リスト', headers:['時刻','店舗','人数','受付窓口','コース','卓','ステータス'], rows:exp });
+  return h;
+}
+// 予約分析（曜日別・当日予約の時刻）— viewAd内の既存ブロック（D.rsv・管理シート💾予約DB）と同じロジックを
+// D.rsvBq（BQ・自動取込）向けに移植したもの。数字を突き合わせて確認できたら、viewAd側は削除しリンクに置き換える予定。
+function rsvAnalysisHtml_(){
+  const ref=D.refDate||new Date();
+  const defMonth=ref.getFullYear()+'-'+String(ref.getMonth()+1).padStart(2,'0');
+  const ym=(S.rsvMonth||defMonth).split('-'); const yy=+ym[0], mm=+ym[1]-1;
+  const mS=new Date(yy,mm,1).getTime(), mE=new Date(yy,mm+1,0).getTime();
+  const mLabel=yy+'年'+(mm+1)+'月';
+  let h=`<div class="ctrl-bar no-print">${ymSelect('rsvMonth',yy,mm)}<span class="period-label">予約分析（${mLabel}）</span></div>`;
+  const rsv=D.rsvBq.filter(r=>r.t>=mS&&r.t<=mE);
+  if(!rsv.length){ h+=`<div class="panel no-print"><div class="panel-head"><div><h3>予約分析（${mLabel}：データなし）</h3></div></div></div>`; return h; }
+  const wnames=['日','月','火','水','木','金','土'];
+  const wd=Array.from({length:7},()=>({grp:0,ppl:0,net:0,same:0,cxl:0}));
+  let tGrp=0,tPpl=0,tNet=0,tSame=0,tCxl=0,tWalk=0;
+  const hist=new Array(24).fill(0); const sameWin={};
+  rsv.forEach(r=>{
+    const w=new Date(r.t).getDay(); const o=wd[w]; const cx=r.isCancelled;
+    const walk=/ウォークイン|walk-?in/i.test(r.channelNorm||r.channelRaw);
+    o.grp++; tGrp++;
+    if(!cx){ o.ppl+=r.partySize; tPpl+=r.partySize; }
+    if(cx){ o.cxl++; tCxl++; }
+    if(/ネット|net/i.test(r.channelNorm||r.channelRaw)){ o.net++; tNet++; }
+    if(walk) tWalk++;
+    const ct=r.createdAt?parseDateStr(r.createdAt):0;
+    if(!cx&&!walk&&ct&&ct===r.t){
+      o.same++; tSame++;
+      const mch=String(r.createdAt||'').match(/T(\d{1,2}):(\d{2})/);
+      const chHH=mch?(+mch[1]+(+mch[2])/60):-1;
+      if(chHH>=0&&chHH<24) hist[Math.floor(chHH)]++;
+      const wk=r.channelNorm||r.channelRaw||'（不明）'; sameWin[wk]=(sameWin[wk]||0)+1;
+    }
+  });
+  const pc=(x,z)=>z>0?(x/z*100).toFixed(0)+'%':'—';
+  const maxGrp=Math.max.apply(null,wd.map(o=>o.grp).concat([1]));
+  h+=`<div class="panel"><div class="panel-head"><div><h3>予約分析：曜日別（${mLabel}）</h3>
+    <div class="sub">出典：BigQuery stg_reservation（I-1自動取込）全${cnt(rsv.length)}件 ／ 当日予約率 ${pc(tSame,Math.max(tGrp-tCxl-tWalk,0))}（ウォークイン・キャンセル除く）／ キャンセル率 ${pc(tCxl,tGrp)}</div></div></div>
+  <div class="scroll-x"><table class="tbl"><thead><tr><th>曜日</th><th>予約組数</th><th></th><th>人数</th><th>ネット予約</th><th>当日予約</th><th>キャンセル</th><th>キャンセル率</th></tr></thead><tbody>`;
+  const expW=[];
+  [1,2,3,4,5,6,0].forEach(w=>{
+    const o=wd[w];
+    h+=`<tr><td>${wnames[w]}</td><td>${cnt(o.grp)}</td><td style="min-width:120px"><div style="background:#4c7d5c;height:10px;border-radius:3px;width:${Math.round(o.grp/maxGrp*100)}%"></div></td><td>${cnt(o.ppl)}</td><td>${cnt(o.net)}</td><td>${cnt(o.same)}</td><td>${cnt(o.cxl)}</td><td>${pc(o.cxl,o.grp)}</td></tr>`;
+    expW.push([wnames[w],o.grp,o.ppl,o.net,o.same,o.cxl,o.grp>0?(o.cxl/o.grp*100).toFixed(1)+'%':'']);
+  });
+  h+=`<tr class="total"><td>合計</td><td>${cnt(tGrp)}</td><td></td><td>${cnt(tPpl)}</td><td>${cnt(tNet)}</td><td>${cnt(tSame)}</td><td>${cnt(tCxl)}</td><td>${pc(tCxl,tGrp)}</td></tr></tbody></table></div></div>`;
+  EXPORT.push({ title:'予約分析 曜日別（'+mLabel+'）', headers:['曜日','予約組数','人数','ネット予約','当日予約','キャンセル','キャンセル率'], rows:expW });
+  const hmax=Math.max.apply(null,hist.concat([1])), hTot=hist.reduce((a,b)=>a+b,0);
+  if(hTot>0){
+    let lo=hist.findIndex(v=>v>0), hi2=23; while(hi2>0&&!hist[hi2])hi2--;
+    lo=Math.min(lo,10); hi2=Math.max(hi2,21);
+    const winTxt=Object.keys(sameWin).sort((a,b)=>sameWin[b]-sameWin[a]).map(k=>esc(k)+' '+sameWin[k]+'件').join('、');
+    h+=`<div class="panel"><div class="panel-head"><div><h3>当日予約：申込時刻の分布（${mLabel}）</h3>
+      <div class="sub">作成日＝来店日の予約 ${cnt(hTot)}件（ウォークイン・キャンセル除く）が何時に入ったか ／ 窓口内訳：${winTxt}</div></div></div>
+    <div style="display:flex;align-items:flex-end;gap:4px;height:130px;padding:8px 4px 0">`;
+    for(let hh=lo;hh<=hi2;hh++){
+      h+=`<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:2px;height:100%"><div style="font-size:10px;color:#8a7f6f">${hist[hh]||''}</div><div style="width:70%;background:${hist[hh]===hmax?'#b23b2e':'#4c7d5c'};border-radius:3px 3px 0 0;height:${Math.max(hist[hh]/hmax*80,2)}px"></div><div style="font-size:10px;color:#8a7f6f">${hh}時</div></div>`;
+    }
+    h+=`</div><div class="note-box" style="margin-top:8px">当日予約のピークは <b>${hist.indexOf(hmax)}時台</b>。その少し前の時間帯に空席情報の更新・SNS投稿・掲載枠の見直しを行うと当日集客に効きやすくなります。</div></div>`;
+    EXPORT.push({ title:'当日予約 申込時刻分布（'+mLabel+'）', headers:['時台','件数'], rows:hist.map((v,i)=>[i+'時',v]).filter(r=>r[1]>0) });
+  }
+  return h;
+}
+
 function viewPL(){
   const sc=scopeStores(); const selN=selStoreName();
   // 複数店舗の自由選択（2026-08-23追加）。業態・ブランドでの自動グルーピングではなく、

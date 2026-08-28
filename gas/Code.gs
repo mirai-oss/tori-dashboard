@@ -53,7 +53,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1', time: new Date().toISOString() });
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-rsv', time: new Date().toISOString() }); // rsv=A-6予約タブ用アクション追加（2026-08-28）のデプロイ確認用に更新
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'detailVsDailyDiag') return out(detailVsDailyDiag(p)); // 明細分析とダッシュボードの売上・客数・組数の差を実測で突合（専用トークン認証・読み取り専用・一時的）
@@ -70,6 +70,7 @@ function handle(p) {
     if (action === 'reportDataBQ') return out(reportDataBQ(p)); // Lark/Chatwork自動配信用の軽量レポート数値（専用トークン認証・ログイン不要・スプレッドシート不使用。2026-08-23追加）
     if (action === 'bqReconcileSales') return out(bqReconcileSales(p)); // BQとシートの突合（専用トークン認証・ログイン不要）
     if (action === 'bqSyncPL') return out(bqSyncPL(p)); // PL経費(DB_PL)のBQミラー同期（専用トークン認証・ログイン不要）
+    if (action === 'bqSyncReservation') return out(bqSyncReservation(p)); // 予約(stg_reservation)のBQミラー同期（専用トークン認証・ログイン不要。2026-08-28追加・A-6）
     if (action === 'perf') return out(perfDiag(p)); // パフォーマンス計測（専用トークン認証・ログイン不要・数字は返さず時間だけ）
     setupIfNeeded();
     if (action === 'login')  return out(login(p));
@@ -99,6 +100,7 @@ function handle(p) {
     if (action === 'refreshSpotPl') return out(refreshSpotPl(p, session)); // スポット人件費→月次PLへ今すぐ反映（画面の更新ボタン用）
     if (action === 'bqGetDeposit') return out(bqGetDeposit(p, session)); // 入金管理タブ：入金DBのBQミラーを読む（データソース切替フラグ用）
     if (action === 'bqGetMedia') return out(bqGetMedia(p, session)); // 媒体別日次：媒体別DBのBQミラーを読む（ログイン直後の同期エラー対策・2026-08-23追加）
+    if (action === 'bqGetReservation') return out(bqGetReservation(p, session)); // 予約タブ：stg_reservationのBQミラーを読む（2026-08-28追加・A-6）
     if (action === 'dataFreshness') return out(dataFreshness(p, session)); // データ最新日・BQ同期時刻の表示用（実装指示書_ダッシュボード高速化タスク1・2026-08-23追加）
     if (action === 'accounts') return out(listAccounts(session));
     if (action === 'saveAccount')   return out(saveAccount(p, session));
@@ -1396,6 +1398,142 @@ var BQ_STG_LOAN_SCHEMA = [
   { name: 'corp_name', type: 'STRING' }, { name: 'principal_amount', type: 'NUMERIC' },
   { name: 'memo', type: 'STRING' }
 ];
+
+// ================== 予約（stg_reservation。2026-08-28追加・A-6） ==================
+// I-1（レーンI・担当D兼任・ns-daily-import）が食べログノート/ダイニー予約台帳から日次で
+// Supabase「rsv_reservations」へ書き込み済み（Sync4宣言済み・WORKLOG 2026-08-28参照）。
+// ここではそれをBigQueryへミラーする。他のsales系ミラーと同じ「毎回WRITE_TRUNCATE全置換」方針だが、
+// データ源がこのプロジェクトのスプレッドシートではなくSupabase（外部REST API）のため、
+// bqSheetToCsv_の代わりにUrlFetchAppで取得してからCSV化する点が異なる。
+// 個人情報（予約メモ・お客様名・お客様名フリガナ）はBQに入れない（設計書§8.4の方針。Supabase側限定）。
+var BQ_RESERVATION_SCHEMA = [
+  { name: 'reservation_key', type: 'STRING' }, { name: 'store_id', type: 'STRING' },
+  { name: 'source', type: 'STRING' }, { name: 'store_account', type: 'STRING' },
+  { name: 'source_month', type: 'DATE' }, { name: 'visit_date', type: 'DATE' },
+  { name: 'visit_time', type: 'STRING' }, { name: 'stay_duration_min', type: 'INTEGER' },
+  { name: 'party_size', type: 'INTEGER' }, { name: 'child_count', type: 'INTEGER' },
+  { name: 'status_raw', type: 'STRING' }, { name: 'status_normalized', type: 'STRING' },
+  { name: 'channel_raw', type: 'STRING' }, { name: 'channel_normalized', type: 'STRING' },
+  { name: 'table_no', type: 'STRING' }, { name: 'course', type: 'STRING' },
+  { name: 'menu', type: 'STRING' }, { name: 'attribute', type: 'STRING' },
+  { name: 'tag', type: 'STRING' }, { name: 'customer_no', type: 'STRING' },
+  { name: 'vpoint', type: 'STRING' }, { name: 'created_at_source', type: 'TIMESTAMP' },
+  { name: 'cancel_at', type: 'TIMESTAMP' }, { name: 'first_imported_at', type: 'TIMESTAMP' },
+  { name: 'cancel_detected_at', type: 'TIMESTAMP' }, { name: 'imported_at', type: 'TIMESTAMP' }
+];
+// bqCsvCell_はSTRING/DATE/INTEGER/NUMERIC/FLOAT64のみ対応でTIMESTAMPを扱えないため専用に用意。
+function bqReservationCsvCell_(v, type) {
+  if (v === '' || v === null || v === undefined) return '';
+  if (type === 'STRING') return '"' + String(v).replace(/"/g, '""').replace(/\r?\n/g, ' ') + '"';
+  if (type === 'DATE') return String(v).slice(0, 10);
+  if (type === 'TIMESTAMP') return String(v); // ISO8601文字列をそのまま渡す（BQ側でパース）
+  var n = Number(v);
+  if (!isFinite(n)) return '';
+  return type === 'INTEGER' ? String(Math.round(n)) : n.toFixed(6);
+}
+// Supabase rsv_reservationsを全件取得（1000件ずつRangeヘッダーでページング）。
+// 認証情報はGASのScript Properties（SUPABASE_URL/SUPABASE_SERVICE_KEY）に別途登録が必要
+// （コードには書かない。値はns-daily-importの.envと同じものを使えばよい）。
+function bqFetchReservationRows_() {
+  var supaUrl = PropertiesService.getScriptProperties().getProperty('SUPABASE_URL');
+  var supaKey = PropertiesService.getScriptProperties().getProperty('SUPABASE_SERVICE_KEY');
+  if (!supaUrl || !supaKey) throw new Error('Script PropertiesにSUPABASE_URL/SUPABASE_SERVICE_KEYが未設定です');
+  var cols = BQ_RESERVATION_SCHEMA.map(function (f) { return f.name; }).join(',');
+  var pageSize = 1000, offset = 0, all = [];
+  while (true) {
+    var res = UrlFetchApp.fetch(
+      supaUrl + '/rest/v1/rsv_reservations?select=' + encodeURIComponent(cols) +
+      '&order=source_month.asc,store_account.asc,reservation_key.asc',
+      { headers: { apikey: supaKey, Authorization: 'Bearer ' + supaKey, Range: offset + '-' + (offset + pageSize - 1) },
+        muteHttpExceptions: true }
+    );
+    var code = res.getResponseCode();
+    if (code !== 200 && code !== 206) throw new Error('Supabase取得失敗[' + code + ']: ' + res.getContentText().slice(0, 300));
+    var rows = JSON.parse(res.getContentText() || '[]');
+    all = all.concat(rows);
+    if (rows.length < pageSize) break;
+    offset += pageSize;
+  }
+  return all;
+}
+// 書き込み: token認証・ログイン不要（bqSyncSales等と同じ）。ns-daily-import側の日次スケジュールから
+// 予約取込の後に呼んでもらう想定（担当Dへの依頼。WORKLOG該当エントリ参照）。
+function bqSyncReservation(p) {
+  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+  if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
+  try {
+    var rows = bqFetchReservationRows_();
+    var lines = rows.map(function (r) {
+      return BQ_RESERVATION_SCHEMA.map(function (f) { return bqReservationCsvCell_(r[f.name], f.type); }).join(',');
+    });
+    var res = bqLoadSheetToTable_(lines.join('\n'), 'stg_reservation', BQ_RESERVATION_SCHEMA);
+    if (res && res.ok) bqCacheGenBump_('reservation');
+    return res;
+  } catch (e) {
+    return { ok: false, error: String(e && e.message || e) };
+  }
+}
+// 読み取り: ログイン必須・店舗スコープ制限。stg_reservationのstore_idはdinii.orders等と同じ店舗マスタ
+// （DB_店舗ID対応）を共有しているため、bqDetailSheets_の「明細店舗」と同じbqStoreMap_で店舗名に変換する。
+// 既定はキャンセル系ステータス(status_normalizedがcancelled_*)を除外（p.includeCancelled='true'で分析用に全件）。
+function bqGetReservation(p, session) {
+  try {
+    var sessStores = String(session && session.stores || '').trim();
+    var restricted = sessStores && sessStores !== '全店';
+    var storeMap = bqStoreMap_();
+    var allowIds = [];
+    if (restricted) {
+      var allowNames = sessStores.split(/[,、]/).map(function (s) { return s.trim(); }).filter(Boolean);
+      for (var id in storeMap) { if (allowNames.indexOf(storeMap[id]) >= 0) allowIds.push(id); }
+    }
+    var includeCancelled = String(p.includeCancelled) === 'true';
+    var HEADERS = ['予約No', '店舗ID', '店舗', '取込元', '来店日', '来店時間', '滞在時間', '人数', 'お子様人数',
+      'ステータス', 'ステータス正規化', '受付窓口', '受付窓口正規化', '卓', 'コース', 'メニュー', '予約属性', 'タグ',
+      '顧客No', '作成日時', 'キャンセル日時'];
+    // キーは'予約'にしない: 既存isRsvKey()が完全一致'予約'をヒットさせ、旧シート取込ingestRsv()が
+    // 誤ってこのBQデータを解釈してD.rsv（手動CSV取込側）を上書きしてしまう（設計書§8.9の並行稼働・
+    // 比較確認の方針に反する）。新タブ専用の別データとして明確に分離する。
+    if (restricted && !allowIds.length) return { ok: true, sheets: { reservationBq: [HEADERS] } };
+
+    var ck = bqCacheKey_('reservation', [bqCacheGen_('reservation'), includeCancelled ? 'all' : 'active',
+      restricted ? allowIds.slice().sort().join('.') : 'all']);
+    var cached = bqCacheGet_(ck);
+    if (cached) return cached;
+
+    var cols = ['reservation_key', 'store_id', 'source', 'visit_date', 'visit_time', 'stay_duration_min',
+      'party_size', 'child_count', 'status_raw', 'status_normalized', 'channel_raw', 'channel_normalized',
+      'table_no', 'course', 'menu', 'attribute', 'tag', 'customer_no', 'created_at_source', 'cancel_at'];
+    var where = [];
+    if (restricted) where.push("store_id IN ('" + allowIds.map(function (id) { return String(id).replace(/'/g, "''"); }).join("','") + "')");
+    if (!includeCancelled) where.push("status_normalized NOT LIKE 'cancelled%'");
+    var whereSql = where.length ? 'WHERE ' + where.join(' AND ') : '';
+    var sql = 'SELECT ' + cols.join(', ') + ' FROM `' + BQ_PROJECT + '.' + BQ_SALES_DATASET + '.stg_reservation` ' +
+      whereSql + ' ORDER BY visit_date, visit_time';
+    var rows = bqRows_(sql);
+    if (!rows) return { ok: false, error: 'BigQueryクエリ失敗' };
+
+    var out = [HEADERS];
+    for (var i = 1; i < rows.length; i++) {
+      var rec = {};
+      cols.forEach(function (c, idx) { rec[c] = rows[i][idx]; });
+      out.push([
+        rec.reservation_key, rec.store_id, storeMap[rec.store_id] || rec.store_id, rec.source,
+        rec.visit_date, rec.visit_time,
+        rec.stay_duration_min == null ? '' : Number(rec.stay_duration_min),
+        rec.party_size == null ? '' : Number(rec.party_size),
+        rec.child_count == null ? '' : Number(rec.child_count),
+        rec.status_raw, rec.status_normalized, rec.channel_raw, rec.channel_normalized,
+        rec.table_no, rec.course, rec.menu, rec.attribute, rec.tag, rec.customer_no,
+        rec.created_at_source, rec.cancel_at
+      ]);
+    }
+    var res = { ok: true, sheets: { reservationBq: out } };
+    bqCachePut_(ck, res);
+    return res;
+  } catch (e) {
+    return { ok: false, error: String(e && e.message || e) };
+  }
+}
 
 // ミラー対象一覧（src='local'はこのプロジェクトの自分のスプレッドシート。それ以外はopenByIdで開く）
 function bqSalesTargets_() {
