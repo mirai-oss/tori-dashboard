@@ -1089,8 +1089,11 @@ function bqCachePut_(key, obj) {
 }
 // 明細分析（対話的）：期間 from〜to・店舗で絞り、時間帯別/商品別/店舗別を集計して返す。
 // guests=客数・checks=組数は、店舗別(st)の集計だけレジ実績(fact_daily_store)の実数に差し替える
-// （2026-08-23〜）。時間帯別(hour)は日次粒度の実績と紐づけられないため、引き続きお通し数
-// ベースの推定（お通し=1人1品の慣習）・明細ベースの会計数のまま。
+// （2026-08-23〜。2026-08-30に部分差し替えへ変更）。実績が期間の一部までしか揃っていない場合は、
+// 揃っている範囲だけ実績値・残りはdinii明細からの推定を足し合わせる（「今月」表示は既定でtoが
+// 月末固定のため、月の途中は必ず一部未来分が推定になる。以前は全期間揃うまで丸ごと推定のままだった）。
+// 時間帯別(hour)は日次粒度の実績と紐づけられないため、引き続きお通し数ベースの推定
+// （お通し=1人1品の慣習）・明細ベースの会計数のまま。
 function bqDetail(p, session) {
   var from = String(p.from || '').slice(0, 10), to = String(p.to || '').slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) return { ok: false, error: 'bad date range' };
@@ -1163,24 +1166,37 @@ function bqDetail(p, session) {
     var item = bqRows_("SELECT menu, SUM(sales_incl) AS sales, SUM(price_excl*qty) AS sales_excl, SUM(qty) AS qty FROM " + T + " " + where + " GROUP BY menu ORDER BY sales DESC LIMIT 2000"); // 500だと全店・月間で商品数が超過し0円商品などが丸ごと欠落する
     var st = bqRows_("SELECT store_id, SUM(sales_incl) AS sales, SUM(price_excl*qty) AS sales_excl, " + VCHK + ", " + G + ", " + DRINK + ", " + KARA + ", " + FOOD + " FROM " + T + " " + where + " GROUP BY store_id ORDER BY sales DESC");
     if (st) {
-      var m = bqStoreMap_(); for (var r = 1; r < st.length; r++) st[r][0] = m[st[r][0]] || st[r][0]; if (st[0]) st[0][0] = '店舗';
+      var m = bqStoreMap_();
+      // 2026-08-30追加（担当D指摘）: dinii側店舗名(DB_店舗ID対応経由)とfact_daily_store側店舗名
+      // (store_aliases正規化済み)の突合が完全一致頼みだった。表記ゆれがあると下のrealMap/tailMapの
+      // 突合が静かに外れ（PL画面のresolveStore()と同種のバグ）、その店舗だけ実績への差し替えが
+      // 発火しなくなる。既存のbqStoreNameIndex_()/bqResolveStoreName_()（他のBQミラーで実績あり・
+      // 取得失敗時は無害にスキップされる設計）で正準化してから使う。
+      var snIdx = bqStoreNameIndex_();
+      for (var r = 1; r < st.length; r++) { st[r][0] = m[st[r][0]] || st[r][0]; st[r][0] = bqResolveStoreName_(snIdx, st[r][0]); }
+      if (st[0]) st[0][0] = '店舗';
       // 客数・組数は、dinii明細の「お通し」注文数からの推定ではなく、レジ実績(fact_daily_store)の
       // 実数に差し替える（2026-08-23変更・ユーザー指摘。Day4のBigQueryミラーで実績が取得できる
       // ようになったため）。店舗名で突合。時間帯別(hour)は日次粒度の実績と紐づけられないため、
       // 引き続きお通し数からの推定のまま。
       try {
         // fact_daily_storeは日次バッチ同期（Mac mini・毎日11時頃）のミラーのため、直近1日以上遅れることがある
-        // （同期ホストの再起動等で更に遅れる場合も）。指定期間の終端(to)までデータが揃っていない状態で
-        // 実績値に差し替えると、ダッシュボード（シート直読・ほぼリアルタイム）と比べて過少な数字になり、
-        // 「明細分析とダッシュボードの数字が全然違う」という混乱を生む。そのため、ミラーの最新日が
-        // 期間の終端(to)以降まで揃っている場合に限り実績値へ差し替える。揃っていなければ従来の推定値のまま。
+        // （同期ホストの再起動等で更に遅れる場合も）。
         // ※単純にMAX(date)を取ると、月末まで日付欄だけ先に埋まっているテンプレート行（実績はまだ0件）を
         //   拾ってしまい、常に「揃っている」と誤判定してガードが機能しなくなる（2026-08-23発覚・reportDataBQと
         //   同じ「実績が入っている行に限定」の対策を流用）。
         var maxRow = bqRows_("SELECT MAX(date) AS d FROM `" + BQ_PROJECT + "." + BQ_SALES_DATASET + ".fact_daily_store` WHERE net_sales > 0 OR guests_total > 0");
         var maxDate = (maxRow && maxRow[1] && maxRow[1][0]) ? String(maxRow[1][0]) : '';
-        if (maxDate && maxDate >= to) {
-          var realWhere = "WHERE date BETWEEN DATE('" + from + "') AND DATE('" + to + "')";
+        // 2026-08-30修正（担当D報告・原因: app.js detailRange()の既定「今月」表示はtoを月末固定で
+        // 送ってくる＝月の途中は必ずmaxDate<toになる）。従来は「toまで完全に揃っている場合のみ全置換」の
+        // all-or-nothingガードだったため、「今月」表示中は実績が1件もあってもほぼ常に発火せず、月全体・
+        // 全店が丸ごと推定値のまま表示され続けていた（実害：ダッシュボードと数字が食い違う）。
+        // 揃っている範囲[from, min(to,maxDate)]だけ実績値に差し替え、揃っていない残り(maxDate, to]は
+        // 従来どおりdinii明細からの推定を足し合わせる部分差し替えに変更（realTo>=fromの時だけ実施。
+        // maxDateがfromより前＝その期間はまだ実績が1件も無いなら、従来どおり全体を推定値のままにする）。
+        var realTo = (maxDate && maxDate < to) ? maxDate : to;
+        if (maxDate && realTo >= from) {
+          var realWhere = "WHERE date BETWEEN DATE('" + from + "') AND DATE('" + realTo + "')";
           if (restricted) {
             realWhere += " AND store_name IN ('" + allowNames.map(function (n) { return String(n).replace(/'/g, "''"); }).join("','") + "')";
           } else if (p.store && p.store !== 'all') {
@@ -1188,26 +1204,50 @@ function bqDetail(p, session) {
           }
           // 純売上(net_sales)は税抜(PLのFL比計算等で使われているのと同じ前提)。税込は概算(×1.1)で埋める。
           var real = bqRows_("SELECT store_name, SUM(guests_total) guests, SUM(parties_total) checks, SUM(net_sales) sales_excl FROM `" + BQ_PROJECT + "." + BQ_SALES_DATASET + ".fact_daily_store` " + realWhere + " GROUP BY store_name");
+          // realTo<to（＝実績が期間の終端まで揃っていない）の場合、揃っていない残り(realTo, to]分だけ
+          // dinii明細から同じ推定ロジックで計算し、実績に足し合わせる（store_idの明細をstore_name突合するため
+          // bqStoreMap_()で変換）。realTo>=to（全期間揃っている）ならtailは空のままでよい。
+          var tailMap = {};
+          if (realTo < to) {
+            var tailWhere = "WHERE business_date > DATE('" + realTo + "') AND business_date <= DATE('" + to + "')";
+            if (restricted) {
+              tailWhere += " AND store_id IN ('" + allowIds.join("','") + "')";
+            } else if (p.store && p.store !== 'all') {
+              var tid = reverseStoreId_(p.store);
+              if (tid) tailWhere += " AND store_id = '" + String(tid).replace(/'/g, '') + "'";
+            }
+            var tail = bqRows_("SELECT store_id, SUM(price_excl*qty) AS sales_excl, " + VCHK + ", " + G + " FROM " + T + " " + tailWhere + " GROUP BY store_id");
+            if (tail) {
+              var sm = bqStoreMap_();
+              for (var ti = 1; ti < tail.length; ti++) {
+                var tname = sm[tail[ti][0]] || tail[ti][0];
+                tailMap[tname] = { sales_excl: Number(tail[ti][1] || 0), checks: Number(tail[ti][2] || 0), guests: Number(tail[ti][3] || 0) };
+              }
+            }
+          }
           if (real) {
             var realMap = {};
             for (var ri = 1; ri < real.length; ri++) realMap[real[ri][0]] = { guests: Number(real[ri][1] || 0), checks: Number(real[ri][2] || 0), sales_excl: Number(real[ri][3] || 0) };
             for (var si = 1; si < st.length; si++) {
               var rm = realMap[st[si][0]];
-              if (!rm) continue;
-              // 客数・組数は実績値に差し替え
-              st[si][3] = rm.checks; st[si][4] = rm.guests;
-              // 売上も、明細(dinii)の積み上げではなくレジ実績(fact_daily_store)に差し替える
-              // （2026-08-23追加・ユーザーから「客数だけでなく売上もダッシュボードと全然違う」と指摘。
-              // dinii明細は一部の売上しか拾えておらず、店舗によっては実績の6〜7割程度しか積み上がらないと判明）。
-              // ドリンク/フード/カラオケの内訳は明細からしか出せないため、内訳どうしの構成比は維持したまま
-              // 合計が実績の税抜売上に一致するよう比例配分し直す。
+              if (!rm) continue; // その店舗の実績行が1件も無い（新規店舗等）ならこれまでどおり全期間推定のまま
+              var tm = tailMap[st[si][0]] || { guests: 0, checks: 0, sales_excl: 0 };
+              // 客数・組数は「揃っている範囲は実績値・揃っていない残りはdinii明細からの推定」を合算
+              var finalChecks = rm.checks + tm.checks;
+              var finalGuests = rm.guests + tm.guests;
+              var finalSalesExcl = rm.sales_excl + tm.sales_excl;
+              st[si][3] = finalChecks; st[si][4] = finalGuests;
+              // 売上も同様に合算。明細(dinii)は一部の売上しか拾えておらず店舗によっては実績の6〜7割程度
+              // しか積み上がらないと判明済み（2026-08-23）のため、ドリンク/フード/カラオケの内訳は明細からしか
+              // 出せない前提で、内訳どうしの構成比は維持したまま合計が上のfinalSalesExclに一致するよう
+              // 比例配分し直す（oldExclは全期間dinii推定の元の合計＝差し替え前のst[si][2]）。
               var oldExcl = Number(st[si][2]) || 0;
-              var scale = oldExcl > 0 ? (rm.sales_excl / oldExcl) : 1;
+              var scale = oldExcl > 0 ? (finalSalesExcl / oldExcl) : 1;
               st[si][5] = Math.round((Number(st[si][5]) || 0) * scale); // ドリンク
               st[si][6] = Math.round((Number(st[si][6]) || 0) * scale); // カラオケ
               st[si][7] = Math.round((Number(st[si][7]) || 0) * scale); // フード
-              st[si][2] = rm.sales_excl;                                // 売上（税別）
-              st[si][1] = Math.round(rm.sales_excl * 1.1);              // 売上（税込・概算＝税別×1.1）
+              st[si][2] = finalSalesExcl;                               // 売上（税別）
+              st[si][1] = Math.round(finalSalesExcl * 1.1);             // 売上（税込・概算＝税別×1.1）
             }
           }
         }
