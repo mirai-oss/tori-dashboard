@@ -4416,18 +4416,31 @@ function rsvCalendarHtml_(date,rows){
   h+=`</div></div>`;
   return h;
 }
+// createdAt（BQのcreated_at_source。食べログノート等のCSV「作成日／作成時間」由来）を「8/27 14:23」の
+// ような表示用文字列にする。2026-08-30追加: ユーザーから「食べログノートと当日予約の数字が合わない、
+// 本当に作成日=来店日で判定しているのか確認したい」と指摘があり、予約リストに作成日そのものを出して
+// 突き合わせできるようにした（rsvIsSameDay_の判定ロジック自体は変更していない）。
+function rsvCreatedAtDisp_(r){
+  if(!r.createdAt) return '—';
+  const m=String(r.createdAt).match(/(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}))?/);
+  if(!m) return esc(r.createdAt);
+  return (+m[2])+'/'+(+m[3])+(m[4]?' '+m[4]+':'+m[5]:'');
+}
 function rsvListHtml_(dayRows){
   const rows=dayRows.slice().sort((a,b)=>a.hh-b.hh);
   if(!rows.length) return `<div class="panel no-print"><div class="panel-head"><div><h3>この日の予約はありません</h3></div></div></div>`;
-  let h=`<div class="panel"><div class="panel-head"><div><h3>予約リスト</h3></div></div>
-    <div class="scroll-x"><table class="tbl"><thead><tr><th>時刻</th><th>店舗</th><th>人数</th><th>受付窓口</th><th>コース</th><th>メニュー</th><th>卓</th><th>ステータス</th></tr></thead><tbody>`;
+  let h=`<div class="panel"><div class="panel-head"><div><h3>予約リスト</h3>
+    <div class="sub">「作成日」＝取込元（食べログノート等）の作成日時。来店日と同じ日の予約に <span style="color:var(--accent,#b5502f);font-weight:700">オレンジ文字</span> を付けています（＝当日予約と判定した行）</div></div></div>
+    <div class="scroll-x"><table class="tbl"><thead><tr><th>時刻</th><th>店舗</th><th>人数</th><th>受付窓口</th><th>コース</th><th>メニュー</th><th>卓</th><th>ステータス</th><th>作成日</th></tr></thead><tbody>`;
   const exp=[];
   rows.forEach(r=>{
-    h+=`<tr style="cursor:pointer" onclick="App.rsvOpenDetail('${esc(r.key)}')"><td>${esc(r.timeStr)}</td><td>${esc(r.store)}</td><td>${cnt(r.partySize)}${r.childCount?'（子'+r.childCount+'）':''}</td><td>${esc(r.channelNorm||r.channelRaw)}</td><td>${esc(r.course||'')}</td><td>${esc(r.menu||'')}</td><td>${esc(r.tableNo||'')}</td><td>${esc(r.statusRaw)}</td></tr>`;
-    exp.push([r.timeStr,r.store,r.partySize,r.channelNorm||r.channelRaw,r.course||'',r.menu||'',r.tableNo||'',r.statusRaw]);
+    const createdDisp=rsvCreatedAtDisp_(r);
+    const isSame=rsvIsSameDay_(r);
+    h+=`<tr style="cursor:pointer" onclick="App.rsvOpenDetail('${esc(r.key)}')"><td>${esc(r.timeStr)}</td><td>${esc(r.store)}</td><td>${cnt(r.partySize)}${r.childCount?'（子'+r.childCount+'）':''}</td><td>${esc(r.channelNorm||r.channelRaw)}</td><td>${esc(r.course||'')}</td><td>${esc(r.menu||'')}</td><td>${esc(r.tableNo||'')}</td><td>${esc(r.statusRaw)}</td><td${isSame?' style="color:var(--accent,#b5502f);font-weight:700"':''}>${createdDisp}</td></tr>`;
+    exp.push([r.timeStr,r.store,r.partySize,r.channelNorm||r.channelRaw,r.course||'',r.menu||'',r.tableNo||'',r.statusRaw,r.createdAt||'']);
   });
   h+=`</tbody></table></div></div>`;
-  EXPORT.push({ title:'予約リスト', headers:['時刻','店舗','人数','受付窓口','コース','メニュー','卓','ステータス'], rows:exp });
+  EXPORT.push({ title:'予約リスト', headers:['時刻','店舗','人数','受付窓口','コース','メニュー','卓','ステータス','作成日'], rows:exp });
   return h;
 }
 // 予約詳細モーダル（読み取り専用。2026-08-29追加）: タイムライン/リストの予約をクリックすると開く。
@@ -4459,6 +4472,7 @@ function rsvDetailModal(){
       ${row('ステータス', esc(r.statusRaw||''))}
       ${row('顧客No', esc(r.customerNo||''))}
       ${row('取込元', r.source==='dinii'?'ダイニー予約台帳':r.source==='tabelog_note'?'食べログノート':esc(r.source||''))}
+      ${row('作成日', rsvCreatedAtDisp_(r)+(rsvIsSameDay_(r)?'<span style="color:var(--accent,#b5502f);font-weight:700;margin-left:6px">（当日予約）</span>':''))}
     </table>
     <div class="note-box" style="margin-top:10px;font-size:11.5px">お客様名の表示は今後の対応予定です（現在はダイニー分のみSupabaseに限定保存・BigQueryには入れていません）。</div>
     <div class="modal-btns"><button class="icon-btn" onclick="App.closeModal()">閉じる</button></div>
