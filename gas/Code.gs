@@ -118,6 +118,8 @@ function handle(p) {
     if (action === 'saveAdFee') return out(saveAdFee(p, session)); // 広告費の手入力（管理シート💾広告費DBへupsert）
     if (action === 'saveAdSales') return out(saveAdSales(p, session)); // 売上・反響の手入力（管理シート💾売上DBへupsert）
     if (action === 'importReservations') return out(importReservations(p, session)); // 予約CSV取込（管理シート💾予約DBへ追記）
+    if (action === 'saveTanka')   return out(saveTanka(p, session));   // 単価設定の保存（管理シート⚙単価設定へupsert。2026-08-30追加）
+    if (action === 'deleteTanka') return out(deleteTanka(p, session)); // 単価設定の削除（2026-08-30追加）
     if (action === 'saveDepNote') return out(saveDepNote(p, session)); // 入金備考の保存（社長・本部のみ）
     if (action === 'setPlTaxRate') return out(setPlTaxRate(p, session)); // 簡易キャッシュフローの法人税率設定（社長・本部のみ。2026-08-26追加・A-5）
     if (action === 'saveWeekly')   return out(saveWeekly(p, session));   // 週報の提出・更新
@@ -3910,6 +3912,60 @@ function importReservations(p, session) {
   });
   if (outRows.length) sh.getRange(sh.getLastRow() + 1, 1, outRows.length, width).setValues(outRows);
   return { ok: true, added: outRows.length, dup: dup, store: store };
+}
+
+/* ---- 単価設定（⚙単価設定）のダッシュボードからの編集 ----
+ * 2026-08-30追加。これまで「⚙単価設定」タブはユーザーがスプレッドシートを直接編集する運用
+ * だったが、ユーザーから「スプレッドシートではなくダッシュボード上で設定できるようにしてほしい」
+ * と依頼があり追加。保存先は従来どおり同じ⚙単価設定タブ（＝新しいデータ源は増やさない。
+ * getData()のMGMT_TABS経由でこれまでどおりD.tanka等に反映される）。 */
+// 店舗が空欄（＝全店共通）の行は社長・本部のみ編集可、店舗が指定されていればその店舗の担当者も編集可
+function tankaEditAllowed_(session, store) {
+  if (!store) return isAdmin(session);
+  return scopeAllows_(session, store);
+}
+function saveTanka(p, session) {
+  var store = String(p.store || '').trim();
+  var media = String(p.media || '').trim();
+  var price = Number(p.price);
+  if (!(price > 0)) return { ok: false, error: '設定単価は1以上の数字で入力してください' };
+  var avg = Number(p.avg) || 0;
+  var cvRaw = Number(p.cv) || 0;
+  var cv = cvRaw >= 1 ? cvRaw / 100 : cvRaw; // 30 でも 0.3 でもOK（30以上=%表記とみなす）
+  var memo = String(p.memo || '').trim();
+  var oldStore = String(p.oldStore || '').trim();
+  var oldMedia = String(p.oldMedia || '').trim();
+  if (!tankaEditAllowed_(session, store)) return { ok: false, error: '全店共通の単価設定は社長・本部のみ編集できます' };
+  if (oldStore && oldStore !== store && !tankaEditAllowed_(session, oldStore)) return { ok: false, error: '元の店舗の単価設定を編集する権限がありません' };
+  var mss = mgmtOpen(); if (!mss) return { ok: false, error: '管理シートを開けません（MGMT_SHEET_ID）' };
+  mgmtEnsure(mss);
+  var sh = mgmtFindTab(mss, /単価設定/); if (!sh) return { ok: false, error: '⚙単価設定タブが見つかりません' };
+  var last = sh.getLastRow(), found = -1;
+  if (last >= 2) {
+    var vals = sh.getRange(2, 1, last - 1, 2).getValues();
+    for (var i = 0; i < vals.length; i++) {
+      if (String(vals[i][0] || '').trim() === oldStore && String(vals[i][1] || '').trim() === oldMedia) { found = i + 2; break; }
+    }
+  }
+  var row = [store, media, price, avg || '', cv || '', memo];
+  var target = found > 0 ? found : sh.getLastRow() + 1;
+  sh.getRange(target, 1, 1, 6).setValues([row]);
+  return { ok: true };
+}
+function deleteTanka(p, session) {
+  var store = String(p.store || '').trim();
+  var media = String(p.media || '').trim();
+  if (!tankaEditAllowed_(session, store)) return { ok: false, error: 'この単価設定を削除する権限がありません' };
+  var mss = mgmtOpen(); if (!mss) return { ok: false, error: '管理シートを開けません（MGMT_SHEET_ID）' };
+  var sh = mgmtFindTab(mss, /単価設定/); if (!sh) return { ok: false, error: '⚙単価設定タブが見つかりません' };
+  var last = sh.getLastRow();
+  if (last >= 2) {
+    var vals = sh.getRange(2, 1, last - 1, 2).getValues();
+    for (var i = 0; i < vals.length; i++) {
+      if (String(vals[i][0] || '').trim() === store && String(vals[i][1] || '').trim() === media) { sh.deleteRow(i + 2); return { ok: true }; }
+    }
+  }
+  return { ok: false, error: '該当の設定が見つかりませんでした（既に削除済みかもしれません）' };
 }
 
 // ================== イベント自動取得（横浜アリーナ等） ==================

@@ -45,6 +45,7 @@ const FEATURE_LABELS = {
   adInput:'広告費を入力（広告管理）',
   adSales:'売上を入力（広告管理）',
   rsvImport:'予約CSVを取込（広告管理）',
+  tankaEdit:'単価設定を編集（広告管理）',   // 店舗×媒体の想定客単価。予約売上見込の算出にも使う（2026-08-30追加）
   spot:'スポット人件費を入力',   // タイミー等の単発人件費（2026-08-23追加）
 };
 const ALL_FEATURES = Object.keys(FEATURE_LABELS);
@@ -180,7 +181,7 @@ const S = {
   useBqDaily:(localStorage.getItem(LS.dailyBq)==='1'),   // 推移分析のデータソース切替（既定=false=シート。2026-08-22追加）
   embed:false, pendingTab:'',   // F-3(ns-portal統合ポータルシェル・2026-08-24追加): ?embed=1でヘッダー/ナビ非表示、?tab=でタブ直接指定
 };
-const D = { daily:[], media:[], deposit:[], review:[], ad:[], adfx:[], tanka:{}, pl:[], dinii:[], diniiCols:[], targets:[], targetsM:[], events:[], extra:{}, storeAlias:{}, storeParent:{}, mediaClass:{}, adMediaMaster:[], adPlanMaster:{}, adStoreMaster:[], subItemMaster:{}, mfCategoryMap:{}, holidays:null, detailData:null, detailKey:'', detailLoading:'', refDate:null, maxDate:null,
+const D = { daily:[], media:[], deposit:[], review:[], ad:[], adfx:[], tanka:{}, tankaRows:[], tankaAvg:{}, tankaCv:{}, pl:[], dinii:[], diniiCols:[], targets:[], targetsM:[], events:[], extra:{}, storeAlias:{}, storeParent:{}, mediaClass:{}, adMediaMaster:[], adPlanMaster:{}, adStoreMaster:[], subItemMaster:{}, mfCategoryMap:{}, holidays:null, detailData:null, detailKey:'', detailLoading:'', refDate:null, maxDate:null,
   spot:[], spotBqLoading:false, spotBqErr:'',
   loanPrincipal:[], loanBqLoading:false, loanBqErr:'', taxRate:0.34,   // A-5(2026-08-26追加): 簡易キャッシュフロー用
   wkTpl:{}, wkRep:[], wkAns:{}, wkFb:{}, roleDef:{}, depNote:{}, dailyBqLoading:false, dailyBqErr:'', plBqLoading:false, plBqErr:'', storeDirectory:null,
@@ -561,21 +562,25 @@ function ingestTanka(rows){
   if(!rows||!rows.length) return false;
   const H=rows[0].map(h=>String(h).trim());
   let iS=colOf(H,'店舗'), iM=colOf(H,'媒体'), iV=colAny(H,['設定単価','客単価','単価']);
-  let iAvg=colAny(H,['平均1組人数','平均１組人数','1組人数','１組人数','組人数']), iCv=colAny(H,['電話CV','電話ＣＶ','電話成約']);
+  let iAvg=colAny(H,['平均1組人数','平均１組人数','1組人数','１組人数','組人数']), iCv=colAny(H,['電話CV','電話ＣＶ','電話成約']), iMemo=colOf(H,'メモ');
   let start=1;
-  if(iV<0){ iS=0;iM=1;iV=2;start=0; iAvg=-1;iCv=-1; }   // 見出しなし＝A:店舗 B:媒体 C:単価とみなす
-  const map={}, avg={}, cv={}; let n=0;
+  if(iV<0){ iS=0;iM=1;iV=2;start=0; iAvg=-1;iCv=-1;iMemo=-1; }   // 見出しなし＝A:店舗 B:媒体 C:単価とみなす
+  const map={}, avg={}, cv={}, list=[]; let n=0;
   for(let i=start;i<rows.length;i++){
     const c=rows[i]; const v=num(c[iV]);
-    const st=String(iS>=0?c[iS]||'':'').trim(), md=canonMedia(String(iM>=0?c[iM]||'':'').trim());
-    const key=st+'|'+md;
-    if(iAvg>=0){ const a=num(c[iAvg]); if(a>0) avg[key]=a; }
-    if(iCv>=0){ let z=num(c[iCv]); if(z>0){ if(z>=1)z=z/100; cv[key]=z; } }  // 30% でも 0.3 でもOK（1以上＝%表記とみなす）
+    const stRaw=String(iS>=0?c[iS]||'':'').trim(), mdRaw=String(iM>=0?c[iM]||'':'').trim();
+    const md=canonMedia(mdRaw);
+    const key=stRaw+'|'+md;
+    let a=0,z=0;
+    if(iAvg>=0){ a=num(c[iAvg]); if(a>0) avg[key]=a; }
+    if(iCv>=0){ z=num(c[iCv]); if(z>0){ if(z>=1)z=z/100; cv[key]=z; } }  // 30% でも 0.3 でもOK（1以上＝%表記とみなす）
     if(!(v>0))continue;
     map[key]=v; n++;
+    // 単価設定モーダル（App.tankaEdit系）の一覧・編集フォーム用に生の行も保持（店舗/媒体はcanonMedia前の原文）
+    list.push({ store:stRaw, media:mdRaw, price:v, avg:a||0, cv:z>=1?z/100:z||0, memo:iMemo>=0?String(c[iMemo]||'').trim():'' });
   }
   if(!n){ D.diag['単価設定']='0件'; return false; }
-  D.tanka=map; D.tankaAvg=avg; D.tankaCv=cv; D.diag['単価設定']='OK '+n+'件'; return true;
+  D.tanka=map; D.tankaAvg=avg; D.tankaCv=cv; D.tankaRows=list; D.diag['単価設定']='OK '+n+'件'; return true;
 }
 // 設定単価を引く：店舗×媒体 → 店舗のみ → 全店×媒体 → 全店共通 の順
 function tankaOf(store,cm){
@@ -1134,7 +1139,7 @@ function ingestStoreParent(rows){
   return map;
 }
 function ingestSheets(sheets, partial){
-  if(!partial){ D.extra={}; D.diag={}; D.receivedKeys=Object.keys(sheets); D.ad=[]; D.adSrc=''; D.adfx=[]; D.tanka={}; D.rsv=[]; D.pl=[]; D.spot=[]; D.loanPrincipal=[]; D.dinii=[]; D.targets=[]; D.targetsM=[]; D.events=[]; D.storeAlias={}; D.storeParent={}; D.adMediaMaster=[]; D.adPlanMaster={}; D.adStoreMaster=[]; D.subItemMaster={}; D.mfCategoryMap={}; }  // 広告・PL・スポット人件費・借入返済元金・ダイニー・目標・対応表・親子・補助科目/MF科目対応マスタはフル受信のたびに入れ替え
+  if(!partial){ D.extra={}; D.diag={}; D.receivedKeys=Object.keys(sheets); D.ad=[]; D.adSrc=''; D.adfx=[]; D.tanka={}; D.tankaRows=[]; D.tankaAvg={}; D.tankaCv={}; D.rsv=[]; D.pl=[]; D.spot=[]; D.loanPrincipal=[]; D.dinii=[]; D.targets=[]; D.targetsM=[]; D.events=[]; D.storeAlias={}; D.storeParent={}; D.adMediaMaster=[]; D.adPlanMaster={}; D.adStoreMaster=[]; D.subItemMaster={}; D.mfCategoryMap={}; }  // 広告・PL・スポット人件費・借入返済元金・ダイニー・目標・対応表・親子・補助科目/MF科目対応マスタはフル受信のたびに入れ替え
   else { D.receivedKeys=(D.receivedKeys||[]).concat(Object.keys(sheets)); }
   const known=['daily','media','deposit','review','ad','広告'];
   if(!partial){ known.forEach(k=>{ if(!(k in sheets)) D.diag[k]='シート未受信（接続設定のシート名を確認）'; }); }
@@ -3359,6 +3364,7 @@ function viewAd(){
     return storeSegHtml()+`<div class="ctrl-bar no-print">
       ${canUse('adInput')?`<button class="icon-btn primary" onclick="App.openAdInput()">✎ 広告費を入力</button>`:''}
       ${canUse('rsvImport')?`<button class="icon-btn" onclick="App.openRsvImport()">⬆ 予約CSVを取込</button>`:''}
+      ${canUse('tankaEdit')?`<button class="icon-btn" onclick="App.openTankaSettings()">⚙ 単価設定</button>`:''}
     </div><div class="panel"><div class="panel-head"><div><h3>広告管理</h3><div class="sub">実データ（DB_広告シート）のみ表示・サンプルは入っていません</div></div></div>
     ${diagBox||`<div class="note-box">
       広告データはまだ接続されていません。スプレッドシートに <code>DB_広告</code> という名前のシートを作り、
@@ -3414,6 +3420,7 @@ function viewAd(){
     ${canUse('adInput')?`<button class="icon-btn primary" onclick="App.openAdInput()">✎ 広告費を入力</button>`:''}
     ${canUse('adSales')?`<button class="icon-btn primary" onclick="App.openAdSales()">✎ 売上を入力</button>`:''}
     ${canUse('rsvImport')?`<button class="icon-btn" onclick="App.openRsvImport()">⬆ 予約CSVを取込</button>`:''}
+    ${canUse('tankaEdit')?`<button class="icon-btn" onclick="App.openTankaSettings()">⚙ 単価設定</button>`:''}
     <span class="period-label">広告費用対効果（${mLabel}${selN?' ／ '+esc(selN):''}）</span></div>`;
   // データの出どころを見える化：この画面の数字がどこから来ているかを表示
   let a0=0,a1=0; for(const r of D.ad){ if(!a0||r.t<a0)a0=r.t; if(r.t>a1)a1=r.t; }
@@ -3516,7 +3523,7 @@ function viewAd(){
     h+=`<tr class="total"><td>合計</td><td>${yen(cur.ad)}</td><td>${fmt0(T.access)}</td><td>${fmt0(T.grp)}</td><td>${fmt0(T.ppl)}</td><td>${fmt0(T.tel)}</td><td>${pct(T.grp,T.access)}</td><td>${cpa(cur.ad,T.grp)}</td><td>${cpa(cur.ad,T.ppl)}</td><td>${T.exp>0?yen(T.exp):'—'}</td><td>${roasBadge(cur.ad,T.exp)}</td><td class="mut">${cur.medNet>0?yen(cur.medNet):'—'}</td></tr></tbody></table></div>`;
     if(fx.noTanka.size){
       h+=`<div class="note-box" style="margin-top:12px"><b style="color:#b5502f">⚠ 設定単価が未登録のため予想売上に入っていない組合せ：</b>${Array.from(fx.noTanka).slice(0,8).map(esc).join('、')}${fx.noTanka.size>8?' ほか':''}<br>
-      <code>⚙単価設定</code> タブ（店舗名／媒体／設定単価／平均1組人数／電話CV）に行を追加してください（店舗名空欄＝全店共通）。</div>`;
+      ${canUse('tankaEdit')?'上の「⚙ 単価設定」ボタンから追加してください（店舗空欄＝全店共通）。':'<code>⚙単価設定</code> タブ（店舗名／媒体／設定単価／平均1組人数／電話CV）に行を追加してください（店舗名空欄＝全店共通）。'}</div>`;
     }
     h+=`</div>`;
     EXPORT.push({ title:'ネット予約ベース費用対効果（'+mLabel+'）', headers:['媒体','広告費','アクセス','予約組数','予約人数','電話','CVR','CPA組','CPA人','予想売上','想定ROAS','参考レジ実績'], rows:expF });
@@ -4032,14 +4039,18 @@ function rsvMediaHistAvgPrice_(store,ch){
   });
   return guests>0 ? Math.round(net/guests) : 0;
 }
-// 1件の予約の見込売上（単価×人数）。①コース/メニュー名の金額 ②既存の⚙単価設定(店舗×媒体)
-// ③直近実績からの自動算出（rsvMediaHistAvgPrice_） の順で単価を決める。どれも無ければ0（無理に推測しない）。
+// 1件の予約の見込売上（単価×人数）。①コース/メニュー名の金額 ②直近実績からの自動算出
+// （rsvMediaHistAvgPrice_・店舗×媒体の実売上÷人数） ③（実績が無い組合せだけ）⚙単価設定の手動設定値
+// の順で単価を決める。どれも無ければ0（無理に推測しない）。
+// 2026-08-30: 当初は②③が逆（手動設定を実績より優先）だったが、ユーザーから「実績データを優先して
+// ほしい」と明確な希望があり順序を入れ替えた。単価設定（⚙単価設定・App.openTankaSettings）は
+// 電話予約など実績データが取れない組合せの補完用として引き続き使う。
 function rsvEstRevenue_(r){
   if(r.isCancelled) return 0;
   const ch=canonMedia(r.channelNorm||r.channelRaw||'');
   let unit=rsvCoursePrice_(r.course)||rsvCoursePrice_(r.menu);
-  if(!unit) unit=tankaOf(r.store,ch);
   if(!unit) unit=rsvMediaHistAvgPrice_(r.store,ch);
+  if(!unit) unit=tankaOf(r.store,ch);
   return unit>0 ? unit*r.partySize : 0;
 }
 // 前年同曜日（364日前＝ちょうど52週前で曜日が揃う）・前年同週の売上/人数をD.dailyから集計。
@@ -4168,7 +4179,7 @@ function rsvBookHtml_(){
     <div class="kpi"><div class="lb">今日の予約</div><div class="vl">${cnt(dayRows.length)}件 / ${cnt(ppl)}名</div><div class="yy mut">事前予約＋当日予約</div></div>
     <div class="kpi" style="background:var(--warn-bg,#faf0ec)"><div class="lb">当日予約</div><div class="vl" style="color:var(--accent,#b5502f)">${cnt(sameRows.length)}件 / ${cnt(samePpl)}名</div><div class="yy" style="color:var(--accent,#b5502f)">予約全体の ${samePct}%</div></div>
     <div class="kpi"><div class="lb">ウォークイン</div><div class="vl">${cnt(walkRows.length)}組 / ${cnt(walkPpl)}名</div><div class="yy mut">来店全体の ${walkPct}%（予約ではなく「フリー」扱い）</div></div>
-    <div class="kpi"><div class="lb">予約売上見込</div><div class="vl">${yen(estRevenue)}</div><div class="yy mut">予約分のみ（コース金額／設定単価／実績単価から算出）</div></div>
+    <div class="kpi"><div class="lb">予約売上見込</div><div class="vl">${yen(estRevenue)}</div><div class="yy mut">予約分のみ（コース金額／実績単価／設定単価の順で算出）</div></div>
   </div>`;
 
   // 前年同週・同曜日比較（2026-08-29追加。予約画面自体を邪魔しないよう上部のサマリーに分離）
@@ -5989,6 +6000,7 @@ function viewModal(){
   if(S.modal&&S.modal.type==='rsvDetail') return rsvDetailModal();
   if(S.modal&&S.modal.type==='plStorePick') return plStorePickModal();
   if(S.modal&&S.modal.type==='spotInput') return spotInputModal();
+  if(S.modal&&S.modal.type==='tanka') return tankaModal();
   return '';
 }
 /* ---- 目標入力モーダル：日別売上（昨年同週同曜日を指標表示）＋月次目標 ---- */
@@ -6812,6 +6824,48 @@ function rsvImportModal(){
       <button class="icon-btn primary" id="rv-run" onclick="App.runRsvImport()" disabled>取込実行</button>
       <button class="icon-btn" onclick="App.closeModal()">キャンセル</button>
     </div>
+  </div></div>`;
+}
+/* ---- 単価設定モーダル：店舗×媒体の想定客単価（2026-08-30追加） ----
+ * ユーザー要望「スプレッドシートではなくダッシュボード上で単価設定できるようにしてほしい」に対応。
+ * 保存先は従来どおり管理シートの⚙単価設定タブ（新しいデータ源は増やさない）。
+ * 予約帳の「予約売上見込」・広告管理の「ネット予約ベース費用対効果」の両方がここの設定を使う。 */
+function tankaModal(){
+  const m=S.modal;
+  const editKey=m.key||'';
+  const rows=D.tankaRows||[];
+  const editing=editKey?rows.find(r=>(r.store+'|'+r.media)===editKey):null;
+  const stores=scopeStores();
+  const mediaOpts=[...new Set((D.tankaRows||[]).map(r=>r.media).concat(['ホットペッパー','食べログ','ぐるなび','電話']))].filter(Boolean);
+  return `<div class="modal-bg" onclick="if(event.target===this)App.closeModal()"><div class="modal" style="max-width:640px">
+    <h3>単価設定</h3>
+    <div class="sub">店舗×媒体ごとの想定客単価（円）。予約の「予約売上見込」は、①コース名に金額が書かれていればその金額 → ②無ければ媒体別売上の直近90日実績（実売上÷人数）から自動算出 → ③実績も無い組合せ（電話予約など）だけ、ここで設定した単価、の順で計算します。店舗・媒体を空欄にすると、それぞれ「全店共通」「全媒体共通」の既定値になります。</div>
+    <div class="form-grid" style="margin-top:12px">
+      <div><label>店舗（空欄=全店共通）</label>
+        <input list="tk-stores" id="tk-store" value="${esc(editing?editing.store:'')}" placeholder="空欄=全店共通">
+        <datalist id="tk-stores">${stores.map(s=>`<option value="${esc(s)}">`).join('')}</datalist></div>
+      <div><label>媒体（空欄=全媒体共通）</label>
+        <input list="tk-medias" id="tk-media" value="${esc(editing?editing.media:'')}" placeholder="空欄=全媒体共通">
+        <datalist id="tk-medias">${mediaOpts.map(m2=>`<option value="${esc(m2)}">`).join('')}</datalist></div>
+      <div><label>設定単価（円・1人あたり）</label><input type="number" id="tk-price" min="1" value="${editing&&editing.price?editing.price:''}"></div>
+      <div><label>平均1組人数（任意・電話の予想売上算出用）</label><input type="number" id="tk-avg" min="0" value="${editing&&editing.avg?editing.avg:''}"></div>
+      <div><label>電話CV（任意・% または 0〜1）</label><input type="number" id="tk-cv" min="0" value="${editing&&editing.cv?Math.round(editing.cv*100):''}"></div>
+      <div><label>メモ（任意）</label><input id="tk-memo" value="${esc(editing?editing.memo||'':'')}"></div>
+    </div>
+    <div id="tk-msg" style="font-size:12px;color:#b5502f;margin:8px 0"></div>
+    <div class="modal-btns">
+      <button class="icon-btn primary" onclick="App.saveTankaRow('${esc(editing?editing.store:'')}','${esc(editing?editing.media:'')}')">${editing?'更新して保存':'追加'}</button>
+      ${editing?`<button class="icon-btn" onclick="App.deleteTankaRow('${esc(editing.store)}','${esc(editing.media)}')">削除</button>`:''}
+      ${editing?`<button class="icon-btn" onclick="App.editTankaRow('')">新規追加に戻す</button>`:''}
+      <button class="icon-btn" onclick="App.closeModal()">閉じる</button>
+    </div>
+    <div class="scroll-x" style="max-height:280px;overflow-y:auto;margin-top:14px;border-top:1px solid var(--line2);padding-top:10px">
+    <table class="tbl"><thead><tr><th>店舗</th><th>媒体</th><th>単価</th><th>平均人数</th><th>電話CV</th><th>メモ</th><th></th></tr></thead><tbody>
+    ${rows.length?rows.map(r=>`<tr style="cursor:pointer" onclick="App.editTankaRow('${esc(r.store+'|'+r.media)}')">
+      <td>${esc(r.store||'（全店）')}</td><td>${esc(r.media||'（全媒体）')}</td><td>${yen(r.price)}</td>
+      <td>${r.avg?cnt(r.avg)+'名':'—'}</td><td>${r.cv?Math.round(r.cv*100)+'%':'—'}</td><td class="mut">${esc(r.memo||'')}</td>
+      <td><span class="mut" style="font-size:11px">編集</span></td></tr>`).join(''):`<tr><td colspan="7" class="mut">まだ設定がありません</td></tr>`}
+    </tbody></table></div>
   </div></div>`;
 }
 /* ---- イベント入力モーダル：会場・イベント名・対象店舗チェックリスト ---- */
@@ -7688,6 +7742,33 @@ window.App = {
       toast(`予約 ${d.added}件を取り込みました`+(d.dup>0?`（重複スキップ ${d.dup}件）`:''));
       fetchData(true,{ only:['予約'], partial:true });
     }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; if(btn)btn.disabled=false; }
+  },
+  /* ---- 単価設定（2026-08-30追加） ---- */
+  openTankaSettings(){ if(!requireFeature('tankaEdit'))return; S.modal={type:'tanka'}; render(); },
+  editTankaRow(key){ S.modal={type:'tanka', key}; render(); },
+  async saveTankaRow(oldStore,oldMedia){
+    const msg=$('tk-msg');
+    if(!S.auth||!S.auth.token){ msg.textContent='スプレッドシート接続時のみ保存できます'; return; }
+    const store=($('tk-store').value||'').trim(), media=($('tk-media').value||'').trim();
+    const price=Number($('tk-price').value);
+    if(!(price>0)){ msg.textContent='設定単価を入力してください'; return; }
+    const avg=Number($('tk-avg').value)||0, cv=Number($('tk-cv').value)||0, memo=($('tk-memo').value||'').trim();
+    msg.style.color='#8c8375'; msg.textContent='保存中…';
+    try{
+      const d=await api({ action:'saveTanka', token:S.auth.token, store, media, price, avg, cv, memo, oldStore:oldStore||'', oldMedia:oldMedia||'' });
+      if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'保存に失敗しました'; return; }
+      S.modal=null; render(); toast('単価設定を保存しました');
+      fetchData(true,{ only:['単価設定'], partial:true });
+    }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
+  },
+  async deleteTankaRow(store,media){
+    if(!confirm('この単価設定を削除しますか？')) return;
+    try{
+      const d=await api({ action:'deleteTanka', token:S.auth.token, store:store||'', media:media||'' });
+      if(!d.ok){ toast(d.error||'削除に失敗しました'); return; }
+      S.modal=null; render(); toast('単価設定を削除しました');
+      fetchData(true,{ only:['単価設定'], partial:true });
+    }catch(e){ toast('通信エラー: '+e.message); }
   },
   openEventInput(id){ S.modal={type:'event', id:id||''}; render(); },
   rsvOpenDetail(key){ S.modal={type:'rsvDetail', key}; render(); },
