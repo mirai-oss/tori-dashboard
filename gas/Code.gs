@@ -1430,7 +1430,20 @@ function bqReservationCsvCell_(v, type) {
   if (v === '' || v === null || v === undefined) return '';
   if (type === 'STRING') return '"' + String(v).replace(/"/g, '""').replace(/\r?\n/g, ' ') + '"';
   if (type === 'DATE') return String(v).slice(0, 10);
-  if (type === 'TIMESTAMP') return String(v); // ISO8601文字列をそのまま渡す（BQ側でパース）
+  if (type === 'TIMESTAMP') {
+    // 2026-08-30 ユーザー報告で発覚したバグの修正: ns-daily-import側（食べログノート/ダイニー
+    // 両方のtoIsoDate系ヘルパー）は「作成日+作成時間」等をタイムゾーン情報の無いISO文字列
+    // （例:"2026-08-28T22:38:00"。これは日本時間の壁時計表記そのもの）としてSupabaseへ書き込んでいる。
+    // これを従来はそのままBigQueryへ渡していたため、BigQueryがタイムゾーン無しのTIMESTAMPリテラルを
+    // UTCとして解釈し、読み出し時に更にFORMAT_TIMESTAMP(...,'Asia/Tokyo')でAsia/Tokyoへ変換する
+    // （=+9時間）ことで、実質+9時間ズレていた（21時以降に作成された予約は「作成日」が翌日になる）。
+    // タイムゾーン表記（Z または ±HH:MM）が既に付いている値はそのまま、無ければ日本時間として
+    // 明示（+09:00を付与）してからBigQueryへ渡す。
+    var ts = String(v).trim();
+    if (!ts) return '';
+    if (!/[Zz]$|[+\-]\d{2}:?\d{2}$/.test(ts)) ts += '+09:00';
+    return ts;
+  }
   var n = Number(v);
   if (!isFinite(n)) return '';
   return type === 'INTEGER' ? String(Math.round(n)) : n.toFixed(6);
