@@ -1584,20 +1584,25 @@ function bqGetReservation(p, session) {
 // rsv_reservations/stg_reservationには「その日実際に使われた卓番号」しか無く、空席（その日
 // 予約が無い卓）を含めた店舗の卓構成そのものはどこにも無いため、ユーザーが直接入力するシートを新設。
 function seatMasterSheet_() {
-  var sh = sheetOrCreate_('DB_席マスタ', ['店舗', '卓番号', '席数', 'エリア', '表示順', '属性'],
+  var sh = sheetOrCreate_('DB_席マスタ', ['店舗', '卓番号', '席数', 'エリア', '表示順', '属性', '配置X', '配置Y'],
     '予約タブの日別タイムラインに、その日予約が無い卓（空席）も含めて表示するための一覧です。1行=1卓。\n' +
     '「店舗」はダッシュボードの店舗名と完全に一致させてください（例: 鶏武者 新横浜）。\n' +
-    '「エリア」「表示順」「属性」は空欄でも構いません（表示順が空の行は卓番号順で並びます）。\n' +
+    '「エリア」「表示順」「属性」「配置X」「配置Y」は空欄でも構いません（表示順が空の行は卓番号順で並びます）。\n' +
     '「属性」は個室・禁煙・喫煙・座敷・テラス等をカンマ区切りで（例: 個室,禁煙）。バッジとして表示されます。\n' +
-    'このシートに行が無い店舗は、従来どおり「その日予約がある卓だけ」表示されます。');
-  // 2026-08-28追記: 既に運用中のシートに「属性」列が無ければ末尾に追加（新規作成時は上のsheetOrCreate_で入っている）
+    '「配置X」「配置Y」は店舗の「配置図」タブに卓を並べる位置（左から何列目・上から何行目。1,2,3...の\n' +
+    '整数）。両方とも空欄の卓は、配置図の中で自動的に余ったマスに並びます。');
+  // 2026-08-28/29追記: 既に運用中のシートに列が無ければ末尾に追加（新規作成時は上のsheetOrCreate_で入っている）
   var lastCol = sh.getLastColumn();
   if (lastCol >= 1) {
     var headers = sh.getRange(1, 1, 1, lastCol).getValues()[0].map(function (v) { return String(v); });
-    if (headers.indexOf('属性') < 0) {
-      sh.getRange(1, lastCol + 1).setValue('属性').setFontWeight('bold').setBackground('#efe9dd');
-      sh.setColumnWidth(lastCol + 1, 160);
-    }
+    ['属性', '配置X', '配置Y'].forEach(function (col) {
+      var lc = sh.getLastColumn();
+      var hs = sh.getRange(1, 1, 1, lc).getValues()[0].map(function (v) { return String(v); });
+      if (hs.indexOf(col) < 0) {
+        sh.getRange(1, lc + 1).setValue(col).setFontWeight('bold').setBackground('#efe9dd');
+        sh.setColumnWidth(lc + 1, col === '属性' ? 160 : 70);
+      }
+    });
   }
   return sh;
 }
@@ -1661,15 +1666,16 @@ function bqGetSeatMaster(p, session) {
 
     var sh = seatMasterSheet_();
     var lastRow = sh.getLastRow();
-    var seats = [['店舗', '卓番号', '席数', 'エリア', '表示順', '属性']];
+    var seats = [['店舗', '卓番号', '席数', 'エリア', '表示順', '属性', '配置X', '配置Y']];
     if (lastRow >= 2) {
-      var values = sh.getRange(2, 1, lastRow - 1, 6).getValues();
+      var values = sh.getRange(2, 1, lastRow - 1, 8).getValues();
       for (var i = 0; i < values.length; i++) {
         var store = String(values[i][0] || '').trim();
         var tableNo = String(values[i][1] || '').trim();
         if (!store || !tableNo) continue;
         if (allowNames && allowNames.indexOf(store) < 0) continue;
-        seats.push([store, tableNo, values[i][2] === '' ? '' : Number(values[i][2]), String(values[i][3] || ''), values[i][4] === '' ? '' : Number(values[i][4]), String(values[i][5] || '')]);
+        seats.push([store, tableNo, values[i][2] === '' ? '' : Number(values[i][2]), String(values[i][3] || ''), values[i][4] === '' ? '' : Number(values[i][4]), String(values[i][5] || ''),
+          values[i][6] === '' ? '' : Number(values[i][6]), values[i][7] === '' ? '' : Number(values[i][7])]);
       }
     }
 

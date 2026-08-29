@@ -3925,7 +3925,7 @@ async function fetchSeatMaster(){
     if(d&&d.ok&&d.sheets){
       if(d.sheets.rsvSeatMaster){
         const rows=d.sheets.rsvSeatMaster;
-        D.rsvSeats=rows.slice(1).map(r=>({ store:String(r[0]||''), tableNo:String(r[1]||''), capacity:r[2]===''?null:Number(r[2]), area:String(r[3]||''), order:r[4]===''?null:Number(r[4]), tags:String(r[5]||'').split(/[,、]/).map(s=>s.trim()).filter(Boolean) }));
+        D.rsvSeats=rows.slice(1).map(r=>({ store:String(r[0]||''), tableNo:String(r[1]||''), capacity:r[2]===''?null:Number(r[2]), area:String(r[3]||''), order:r[4]===''?null:Number(r[4]), tags:String(r[5]||'').split(/[,、]/).map(s=>s.trim()).filter(Boolean), posX:r[6]===''||r[6]==null?null:Number(r[6]), posY:r[7]===''||r[7]==null?null:Number(r[7]) }));
       }
       if(d.sheets.rsvStoreHours){
         const hhmm=(v)=>{ const m=String(v==null?'':v).match(/(\d{1,3}):(\d{2})/); return m?(+m[1]+(+m[2])/60):null; };
@@ -3994,6 +3994,13 @@ function shiftDateStr_(dateStr,days){
 }
 function rsvShiftDate_(days){ return shiftDateStr_(rsvDate_(),days); }
 function hashStr_(s){ let h=0; s=String(s||''); for(let i=0;i<s.length;i++) h=(h*31+s.charCodeAt(i))|0; return h; }
+// 卓の属性（DB_席マスタの「属性」列）から禁煙/喫煙マークを判定（2026-08-29追加）
+function rsvSmokeIcon_(tags){
+  const s=(tags||[]).join(',');
+  if(/禁煙/.test(s)) return '🚭';
+  if(/喫煙/.test(s)) return '🚬';
+  return '';
+}
 
 function viewReservation(){
   fetchReservationBQ();
@@ -4029,7 +4036,7 @@ function rsvBookHtml_(){
     <input type="date" value="${date}" onchange="App.set('rsvDate',this.value)">
     <button class="icon-btn" onclick="App.set('rsvDate','${rsvShiftDate_(1)}')">翌日 ›</button>
     <button class="icon-btn" onclick="App.set('rsvDate','${todayStr_()}')">今日</button>
-    <div class="seg">${[['timeline','タイムライン'],['calendar','カレンダー'],['list','リスト']].map(([k,l])=>`<button class="${view===k?'on':''}" onclick="App.set('rsvView','${k}')">${l}</button>`).join('')}</div>
+    <div class="seg">${[['timeline','タイムライン'],['floorplan','配置図'],['calendar','カレンダー'],['list','リスト']].map(([k,l])=>`<button class="${view===k?'on':''}" onclick="App.set('rsvView','${k}')">${l}</button>`).join('')}</div>
     ${periodOpts.length?`<select onchange="App.set('rsvPeriod',this.value)">${periodOpts.map(o=>`<option ${((S.rsvPeriod||'全体')===o)?'selected':''}>${esc(o)}</option>`).join('')}</select>`:''}
     <span class="period-label">${dLabel}</span></div>`;
   const periodSel=periodOpts.length&&(S.rsvPeriod||'全体')!=='全体'?S.rsvPeriod:'';
@@ -4045,6 +4052,7 @@ function rsvBookHtml_(){
   </div>`;
   if(view==='calendar') h+=rsvCalendarHtml_(date,scoped);
   else if(view==='timeline') h+=rsvTimelineHtml_(dayRows,date,selN,periodSel);
+  else if(view==='floorplan') h+=rsvFloorplanHtml_(dayRows,date,selN,periodSel);
   else h+=rsvListHtml_(dayRows);
   // CSVボタンはEXPORTの中身を出すだけなので、タイムライン/カレンダー表示中でもこの日の予約一覧を
   // 出せるようにしておく（listビューはrsvListHtml_が自前でEXPORTするため、ここでは重複させない。
@@ -4123,8 +4131,9 @@ function rsvTimelineHtml_(dayRows,date,selN,periodSel){
     const tags=seatTags[st]||[];
     const empty=byTable && !rows.length;
     const tagsHtml=tags.length?`<div style="display:flex;flex-wrap:wrap;gap:2px;margin-top:2px">${tags.map(t=>`<span style="font-size:9px;background:var(--bg2,#f4efe6);border:1px solid var(--bd,#e5ddd0);border-radius:3px;padding:0 4px;color:var(--mut2,#8a7f6f)">${esc(t)}</span>`).join('')}</div>`:'';
+    const smoke=rsvSmokeIcon_(tags);
     h+=`<div style="display:flex;align-items:center;border-top:1px solid var(--bd,#e5ddd0);padding:6px 0">
-      <div style="width:140px;flex:none;font-weight:700;font-size:12px">${esc(st)}${cap?`<span class="mut" style="font-weight:400;font-size:10px">　${cap}席</span>`:''}${tagsHtml}</div>
+      <div style="width:140px;flex:none;font-weight:700;font-size:12px">${smoke?smoke+' ':''}${esc(st)}${cap?`<span class="mut" style="font-weight:400;font-size:10px">　${cap}席</span>`:''}${tagsHtml}</div>
       <div style="position:relative;flex:1;height:28px;background:${empty?'var(--success-bg,#eef2e6)':'var(--bg2,#f4efe6)'};border-radius:4px">`;
     if(empty) h+=`<div style="position:absolute;inset:0;display:flex;align-items:center;padding:0 8px;font-size:10px;color:#4c7d5c">空席</div>`;
     rows.forEach(r=>{
@@ -4136,11 +4145,66 @@ function rsvTimelineHtml_(dayRows,date,selN,periodSel){
       const joined=byTable && rsvSplitTables_(r.tableNo).length>1; // 複数卓を連結した予約か
       const courseMenu=[r.course,r.menu].filter(Boolean).join(' / ');
       const label=esc(r.timeStr)+' '+esc(r.partySize)+'名 '+esc(r.channelNorm||r.channelRaw)+(courseMenu?' '+esc(courseMenu):'')+(joined?'（'+esc(r.tableNo)+'を連結利用）':'');
-      h+=`<div title="${label}" style="position:absolute;left:${left}%;width:${width}%;top:2px;bottom:2px;background:${color};border-radius:3px;overflow:hidden;font-size:10px;color:#fff;padding:0 4px;white-space:nowrap">${esc(r.timeStr)} ${cnt(r.partySize)}名${joined?' 🔗':''}</div>`;
+      h+=`<div title="${label}" onclick="App.rsvOpenDetail('${esc(r.key)}')" style="cursor:pointer;position:absolute;left:${left}%;width:${width}%;top:2px;bottom:2px;background:${color};border-radius:3px;overflow:hidden;font-size:10px;color:#fff;padding:0 4px;white-space:nowrap">${esc(r.timeStr)} ${cnt(r.partySize)}名${joined?' 🔗':''}</div>`;
     });
     h+=`</div></div>`;
   });
   h+=`</div></div>`;
+  return h;
+}
+// 配置図（2026-08-29追加）: 店舗ごとの卓を実際の配置（DB_席マスタの配置X/配置Y）に沿って並べ、
+// 指定した時刻に空いている卓・埋まっている卓を一目で分かるようにする。1店舗を選んでいないと使えない。
+function rsvFloorplanHtml_(dayRows,date,selN,periodSel){
+  if(!selN) return `<div class="note-box">配置図は1店舗を選ぶと使えます（左上の「🏪 店舗」で選んでください）。</div>`;
+  const seats=D.rsvSeats.filter(s=>s.store===selN);
+  if(!seats.length) return `<div class="note-box">この店舗の卓一覧（DB_席マスタ）が未登録のため、配置図は表示できません。DB_席マスタに卓番号・配置X/配置Yを登録してください。</div>`;
+
+  const fmtHM=(v)=>{ const h2=Math.floor(v%24), m2=Math.round((v%1)*60); return String(h2).padStart(2,'0')+':'+String(m2).padStart(2,'0'); };
+  const hours=resolveStoreHours_(selN,date,periodSel);
+  const isToday=date===todayStr_();
+  const now=new Date();
+  const defTime=S.rsvFloorTime || (isToday ? String(now.getHours()).padStart(2,'0')+':'+String(now.getMinutes()).padStart(2,'0') : (hours?fmtHM(hours.open):'18:00'));
+  const tp=defTime.split(':').map(Number);
+  let targetHH=tp[0]+(tp[1]||0)/60;
+  // 深夜営業で日をまたぐ場合、開店時刻より早い時刻は「日をまたいだ後」＝当日の続きとみなす（rsvDayRowsForStore_と同じ考え方）
+  if(hours && hours.close>24 && targetHH < (hours.open%24)) targetHH+=24;
+
+  const byTable={};
+  dayRows.forEach(r=>{ rsvSplitTables_(r.tableNo).forEach(k=>{ (byTable[k]=byTable[k]||[]).push(r); }); });
+
+  // 配置：配置X/配置Yが設定済みの卓はその位置を使う。未設定の卓は空いているマスへ自動で詰める
+  // （元のD.rsvSeatsは書き換えず、ローカルの作業用コピーに座標を補って使う）
+  const known=seats.filter(s=>s.posX!=null&&s.posY!=null).map(s=>({...s}));
+  const unknown=seats.filter(s=>s.posX==null||s.posY==null);
+  const occupiedCells=new Set(known.map(s=>s.posX+','+s.posY));
+  const cols=Math.max(known.length?Math.max(...known.map(s=>s.posX)):0, Math.ceil(Math.sqrt(seats.length)), 1);
+  let autoX=1, autoY=known.length?Math.max(...known.map(s=>s.posY))+1:1;
+  const laidOut=known.concat(unknown.map(s=>{
+    while(occupiedCells.has(autoX+','+autoY)){ autoX++; if(autoX>cols){ autoX=1; autoY++; } }
+    occupiedCells.add(autoX+','+autoY);
+    const copy={...s, posX:autoX, posY:autoY};
+    autoX++; if(autoX>cols){ autoX=1; autoY++; }
+    return copy;
+  }));
+  const gridCols=Math.max(...laidOut.map(s=>s.posX)), gridRows=Math.max(...laidOut.map(s=>s.posY));
+  const CELL=104;
+
+  let h=`<div class="panel"><div class="panel-head"><div><h3>配置図（${esc(selN)}）</h3>
+    <div class="sub">指定した時刻に埋まっている卓・空いている卓を表示 ／ 埋まっている卓をクリックで予約詳細</div></div>
+    <div class="no-print"><input type="time" value="${esc(defTime)}" onchange="App.rsvSetFloorTime(this.value)"></div></div>
+    <div class="scroll-x"><div style="position:relative;display:grid;grid-template-columns:repeat(${gridCols},${CELL}px);grid-template-rows:repeat(${gridRows},${CELL}px);gap:10px;padding:6px 2px">`;
+  laidOut.forEach(s=>{
+    const rows=(byTable[s.tableNo]||[]).filter(r=>r.hh>=0 && targetHH>=r.hh && targetHH<r.hh+(r.stayMin||90)/60);
+    const occ=rows[0];
+    const smoke=rsvSmokeIcon_(s.tags);
+    const bg=occ?'var(--surface-2,#fdf7ea)':'var(--success-bg,#eef2e6)';
+    const bd=occ?'var(--accent,#b5502f)':'var(--success,#4f6b45)';
+    h+=`<div onclick="${occ?`App.rsvOpenDetail('${esc(occ.key)}')`:''}" style="grid-column:${s.posX};grid-row:${s.posY};${occ?'cursor:pointer;':''}border:2px solid ${bd};background:${bg};border-radius:10px;padding:8px;display:flex;flex-direction:column;justify-content:space-between;overflow:hidden">
+      <div style="font-size:12px;font-weight:700">${smoke?smoke+' ':''}${esc(s.tableNo)}${s.capacity?`<span class="mut" style="font-weight:400;font-size:10px">　${s.capacity}席</span>`:''}</div>
+      ${occ?`<div style="font-size:11px;color:var(--accent,#b5502f);font-weight:700">${esc(occ.timeStr)}〜 ${cnt(occ.partySize)}名</div>`:`<div style="font-size:11px;color:var(--success,#4f6b45)">空席</div>`}
+    </div>`;
+  });
+  h+=`</div></div></div>`;
   return h;
 }
 function rsvCalendarHtml_(date,rows){
@@ -4176,12 +4240,46 @@ function rsvListHtml_(dayRows){
     <div class="scroll-x"><table class="tbl"><thead><tr><th>時刻</th><th>店舗</th><th>人数</th><th>受付窓口</th><th>コース</th><th>メニュー</th><th>卓</th><th>ステータス</th></tr></thead><tbody>`;
   const exp=[];
   rows.forEach(r=>{
-    h+=`<tr><td>${esc(r.timeStr)}</td><td>${esc(r.store)}</td><td>${cnt(r.partySize)}${r.childCount?'（子'+r.childCount+'）':''}</td><td>${esc(r.channelNorm||r.channelRaw)}</td><td>${esc(r.course||'')}</td><td>${esc(r.menu||'')}</td><td>${esc(r.tableNo||'')}</td><td>${esc(r.statusRaw)}</td></tr>`;
+    h+=`<tr style="cursor:pointer" onclick="App.rsvOpenDetail('${esc(r.key)}')"><td>${esc(r.timeStr)}</td><td>${esc(r.store)}</td><td>${cnt(r.partySize)}${r.childCount?'（子'+r.childCount+'）':''}</td><td>${esc(r.channelNorm||r.channelRaw)}</td><td>${esc(r.course||'')}</td><td>${esc(r.menu||'')}</td><td>${esc(r.tableNo||'')}</td><td>${esc(r.statusRaw)}</td></tr>`;
     exp.push([r.timeStr,r.store,r.partySize,r.channelNorm||r.channelRaw,r.course||'',r.menu||'',r.tableNo||'',r.statusRaw]);
   });
   h+=`</tbody></table></div></div>`;
   EXPORT.push({ title:'予約リスト', headers:['時刻','店舗','人数','受付窓口','コース','メニュー','卓','ステータス'], rows:exp });
   return h;
+}
+// 予約詳細モーダル（読み取り専用。2026-08-29追加）: タイムライン/リストの予約をクリックすると開く。
+// お客様名はダイニー分のみSupabase限定で持っているがBQには入れておらず（設計書§8.7・§8.8 R3、
+// Phase2で対応予定）、現時点ではまだ表示できない。
+function rsvDetailModal(){
+  const key=S.modal.key;
+  const r=D.rsvBq.find(x=>x.key===key);
+  if(!r) return `<div class="modal-bg" onclick="if(event.target===this)App.closeModal()"><div class="modal" style="max-width:420px">
+    <h3>予約詳細</h3><div class="sub">この予約データが見つかりませんでした（読み込み直後は少し待ってからもう一度お試しください）。</div>
+    <div class="modal-btns"><button class="icon-btn" onclick="App.closeModal()">閉じる</button></div>
+  </div></div>`;
+  const dateLabel=(()=>{ const p=r.dateStr.split('-').map(Number); return p[0]+'年'+p[1]+'月'+p[2]+'日（'+['日','月','火','水','木','金','土'][new Date(p[0],p[1]-1,p[2]).getDay()]+'）'; })();
+  const seat=D.rsvSeats.find(s=>s.store===r.store&&s.tableNo===r.tableNo);
+  const smoke=seat?rsvSmokeIcon_(seat.tags):'';
+  const row=(label,val)=>val?`<tr><td style="color:var(--mut2,#8a7f6f);padding:4px 12px 4px 0;white-space:nowrap;vertical-align:top">${esc(label)}</td><td style="padding:4px 0">${val}</td></tr>`:'';
+  return `<div class="modal-bg" onclick="if(event.target===this)App.closeModal()"><div class="modal" style="max-width:460px">
+    <h3>予約詳細</h3>
+    <div class="sub">${esc(r.store)} ／ ${esc(dateLabel)} ${esc(r.timeStr)}〜</div>
+    <table style="width:100%;font-size:13.5px;margin-top:10px">
+      ${row('人数', cnt(r.partySize)+'名'+(r.childCount?'（うちお子様 '+r.childCount+'名）':''))}
+      ${row('卓', esc(r.tableNo||'—')+(smoke?' '+smoke:'')+(seat&&seat.tags&&seat.tags.length?' '+seat.tags.map(esc).join('・'):''))}
+      ${row('滞在時間', r.stayMin?r.stayMin+'分':'')}
+      ${row('コース', esc(r.course||''))}
+      ${row('メニュー', esc(r.menu||''))}
+      ${row('受付窓口', esc(r.channelNorm||r.channelRaw||''))}
+      ${row('予約属性', esc(r.attribute||''))}
+      ${row('タグ', esc(r.tag||''))}
+      ${row('ステータス', esc(r.statusRaw||''))}
+      ${row('顧客No', esc(r.customerNo||''))}
+      ${row('取込元', r.source==='dinii'?'ダイニー予約台帳':r.source==='tabelog_note'?'食べログノート':esc(r.source||''))}
+    </table>
+    <div class="note-box" style="margin-top:10px;font-size:11.5px">お客様名の表示は今後の対応予定です（現在はダイニー分のみSupabaseに限定保存・BigQueryには入れていません）。</div>
+    <div class="modal-btns"><button class="icon-btn" onclick="App.closeModal()">閉じる</button></div>
+  </div></div>`;
 }
 // 予約分析（曜日別・当日予約の時刻）— viewAd内の既存ブロック（D.rsv・管理シート💾予約DB）と同じロジックを
 // D.rsvBq（BQ・自動取込）向けに移植したもの。数字を突き合わせて確認できたら、viewAd側は削除しリンクに置き換える予定。
@@ -5574,6 +5672,7 @@ function viewModal(){
   if(S.modal&&S.modal.type==='adSales') return adSalesModal();
   if(S.modal&&S.modal.type==='rsvImport') return rsvImportModal();
   if(S.modal&&S.modal.type==='event') return eventModal();
+  if(S.modal&&S.modal.type==='rsvDetail') return rsvDetailModal();
   if(S.modal&&S.modal.type==='plStorePick') return plStorePickModal();
   if(S.modal&&S.modal.type==='spotInput') return spotInputModal();
   return '';
@@ -7277,6 +7376,8 @@ window.App = {
     }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; if(btn)btn.disabled=false; }
   },
   openEventInput(id){ S.modal={type:'event', id:id||''}; render(); },
+  rsvOpenDetail(key){ S.modal={type:'rsvDetail', key}; render(); },
+  rsvSetFloorTime(v){ S.rsvFloorTime=v; render(); },
   async saveEventInput(){
     const msg=$('ev-msg');
     if(!S.auth||!S.auth.token){ msg.textContent='スプレッドシート接続時のみ保存できます'; return; }
