@@ -3983,7 +3983,10 @@ function resolveStoreHours_(store,dateStr,periodSel){
   if(periodSel){ const hit=top.find(r=>(r.period||'（未設定）')===periodSel); if(hit) return {open:hit.open,close:hit.close}; }
   return { open:Math.min.apply(null,top.map(r=>r.open)), close:Math.max.apply(null,top.map(r=>r.close)) };
 }
-function todayStr_(){ const d=D.refDate||new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+// 予約タブ専用の「今日」（実際のカレンダー上の今日）。D.refDateは売上データが確定している最新日
+// （＝前日）を指すため、予約（未来日程を含む）の「今日」ボタンにはそのまま使えない
+// （2026-08-29修正: ユーザー報告「今日を押すと前日になる」対応）。
+function todayStr_(){ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
 function rsvDate_(){ return S.rsvDate||todayStr_(); }
 function shiftDateStr_(dateStr,days){
   const p=dateStr.split('-').map(Number); const d=new Date(p[0],p[1]-1,p[2]+days);
@@ -4043,6 +4046,15 @@ function rsvBookHtml_(){
   if(view==='calendar') h+=rsvCalendarHtml_(date,scoped);
   else if(view==='timeline') h+=rsvTimelineHtml_(dayRows,date,selN,periodSel);
   else h+=rsvListHtml_(dayRows);
+  // CSVボタンはEXPORTの中身を出すだけなので、タイムライン/カレンダー表示中でもこの日の予約一覧を
+  // 出せるようにしておく（listビューはrsvListHtml_が自前でEXPORTするため、ここでは重複させない。
+  // 2026-08-29追加: ユーザー要望「このページにもCSV/PDFをダウンロードできるようにしてほしい」対応）。
+  if(view!=='list' && dayRows.length){
+    const sorted=dayRows.slice().sort((a,b)=>a.hh-b.hh);
+    EXPORT.push({ title:'予約一覧（'+dLabel+'）',
+      headers:['時刻','店舗','人数','受付窓口','コース','メニュー','卓','ステータス'],
+      rows:sorted.map(r=>[r.timeStr,r.store,r.partySize,r.channelNorm||r.channelRaw,r.course||'',r.menu||'',r.tableNo||'',r.statusRaw]) });
+  }
   return h;
 }
 // 1店舗の「営業日」ぶんの予約を集める。営業時間が24時を超える（例: うお蔵は翌5:00=close29）
@@ -4122,7 +4134,8 @@ function rsvTimelineHtml_(dayRows,date,selN,periodSel){
       const width=Math.max(2,Math.min(100-left,stay/60/(hiH-lo)*100));
       const color=PALETTE[Math.abs(hashStr_(r.channelNorm||r.channelRaw))%PALETTE.length];
       const joined=byTable && rsvSplitTables_(r.tableNo).length>1; // 複数卓を連結した予約か
-      const label=esc(r.timeStr)+' '+esc(r.partySize)+'名 '+esc(r.channelNorm||r.channelRaw)+' '+esc(r.course||'')+(joined?'（'+esc(r.tableNo)+'を連結利用）':'');
+      const courseMenu=[r.course,r.menu].filter(Boolean).join(' / ');
+      const label=esc(r.timeStr)+' '+esc(r.partySize)+'名 '+esc(r.channelNorm||r.channelRaw)+(courseMenu?' '+esc(courseMenu):'')+(joined?'（'+esc(r.tableNo)+'を連結利用）':'');
       h+=`<div title="${label}" style="position:absolute;left:${left}%;width:${width}%;top:2px;bottom:2px;background:${color};border-radius:3px;overflow:hidden;font-size:10px;color:#fff;padding:0 4px;white-space:nowrap">${esc(r.timeStr)} ${cnt(r.partySize)}名${joined?' 🔗':''}</div>`;
     });
     h+=`</div></div>`;
@@ -4160,14 +4173,14 @@ function rsvListHtml_(dayRows){
   const rows=dayRows.slice().sort((a,b)=>a.hh-b.hh);
   if(!rows.length) return `<div class="panel no-print"><div class="panel-head"><div><h3>この日の予約はありません</h3></div></div></div>`;
   let h=`<div class="panel"><div class="panel-head"><div><h3>予約リスト</h3></div></div>
-    <div class="scroll-x"><table class="tbl"><thead><tr><th>時刻</th><th>店舗</th><th>人数</th><th>受付窓口</th><th>コース</th><th>卓</th><th>ステータス</th></tr></thead><tbody>`;
+    <div class="scroll-x"><table class="tbl"><thead><tr><th>時刻</th><th>店舗</th><th>人数</th><th>受付窓口</th><th>コース</th><th>メニュー</th><th>卓</th><th>ステータス</th></tr></thead><tbody>`;
   const exp=[];
   rows.forEach(r=>{
-    h+=`<tr><td>${esc(r.timeStr)}</td><td>${esc(r.store)}</td><td>${cnt(r.partySize)}${r.childCount?'（子'+r.childCount+'）':''}</td><td>${esc(r.channelNorm||r.channelRaw)}</td><td>${esc(r.course||'')}</td><td>${esc(r.tableNo||'')}</td><td>${esc(r.statusRaw)}</td></tr>`;
-    exp.push([r.timeStr,r.store,r.partySize,r.channelNorm||r.channelRaw,r.course||'',r.tableNo||'',r.statusRaw]);
+    h+=`<tr><td>${esc(r.timeStr)}</td><td>${esc(r.store)}</td><td>${cnt(r.partySize)}${r.childCount?'（子'+r.childCount+'）':''}</td><td>${esc(r.channelNorm||r.channelRaw)}</td><td>${esc(r.course||'')}</td><td>${esc(r.menu||'')}</td><td>${esc(r.tableNo||'')}</td><td>${esc(r.statusRaw)}</td></tr>`;
+    exp.push([r.timeStr,r.store,r.partySize,r.channelNorm||r.channelRaw,r.course||'',r.menu||'',r.tableNo||'',r.statusRaw]);
   });
   h+=`</tbody></table></div></div>`;
-  EXPORT.push({ title:'予約リスト', headers:['時刻','店舗','人数','受付窓口','コース','卓','ステータス'], rows:exp });
+  EXPORT.push({ title:'予約リスト', headers:['時刻','店舗','人数','受付窓口','コース','メニュー','卓','ステータス'], rows:exp });
   return h;
 }
 // 予約分析（曜日別・当日予約の時刻）— viewAd内の既存ブロック（D.rsv・管理シート💾予約DB）と同じロジックを
