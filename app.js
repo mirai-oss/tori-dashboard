@@ -1849,7 +1849,7 @@ function render(){
   // F-3(ns-portal統合ポータルシェルからのembed依頼・2026-08-24): ?embed=1のときは
   // 自画面のヘッダー（ロゴ・接続設定・ログアウト等）とタブ切替ナビを隠す
   // （ポータル側のサイドバーが同じ役割を担うため二重表示を避ける）。
-  root.innerHTML=`<div class="app${S.embed?' embed':''}">${S.embed?'':viewHeader()}${diagBanner()}${S.embed?'':viewNav()}${body}</div>${ctxBarHtml()}${S.modal?viewModal():''}`;
+  root.innerHTML=`<div class="app${S.embed?' embed':''}">${S.embed?viewEmbedBar():viewHeader()}${diagBanner()}${S.embed?'':viewNav()}${body}</div>${ctxBarHtml()}${S.modal?viewModal():''}`;
 }
 function renderHeaderOnly(){ /* 軽量更新は全再描画で十分 */ }
 
@@ -1919,6 +1919,14 @@ function diagBanner(){
   </div>`;
 }
 
+// 連携ステータス＋CSV/PDF（＋更新）。フルヘッダーと、埋め込み時の簡易バー（viewEmbedBar）の両方から使う
+// （2026-08-29追加・F-3の副作用修正: ns-portal埋め込み時にヘッダーごと消えてこの2つも道連れで消えていた）。
+function headerActionsHtml_(){
+  return `<div class="sync-info">${connBadge()}</div>
+    <button class="icon-btn" onclick="App.refresh()" title="手動更新">↻ 更新</button>
+    <button class="icon-btn" onclick="App.csv()">⬇ CSV</button>
+    <button class="icon-btn" onclick="App.pdf()">🖨 PDF</button>`;
+}
 function viewHeader(){
   const acc=S.auth.account;
   const sc=scopeStores();
@@ -1931,11 +1939,8 @@ function viewHeader(){
     <div class="logo-sq">鳥</div>
     <div class="brand"><h1>鳥一代グループ 経営ダッシュボード</h1><p>TORI-ICHIDAI GROUP SALES MONITOR</p></div>
     <div class="top-right">
-      <div class="sync-info">${connBadge()}</div>
-      <button class="icon-btn" onclick="App.refresh()" title="手動更新">↻ 更新</button>
+      ${headerActionsHtml_()}
       ${acc.role==='社長'?`<button class="icon-btn" onclick="App.openConnect()">⚙ 接続設定</button>`:''}
-      <button class="icon-btn" onclick="App.csv()">⬇ CSV</button>
-      <button class="icon-btn" onclick="App.pdf()">🖨 PDF</button>
       <div class="role-chip">
         <div class="avatar">${esc(acc.role.substring(0,2))}</div>
         <div><div class="nm">${esc(acc.name)}</div><div class="sc">${esc(acc.role)} ／ ${esc(acc.role==='店舗'?sc[0]||'':scopeLabel)}</div></div>
@@ -1943,6 +1948,11 @@ function viewHeader(){
       <button class="icon-btn" onclick="App.logout()">ログアウト</button>
     </div>
   </header>`;
+}
+// 埋め込み時（ns-portalの?embed=1）の簡易バー。ロゴ・タイトル・ロールチップ・ログアウトは隠したままでよいが、
+// 連携ステータスとCSV/PDFはポータル側からも使えるよう右上に小さく残す（ユーザー要望・担当D調査）。
+function viewEmbedBar(){
+  return `<div class="embed-bar no-print"><div class="top-right">${headerActionsHtml_()}</div></div>`;
 }
 function viewNav(){
   const tabs=myTabs();
