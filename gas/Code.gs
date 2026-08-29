@@ -1094,22 +1094,59 @@ function bqCachePut_(key, obj) {
 // 「その店のランチ→ディナーの境目」とみなす（曜日ごとの違いは無視する簡略化。明細分析は月単位等
 // まとまった期間の集計であり、曜日別に厳密に分けると複雑になりすぎるため）。設定が無い店舗は
 // 呼び出し側が既定値（16時）にフォールバックする。
-function lunchCutoffByStore_() {
+// 2026-08-30改良（ユーザー指摘）: 当初は店舗ごとに「昼の部」閉店時刻を1つだけ採用する簡略版だったが、
+// 「土日は13時開店でも夜の部（＝ランチにはならない）」という指摘を受け、app.jsのresolveStoreHoursPeriods_
+// と同じ優先順位（個別曜日名 > 平日/土日/土日祝 > 空欄既定）で店舗×曜日(0=日〜6=土)ごとに判定するよう
+// 変更。その曜日に当てはまる営業時間の中に「昼の部」が無ければ（例:土日が夜の部のみの店）、その曜日は
+// 一日中ランチ扱いにしない。祝日の特別営業は今回は対象外（祝トークンは常に非該当として扱う。通常の
+// 曜日ルールにフォールバックする＝土日祝は土日と同じ扱いになる）。
+function lunchCutoffMatrix_() {
   var sh = storeHoursSheet_();
   var last = sh.getLastRow();
-  var out = {};
-  if (last < 2) return out;
-  var vals = sh.getRange(2, 1, last - 1, 6).getValues(); // 店舗,曜日区分,営業区分,開店時刻,閉店時刻,メモ
-  for (var i = 0; i < vals.length; i++) {
-    var store = String(vals[i][0] || '').trim();
-    var seg = String(vals[i][2] || '').trim();
-    if (!store || seg.indexOf('昼') < 0) continue;
-    var m = String(rsvTimeCell_(vals[i][4]) || '').match(/(\d{1,2}):(\d{2})/);
-    if (!m) continue;
-    var hh = (+m[1]) + (+m[2]) / 60;
-    if (!(store in out) || hh > out[store]) out[store] = hh;
+  var byStore = {};
+  if (last >= 2) {
+    var vals = sh.getRange(2, 1, last - 1, 6).getValues(); // 店舗,曜日区分,営業区分,開店時刻,閉店時刻,メモ
+    for (var i = 0; i < vals.length; i++) {
+      var store = String(vals[i][0] || '').trim();
+      if (!store) continue;
+      var spec = String(vals[i][1] || '').trim();
+      var seg = String(vals[i][2] || '').trim();
+      var cm = String(rsvTimeCell_(vals[i][4]) || '').match(/(\d{1,2}):(\d{2})/);
+      if (!cm) continue; // 閉店時刻が読めない行はスキップ
+      (byStore[store] = byStore[store] || []).push({ spec: spec, isLunch: seg.indexOf('昼') >= 0, close: (+cm[1]) + (+cm[2]) / 60 });
+    }
   }
-  return out;
+  var dayNames = ['日', '月', '火', '水', '木', '金', '土'];
+  var out = {};
+  for (var store2 in byStore) {
+    var rows = byStore[store2];
+    var days = [];
+    for (var dow = 0; dow <= 6; dow++) {
+      var best = -1, group = [];
+      for (var ri = 0; ri < rows.length; ri++) {
+        var r = rows[ri], score = -1;
+        if (!r.spec) score = 0;
+        else {
+          var tokens = r.spec.split(/[,、\/\s]+/).map(function (t) { return t.trim(); }).filter(Boolean);
+          for (var ti = 0; ti < tokens.length; ti++) {
+            var t = tokens[ti];
+            if (t === '平日') { if (dow >= 1 && dow <= 5) score = Math.max(score, 2); }
+            else if (t === '土日' || t === '週末') { if (dow === 0 || dow === 6) score = Math.max(score, 2); }
+            else if (t === '土日祝') { if (dow === 0 || dow === 6) score = Math.max(score, 2); } // 祝判定は今回対象外
+            else if (t === '祝') { /* 祝日判定は今回対象外のため常に非該当 */ }
+            else if (dayNames.indexOf(t) >= 0) { if (dayNames[dow] === t) score = Math.max(score, 3); }
+          }
+        }
+        if (score > best) { best = score; group = [r]; }
+        else if (score === best && score >= 0) group.push(r);
+      }
+      if (best < 0) { days.push(null); continue; } // この曜日に当てはまる営業時間設定が無い
+      var lunchRows = group.filter(function (rr) { return rr.isLunch; });
+      days.push(lunchRows.length ? { lunchOk: true, cutoff: Math.max.apply(null, lunchRows.map(function (rr) { return rr.close; })) } : { lunchOk: false });
+    }
+    out[store2] = days;
+  }
+  return out; // {店舗名: [dow0(日)〜dow6(土)の {lunchOk,cutoff}|{lunchOk:false}|null]}（未設定店舗はキー無し）
 }
 // 明細分析（対話的）：期間 from〜to・店舗で絞り、時間帯別/商品別/店舗別を集計して返す。
 // guests=客数・checks=組数は、店舗別(st)の集計だけレジ実績(fact_daily_store)の実数に差し替える
@@ -1143,23 +1180,37 @@ function bqDetail(p, session) {
     if (id) where += " AND store_id = '" + String(id).replace(/'/g, '') + "'";
     else return { ok: true, hour: [], item: [], store: [], note: 'store_id未対応' };
   }
-  // 営業区分（ランチ/ディナー）絞り込み（2026-08-30追加）。dinii明細にはこの区分の列が無いため、
-  // 予約タブの営業時間設定（DB_営業時間・§lunchCutoffByStore_）にある店舗ごとの「昼の部」閉店時刻を
-  // 境目として使う（会計時刻=checkout_atで判定。設定が無い店舗は既定16:00にフォールバック）。
+  // 営業区分（ランチ/ディナー）絞り込み（2026-08-30追加・曜日ごとの判定に改良）。dinii明細にはこの
+  // 区分の列が無いため、予約タブの営業時間設定（DB_営業時間・§lunchCutoffMatrix_）を店舗×曜日
+  // （0=日〜6=土）で流用する。会計時刻(checkout_at)の曜日ごとに「昼の部」があるかどうかを見るため、
+  // 「土日は夜の部のみ（13時開店でもランチにならない）」というケースにも対応する。
   var segment = (p.segment === 'lunch' || p.segment === 'dinner') ? p.segment : '';
   if (segment) {
-    var defaultCutoff = 16;
-    var cutoffs = lunchCutoffByStore_();
+    var defaultCutoff = 16; // 店舗が丸ごと未設定の時だけ使う既定値（曜日を問わず適用）
+    var matrix = lunchCutoffMatrix_();
     var sidMap = bqStoreMap_();
-    var caseParts = [];
+    var hourDecExpr = "(EXTRACT(HOUR FROM checkout_at) + EXTRACT(MINUTE FROM checkout_at)/60.0)";
+    var dowExpr = "EXTRACT(DAYOFWEEK FROM business_date)"; // BigQuery: 1=日〜7=土
+    var storeParts = [];
     for (var sid in sidMap) {
       var snm = sidMap[sid];
-      var co = (snm in cutoffs) ? cutoffs[snm] : defaultCutoff;
-      caseParts.push("WHEN store_id='" + String(sid).replace(/'/g, "''") + "' THEN " + co);
+      var days = matrix[snm]; // [dow0(日)〜dow6(土)] or undefined（店舗丸ごと未設定）
+      var dowExprForStore;
+      if (!days) {
+        dowExprForStore = hourDecExpr + " < " + defaultCutoff; // 店舗が丸ごと未設定＝曜日を問わず既定値
+      } else {
+        var dowParts = [];
+        for (var dow = 0; dow <= 6; dow++) {
+          var info = days[dow];
+          var lunchCond = (info && info.lunchOk) ? (hourDecExpr + " < " + info.cutoff) : 'FALSE';
+          dowParts.push("WHEN " + (dow + 1) + " THEN " + lunchCond); // BQのDAYOFWEEKは1=日始まり
+        }
+        dowExprForStore = "(CASE " + dowExpr + " " + dowParts.join(' ') + " ELSE FALSE END)";
+      }
+      storeParts.push("WHEN store_id='" + String(sid).replace(/'/g, "''") + "' THEN " + dowExprForStore);
     }
-    var cutoffExpr = caseParts.length ? "(CASE " + caseParts.join(' ') + " ELSE " + defaultCutoff + " END)" : String(defaultCutoff);
-    var hourDecExpr = "(EXTRACT(HOUR FROM checkout_at) + EXTRACT(MINUTE FROM checkout_at)/60.0)";
-    where += " AND " + hourDecExpr + (segment === 'lunch' ? ' < ' : ' >= ') + cutoffExpr;
+    var isLunchExpr = storeParts.length ? "(CASE " + storeParts.join(' ') + " ELSE " + hourDecExpr + " < " + defaultCutoff + " END)" : (hourDecExpr + " < " + defaultCutoff);
+    where += " AND " + (segment === 'lunch' ? isLunchExpr : ("NOT " + isLunchExpr));
   }
   // 集計基準: checkout=会計時(既定) / order=オーダー時(各明細) / arrival=来店時(伝票の最初のオーダー)
   var basis = (p.basis === 'order' || p.basis === 'arrival') ? p.basis : 'checkout';
