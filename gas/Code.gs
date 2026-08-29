@@ -1087,6 +1087,30 @@ function bqCachePut_(key, obj) {
     CacheService.getScriptCache().putAll(puts, 600);
   } catch (e) { /* キャッシュに失敗してもBQモード自体は動き続ける */ }
 }
+// 明細分析のランチ/ディナー絞り込み（2026-08-30追加）用。dinii明細CSVには「営業区分」に相当する列が
+// 無い（分類名称・メニュー名等はメニューの種類であって時間帯区分ではない）ため、時刻で判定する。
+// 新しくデータ源を増やさず、予約タブの営業時間設定（DB_営業時間・店舗×曜日区分×営業区分×開店/閉店
+// 時刻。§storeHoursSheet_）を流用する： 店舗ごとに「営業区分」に"昼"を含む行の閉店時刻の最大値を
+// 「その店のランチ→ディナーの境目」とみなす（曜日ごとの違いは無視する簡略化。明細分析は月単位等
+// まとまった期間の集計であり、曜日別に厳密に分けると複雑になりすぎるため）。設定が無い店舗は
+// 呼び出し側が既定値（16時）にフォールバックする。
+function lunchCutoffByStore_() {
+  var sh = storeHoursSheet_();
+  var last = sh.getLastRow();
+  var out = {};
+  if (last < 2) return out;
+  var vals = sh.getRange(2, 1, last - 1, 6).getValues(); // 店舗,曜日区分,営業区分,開店時刻,閉店時刻,メモ
+  for (var i = 0; i < vals.length; i++) {
+    var store = String(vals[i][0] || '').trim();
+    var seg = String(vals[i][2] || '').trim();
+    if (!store || seg.indexOf('昼') < 0) continue;
+    var m = String(rsvTimeCell_(vals[i][4]) || '').match(/(\d{1,2}):(\d{2})/);
+    if (!m) continue;
+    var hh = (+m[1]) + (+m[2]) / 60;
+    if (!(store in out) || hh > out[store]) out[store] = hh;
+  }
+  return out;
+}
 // 明細分析（対話的）：期間 from〜to・店舗で絞り、時間帯別/商品別/店舗別を集計して返す。
 // guests=客数・checks=組数は、店舗別(st)の集計だけレジ実績(fact_daily_store)の実数に差し替える
 // （2026-08-23〜。2026-08-30に部分差し替えへ変更）。実績が期間の一部までしか揃っていない場合は、
@@ -1119,12 +1143,30 @@ function bqDetail(p, session) {
     if (id) where += " AND store_id = '" + String(id).replace(/'/g, '') + "'";
     else return { ok: true, hour: [], item: [], store: [], note: 'store_id未対応' };
   }
+  // 営業区分（ランチ/ディナー）絞り込み（2026-08-30追加）。dinii明細にはこの区分の列が無いため、
+  // 予約タブの営業時間設定（DB_営業時間・§lunchCutoffByStore_）にある店舗ごとの「昼の部」閉店時刻を
+  // 境目として使う（会計時刻=checkout_atで判定。設定が無い店舗は既定16:00にフォールバック）。
+  var segment = (p.segment === 'lunch' || p.segment === 'dinner') ? p.segment : '';
+  if (segment) {
+    var defaultCutoff = 16;
+    var cutoffs = lunchCutoffByStore_();
+    var sidMap = bqStoreMap_();
+    var caseParts = [];
+    for (var sid in sidMap) {
+      var snm = sidMap[sid];
+      var co = (snm in cutoffs) ? cutoffs[snm] : defaultCutoff;
+      caseParts.push("WHEN store_id='" + String(sid).replace(/'/g, "''") + "' THEN " + co);
+    }
+    var cutoffExpr = caseParts.length ? "(CASE " + caseParts.join(' ') + " ELSE " + defaultCutoff + " END)" : String(defaultCutoff);
+    var hourDecExpr = "(EXTRACT(HOUR FROM checkout_at) + EXTRACT(MINUTE FROM checkout_at)/60.0)";
+    where += " AND " + hourDecExpr + (segment === 'lunch' ? ' < ' : ' >= ') + cutoffExpr;
+  }
   // 集計基準: checkout=会計時(既定) / order=オーダー時(各明細) / arrival=来店時(伝票の最初のオーダー)
   var basis = (p.basis === 'order' || p.basis === 'arrival') ? p.basis : 'checkout';
   // キャッシュ（同じ条件は再クエリしない・15分）。scopeKeyを含め、権限の違うユーザー間でキャッシュが混ざらないようにする。
   var cache = CacheService.getScriptCache();
   // 担当店舗が多いとscopeKey(店舗IDの連結)が長くなりキー上限250字を超える→MD5で短縮する
-  var ckRaw = 'det_' + from + '_' + to + '_' + (p.store || 'all') + '_' + basis + '_' + scopeKey;
+  var ckRaw = 'det_' + from + '_' + to + '_' + (p.store || 'all') + '_' + basis + '_' + (segment || 'all') + '_' + scopeKey;
   var ck = ckRaw.length > 200 ? 'det_' + md5Hex_(ckRaw) : ckRaw;
   var hit = cache.get(ck);
   if (hit) { try { var o = JSON.parse(hit); o.cached = true; return o; } catch (e2) {} }
@@ -1195,7 +1237,10 @@ function bqDetail(p, session) {
         // 従来どおりdinii明細からの推定を足し合わせる部分差し替えに変更（realTo>=fromの時だけ実施。
         // maxDateがfromより前＝その期間はまだ実績が1件も無いなら、従来どおり全体を推定値のままにする）。
         var realTo = (maxDate && maxDate < to) ? maxDate : to;
-        if (maxDate && realTo >= from) {
+        // fact_daily_storeは日次合計のみでランチ/ディナーの内訳を持たないため、営業区分で絞り込んで
+        // いる時（segmentあり）はレジ実績への差し替え自体を行わず、明細(dinii)からの推定のみを返す
+        // （2026-08-30追加）。呼び出し側（app.js）にsegmentを返し、「これは推定値」と明示させる。
+        if (maxDate && realTo >= from && !segment) {
           var realWhere = "WHERE date BETWEEN DATE('" + from + "') AND DATE('" + realTo + "')";
           if (restricted) {
             realWhere += " AND store_name IN ('" + allowNames.map(function (n) { return String(n).replace(/'/g, "''"); }).join("','") + "')";
@@ -1254,7 +1299,7 @@ function bqDetail(p, session) {
       } catch (eReal) { /* 実績が取れなければ従来の推定値のまま（BQエラー等で明細分析自体を止めない） */ }
     }
     var hourItem = bqRows_("SELECT EXTRACT(HOUR FROM " + hourCol + ") AS hour, menu, SUM(qty) AS qty, SUM(sales_incl) AS sales FROM " + hiFrom + " " + hiWhere + " GROUP BY hour, menu");
-    var res = { ok: true, hour: hour || [], item: item || [], store: st || [], hourItem: hourItem || [], basis: basis };
+    var res = { ok: true, hour: hour || [], item: item || [], store: st || [], hourItem: hourItem || [], basis: basis, segment: segment || '' };
     try { cache.put(ck, JSON.stringify(res), 900); } catch (e3) { /* 100KB超はキャッシュしない */ }
     return res;
   } catch (e) { return { ok: false, error: String(e && e.message || e) }; }

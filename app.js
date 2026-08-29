@@ -2841,13 +2841,14 @@ function detailRange(){
 // BQに明細（期間・店舗絞り）を問い合わせ。キーで重複取得を防ぎ、取得後にrender。
 async function fetchDetail(){
   if(!S.auth||!S.auth.token) return;
-  const r=detailRange(); const key=[r.from,r.to,S.dStore,S.dBasis||'checkout'].join('|');
+  const r=detailRange(); const seg=(S.dSegment==='lunch'||S.dSegment==='dinner')?S.dSegment:'';
+  const key=[r.from,r.to,S.dStore,S.dBasis||'checkout',seg].join('|');
   if(D.detailKey===key && D.detailData) return;
   if(D.detailLoading===key) return;
   D.detailLoading=key;
   try{
-    const d=await api({ action:'bqDetail', token:S.auth.token, from:r.from, to:r.to, store:S.dStore, basis:S.dBasis||'checkout' });
-    if(d&&d.ok){ D.detailData={ hour:d.hour||[], item:d.item||[], store:d.store||[], hourItem:d.hourItem||[] }; D.detailKey=key; }
+    const d=await api({ action:'bqDetail', token:S.auth.token, from:r.from, to:r.to, store:S.dStore, basis:S.dBasis||'checkout', segment:seg });
+    if(d&&d.ok){ D.detailData={ hour:d.hour||[], item:d.item||[], store:d.store||[], hourItem:d.hourItem||[], segment:d.segment||'' }; D.detailKey=key; }
     else { D.detailData={ hour:[], item:[], store:[], hourItem:[], err:(d&&d.error)||'取得失敗' }; D.detailKey=key; }
   }catch(e){ D.detailData={ hour:[], item:[], store:[], hourItem:[], err:String(e.message||e) }; D.detailKey=key; }
   D.detailLoading=''; render();
@@ -2862,7 +2863,8 @@ function viewDetail(){
   else if(!fullAccess && !allowed.includes(S.dStore)) S.dStore=canAgg?'all':(allowed[0]||'all');
   const stores=fullAccess?allStores():allowed;
   const taxExcl=(S.detailTax||'excl')==='excl'; const taxLb=taxExcl?'税別':'税込';
-  const r=detailRange(); const key=[r.from,r.to,S.dStore,S.dBasis||'checkout'].join('|');
+  const seg=(S.dSegment==='lunch'||S.dSegment==='dinner')?S.dSegment:'';
+  const r=detailRange(); const key=[r.from,r.to,S.dStore,S.dBasis||'checkout',seg].join('|');
   fetchDetail(); // 必要なら取得（キー一致なら何もしない）
   const ref=D.refDate||new Date();
   const defMonth=ref.getFullYear()+'-'+String(ref.getMonth()+1).padStart(2,'0');
@@ -2882,9 +2884,14 @@ function viewDetail(){
     <div class="seg">${[['day','日'],['week','週'],['month','月'],['year','年'],['custom','期間指定']].map(([k,l])=>`<button class="${P===k?'on':''}" onclick="App.set('dPeriod','${k}')">${l}</button>`).join('')}</div>
     ${picker}
     <div class="seg">${[['excl','税別'],['incl','税込']].map(([k,l])=>`<button class="${(S.detailTax||'excl')===k?'on':''}" onclick="App.set('detailTax','${k}')">${l}</button>`).join('')}</div>
-    <span class="period-label">${esc(r.label)} ／ ${S.dStore==='all'?(fullAccess?'全店':'担当店舗（一覧）'):esc(S.dStore)}（${taxLb}）</span>
+    <select onchange="App.set('dSegment',this.value)" title="時間帯で判定（設定は⚙DB_営業時間の「昼の部」閉店時刻を流用。未設定店舗は既定16時）">
+      <option value="" ${!seg?'selected':''}>営業区分：全体</option>
+      <option value="lunch" ${seg==='lunch'?'selected':''}>営業区分：ランチ</option>
+      <option value="dinner" ${seg==='dinner'?'selected':''}>営業区分：ディナー</option>
+    </select>
+    <span class="period-label">${esc(r.label)} ／ ${S.dStore==='all'?(fullAccess?'全店':'担当店舗（一覧）'):esc(S.dStore)}（${taxLb}${seg?'・'+(seg==='lunch'?'ランチ':'ディナー'):''}）</span>
   </div>
-  <div class="note-box no-print" style="margin:4px 0 2px;padding:9px 13px;font-size:11.5px">ℹ️ 上部サマリー・店舗別テーブルの売上/客数/組数は、レジ実績（同期済みの期間のみ）。時間帯別・商品別の内訳はPOS明細からの推定です（傾向・構成比を見る用）。</div>`;
+  <div class="note-box no-print" style="margin:4px 0 2px;padding:9px 13px;font-size:11.5px">ℹ️ ${seg?'営業区分（ランチ/ディナー）で絞り込み中は、レジ実績（fact_daily_store）が日別合計のみで昼夜を分けられないため、上部サマリー・店舗別テーブルを含め<b>すべてPOS明細（dinii）からの推定</b>です（傾向・構成比を見る用）。ランチ/ディナーの境目は、店舗ごとに予約タブの「営業時間」設定にある昼の部の閉店時刻（未設定の店舗は16:00を既定値として使用）。':'上部サマリー・店舗別テーブルの売上/客数/組数は、レジ実績（同期済みの期間のみ）。時間帯別・商品別の内訳はPOS明細からの推定です（傾向・構成比を見る用）。'}</div>`;
   // その日のイベント（「日」表示かつ特定店舗を選んでいるときだけ・その店舗対象のイベントのみ）。
   // 月/年/全店では出さない（多すぎ・対象外店舗のイベントが混じるため）。
   if(S.dPeriod==='day' && S.dStore && S.dStore!=='all'){
@@ -2941,7 +2948,7 @@ function viewDetail(){
         kpiS=storeRecs.reduce((s,row)=>s+salesAt(HS,row),0);
         kpiC=storeRecs.reduce((s,row)=>s+num(row[iChkS]),0);
         kpiG=storeRecs.reduce((s,row)=>s+num(row[iGS]),0);
-        kpiReal=true;
+        kpiReal=!seg; // 営業区分（ランチ/ディナー）絞り込み中はdd.storeもレジ実績ではなく明細からの推定のため
       }
     }
     const peak=recs.reduce((m,x)=>x.sales>m.sales?x:m,{sales:-1});
