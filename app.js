@@ -4129,10 +4129,13 @@ function rsvBookHtml_(){
   const trueRsvCount=dayRows.length-walkRows.length;
   const samePct=trueRsvCount?Math.round(sameRows.length/trueRsvCount*100):0;
   const estRevenue=dayRows.reduce((a,r)=>a+rsvEstRevenue_(r),0);
+  // ウォークイン＝予約外の「当日来店」なので、当日予約と対になる割合として来店全体（予約＋ウォークイン）
+  // に占める比率も出す（2026-08-29 ユーザー報告「ウォークインにも割合を出してほしい」対応）
+  const walkPct=dayRows.length?Math.round(walkRows.length/dayRows.length*100):0;
   h+=`<div class="kpi-grid">
     <div class="kpi"><div class="lb">今日の予約</div><div class="vl">${cnt(dayRows.length)}件 / ${cnt(ppl)}名</div><div class="yy mut">事前予約＋当日予約</div></div>
     <div class="kpi" style="background:var(--warn-bg,#faf0ec)"><div class="lb">当日予約</div><div class="vl" style="color:var(--accent,#b5502f)">${cnt(sameRows.length)}件 / ${cnt(samePpl)}名</div><div class="yy" style="color:var(--accent,#b5502f)">予約全体の ${samePct}%</div></div>
-    <div class="kpi"><div class="lb">ウォークイン</div><div class="vl">${cnt(walkRows.length)}組 / ${cnt(walkPpl)}名</div><div class="yy mut">予約ではなく「フリー」扱い</div></div>
+    <div class="kpi"><div class="lb">ウォークイン</div><div class="vl">${cnt(walkRows.length)}組 / ${cnt(walkPpl)}名</div><div class="yy mut">来店全体の ${walkPct}%（予約ではなく「フリー」扱い）</div></div>
     <div class="kpi"><div class="lb">予約売上見込</div><div class="vl">${yen(estRevenue)}</div><div class="yy mut">予約分のみ（コース金額／設定単価／実績単価から算出）</div></div>
   </div>`;
 
@@ -4445,12 +4448,14 @@ function rsvAnalysisTopHtml_(rsv,mS,mm,yy,selN){
   // 2026-08-29: ウォークインも分母に含めていたため率が実態より低く出ていたバグをユーザー報告で発見）
   const trueRsvCount=activeRows.length-walkRows.length;
   const samePct=trueRsvCount?Math.round(sameRows.length/trueRsvCount*100):0;
+  // ウォークインの割合も対で出す（来店全体＝予約＋ウォークインに占める比率。2026-08-29追加）
+  const walkPct=activeRows.length?Math.round(walkRows.length/activeRows.length*100):0;
   let h=`<div class="note-box no-print">広告費・媒体手数料を含む費用対効果は「経営ダッシュボード」に集約。予約分析では、予約構成・当日予約・媒体・コース・時間帯を確認します。</div>`;
   h+=`<div class="kpi-grid">
     <div class="kpi"><div class="lb">予約件数</div><div class="vl">${cnt(activeRows.length)}件</div></div>
     <div class="kpi"><div class="lb">予約人数</div><div class="vl">${cnt(ppl)}名</div></div>
     <div class="kpi" style="background:var(--warn-bg,#faf0ec)"><div class="lb">当日予約</div><div class="vl" style="color:var(--accent,#b5502f)">${cnt(sameRows.length)}件 / ${cnt(samePpl)}名</div><div class="yy" style="color:var(--accent,#b5502f)">予約全体の ${samePct}%（ウォークイン除く）</div></div>
-    <div class="kpi"><div class="lb">ウォークイン</div><div class="vl">${cnt(walkRows.length)}組 / ${cnt(walkPpl)}名</div><div class="yy mut">予約外・フリー</div></div>
+    <div class="kpi"><div class="lb">ウォークイン</div><div class="vl">${cnt(walkRows.length)}組 / ${cnt(walkPpl)}名</div><div class="yy mut">来店全体の ${walkPct}%（予約外）</div></div>
   </div>`;
 
   // 件数/人数の切替（2026-08-29追加。時間帯別・媒体別の2パネルはどちらも見たい場面があるため）
@@ -4520,20 +4525,27 @@ function rsvAnalysisHtml_(){
   h+=rsvAnalysisTopHtml_(rsv,mS,mm,yy,selN);
   const wnames=['日','月','火','水','木','金','土'];
   const wd=Array.from({length:7},()=>({grp:0,ppl:0,net:0,same:0,samePpl:0,cxl:0}));
-  const daily={}; // dateStr -> {grp,ppl,same,samePpl}（2026-08-28追加: 日別の当日予約分析用）
+  // dateStr -> {grp,ppl,walkGrp,walkPpl,same,samePpl}（2026-08-28追加、2026-08-29に当日来店(ウォークイン)分を追加）
+  // grp/ppl は「本当の予約」（ウォークイン・キャンセルを除く）。当日予約カードの分母と揃えるため。
+  const daily={};
   let tGrp=0,tPpl=0,tNet=0,tSame=0,tSamePpl=0,tCxl=0,tWalk=0;
   const hist=new Array(24).fill(0); const sameWin={};
   rsv.forEach(r=>{
     const w=new Date(r.t).getDay(); const o=wd[w]; const cx=r.isCancelled;
-    const walk=/ウォークイン|walk-?in/i.test(r.channelNorm||r.channelRaw);
-    const d=daily[r.dateStr]=daily[r.dateStr]||{grp:0,ppl:0,same:0,samePpl:0};
-    o.grp++; tGrp++; d.grp++;
-    if(!cx){ o.ppl+=r.partySize; tPpl+=r.partySize; d.ppl+=r.partySize; }
+    const walk=rsvIsWalkin_(r);
+    o.grp++; tGrp++;
     if(cx){ o.cxl++; tCxl++; }
     if(/ネット|net/i.test(r.channelNorm||r.channelRaw)){ o.net++; tNet++; }
     if(walk) tWalk++;
+    if(cx) return; // キャンセルは人数・日別集計（予約／ウォークインどちらにも）含めない
+    o.ppl+=r.partySize; tPpl+=r.partySize;
+    const d=daily[r.dateStr]=daily[r.dateStr]||{grp:0,ppl:0,walkGrp:0,walkPpl:0,same:0,samePpl:0};
+    if(walk){ d.walkGrp++; d.walkPpl+=r.partySize; return; }
+    d.grp++; d.ppl+=r.partySize;
+    // 当日予約＝媒体（ネット・電話等）を問わず「作成日＝来店日」の予約（ウォークインを除く）。
+    // 電話予約かどうかで絞り込む条件は入れていない（2026-08-29 ユーザー確認: 電話も当日予約として数える）
     const ct=r.createdAt?parseDateStr(r.createdAt):0;
-    if(!cx&&!walk&&ct&&ct===r.t){
+    if(ct&&ct===r.t){
       o.same++; tSame++; o.samePpl+=r.partySize; tSamePpl+=r.partySize;
       d.same++; d.samePpl+=r.partySize;
       const mch=String(r.createdAt||'').match(/T(\d{1,2}):(\d{2})/);
@@ -4556,21 +4568,27 @@ function rsvAnalysisHtml_(){
   h+=`<tr class="total"><td>合計</td><td>${cnt(tGrp)}</td><td></td><td>${cnt(tPpl)}</td><td>${cnt(tNet)}</td><td>${cnt(tSame)}</td><td>${cnt(tSamePpl)}</td><td>${cnt(tCxl)}</td><td>${pc(tCxl,tGrp)}</td></tr></tbody></table></div></div>`;
   EXPORT.push({ title:'予約分析 曜日別（'+mLabel+'）', headers:['曜日','予約組数','人数','ネット予約','当日予約(組)','当日予約(人)','キャンセル','キャンセル率'], rows:expW });
 
-  // 当日予約：日別（2026-08-28追加。曜日集計だけでは「特に多かった日」が分からないため）
+  // 当日予約：日別（2026-08-28追加。曜日集計だけでは「特に多かった日」が分からないため。
+  // 2026-08-29: 予約人数・当日来店（ウォークイン＝予約以外）の組数/人数/割合を追加。件数/人数は
+  // 上の予約分析パネルと共通の切替（S.rsvAnalysisMetric）を使う（ユーザー要望「プルダウンで切替でもOK」）
   const dailyKeys=Object.keys(daily).sort();
   if(dailyKeys.length){
+    const dMetric=S.rsvAnalysisMetric==='人数'?'人数':'件数';
+    const dPick=(c,p)=>dMetric==='人数'?p:c;
     h+=`<div class="panel"><div class="panel-head"><div><h3>当日予約：日別（${mLabel}${selN?' ／ '+esc(selN):''}）</h3>
-      <div class="sub">日ごとの当日予約（組数・人数）。ウォークイン・キャンセルは除く</div></div></div>
-    <div class="scroll-x"><table class="tbl"><thead><tr><th>日付</th><th>曜日</th><th>予約組数</th><th>当日予約(組)</th><th>当日予約(人)</th><th>当日予約率</th></tr></thead><tbody>`;
+      <div class="sub">日ごとの予約・当日予約・当日来店（予約外＝ウォークイン）の${dMetric}。表示切替は上の「表示切替」プルダウンと共通／キャンセルは除く</div></div></div>
+    <div class="scroll-x"><table class="tbl"><thead><tr><th>日付</th><th>曜日</th><th>予約(${dMetric})</th><th>当日予約(${dMetric})</th><th>当日予約率</th><th>当日来店・予約外(${dMetric})</th><th>当日来店率</th></tr></thead><tbody>`;
     const expD=[];
     dailyKeys.forEach(ds=>{
       const d=daily[ds]; const dt=new Date(ds+'T00:00:00'); const wname=wnames[dt.getDay()];
       const mdLabel=(dt.getMonth()+1)+'/'+dt.getDate();
-      h+=`<tr><td>${mdLabel}</td><td>${wname}</td><td>${cnt(d.grp)}</td><td>${cnt(d.same)}</td><td>${cnt(d.samePpl)}</td><td>${pc(d.same,d.grp)}</td></tr>`;
-      expD.push([ds,wname,d.grp,d.same,d.samePpl,d.grp>0?(d.same/d.grp*100).toFixed(1)+'%':'']);
+      const rsvV=dPick(d.grp,d.ppl), sameV=dPick(d.same,d.samePpl), walkV=dPick(d.walkGrp,d.walkPpl);
+      const samePctTxt=pc(sameV,rsvV), walkPctTxt=pc(walkV,rsvV+walkV);
+      h+=`<tr><td>${mdLabel}</td><td>${wname}</td><td>${cnt(rsvV)}</td><td>${cnt(sameV)}</td><td>${samePctTxt}</td><td>${cnt(walkV)}</td><td>${walkPctTxt}</td></tr>`;
+      expD.push([ds,wname,rsvV,sameV,samePctTxt,walkV,walkPctTxt]);
     });
     h+=`</tbody></table></div></div>`;
-    EXPORT.push({ title:'当日予約 日別（'+mLabel+'）', headers:['日付','曜日','予約組数','当日予約(組)','当日予約(人)','当日予約率'], rows:expD });
+    EXPORT.push({ title:'当日予約 日別（'+mLabel+'・'+dMetric+'）', headers:['日付','曜日','予約','当日予約','当日予約率','当日来店・予約外','当日来店率'], rows:expD });
   }
   const hmax=Math.max.apply(null,hist.concat([1])), hTot=hist.reduce((a,b)=>a+b,0);
   if(hTot>0){
