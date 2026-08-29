@@ -128,17 +128,13 @@ function resolveStore(name){
   // Supabase店舗マスタのstore_aliases(kind='name')＝表記ゆれの別名経由でも試す（2026-08-23追加）。
   // 例: 精算システムの正本「じんべぇ 川崎」で書いたPL行が、売上シート側の表記「じんべえ 川崎店」と
   // 文字種の違い（え/ぇ）で↑の部分一致にもかからず未突合になっていたのを解消。
+  // 2026-08-29修正（担当D実機調査で発覚）: s.name===target（targetと"正式名"が完全一致する店舗を探す）
+  // は、そもそもtargetが正式名と一致するならこの時点で既にall.includes(target)にヒットしているはずで、
+  // 実装ミスにより一度も発火しない条件だった。正しくは76行目のstoreDirParentOf_と同じく、
+  // 「aliasesの中にtargetと一致するものを持つ店舗」を探す。
   if(D.storeDirectory){
-    const rec=D.storeDirectory.find(s=>s.name===target);
-    if(rec&&rec.aliases){
-      for(const a of rec.aliases){
-        if(a.kind!=='name'||a.alias===target) continue;
-        if(all.includes(a.alias)) return a.alias;
-        const an=_norm(a.alias);
-        const h2=all.find(s=>_norm(s)===an || (an.length>=2 && (_norm(s).includes(an)||an.includes(_norm(s)))));
-        if(h2) return h2;
-      }
-    }
+    const rec=D.storeDirectory.find(s=>(s.aliases||[]).some(a=>a.kind==='name'&&a.alias===target));
+    if(rec&&all.includes(rec.name)) return rec.name;
   }
   return hit||null;
 }
