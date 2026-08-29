@@ -6842,18 +6842,31 @@ function tankaModal(){
   const editKey=m.key||'';
   const rows=D.tankaRows||[];
   const editing=editKey?rows.find(r=>(r.store+'|'+r.media)===editKey):null;
-  const stores=scopeStores();
-  const mediaOpts=[...new Set((D.tankaRows||[]).map(r=>r.media).concat(['ホットペッパー','食べログ','ぐるなび','電話']))].filter(Boolean);
+  const stores=scopeStores().slice();
+  if(editing&&editing.store&&!stores.includes(editing.store)) stores.unshift(editing.store);
+  // 2026-08-30: 媒体・店舗を<input list>（datalist）にしていたところ、「一度選ぶと矢印から再選択
+  // できず、一度文字を消さないとプルダウンが開かない」というブラウザの既知の癖をユーザーに指摘され、
+  // 通常の<select>に変更（矢印クリックでいつでも選び直せる）。媒体だけは既存の固定候補に無い名前も
+  // 入れたいケースがあるため、「＋その他（自由入力）」を選ぶとテキスト欄が出る形にした。
+  const mediaOpts=[...new Set(['ホットペッパー','食べログ','ぐるなび','Retty','Google','Instagram','自社LP','電話'].concat((D.tankaRows||[]).map(r=>r.media)))].filter(Boolean);
+  const curMedia=editing?editing.media:'';
+  const isKnownMedia=!curMedia||mediaOpts.includes(curMedia);
   return `<div class="modal-bg" onclick="if(event.target===this)App.closeModal()"><div class="modal" style="max-width:640px">
     <h3>単価設定</h3>
     <div class="sub">店舗×媒体ごとの想定客単価（円）。予約の「予約売上見込」は、①コース名に金額が書かれていればその金額 → ②無ければ媒体別売上の直近90日実績（実売上÷人数）から自動算出 → ③実績も無い組合せ（電話予約など）だけ、ここで設定した単価、の順で計算します。店舗・媒体を空欄にすると、それぞれ「全店共通」「全媒体共通」の既定値になります。</div>
     <div class="form-grid" style="margin-top:12px">
       <div><label>店舗（空欄=全店共通）</label>
-        <input list="tk-stores" id="tk-store" value="${esc(editing?editing.store:'')}" placeholder="空欄=全店共通">
-        <datalist id="tk-stores">${stores.map(s=>`<option value="${esc(s)}">`).join('')}</datalist></div>
+        <select id="tk-store">
+          <option value="" ${!editing||!editing.store?'selected':''}>（全店共通）</option>
+          ${stores.map(s=>`<option value="${esc(s)}" ${editing&&editing.store===s?'selected':''}>${esc(s)}</option>`).join('')}
+        </select></div>
       <div><label>媒体（空欄=全媒体共通）</label>
-        <input list="tk-medias" id="tk-media" value="${esc(editing?editing.media:'')}" placeholder="空欄=全媒体共通">
-        <datalist id="tk-medias">${mediaOpts.map(m2=>`<option value="${esc(m2)}">`).join('')}</datalist></div>
+        <select id="tk-media" onchange="App.tankaMediaChange(this.value)">
+          <option value="" ${!editing||!editing.media?'selected':''}>（全媒体共通）</option>
+          ${mediaOpts.map(m2=>`<option value="${esc(m2)}" ${editing&&editing.media===m2?'selected':''}>${esc(m2)}</option>`).join('')}
+          <option value="__custom__" ${!isKnownMedia?'selected':''}>＋その他（自由入力）</option>
+        </select>
+        <input id="tk-media-custom" placeholder="媒体名を入力" value="${esc(isKnownMedia?'':curMedia)}" style="margin-top:6px;${isKnownMedia?'display:none':''}"></div>
       <div><label>設定単価（円・1人あたり）</label><input type="number" id="tk-price" min="1" value="${editing&&editing.price?editing.price:''}"></div>
       <div><label>平均1組人数（任意・電話の予想売上算出用）</label><input type="number" id="tk-avg" min="0" value="${editing&&editing.avg?editing.avg:''}"></div>
       <div><label>電話CV（任意・% または 0〜1）</label><input type="number" id="tk-cv" min="0" value="${editing&&editing.cv?Math.round(editing.cv*100):''}"></div>
@@ -7753,10 +7766,13 @@ window.App = {
   /* ---- 単価設定（2026-08-30追加） ---- */
   openTankaSettings(){ if(!requireFeature('tankaEdit'))return; S.modal={type:'tanka'}; render(); },
   editTankaRow(key){ S.modal={type:'tanka', key}; render(); },
+  tankaMediaChange(v){ const c=$('tk-media-custom'); if(!c)return; if(v==='__custom__'){ c.style.display=''; c.focus(); } else { c.style.display='none'; } },
   async saveTankaRow(oldStore,oldMedia){
     const msg=$('tk-msg');
     if(!S.auth||!S.auth.token){ msg.textContent='スプレッドシート接続時のみ保存できます'; return; }
-    const store=($('tk-store').value||'').trim(), media=($('tk-media').value||'').trim();
+    const store=($('tk-store').value||'').trim();
+    let media=($('tk-media').value||'').trim();
+    if(media==='__custom__') media=($('tk-media-custom').value||'').trim();
     const price=Number($('tk-price').value);
     if(!(price>0)){ msg.textContent='設定単価を入力してください'; return; }
     const avg=Number($('tk-avg').value)||0, cv=Number($('tk-cv').value)||0, memo=($('tk-memo').value||'').trim();
