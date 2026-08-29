@@ -4123,8 +4123,11 @@ function rsvBookHtml_(){
   const walkRows=dayRows.filter(rsvIsWalkin_);
   const sameRows=dayRows.filter(rsvIsSameDay_);
   const samePpl=sameRows.reduce((a,r)=>a+r.partySize,0);
-  const samePct=dayRows.length?Math.round(sameRows.length/dayRows.length*100):0;
   const walkPpl=walkRows.reduce((a,r)=>a+r.partySize,0);
+  // 当日予約率の分母はウォークインを除いた「本当の予約」件数にする（2026-08-29修正:
+  // ウォークインも分母に含めていたため率が実態より低く出ていた。ユーザー報告で発覚）
+  const trueRsvCount=dayRows.length-walkRows.length;
+  const samePct=trueRsvCount?Math.round(sameRows.length/trueRsvCount*100):0;
   const estRevenue=dayRows.reduce((a,r)=>a+rsvEstRevenue_(r),0);
   h+=`<div class="kpi-grid">
     <div class="kpi"><div class="lb">今日の予約</div><div class="vl">${cnt(dayRows.length)}件 / ${cnt(ppl)}名</div><div class="yy mut">事前予約＋当日予約</div></div>
@@ -4166,14 +4169,6 @@ function rsvBookHtml_(){
     ${selectRow('キーワード',S.rsvFilterKeyword,kwOpts,'rsvFilterKeyword')}
     ${selectRow('人数',S.rsvFilterPpl,['1-2','3-4','5+'],'rsvFilterPpl')}
   </div>`;
-
-  h+=`<div class="ctrl-bar no-print">
-    <button class="icon-btn" onclick="App.set('rsvDate','${rsvShiftDate_(-1)}')">‹ 前日</button>
-    <input type="date" value="${date}" onchange="App.set('rsvDate',this.value)">
-    <button class="icon-btn" onclick="App.set('rsvDate','${rsvShiftDate_(1)}')">翌日 ›</button>
-    <button class="icon-btn" onclick="App.set('rsvDate','${todayStr_()}')">今日</button>
-    <div class="seg">${[['timeline','タイムライン'],['floorplan','配置図'],['calendar','カレンダー'],['list','リスト']].map(([k,l])=>`<button class="${view===k?'on':''}" onclick="App.set('rsvView','${k}')">${l}</button>`).join('')}</div>
-    ${periodOpts.length?`<select onchange="App.set('rsvPeriod',this.value)">${periodOpts.map(o=>`<option ${((S.rsvPeriod||'全体')===o)?'selected':''}>${esc(o)}</option>`).join('')}</select>`:''}</div>`;
 
   // 日付ヘッダーバー（モックアップv1準拠）: 日付＋店舗／内訳／ステータスバッジ。「＋予約作成」はユーザー確認により今回は追加しない
   const isOpenNow=(()=>{ if(date!==todayStr_()) return false; const hrs=selN?resolveStoreHours_(selN,date,periodSel):null; if(!hrs) return true; const now=new Date(); const nowHH=now.getHours()+now.getMinutes()/60; return nowHH>=(hrs.open%24)||nowHH<(hrs.close%24); })();
@@ -4378,7 +4373,7 @@ function rsvCalendarHtml_(date,rows){
     const ds=ymPrefix+'-'+String(d).padStart(2,'0');
     const o=byDate[ds];
     const isToday=ds===todayStr_(), isSel=ds===date;
-    h+=`<div onclick="App.set('rsvDate','${ds}')" style="cursor:pointer;border:1px solid ${isToday?'#4c7d5c':'var(--bd,#e5ddd0)'};border-radius:4px;padding:4px;min-height:52px;${isSel?'background:var(--bg2,#f4efe6)':''}">
+    h+=`<div onclick="App.set('rsvDate','${ds}');App.set('rsvView','list')" style="cursor:pointer;border:1px solid ${isToday?'#4c7d5c':'var(--bd,#e5ddd0)'};border-radius:4px;padding:4px;min-height:52px;${isSel?'background:var(--bg2,#f4efe6)':''}">
       <div style="font-weight:700;font-size:12px">${d}</div>
       ${o?`<div style="font-size:10px;color:#4c7d5c">${o.grp}組</div><div style="font-size:10px;color:var(--mut2,#8a7f6f)">${o.ppl}名</div>`:''}
     </div>`;
@@ -4440,30 +4435,46 @@ function rsvDetailModal(){
 // （時間帯別当日予約／当日予約×媒体／コース別／キーワード）。既存の曜日別集計・申込時刻分布は
 // この下にそのまま残す（指示書の指定どおり、無くさない）。
 function rsvAnalysisTopHtml_(rsv,mS,mm,yy,selN){
-  const cxlRows=rsv.filter(r=>r.isCancelled), activeRows=rsv.filter(r=>!r.isCancelled);
+  const activeRows=rsv.filter(r=>!r.isCancelled);
   const walkRows=activeRows.filter(rsvIsWalkin_);
   const sameRows=activeRows.filter(rsvIsSameDay_);
   const ppl=activeRows.reduce((a,r)=>a+r.partySize,0);
-  const samePct=activeRows.length?Math.round(sameRows.length/activeRows.length*100):0;
+  const walkPpl=walkRows.reduce((a,r)=>a+r.partySize,0);
+  const samePpl=sameRows.reduce((a,r)=>a+r.partySize,0);
+  // 当日予約率の分母はウォークインを除いた「本当の予約」件数にする（予約帳KPIと同じ修正。
+  // 2026-08-29: ウォークインも分母に含めていたため率が実態より低く出ていたバグをユーザー報告で発見）
+  const trueRsvCount=activeRows.length-walkRows.length;
+  const samePct=trueRsvCount?Math.round(sameRows.length/trueRsvCount*100):0;
   let h=`<div class="note-box no-print">広告費・媒体手数料を含む費用対効果は「経営ダッシュボード」に集約。予約分析では、予約構成・当日予約・媒体・コース・時間帯を確認します。</div>`;
   h+=`<div class="kpi-grid">
-    <div class="kpi"><div class="lb">予約件数</div><div class="vl">${cnt(rsv.length)}件</div></div>
+    <div class="kpi"><div class="lb">予約件数</div><div class="vl">${cnt(activeRows.length)}件</div></div>
     <div class="kpi"><div class="lb">予約人数</div><div class="vl">${cnt(ppl)}名</div></div>
-    <div class="kpi" style="background:var(--warn-bg,#faf0ec)"><div class="lb">当日予約</div><div class="vl" style="color:var(--accent,#b5502f)">${cnt(sameRows.length)}件</div><div class="yy" style="color:var(--accent,#b5502f)">予約の ${samePct}%</div></div>
-    <div class="kpi"><div class="lb">ウォークイン</div><div class="vl">${cnt(walkRows.length)}組</div><div class="yy mut">予約外・フリー</div></div>
+    <div class="kpi" style="background:var(--warn-bg,#faf0ec)"><div class="lb">当日予約</div><div class="vl" style="color:var(--accent,#b5502f)">${cnt(sameRows.length)}件 / ${cnt(samePpl)}名</div><div class="yy" style="color:var(--accent,#b5502f)">予約全体の ${samePct}%（ウォークイン除く）</div></div>
+    <div class="kpi"><div class="lb">ウォークイン</div><div class="vl">${cnt(walkRows.length)}組 / ${cnt(walkPpl)}名</div><div class="yy mut">予約外・フリー</div></div>
   </div>`;
 
-  // ①時間帯別 当日予約分析
+  // 件数/人数の切替（2026-08-29追加。時間帯別・媒体別の2パネルはどちらも見たい場面があるため）
+  const metric=S.rsvAnalysisMetric==='人数'?'人数':'件数';
+  h+=`<div class="ctrl-bar no-print" style="justify-content:flex-end"><label class="mut" style="font-size:11px">表示切替</label>
+    <select onchange="App.set('rsvAnalysisMetric',this.value)"><option ${metric==='件数'?'selected':''}>件数</option><option ${metric==='人数'?'selected':''}>人数</option></select></div>`;
+  const pick=(cntVal,pplVal)=>metric==='人数'?pplVal:cntVal;
+
+  // ①時間帯別 当日予約分析（件数・人数の両方を集計し、表示は切替に従う）
   const buckets=[[11,14,'11:00〜14:00'],[17,19,'17:00〜19:00'],[19,21,'19:00〜21:00'],[21,26,'21:00以降']];
   const bRows=buckets.map(([a,b,lb])=>{
     const inRange=activeRows.filter(r=>r.hh>=a&&r.hh<b);
-    const same=inRange.filter(rsvIsSameDay_).length;
-    return [lb,same,inRange.length,inRange.length?Math.round(same/inRange.length*100)+'%':'—'];
+    const sameIn=inRange.filter(rsvIsSameDay_);
+    const same=pick(sameIn.length,sameIn.reduce((s,r)=>s+r.partySize,0));
+    const total=pick(inRange.length,inRange.reduce((s,r)=>s+r.partySize,0));
+    return [lb,same,total,total?Math.round(same/total*100)+'%':'—'];
   });
-  // ②当日予約×媒体
+  // ②当日予約×媒体（件数・人数の両方を集計）
   const byMedia={};
-  activeRows.forEach(r=>{ const k=canonMedia(r.channelNorm||r.channelRaw)||'（不明）'; const o=byMedia[k]=byMedia[k]||{same:0,total:0}; o.total++; if(rsvIsSameDay_(r))o.same++; });
-  const mRows=Object.keys(byMedia).sort((a,b)=>byMedia[b].total-byMedia[a].total).map(k=>{ const o=byMedia[k]; return [k,o.same,o.total,o.total?Math.round(o.same/o.total*100)+'%':'—']; });
+  activeRows.forEach(r=>{ const k=canonMedia(r.channelNorm||r.channelRaw)||'（不明）'; const o=byMedia[k]=byMedia[k]||{same:0,total:0,samePpl:0,totalPpl:0}; o.total++; o.totalPpl+=r.partySize; if(rsvIsSameDay_(r)){ o.same++; o.samePpl+=r.partySize; } });
+  const mRows=Object.keys(byMedia).sort((a,b)=>byMedia[b].total-byMedia[a].total).map(k=>{
+    const o=byMedia[k]; const same=pick(o.same,o.samePpl), total=pick(o.total,o.totalPpl);
+    return [k,same,total,total?Math.round(same/total*100)+'%':'—'];
+  });
   // ③コース別
   const byCourse={};
   activeRows.forEach(r=>{ const k=r.course||'（未設定）'; const o=byCourse[k]=byCourse[k]||{grp:0,ppl:0}; o.grp++; o.ppl+=r.partySize; });
@@ -4484,15 +4495,15 @@ function rsvAnalysisTopHtml_(rsv,mS,mm,yy,selN){
     ${rows.length?rows.map(r=>`<tr${hiIdx!=null&&Number(String(r[hiIdx]).replace('%',''))>=25?' class="hi"':''}>${r.map(c=>`<td>${esc(c)}</td>`).join('')}</tr>`).join(''):`<tr><td colspan="${headers.length}" class="mut">データなし</td></tr>`}
     </tbody></table></div></div>`;
   h+=`<div class="grid2" style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-    ${panel('当日予約分析','当日予約がいつ入っているか',['時間帯','当日予約','全予約','当日比率'],bRows,3)}
-    ${panel('当日予約×媒体','媒体ごとの当日予約比率',['媒体','当日予約','全予約','比率'],mRows,3)}
+    ${panel('当日予約分析','当日予約がいつ入っているか（'+metric+'）',['時間帯','当日予約('+metric+')','全予約('+metric+')','当日比率'],bRows,3)}
+    ${panel('当日予約×媒体','媒体ごとの当日予約比率（'+metric+'）',['媒体','当日予約('+metric+')','全予約('+metric+')','比率'],mRows,3)}
   </div>
   <div class="grid2" style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
     ${panel('コース別','予約件数・人数・構成比',['コース','件数','人数','構成比'],cRows)}
     ${panel('予約目的・キーワード','特別対応が必要な予約（前月比）',['キーワード','件数','前月比'],kRows)}
   </div>`;
-  EXPORT.push({ title:'予約分析：時間帯別当日予約', headers:['時間帯','当日予約','全予約','当日比率'], rows:bRows });
-  EXPORT.push({ title:'予約分析：当日予約×媒体', headers:['媒体','当日予約','全予約','比率'], rows:mRows });
+  EXPORT.push({ title:'予約分析：時間帯別当日予約（'+metric+'）', headers:['時間帯','当日予約','全予約','当日比率'], rows:bRows });
+  EXPORT.push({ title:'予約分析：当日予約×媒体（'+metric+'）', headers:['媒体','当日予約','全予約','比率'], rows:mRows });
   EXPORT.push({ title:'予約分析：コース別', headers:['コース','件数','人数','構成比'], rows:cRows });
   return h;
 }
