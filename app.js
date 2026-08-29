@@ -2891,7 +2891,7 @@ function viewDetail(){
     </select>
     <span class="period-label">${esc(r.label)} ／ ${S.dStore==='all'?(fullAccess?'全店':'担当店舗（一覧）'):esc(S.dStore)}（${taxLb}${seg?'・'+(seg==='lunch'?'ランチ':'ディナー'):''}）</span>
   </div>
-  <div class="note-box no-print" style="margin:4px 0 2px;padding:9px 13px;font-size:11.5px">ℹ️ ${seg?'営業区分（ランチ/ディナー）で絞り込み中は、レジ実績（fact_daily_store）が日別合計のみで昼夜を分けられないため、上部サマリー・店舗別テーブルを含め<b>すべてPOS明細（dinii）からの推定</b>です（傾向・構成比を見る用）。ランチ/ディナーの境目は、店舗×曜日ごとに予約タブの「営業時間」設定を見て判定します（例：土日は夜の部のみの店舗なら、その曜日は終日ディナー扱い。曜日設定が無い店舗は昼の部の閉店時刻、丸ごと未設定の店舗は16:00を既定値として使用。祝日の特別営業は今回は未対応で通常の曜日と同じ扱いです）。':'上部サマリー・店舗別テーブルの売上/客数/組数は、レジ実績（同期済みの期間のみ）。時間帯別・商品別の内訳はPOS明細からの推定です（傾向・構成比を見る用）。'}</div>`;
+  <div class="note-box no-print" style="margin:4px 0 2px;padding:9px 13px;font-size:11.5px">ℹ️ ${seg?'営業区分（ランチ/ディナー）で絞り込み中の上部サマリー・店舗別テーブルは、レジ実績（同期済みの期間）を、POS明細（dinii）から算出した「その区分の構成比」で按分した数字です（fact_daily_storeが日別合計のみでランチ/ディナー別を持たないため。全体の実績合計とは一致しますが、明細側の推定精度の影響は受けます）。ランチ/ディナーの境目は、店舗×曜日ごとに予約タブの「営業時間」設定を見て判定します（例：土日は夜の部のみの店舗なら、その曜日は終日ディナー扱い。曜日設定が無い店舗は昼の部の閉店時刻、丸ごと未設定の店舗は16:00を既定値として使用。祝日の特別営業は今回は未対応で通常の曜日と同じ扱いです）。時間帯別・商品別の内訳は引き続きPOS明細からの推定です。':'上部サマリー・店舗別テーブルの売上/客数/組数は、レジ実績（同期済みの期間のみ）。時間帯別・商品別の内訳はPOS明細からの推定です（傾向・構成比を見る用）。'}</div>`;
   // その日のイベント（「日」表示かつ特定店舗を選んでいるときだけ・その店舗対象のイベントのみ）。
   // 月/年/全店では出さない（多すぎ・対象外店舗のイベントが混じるため）。
   if(S.dPeriod==='day' && S.dStore && S.dStore!=='all'){
@@ -2948,13 +2948,13 @@ function viewDetail(){
         kpiS=storeRecs.reduce((s,row)=>s+salesAt(HS,row),0);
         kpiC=storeRecs.reduce((s,row)=>s+num(row[iChkS]),0);
         kpiG=storeRecs.reduce((s,row)=>s+num(row[iGS]),0);
-        kpiReal=!seg; // 営業区分（ランチ/ディナー）絞り込み中はdd.storeもレジ実績ではなく明細からの推定のため
+        kpiReal=true; // 営業区分（ランチ/ディナー）絞り込み中もbqDetail側でレジ実績を構成比按分するため、引き続き実績ベース
       }
     }
     const peak=recs.reduce((m,x)=>x.sales>m.sales?x:m,{sales:-1});
     h+=`<div class="kpi-grid">
-      <div class="kpi"><div class="lb">売上（${taxLb}）</div><div class="vl">${yen(kpiS)}</div><div class="yy">${esc(r.label)}${kpiReal?'・レジ実績':''}</div></div>
-      <div class="kpi"><div class="lb">会計数 / 客数</div><div class="vl" style="font-size:19px">${cnt(kpiC)}組 / ${cnt(kpiG)}人</div><div class="yy">${kpiReal?'客数=レジ実績':'客数=お通し推定'}</div></div>
+      <div class="kpi"><div class="lb">売上（${taxLb}）</div><div class="vl">${yen(kpiS)}</div><div class="yy">${esc(r.label)}${kpiReal?(seg?'・レジ実績を按分':'・レジ実績'):''}</div></div>
+      <div class="kpi"><div class="lb">会計数 / 客数</div><div class="vl" style="font-size:19px">${cnt(kpiC)}組 / ${cnt(kpiG)}人</div><div class="yy">${kpiReal?(seg?'客数=レジ実績を按分':'客数=レジ実績'):'客数=お通し推定'}</div></div>
       <div class="kpi"><div class="lb">客単価</div><div class="vl">${yen(kpiG>0?kpiS/kpiG:0)}</div><div class="yy">${taxLb}・売上÷客数</div></div>
       <div class="kpi"><div class="lb">ピーク時間帯</div><div class="vl">${peak.sales>=0?peak.hour+'時台':'—'}</div><div class="yy">${peak.sales>=0?yen(peak.sales):''}</div></div>
     </div>`;

@@ -1210,6 +1210,7 @@ function bqDetail(p, session) {
       storeParts.push("WHEN store_id='" + String(sid).replace(/'/g, "''") + "' THEN " + dowExprForStore);
     }
     var isLunchExpr = storeParts.length ? "(CASE " + storeParts.join(' ') + " ELSE " + hourDecExpr + " < " + defaultCutoff + " END)" : (hourDecExpr + " < " + defaultCutoff);
+    var whereBase = where; // segment条件を付ける前のwhere（客数・組数の按分比の分母クエリで再利用する）
     where += " AND " + (segment === 'lunch' ? isLunchExpr : ("NOT " + isLunchExpr));
   }
   // 集計基準: checkout=会計時(既定) / order=オーダー時(各明細) / arrival=来店時(伝票の最初のオーダー)
@@ -1288,10 +1289,13 @@ function bqDetail(p, session) {
         // 従来どおりdinii明細からの推定を足し合わせる部分差し替えに変更（realTo>=fromの時だけ実施。
         // maxDateがfromより前＝その期間はまだ実績が1件も無いなら、従来どおり全体を推定値のままにする）。
         var realTo = (maxDate && maxDate < to) ? maxDate : to;
-        // fact_daily_storeは日次合計のみでランチ/ディナーの内訳を持たないため、営業区分で絞り込んで
-        // いる時（segmentあり）はレジ実績への差し替え自体を行わず、明細(dinii)からの推定のみを返す
-        // （2026-08-30追加）。呼び出し側（app.js）にsegmentを返し、「これは推定値」と明示させる。
-        if (maxDate && realTo >= from && !segment) {
+        // 2026-08-30追加・改良: 当初は営業区分（segment）で絞り込んでいる時はレジ実績への差し替え
+        // 自体を行わず明細(dinii)推定のみを返していたが、ユーザーから「全体だと合っているのにディナー
+        // だけにすると数字がまたズレる」と指摘され、実績を活かせるよう変更。fact_daily_storeは日次合計
+        // のみでランチ/ディナー別を持たないため、①まずこのブロックでフルデイ（営業区分を問わない）の
+        // 実績＋推定の合計（day*）を出し、②segmentがある時だけ、明細(dinii)から算出した「その区分の
+        // 構成比」（絞り込み後の推定÷フルデイの推定）をday*に掛けて按分する（下のfor文内）。
+        if (maxDate && realTo >= from) {
           var realWhere = "WHERE date BETWEEN DATE('" + from + "') AND DATE('" + realTo + "')";
           if (restricted) {
             realWhere += " AND store_name IN ('" + allowNames.map(function (n) { return String(n).replace(/'/g, "''"); }).join("','") + "')";
@@ -1321,6 +1325,19 @@ function bqDetail(p, session) {
               }
             }
           }
+          // segmentがある時だけ、按分の分母（その店舗・期間の営業区分を問わないdinii推定合計）を
+          // 追加で取得する（whereBase＝segment条件を付ける前のwhere）。
+          var stFullMap = {};
+          if (segment) {
+            var stFull = bqRows_("SELECT store_id, SUM(price_excl*qty) AS sales_excl, " + VCHK + ", " + G + " FROM " + T + " " + whereBase + " GROUP BY store_id");
+            if (stFull) {
+              var m2 = bqStoreMap_(), snIdx2 = bqStoreNameIndex_();
+              for (var fi = 1; fi < stFull.length; fi++) {
+                var fname = bqResolveStoreName_(snIdx2, m2[stFull[fi][0]] || stFull[fi][0]);
+                stFullMap[fname] = { sales_excl: Number(stFull[fi][1] || 0), checks: Number(stFull[fi][2] || 0), guests: Number(stFull[fi][3] || 0) };
+              }
+            }
+          }
           if (real) {
             var realMap = {};
             for (var ri = 1; ri < real.length; ri++) realMap[real[ri][0]] = { guests: Number(real[ri][1] || 0), checks: Number(real[ri][2] || 0), sales_excl: Number(real[ri][3] || 0) };
@@ -1328,21 +1345,38 @@ function bqDetail(p, session) {
               var rm = realMap[st[si][0]];
               if (!rm) continue; // その店舗の実績行が1件も無い（新規店舗等）ならこれまでどおり全期間推定のまま
               var tm = tailMap[st[si][0]] || { guests: 0, checks: 0, sales_excl: 0 };
-              // 客数・組数は「揃っている範囲は実績値・揃っていない残りはdinii明細からの推定」を合算
-              var finalChecks = rm.checks + tm.checks;
-              var finalGuests = rm.guests + tm.guests;
-              var finalSalesExcl = rm.sales_excl + tm.sales_excl;
-              st[si][3] = finalChecks; st[si][4] = finalGuests;
-              // 売上も同様に合算。明細(dinii)は一部の売上しか拾えておらず店舗によっては実績の6〜7割程度
-              // しか積み上がらないと判明済み（2026-08-23）のため、ドリンク/フード/カラオケの内訳は明細からしか
-              // 出せない前提で、内訳どうしの構成比は維持したまま合計が上のfinalSalesExclに一致するよう
-              // 比例配分し直す（oldExclは全期間dinii推定の元の合計＝差し替え前のst[si][2]）。
+              // フルデイ（営業区分を問わない）の「揃っている範囲は実績値・揃っていない残りはdinii明細
+              // からの推定」を合算
+              var dayChecks = rm.checks + tm.checks;
+              var dayGuests = rm.guests + tm.guests;
+              var daySalesExcl = rm.sales_excl + tm.sales_excl;
+              // segChecks0/segGuests0/oldExclは「絞り込み後（segment適用済み）」のdinii明細推定・按分前の値
+              var segChecks0 = Number(st[si][3]) || 0;
+              var segGuests0 = Number(st[si][4]) || 0;
               var oldExcl = Number(st[si][2]) || 0;
+              var finalChecks, finalGuests, finalSalesExcl;
+              if (segment) {
+                var full = stFullMap[st[si][0]];
+                if (!full || !(full.checks > 0) || !(full.guests > 0) || !(full.sales_excl > 0)) continue; // 按分の材料が無ければこの店舗はdinii推定のまま触らない
+                // 客数・組数・売上のいずれも「絞り込み後の推定 ÷ フルデイの推定」＝その区分の構成比を
+                // フルデイの実績（dayChecks等）に掛けて按分する（例: ディナーの明細推定客数が
+                // フルデイ明細推定客数の60%なら、実績客数の60%をディナーの客数とみなす）。
+                finalChecks = dayChecks * (segChecks0 / full.checks);
+                finalGuests = dayGuests * (segGuests0 / full.guests);
+                finalSalesExcl = daySalesExcl * (oldExcl / full.sales_excl);
+              } else {
+                finalChecks = dayChecks; finalGuests = dayGuests; finalSalesExcl = daySalesExcl;
+              }
+              st[si][3] = Math.round(finalChecks); st[si][4] = Math.round(finalGuests);
+              // 売上も同様に按分・合算。明細(dinii)は一部の売上しか拾えておらず店舗によっては実績の
+              // 6〜7割程度しか積み上がらないと判明済み（2026-08-23）のため、ドリンク/フード/カラオケの
+              // 内訳は明細からしか出せない前提で、内訳どうしの構成比は維持したまま合計が上の
+              // finalSalesExclに一致するよう比例配分し直す（oldExclは絞り込み後のdinii推定の元の合計）。
               var scale = oldExcl > 0 ? (finalSalesExcl / oldExcl) : 1;
               st[si][5] = Math.round((Number(st[si][5]) || 0) * scale); // ドリンク
               st[si][6] = Math.round((Number(st[si][6]) || 0) * scale); // カラオケ
               st[si][7] = Math.round((Number(st[si][7]) || 0) * scale); // フード
-              st[si][2] = finalSalesExcl;                               // 売上（税別）
+              st[si][2] = Math.round(finalSalesExcl);                   // 売上（税別）
               st[si][1] = Math.round(finalSalesExcl * 1.1);             // 売上（税込・概算＝税別×1.1）
             }
           }
