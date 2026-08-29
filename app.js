@@ -1624,6 +1624,13 @@ async function fetchVersion(){
 function touchSyncBadge(){ S.lastSync=stampNow(); const el=document.querySelector('.sync-info'); if(el) el.innerHTML=connBadge(); }
 async function syncIfChanged(){
   if(!S.auth||!S.auth.token) return;
+  // 2026-08-30: モーダル（単価設定・PL入力等の手入力フォーム）を開いている間にこのバックグラウンド
+  // 同期が動くと、最後にrender()が画面全体を作り直すため、入力欄が保存前の値（＝空欄）に巻き戻り、
+  // 「入力途中で消えてやり直しになる」原因になっていた（ユーザー報告・ポーリング間隔＝60秒ごと、
+  // またはタブを切り替えて戻ると即発火するvisibilitychange経由で頻発）。モーダルを開いている間は
+  // 同期を止め、閉じたら次のポーリング/タブ復帰時に自動で再開する（入力中のデータが失われない
+  // ようにするのが目的で、多少データが古いまま見える時間ができるのはこの間だけの許容範囲）。
+  if(S.modal) return;
   const v=await fetchVersion();
   // 確実に「変化なし」と分かった時だけ重い読込をスキップ。versionが取れない古いGASでは従来通りフル取得。
   if(v!==null && v!=='' && S.dataVersion && v===S.dataVersion){ touchSyncBadge(); return; }
