@@ -4059,6 +4059,38 @@ function rsvYoyStat_(store,dateStr){
     curWeek: stat(setArg,weekStart,weekStart+7*DAY-1,store)
   };
 }
+// 予約分析（月次）の前年同月比較（2026-08-30追加）。上のrsvYoyStat_はD.daily（売上・来店人数実績）を
+// 使うが、予約分析で見たいのは「予約そのものの件数・人数」の前年比なので、予約データ（D.rsvBq／D.rsv）
+// から集計する。I-1（BQ自動取込）は運用開始が2026-08と新しいため、前年分はほぼ確実に存在しない。
+// そこで「広告管理」の予約CSV手動取込（D.rsv・💾予約DB）にフォールバックする（例: 黒霧屋は前年、食べログ
+// ノートの予約帳をユーザーが手動アップロードする運用）。BQに1件でもあればBQを優先しD.rsvは見ない
+// （両方を合算すると二重計上になり得るため）。全店表示（selN未指定）でD.rsvにフォールバックする場合、
+// アップロードされている店舗しか前年データが無い＝一部店舗のみの合算になるため、対象店舗名を
+// src2ndStoresとして返し、呼び出し側で注記できるようにする。
+function rsvPeriodAgg_(selN,mS,mE,scopeSet){
+  const bqRows=(D.rsvBq||[]).filter(r=>r.t>=mS&&r.t<=mE&&!r.isCancelled&&(selN?r.store===selN:scopeSet.has(r.store)));
+  if(bqRows.length){
+    const walk=bqRows.filter(rsvIsWalkin_), same=bqRows.filter(rsvIsSameDay_);
+    return { src:'bq', totalGrp:bqRows.length, totalPpl:bqRows.reduce((a,r)=>a+r.partySize,0),
+      walkGrp:walk.length, walkPpl:walk.reduce((a,r)=>a+r.partySize,0),
+      sameGrp:same.length, samePpl:same.reduce((a,r)=>a+r.partySize,0), stores:null };
+  }
+  const legacyStores=new Set();
+  const legacy=(D.rsv||[]).filter(r=>{
+    if(r.t<mS||r.t>mE||/キャンセル/.test(r.st)) return false;
+    if(!r.store) return false; // 店舗名が無い行は突合できないため対象外
+    const res=resolveStoreEx(r.store); const canon=res?res.parent:r.store;
+    const ok=selN?canon===selN:scopeSet.has(canon);
+    if(ok) legacyStores.add(canon);
+    return ok;
+  });
+  if(!legacy.length) return { src:'none', totalGrp:0,totalPpl:0,walkGrp:0,walkPpl:0,sameGrp:0,samePpl:0, stores:null };
+  const isWalk=(r)=>/ウォークイン/.test(r.win);
+  const walk=legacy.filter(isWalk), same=legacy.filter(r=>!isWalk(r)&&r.ct&&r.ct===r.t);
+  return { src:'legacy', totalGrp:legacy.length, totalPpl:legacy.reduce((a,r)=>a+r.n,0),
+    walkGrp:walk.length, walkPpl:walk.reduce((a,r)=>a+r.n,0),
+    sameGrp:same.length, samePpl:same.reduce((a,r)=>a+r.n,0), stores:[...legacyStores] };
+}
 // 予約帳のフィルタ行（時間帯/媒体/コース/キーワード/人数）をdayRowsに適用
 function rsvApplyFilters_(rows){
   let out=rows;
@@ -4457,6 +4489,31 @@ function rsvAnalysisTopHtml_(rsv,mS,mm,yy,selN){
     <div class="kpi" style="background:var(--warn-bg,#faf0ec)"><div class="lb">当日予約</div><div class="vl" style="color:var(--accent,#b5502f)">${cnt(sameRows.length)}件 / ${cnt(samePpl)}名</div><div class="yy" style="color:var(--accent,#b5502f)">予約全体の ${samePct}%（ウォークイン除く）</div></div>
     <div class="kpi"><div class="lb">ウォークイン</div><div class="vl">${cnt(walkRows.length)}組 / ${cnt(walkPpl)}名</div><div class="yy mut">来店全体の ${walkPct}%（予約外）</div></div>
   </div>`;
+
+  // 前年同月比較（2026-08-30追加）。予約データ自体（D.rsvBq／D.rsv）が前年分あるときだけ表示。
+  // I-1(BQ自動取込)は運用開始が新しく前年分は無いのが通常。店舗ごとに「広告管理」から予約CSVを
+  // 手動アップロードしていれば（D.rsv・💾予約DB）そちらで補う。
+  {
+    const scopeSet=selN?null:new Set(scopeStores());
+    const pMS=new Date(yy-1,mm,1).getTime(), pME=new Date(yy-1,mm+1,0).getTime();
+    const prev=rsvPeriodAgg_(selN,pMS,pME,scopeSet);
+    if(prev.src==='none'){
+      h+=`<div class="note-box no-print">前年同月（${yy-1}年${mm+1}月）の予約データがまだありません。BigQuery自動取込は運用開始が新しいため前年分が無いのが通常です。前年比較を見たい店舗は、「広告費用対効果」画面の「予約CSVの取込」から前年の予約一覧CSV（食べログ等）を手動でアップロードすると、ここに反映されます。</div>`;
+    } else {
+      const d=(cur,py)=>{ if(!(py>0)) return {t:'前年 —',cls:'mut'}; const r=(cur-py)/py*100; const up=r>=0; return { t:'今回 '+(up?'+':'▲')+Math.abs(r).toFixed(1)+'%', cls:up?'up':'dn' }; };
+      const dGrp=d(activeRows.length,prev.totalGrp), dPpl=d(ppl,prev.totalPpl);
+      const dSame=d(sameRows.length,prev.sameGrp), dWalk=d(walkRows.length,prev.walkGrp);
+      const srcTxt=prev.src==='bq'?'BigQuery自動取込':'手動アップロード（💾予約DB）'+(prev.stores?'・対象店舗: '+esc(prev.stores.join('、')):'');
+      h+=`<div class="panel"><div class="panel-head"><div><h3>前年同月 比較（${yy-1}年${mm+1}月）</h3>
+        <div class="sub">出典: ${srcTxt}${!selN&&prev.src==='legacy'?'（アップロード済みの店舗ぶんのみ合算。今回側は全店なので単純比較にならない点に注意）':''}</div></div></div>
+        <div class="kpi-grid">
+          <div class="kpi"><div class="lb">前年同月 予約件数</div><div class="vl" style="font-size:16px">${cnt(prev.totalGrp)}件</div><div class="yy ${dGrp.cls}">${dGrp.t}</div></div>
+          <div class="kpi"><div class="lb">前年同月 予約人数</div><div class="vl" style="font-size:16px">${cnt(prev.totalPpl)}名</div><div class="yy ${dPpl.cls}">${dPpl.t}</div></div>
+          <div class="kpi"><div class="lb">前年同月 当日予約</div><div class="vl" style="font-size:16px">${cnt(prev.sameGrp)}件</div><div class="yy ${dSame.cls}">${dSame.t}</div></div>
+          <div class="kpi"><div class="lb">前年同月 ウォークイン</div><div class="vl" style="font-size:16px">${cnt(prev.walkGrp)}組</div><div class="yy ${dWalk.cls}">${dWalk.t}</div></div>
+        </div></div>`;
+    }
+  }
 
   // 件数/人数の切替（2026-08-29追加。時間帯別・媒体別の2パネルはどちらも見たい場面があるため）
   const metric=S.rsvAnalysisMetric==='人数'?'人数':'件数';
