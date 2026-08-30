@@ -543,6 +543,7 @@ function ingestRsv(rows){
   const iS=colOf(H,'ステータス'), iW=colAny(H,['受付窓口','経路','媒体']);
   const iC=colOf(H,'作成日'), iCT=colOf(H,'作成時間');
   const iSt=H.findIndex(h=>/店舗/.test(h));
+  const iNo=colAny(H,['予約No','予約番号','予約ID']); // 2026-08-30追加: BQ自動取込側とのつき合わせ（重複防止）に使う
   if(iD<0){ D.diag['予約']='来店日列がありません／見出し行: '+H.filter(Boolean).join('|'); return false; }
   const hhmm=(v)=>{ const m2=String(v==null?'':v).match(/(\d{1,2}):(\d{2})/); return m2?(+m2[1]+(+m2[2])/60):-1; };
   const recs=[];
@@ -551,6 +552,7 @@ function ingestRsv(rows){
     recs.push({ t, hh:iT>=0?hhmm(c[iT]):-1, n:iP>=0?num(c[iP])||0:0,
       st:String(iS>=0?c[iS]||'':'').trim(), win:String(iW>=0?c[iW]||'':'').trim(),
       ct:iC>=0?parseDateStr(c[iC]):0, ch:iCT>=0?hhmm(c[iCT]):-1,
+      no:iNo>=0?String(c[iNo]||'').trim():'',
       store:String(iSt>=0?c[iSt]||'':'').trim() });
   }
   if(!recs.length){ D.diag['予約']='0件'; return false; }
@@ -3932,6 +3934,56 @@ function ingestReservationBq_(rows){
   }
   D.rsvBq=recs;
 }
+// 予約帳・予約分析で使う「表示用の全予約行」（2026-08-30追加）。BigQuery自動取込(D.rsvBq)を基本とし、
+// 手動アップロード分（D.rsv・💾予約DB。広告管理の「予約CSVの取込」）のうち、BQにまだ無い予約だけを
+// 追加する。ユーザー運用: 基本はI-1の自動取込（食べログノート/ダイニーを毎日1回）任せだが、当日の
+// 予約をすぐ反映させたい時などに手動でCSVをアップロードすることがある→翌日以降、同じ予約がBQ側にも
+// 入ってきたら重複させず自動取込側を優先する。突合は「予約No」があればそれを最優先（食べログノート
+// 由来ならBQ側のreservation_keyと同じ値になる）、無ければ 店舗+来店日+来店時間+人数+受付窓口 の
+// 組合せで代用する。
+function rsvHhToStr_(hh){
+  if(!(hh>=0)) return '';
+  return String(Math.floor(hh)).padStart(2,'0')+':'+String(Math.round((hh%1)*60)).padStart(2,'0');
+}
+function rsvManualKey_(store,dateStr,timeStr,partySize,channel){
+  return [store,dateStr,timeStr,partySize,String(channel||'').trim()].join('|');
+}
+let RSV_ALL_CACHE_={sig:'',rows:null};
+function rsvAllRows_(){
+  const bq=D.rsvBq||[], legacy=D.rsv||[];
+  const sig=bq.length+'/'+legacy.length;
+  if(RSV_ALL_CACHE_.sig===sig && RSV_ALL_CACHE_.rows) return RSV_ALL_CACHE_.rows;
+  if(!legacy.length){ RSV_ALL_CACHE_={sig,rows:bq}; return bq; }
+  const noSet=new Set(), compositeSet=new Set();
+  bq.forEach(r=>{
+    if(r.key) noSet.add(String(r.key));
+    compositeSet.add(rsvManualKey_(r.store,r.dateStr,r.timeStr,r.partySize,r.channelNorm||r.channelRaw));
+  });
+  const extra=[];
+  legacy.forEach(r=>{
+    if(!r.store||!r.t) return;
+    const res=resolveStoreEx(r.store); const store=res?res.parent:r.store;
+    const dateStr=ymdStr(r.t);
+    const timeStr=rsvHhToStr_(r.hh);
+    if(r.no && noSet.has(String(r.no))) return;        // BQ側に同じ予約Noが既にある→重複させない
+    const ck=rsvManualKey_(store,dateStr,timeStr,r.n,r.win);
+    if(!r.no && compositeSet.has(ck)) return;           // 予約Noが無い行は複合キーで突合
+    const isCxl=/キャンセル/.test(r.st||'');
+    extra.push({
+      key:'manual-'+(r.no||ck), storeId:'', store, source:'manual',
+      t:r.t, dateStr, timeStr, hh:r.hh,
+      stayMin:null, partySize:r.n||0, childCount:0,
+      statusRaw:r.st||'', statusNorm:isCxl?'cancelled':'', isCancelled:isCxl,
+      channelRaw:r.win||'', channelNorm:r.win||'',
+      tableNo:'', course:'', menu:'', attribute:'', tag:'', customerNo:'',
+      createdAt:r.ct?(ymdStr(r.ct)+'T'+(r.ch>=0?rsvHhToStr_(r.ch):'00:00')+':00'):'',
+      cancelAt:''
+    });
+  });
+  const merged=extra.length?bq.concat(extra):bq;
+  RSV_ALL_CACHE_={sig,rows:merged};
+  return merged;
+}
 // 店舗ごとの卓一覧（DB_席マスタ）を一度だけ取得。予約が無い卓（空席）もタイムラインに表示するため
 async function fetchSeatMaster(){
   if(!S.auth||!S.auth.token) return;
@@ -4146,7 +4198,7 @@ function viewReservation(){
     h+=`<div class="panel no-print"><div class="panel-head"><div><h3>予約データを読み込み中…</h3></div></div></div>`;
     return h;
   }
-  if(D.rsvBqLoaded && !D.rsvBq.length){
+  if(D.rsvBqLoaded && !rsvAllRows_().length){
     h+=`<div class="note-box">予約データがまだありません（権限のある店舗の予約が0件、またはI-1の日次取込がまだ反映されていない可能性があります）。</div>`;
     return h;
   }
@@ -4171,7 +4223,8 @@ function rsvBookHtml_(){
     ${periodOpts.length?`<select onchange="App.set('rsvPeriod',this.value)">${periodOpts.map(o=>`<option ${((S.rsvPeriod||'全体')===o)?'selected':''}>${esc(o)}</option>`).join('')}</select>`:''}
     <span class="period-label">${dLabel}</span></div>`;
   const periodSel=periodOpts.length&&(S.rsvPeriod||'全体')!=='全体'?S.rsvPeriod:'';
-  const scoped=selN?D.rsvBq.filter(r=>r.store===selN):D.rsvBq;
+  const allRows=rsvAllRows_();
+  const scoped=selN?allRows.filter(r=>r.store===selN):allRows;
   const rawDayRows=selN?rsvDayRowsForStore_(selN,date,periodSel):scoped.filter(r=>r.dateStr===date && !r.isCancelled);
   const dayRows=rsvApplyFilters_(rawDayRows);
 
@@ -4258,12 +4311,13 @@ function rsvBookHtml_(){
 // 表示上の日付・並び順ともこの日（date）の分として扱う（hhを+24して当日の続きとして位置づける）。
 // 2026-08-28追加: ユーザー要望「深夜の予約が次の日になっては困る。営業時間内はその日の営業として」。
 function rsvDayRowsForStore_(store,date,periodSel){
-  const base=D.rsvBq.filter(r=>r.store===store && !r.isCancelled && r.dateStr===date);
+  const allRows=rsvAllRows_();
+  const base=allRows.filter(r=>r.store===store && !r.isCancelled && r.dateStr===date);
   const hours=resolveStoreHours_(store,date,periodSel);
   if(!hours||hours.close<=24) return base;
   const spillLimit=hours.close-24; // 例: close=29なら翌5:00まで
   const nextDate=shiftDateStr_(date,1);
-  const spill=D.rsvBq.filter(r=>r.store===store && !r.isCancelled && r.dateStr===nextDate && r.hh>=0 && r.hh<spillLimit)
+  const spill=allRows.filter(r=>r.store===store && !r.isCancelled && r.dateStr===nextDate && r.hh>=0 && r.hh<spillLimit)
     .map(r=>({ ...r, hh:r.hh+24 }));
   return base.concat(spill);
 }
@@ -4421,7 +4475,7 @@ function rsvCalendarHtml_(date,rows){
   const daysInMonth=new Date(y,m,0).getDate();
   const ymPrefix=y+'-'+String(m).padStart(2,'0');
   const byDate={};
-  (rows||D.rsvBq).forEach(r=>{
+  (rows||rsvAllRows_()).forEach(r=>{
     if(r.isCancelled||!r.dateStr||r.dateStr.slice(0,7)!==ymPrefix) return;
     const o=byDate[r.dateStr]=byDate[r.dateStr]||{grp:0,ppl:0}; o.grp++; o.ppl+=r.partySize;
   });
@@ -4455,13 +4509,14 @@ function rsvListHtml_(dayRows){
   const rows=dayRows.slice().sort((a,b)=>a.hh-b.hh);
   if(!rows.length) return `<div class="panel no-print"><div class="panel-head"><div><h3>この日の予約はありません</h3></div></div></div>`;
   let h=`<div class="panel"><div class="panel-head"><div><h3>予約リスト</h3>
-    <div class="sub">「作成日」＝取込元（食べログノート等）の作成日時。来店日と同じ日の予約に <span style="color:var(--accent,#b5502f);font-weight:700">オレンジ文字</span> を付けています（＝当日予約と判定した行）</div></div></div>
+    <div class="sub">「作成日」＝取込元（食べログノート等）の作成日時。来店日と同じ日の予約に <span style="color:var(--accent,#b5502f);font-weight:700">オレンジ文字</span> を付けています（＝当日予約と判定した行）／ <span style="color:#7a6f9a;font-weight:700">✎手動</span> ＝広告管理から手動アップロードした予約（自動取込にまだ無いもののみ表示）</div></div></div>
     <div class="scroll-x"><table class="tbl"><thead><tr><th>時刻</th><th>店舗</th><th>人数</th><th>受付窓口</th><th>コース</th><th>メニュー</th><th>卓</th><th>ステータス</th><th>作成日</th></tr></thead><tbody>`;
   const exp=[];
   rows.forEach(r=>{
     const createdDisp=rsvCreatedAtDisp_(r);
     const isSame=rsvIsSameDay_(r);
-    h+=`<tr style="cursor:pointer" onclick="App.rsvOpenDetail('${esc(r.key)}')"><td>${esc(r.timeStr)}</td><td>${esc(r.store)}</td><td>${cnt(r.partySize)}${r.childCount?'（子'+r.childCount+'）':''}</td><td>${esc(r.channelNorm||r.channelRaw)}</td><td>${esc(r.course||'')}</td><td>${esc(r.menu||'')}</td><td>${esc(r.tableNo||'')}</td><td>${esc(r.statusRaw)}</td><td${isSame?' style="color:var(--accent,#b5502f);font-weight:700"':''}>${createdDisp}</td></tr>`;
+    const manualTag=r.source==='manual'?' <span style="color:#7a6f9a;font-weight:700;font-size:11px">✎手動</span>':'';
+    h+=`<tr style="cursor:pointer" onclick="App.rsvOpenDetail('${esc(r.key)}')"><td>${esc(r.timeStr)}${manualTag}</td><td>${esc(r.store)}</td><td>${cnt(r.partySize)}${r.childCount?'（子'+r.childCount+'）':''}</td><td>${esc(r.channelNorm||r.channelRaw)}</td><td>${esc(r.course||'')}</td><td>${esc(r.menu||'')}</td><td>${esc(r.tableNo||'')}</td><td>${esc(r.statusRaw)}</td><td${isSame?' style="color:var(--accent,#b5502f);font-weight:700"':''}>${createdDisp}</td></tr>`;
     exp.push([r.timeStr,r.store,r.partySize,r.channelNorm||r.channelRaw,r.course||'',r.menu||'',r.tableNo||'',r.statusRaw,r.createdAt||'']);
   });
   h+=`</tbody></table></div></div>`;
@@ -4473,7 +4528,7 @@ function rsvListHtml_(dayRows){
 // Phase2で対応予定）、現時点ではまだ表示できない。
 function rsvDetailModal(){
   const key=S.modal.key;
-  const r=D.rsvBq.find(x=>x.key===key);
+  const r=rsvAllRows_().find(x=>x.key===key);
   if(!r) return `<div class="modal-bg" onclick="if(event.target===this)App.closeModal()"><div class="modal" style="max-width:420px">
     <h3>予約詳細</h3><div class="sub">この予約データが見つかりませんでした（読み込み直後は少し待ってからもう一度お試しください）。</div>
     <div class="modal-btns"><button class="icon-btn" onclick="App.closeModal()">閉じる</button></div>
@@ -4496,7 +4551,7 @@ function rsvDetailModal(){
       ${row('タグ', esc(r.tag||''))}
       ${row('ステータス', esc(r.statusRaw||''))}
       ${row('顧客No', esc(r.customerNo||''))}
-      ${row('取込元', r.source==='dinii'?'ダイニー予約台帳':r.source==='tabelog_note'?'食べログノート':esc(r.source||''))}
+      ${row('取込元', r.source==='dinii'?'ダイニー予約台帳':r.source==='tabelog_note'?'食べログノート':r.source==='manual'?'手動アップロード（💾予約DB）':esc(r.source||''))}
       ${row('作成日', rsvCreatedAtDisp_(r)+(rsvIsSameDay_(r)?'<span style="color:var(--accent,#b5502f);font-weight:700;margin-left:6px">（当日予約）</span>':''))}
     </table>
     <div class="note-box" style="margin-top:10px;font-size:11.5px">お客様名の表示は今後の対応予定です（現在はダイニー分のみSupabaseに限定保存・BigQueryには入れていません）。</div>
@@ -4582,7 +4637,7 @@ function rsvAnalysisTopHtml_(rsv,mS,mm,yy,selN){
   const cRows=Object.keys(byCourse).sort((a,b)=>byCourse[b].grp-byCourse[a].grp).map(k=>{ const o=byCourse[k]; return [k,o.grp,o.ppl,activeRows.length?(o.grp/activeRows.length*100).toFixed(1)+'%':'—']; });
   // ④予約目的・キーワード（前月比較付き）
   const prevMS=new Date(yy,mm-1,1).getTime(), prevME=new Date(yy,mm,0).getTime();
-  const prevRows=D.rsvBq.filter(r=>r.t>=prevMS&&r.t<=prevME&&(!selN||r.store===selN)&&!r.isCancelled);
+  const prevRows=rsvAllRows_().filter(r=>r.t>=prevMS&&r.t<=prevME&&(!selN||r.store===selN)&&!r.isCancelled);
   const kwCount=(rows)=>{ const m={}; rows.forEach(r=>rsvKeywords_(r).forEach(({kw,icon})=>{ const key=icon+' '+kw; m[key]=(m[key]||0)+1; })); return m; };
   const curKw=kwCount(activeRows), prevKw=kwCount(prevRows);
   const kRows=Object.keys(curKw).sort((a,b)=>curKw[b]-curKw[a]).map(k=>{
@@ -4616,7 +4671,7 @@ function rsvAnalysisHtml_(){
   const mLabel=yy+'年'+(mm+1)+'月';
   const selN=selStoreName();
   let h=`<div class="ctrl-bar no-print">${ymSelect('rsvMonth',yy,mm)}<span class="period-label">予約分析（${mLabel}${selN?' ／ '+esc(selN):''}）</span></div>`;
-  const rsv=D.rsvBq.filter(r=>r.t>=mS&&r.t<=mE&&(!selN||r.store===selN));
+  const rsv=rsvAllRows_().filter(r=>r.t>=mS&&r.t<=mE&&(!selN||r.store===selN));
   if(!rsv.length){ h+=`<div class="panel no-print"><div class="panel-head"><div><h3>予約分析（${mLabel}：データなし）</h3></div></div></div>`; return h; }
   h+=rsvAnalysisTopHtml_(rsv,mS,mm,yy,selN);
   const wnames=['日','月','火','水','木','金','土'];
