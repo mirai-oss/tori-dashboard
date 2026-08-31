@@ -1889,6 +1889,150 @@ function bqGetSeatMaster(p, session) {
   }
 }
 
+// ===== PL人件費のAPI切替（2026-08-31・ラウンド5①。担当B依頼・ユーザー承認済み） =====
+// fact_daily_storeの社員人件費(fulltime_labor_cost)・アルバイト人件費(parttime_labor_cost)は、
+// 従来スプレッドシート「社員人件費DB」の店舗×月合計を暦日割りしたもの（分析_日別店舗経由でミラー
+// されるだけ・計算自体はこのプロジェクトの外）だった。担当Bが構築したAPI連携（sf_payroll_sync・
+// sf_payroll_allocations・labor_cost_daily）の方が正確なため、**2026年8月分から**そちらに切り替える
+// （それより前の月は8月よりスマレジタイムカード未導入の場合があり、無理に混ぜないユーザー指示）。
+// 法定福利費(statutory_welfare)はAPI側にデータが無いため今回は対象外＝常にスプレッドシート値のまま。
+var API_LABOR_COST_FROM_YM_ = '2026-08';
+// 汎用: Supabaseの任意テーブル/ビューをページング付きで全件取得（bqFetchReservationRows_を一般化）。
+// filterQSはPostgRESTのクエリ文字列（例:'work_date=gte.2026-08-01'）。空文字なら絞り込み無し。
+function bqFetchSupabaseRows_(table, selectCols, filterQS) {
+  var supaUrl = PropertiesService.getScriptProperties().getProperty('SUPABASE_URL');
+  var supaKey = PropertiesService.getScriptProperties().getProperty('SUPABASE_SERVICE_KEY');
+  if (!supaUrl || !supaKey) throw new Error('Script PropertiesにSUPABASE_URL/SUPABASE_SERVICE_KEYが未設定です');
+  var qs = 'select=' + encodeURIComponent(selectCols) + (filterQS ? '&' + filterQS : '');
+  var pageSize = 1000, offset = 0, all = [];
+  while (true) {
+    var res = UrlFetchApp.fetch(
+      supaUrl + '/rest/v1/' + table + '?' + qs,
+      { headers: { apikey: supaKey, Authorization: 'Bearer ' + supaKey, Range: offset + '-' + (offset + pageSize - 1) },
+        muteHttpExceptions: true }
+    );
+    var code = res.getResponseCode();
+    if (code !== 200 && code !== 206) throw new Error('Supabase取得失敗[' + table + ' ' + code + ']: ' + res.getContentText().slice(0, 300));
+    var rows = JSON.parse(res.getContentText() || '[]');
+    all = all.concat(rows);
+    if (rows.length < pageSize) break;
+    offset += pageSize;
+  }
+  return all;
+}
+// 店舗×日のアルバイト人件費実績＋店舗×月の社員人件費（給与賞与・通勤手当）を、
+// Supabase(sf_payroll_sync/sf_payroll_allocations/labor_cost_daily)から集計する。
+// 取得・計算に失敗した場合は空マップを返す（＝呼び出し側はどの行も従来のシート値のまま扱う。
+// 安全側に倒し、他の同期対象・fact_daily_store自体の同期を止めない）。
+function bqBuildApiLaborCostMap_() {
+  var empty = { ptDaily: {}, ptCoveredMonth: {}, empMonthly: {} };
+  try {
+    var storeMap = rsvStoreMap_(); // { store_id(uuid): store_name }（Supabase stores。予約タブと共用）
+    if (!Object.keys(storeMap).length) return empty; // 店舗マスタが取れなければ従来値のまま
+    var users = bqFetchSupabaseRows_('users', 'id,role', 'is_active=eq.true');
+    var roleMap = {}; users.forEach(function (u) { roleMap[u.id] = u.role; });
+    var isShain = function (uid) { var r = roleMap[uid]; return r === 'SHAIN' || r === 'TENCHO'; };
+
+    // ---- アルバイト人件費: SHAIN/TENCHOを除く全員の実績をそのまま店舗×日で使う（暦日割り不要） ----
+    var lcd = bqFetchSupabaseRows_('labor_cost_daily', 'user_id,store_id,work_date,computed_cost,smaregi_estimate_cost',
+      'work_date=gte.' + API_LABOR_COST_FROM_YM_ + '-01');
+    var ptDaily = {}, ptCoveredMonth = {};
+    // SHAIN/TENCHOの「その月どの店舗で何日働いたか」（sf_payroll_syncの店舗按分に使う。最多店舗を採用）
+    var shainDayCount = {}; // userId|ym -> { storeId: dayCount }
+    lcd.forEach(function (r) {
+      var ym = String(r.work_date || '').slice(0, 7);
+      if (!ym || ym < API_LABOR_COST_FROM_YM_) return;
+      if (isShain(r.user_id)) {
+        var key = r.user_id + '|' + ym;
+        var d = shainDayCount[key] = shainDayCount[key] || {};
+        d[r.store_id] = (d[r.store_id] || 0) + 1;
+        return; // SHAIN/TENCHOの打刻はアルバイト人件費の合算には含めない
+      }
+      var sName = storeMap[r.store_id]; if (!sName) return;
+      var dateStr = String(r.work_date).slice(0, 10);
+      var cost = (r.computed_cost != null) ? Number(r.computed_cost) : Number(r.smaregi_estimate_cost || 0);
+      ptDaily[sName] = ptDaily[sName] || {};
+      ptDaily[sName][dateStr] = (ptDaily[sName][dateStr] || 0) + cost;
+      ptCoveredMonth[sName] = ptCoveredMonth[sName] || {};
+      ptCoveredMonth[sName][ym] = true; // この店舗×月はAPIで実績を追えている＝日ごとの0件も0円として信用してよい
+    });
+
+    // ---- 社員人件費①: sf_payroll_allocations（店舗×半月×人・マスター手動）を最優先 ----
+    var alloc = bqFetchSupabaseRows_('sf_payroll_allocations', 'user_id,store_id,period_key,kind,amount',
+      'period_key=gte.' + API_LABOR_COST_FROM_YM_);
+    var salBonus = {}, commute = {}; // storeId|ym -> sum
+    var allocatedUserYm = {}; // userId|ym -> true（sf_payroll_syncフォールバック対象から除外）
+    alloc.forEach(function (r) {
+      var ym = String(r.period_key || '').slice(0, 7);
+      if (!ym) return;
+      allocatedUserYm[r.user_id + '|' + ym] = true;
+      var k = r.store_id + '|' + ym, amt = Number(r.amount || 0);
+      if (r.kind === 'commute') commute[k] = (commute[k] || 0) + amt;
+      else salBonus[k] = (salBonus[k] || 0) + amt; // base/incentive/bonusはまとめて「社員給与賞与」
+    });
+
+    // ---- 社員人件費②: sf_payroll_sync（人×月・店舗の概念なし）を、①未入力の人だけ、
+    //      labor_cost_dailyで判定した「その月最も多く働いた店舗」に計上 ----
+    var sync = bqFetchSupabaseRows_('sf_payroll_sync', 'user_id,year_month,fixed_salary_amount,commute_allowance',
+      'year_month=gte.' + API_LABOR_COST_FROM_YM_);
+    sync.forEach(function (r) {
+      var ym = String(r.year_month || '');
+      if (!ym || allocatedUserYm[r.user_id + '|' + ym]) return; // ①が優先
+      var days = shainDayCount[r.user_id + '|' + ym];
+      if (!days) return; // その月の勤務実績が無く店舗が特定できない→計上しない（既知の制約。掛け持ち者は最多店舗のみに計上）
+      var bestStore = null, bestCount = -1;
+      for (var sid in days) { if (days[sid] > bestCount) { bestCount = days[sid]; bestStore = sid; } }
+      if (!bestStore) return;
+      var k = bestStore + '|' + ym;
+      salBonus[k] = (salBonus[k] || 0) + Number(r.fixed_salary_amount || 0);
+      commute[k] = (commute[k] || 0) + Number(r.commute_allowance || 0);
+    });
+    var empMonthly = {}, mergedKeys = {};
+    for (var kk in salBonus) mergedKeys[kk] = 1;
+    for (var kk2 in commute) mergedKeys[kk2] = 1;
+    for (var k3 in mergedKeys) {
+      var p3 = k3.split('|'), sName3 = storeMap[p3[0]]; if (!sName3) continue;
+      empMonthly[sName3] = empMonthly[sName3] || {};
+      empMonthly[sName3][p3[1]] = { fulltimeBase: salBonus[k3] || 0, commute: commute[k3] || 0 };
+    }
+    return { ptDaily: ptDaily, ptCoveredMonth: ptCoveredMonth, empMonthly: empMonthly };
+  } catch (e) {
+    return empty;
+  }
+}
+// fact_daily_store 1行（BQ_FACT_DAILY_STORE_SCHEMA順の配列）を、上のマップにデータがあれば差し替える。
+// 列インデックスはBQ_FACT_DAILY_STORE_SCHEMAの並び順に対応（date=0,year_month=1,year=2,month=3,…
+// store_name=9,…parttime_labor_cost=23,fulltime_labor_cost=24,labor_cost_total=25,…
+// employee_salary_bonus=32,statutory_welfare=33,commute_allowance=34）。
+function bqApplyApiLaborCostRow_(row, laborData, storeIdx) {
+  var ym = String(row[1] || '');
+  if (ym < API_LABOR_COST_FROM_YM_) return row;
+  var storeName = bqResolveStoreName_(storeIdx, row[9]);
+  var dateStr = (row[0] instanceof Date) ? Utilities.formatDate(row[0], 'Asia/Tokyo', 'yyyy-MM-dd') : String(row[0]).slice(0, 10);
+  var changed = false;
+  var pt = Number(row[23]) || 0;
+  if (laborData.ptCoveredMonth[storeName] && laborData.ptCoveredMonth[storeName][ym]) {
+    var d = laborData.ptDaily[storeName]; pt = (d && d[dateStr] != null) ? d[dateStr] : 0; // 実績0円の日も信用する
+    changed = true;
+  }
+  var salBonus = Number(row[32]) || 0, commute = Number(row[34]) || 0;
+  var em = laborData.empMonthly[storeName] && laborData.empMonthly[storeName][ym];
+  if (em) {
+    var year = Number(row[2]), month = Number(row[3]);
+    var daysInMonth = (year && month) ? new Date(year, month, 0).getDate() : 30;
+    salBonus = em.fulltimeBase / daysInMonth; // 月合計を暦日割り（社員人件費DBと同じ考え方）
+    commute = em.commute / daysInMonth;
+    changed = true;
+  }
+  if (!changed) return row;
+  var out = row.slice();
+  var statutory = Number(row[33]) || 0; // 法定福利費はAPI側にデータが無く今回は対象外・常にシート値
+  out[23] = pt; out[32] = salBonus; out[34] = commute;
+  out[24] = salBonus + statutory + commute; // fulltime_labor_cost
+  out[25] = pt + out[24];                   // labor_cost_total
+  return out;
+}
+
 // ミラー対象一覧（src='local'はこのプロジェクトの自分のスプレッドシート。それ以外はopenByIdで開く）
 function bqSalesTargets_() {
   return [
@@ -1937,7 +2081,9 @@ function bqResolveStoreName_(idx, name) {
 }
 // シートのstartRow行目以降(schemaの列数分)をCSV文字列に変換。
 // storeIndex（bqStoreNameIndex_の戻り値）を渡すと、schema中の'store_name'列だけ正規化してから書き出す。
-function bqSheetToCsv_(sheet, schema, startRow, storeIndex) {
+// rowOverride（省略可）は1行ごとに呼ばれ、書き出す前に行の値を差し替えられる（2026-08-31追加・
+// PL人件費のAPI切替用。fact_daily_store以外のターゲットには渡さないため既存動作に影響なし）。
+function bqSheetToCsv_(sheet, schema, startRow, storeIndex, rowOverride) {
   var lastRow = sheet.getLastRow();
   if (lastRow < startRow) return '';
   var values = sheet.getRange(startRow, 1, lastRow - startRow + 1, schema.length).getValues();
@@ -1945,9 +2091,10 @@ function bqSheetToCsv_(sheet, schema, startRow, storeIndex) {
   if (storeIndex) { for (var k = 0; k < schema.length; k++) if (schema[k].name === 'store_name') { storeCol = k; break; } }
   var lines = [];
   for (var r = 0; r < values.length; r++) {
+    var row = rowOverride ? (rowOverride(values[r]) || values[r]) : values[r];
     var cells = [];
     for (var c = 0; c < schema.length; c++) {
-      var v = (c === storeCol) ? bqResolveStoreName_(storeIndex, values[r][c]) : values[r][c];
+      var v = (c === storeCol) ? bqResolveStoreName_(storeIndex, row[c]) : row[c];
       cells.push(bqCsvCell_(v, schema[c].type));
     }
     lines.push(cells.join(','));
@@ -2014,13 +2161,19 @@ function bqSyncAllSales(p) {
   if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
   var targets = bqSalesTargets_(), results = [];
   var storeIdx = bqStoreNameIndex_(); // 全ターゲット共通の店舗名索引（1回だけ作る。2026-08-28追加）
+  var laborData = null; // PL人件費API切替（2026-08-31）。fact_daily_storeの時だけ遅延構築する
   for (var i = 0; i < targets.length; i++) {
     var t = targets[i];
     try {
       var sh = (t.src === 'local') ? SpreadsheetApp.getActiveSpreadsheet().getSheetByName(t.sheet)
                                     : SpreadsheetApp.openById(t.src).getSheetByName(t.sheet);
       if (!sh) { results.push({ ok: false, table: t.table, error: 'シートが見つかりません: ' + t.sheet }); continue; }
-      var csv = bqSheetToCsv_(sh, t.schema, t.startRow, storeIdx);
+      var rowOverride = null;
+      if (t.table === 'fact_daily_store') {
+        if (!laborData) laborData = bqBuildApiLaborCostMap_();
+        rowOverride = (function (ld, sIdx) { return function (row) { return bqApplyApiLaborCostRow_(row, ld, sIdx); }; })(laborData, storeIdx);
+      }
+      var csv = bqSheetToCsv_(sh, t.schema, t.startRow, storeIdx, rowOverride);
       var loadRes = bqLoadSheetToTable_(csv, t.table, t.schema);
       results.push(loadRes);
       // stg_spotが更新できたらbqGetSpotの応答キャッシュ(10分)を無効化する。
