@@ -1182,11 +1182,21 @@ function ingestStoreParent(rows){
   for(let i=start;i<rows.length;i++){ const r=rows[i]||[]; const c=String(r[ci]||'').trim(), p=String(r[pi]||'').trim(); if(c&&p&&c!==p) map[c]=p; }
   return map;
 }
-function ingestSheets(sheets, partial){
+function ingestSheets(sheets, partial, scope){
   if(!partial){ D.extra={}; D.diag={}; D.receivedKeys=Object.keys(sheets); D.ad=[]; D.adSrc=''; D.adfx=[]; D.tanka={}; D.tankaRows=[]; D.tankaAvg={}; D.tankaCv={}; D.rsv=[]; D.pl=[]; D.spot=[]; D.loanPrincipal=[]; D.dinii=[]; D.targets=[]; D.targetsM=[]; D.events=[]; D.storeAlias={}; D.storeParent={}; D.adMediaMaster=[]; D.adPlanMaster={}; D.adStoreMaster=[]; D.subItemMaster={}; D.mfCategoryMap={}; D.mediaFeeRows=[]; }  // 広告・PL・スポット人件費・借入返済元金・ダイニー・目標・対応表・親子・補助科目/MF科目対応マスタはフル受信のたびに入れ替え
   else { D.receivedKeys=(D.receivedKeys||[]).concat(Object.keys(sheets)); }
   const known=['daily','media','deposit','review','ad','広告'];
-  if(!partial){ known.forEach(k=>{ if(!(k in sheets)) D.diag[k]='シート未受信（接続設定のシート名を確認）'; }); }
+  // 2026-08-31修正（ユーザー報告「予約管理タブの同期がずっと止まっている・分析_日別店舗が
+  // シート未受信になる」の調査で発覚）: fetchDataFast()の最初の呼び出しはBQモード中「daily」等を
+  // 意図的にexcludeするが、ここでpartial:trueを渡し忘れていたため、意図的に除外したキーまで
+  // 「シート未受信（接続設定のシート名を確認）」と誤診断していた（実際にはfetchDailyBQ()側で
+  // 正しく取得できていても、その前に誤った赤バナーが一瞬〜ポーリングの度に表示される不具合）。
+  // scope（呼び出し元のopts.only/opts.exclude）を見て、このレスポンスに「そもそも含まれる
+  // はずが無いキー」は未受信チェックの対象から外す。
+  const checkable = (scope && scope.only) ? known.filter(k=>scope.only.indexOf(k)>=0)
+    : (scope && scope.exclude) ? known.filter(k=>scope.exclude.indexOf(k)<0)
+    : known;
+  if(!partial){ checkable.forEach(k=>{ if(!(k in sheets)) D.diag[k]='シート未受信（接続設定のシート名を確認）'; }); }
   for(const key in sheets){
     const rows=sheets[key];
     if(!Array.isArray(rows)||!rows.length){ if(known.includes(key)) D.diag[key]='空（データ0行）'; continue; }
@@ -1507,7 +1517,7 @@ async function fetchData(silent, opts){
       if(String(d.error||'').includes('unauthorized')){ doLogout('セッションの有効期限が切れました。再度ログインしてください'); return; }
       throw new Error(d.error||'取得に失敗しました');
     }
-    ingestSheets(d.sheets||{}, !!opts.partial);
+    ingestSheets(d.sheets||{}, !!opts.partial, opts);
     if(d.stores && d.stores.length){ D.storeDirectory=d.stores; logReviewChildrenDiff_(); }
     if(d.taxRate!=null) D.taxRate=Number(d.taxRate)||0.34;   // A-5(2026-08-26): 簡易キャッシュフロー用の法人税率
     if(d.version) S.dataVersion=d.version;
