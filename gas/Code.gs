@@ -53,7 +53,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-rsv', time: new Date().toISOString() }); // rsv=A-6予約タブ用アクション追加（2026-08-28）のデプロイ確認用に更新
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-adcost', time: new Date().toISOString() }); // adcost=A-8 writeAdCost/bqSyncAdCost追加（2026-08-31）のデプロイ確認用に更新
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'storeNameAudit') return out(storeNameAudit(p)); // BQミラー全8テーブルの店舗名をstore_aliasesと突合し未登録表記を洗い出す（専用トークン認証・読み取り専用。2026-08-28追加）
@@ -71,6 +71,8 @@ function handle(p) {
     if (action === 'reportDataBQ') return out(reportDataBQ(p)); // Lark/Chatwork自動配信用の軽量レポート数値（専用トークン認証・ログイン不要・スプレッドシート不使用。2026-08-23追加）
     if (action === 'bqReconcileSales') return out(bqReconcileSales(p)); // BQとシートの突合（専用トークン認証・ログイン不要）
     if (action === 'bqSyncPL') return out(bqSyncPL(p)); // PL経費(DB_PL)のBQミラー同期（専用トークン認証・ログイン不要）
+    if (action === 'writeAdCost') return out(writeAdCost(p)); // A-8: 広告費書き込み（invoices側ad-cost-reflectから・AD_COST_WRITE_TOKEN認証・ログイン不要。2026-08-31追加）
+    if (action === 'bqSyncAdCost') return out(bqSyncAdCost(p)); // 💾広告費DBのBQミラー同期（専用トークン認証・ログイン不要。writeAdCostから毎回自動で呼ばれるほか単独でも可。2026-08-31追加・A-8）
     if (action === 'bqSyncReservation') return out(bqSyncReservation(p)); // 予約(stg_reservation)のBQミラー同期（専用トークン認証・ログイン不要。2026-08-28追加・A-6）
     if (action === 'perf') return out(perfDiag(p)); // パフォーマンス計測（専用トークン認証・ログイン不要・数字は返さず時間だけ）
     setupIfNeeded();
@@ -3897,6 +3899,122 @@ function saveAdFee(p, session) {
     sh.getRange(nr, c0 + 5, appendRows.length, 2).setNumberFormat('yyyy/mm/dd');
   }
   return { ok: true, months: mlist.length, added: appendRows.length, updated: mlist.length - appendRows.length };
+}
+
+// ================== A-8: 広告費のtoken書き込み（担当C invoicesのad-cost-reflectから呼ばれる） ==================
+// 経緯: 設計書_広告費自動連携と精算書PL科目連携_2026-08-31.md §4・WORKLOG「担当Aへの依頼・A-8」。
+// invoices側は請求書の仕訳登録と同時に広告費を確定するため、ログインセッションを持たないサーバー間
+// 呼び出し（Supabase Edge Function → GAS）で書き込む必要がある。saveAdFee（本部ログイン前提のUI用
+// action）とは別に、専用トークン認証（AD_COST_WRITE_TOKEN。BQ_LOAD_TOKENとは別の専用トークン＝
+// 依頼どおりinvoices側だけに渡す想定のため使い回さない）の軽量actionとして新設する。
+// 1回の呼び出しで複数店舗ぶん（allocations配列）をまとめて書ける点がsaveAdFeeとの違い。
+function writeAdCost(p) {
+  var tk = PropertiesService.getScriptProperties().getProperty('AD_COST_WRITE_TOKEN');
+  if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
+  var ym = String(p.year_month || '').trim();
+  if (!/^\d{4}-\d{2}$/.test(ym)) return { ok: false, error: '年月が不正です（例: 2026-08）' };
+  var media = String(p.media || '').trim().slice(0, 40);
+  if (!media) return { ok: false, error: '媒体が未指定です' };
+  var allocations = Array.isArray(p.allocations) ? p.allocations : [];
+  if (!allocations.length) return { ok: false, error: 'allocations（店舗×金額）が空です' };
+  var mss = mgmtOpen();
+  if (!mss) return { ok: false, error: '管理シートを開けません（MGMT_SHEET_ID）' };
+  var sh = mgmtFindTab(mss, /広告費DB/);
+  if (!sh) return { ok: false, error: '管理シートに💾広告費DBタブが見つかりません' };
+  var scan = sh.getRange(1, 1, Math.min(sh.getLastRow(), 6), Math.min(sh.getLastColumn(), 12)).getValues();
+  var hr = -1, c0 = -1;
+  for (var r = 0; r < scan.length && hr < 0; r++) {
+    for (var c = 0; c < scan[r].length; c++) {
+      if (String(scan[r][c]).trim() === '年月') { hr = r + 1; c0 = c + 1; break; }
+    }
+  }
+  if (hr < 0) return { ok: false, error: '💾広告費DBの見出し行（年月）が見つかりません' };
+  var ymSlash = ym.slice(0, 4) + '/' + ym.slice(5, 7);
+  var plan = '一式';
+  var memo = ['請求書連携', p.vendor_name ? '発行元:' + String(p.vendor_name).trim().slice(0, 40) : '', p.source_invoice_id ? 'invoice:' + String(p.source_invoice_id).trim().slice(0, 40) : '']
+    .filter(Boolean).join(' / ').slice(0, 100);
+  var now = new Date();
+  var last = sh.getLastRow();
+  var v = last > hr ? sh.getRange(hr + 1, c0, last - hr, 4).getValues() : []; // 年月|店舗|媒体|プラン
+  var foundBy = {}; // storeKey → 行番号（対象月・対象媒体・プラン一式のみ）
+  for (var i = 0; i < v.length; i++) {
+    if (String(v[i][0]) === '' && String(v[i][1]) === '') continue;
+    if (ymOf_(v[i][0]) !== ymSlash) continue;
+    if (String(v[i][2]).trim() !== media || String(v[i][3]).trim() !== plan) continue;
+    foundBy[storeKey_(v[i][1])] = hr + 1 + i;
+  }
+  var results = [], appendRows = [];
+  allocations.forEach(function (a) {
+    var dashStore = String((a && a.store_name) || '').trim();
+    var amt = Number((a && a.amount) || 0);
+    if (!dashStore) { results.push({ store: dashStore, ok: false, error: '店舗名が空です' }); return; }
+    if (!isFinite(amt) || amt < 0) { results.push({ store: dashStore, ok: false, error: '金額が不正です' }); return; }
+    var store = mgmtStoreName_(mss, dashStore);
+    var key = ymSlash + '_' + store + '_' + media + '_' + plan;
+    var fr = foundBy[storeKey_(store)];
+    if (fr > 0) {
+      sh.getRange(fr, c0 + 4).setValue(amt).setNumberFormat('#,##0');
+      sh.getRange(fr, c0 + 6).setValue(now).setNumberFormat('yyyy/mm/dd');
+      sh.getRange(fr, c0 + 7).setValue(memo);
+      sh.getRange(fr, c0 + 8).setValue(key);
+      results.push({ store: store, ok: true, updated: true });
+    } else {
+      appendRows.push([ymSlash, store, media, plan, amt, now, now, memo, key]);
+      results.push({ store: store, ok: true, updated: false });
+    }
+  });
+  if (appendRows.length) {
+    var nr = sh.getLastRow() + 1;
+    sh.getRange(nr, c0, appendRows.length, 9).setValues(appendRows);
+    sh.getRange(nr, c0 + 4, appendRows.length, 1).setNumberFormat('#,##0');
+    sh.getRange(nr, c0 + 5, appendRows.length, 2).setNumberFormat('yyyy/mm/dd');
+  }
+  // 設計書§4 Q1確定仕様: シート書き込みと同時にBigQuery stg_ad_costへも反映（二重書き）。
+  // stg_pl等と同じ「シート全体を都度ミラーする」方式（bqSyncPL参照）。失敗してもシート保存自体は成功扱いにする。
+  var bqRes = null;
+  try { bqRes = bqSyncAdCost({ token: PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN') }); }
+  catch (eBq) { bqRes = { ok: false, error: String(eBq && eBq.message || eBq) }; }
+  return { ok: true, media: media, year_month: ym, results: results, bq: bqRes };
+}
+
+// 💾広告費DBシート全体を stg_ad_cost へミラー（WRITE_TRUNCATE。bqSyncPLと同じ方式）。
+// writeAdCostから毎回呼ばれるほか、単独でも呼べる（手入力saveAdFee後の手動再同期用）。
+var BQ_STG_AD_COST_SCHEMA = [
+  { name: 'year_month', type: 'STRING' }, { name: 'store_name', type: 'STRING' },
+  { name: 'media', type: 'STRING' }, { name: 'plan', type: 'STRING' },
+  { name: 'amount', type: 'NUMERIC' }, { name: 'memo', type: 'STRING' },
+  { name: 'updated_at', type: 'STRING' }, { name: 'key', type: 'STRING' }
+];
+function bqSyncAdCost(p) {
+  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+  if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
+  var mss = mgmtOpen();
+  if (!mss) return { ok: false, error: '管理シートを開けません（MGMT_SHEET_ID）' };
+  var sh = mgmtFindTab(mss, /広告費DB/);
+  if (!sh) return { ok: false, error: '管理シートに💾広告費DBタブが見つかりません' };
+  var scan = sh.getRange(1, 1, Math.min(sh.getLastRow(), 6), Math.min(sh.getLastColumn(), 12)).getValues();
+  var hr = -1, c0 = -1;
+  for (var r = 0; r < scan.length && hr < 0; r++) {
+    for (var c = 0; c < scan[r].length; c++) {
+      if (String(scan[r][c]).trim() === '年月') { hr = r + 1; c0 = c + 1; break; }
+    }
+  }
+  if (hr < 0) return { ok: true, table: 'stg_ad_cost', rows: 0, note: '見出し行が見つかりません（未セットアップ）' };
+  var last = sh.getLastRow();
+  if (last <= hr) return bqLoadSheetToTable_('', 'stg_ad_cost', BQ_STG_AD_COST_SCHEMA);
+  var vals = sh.getRange(hr + 1, c0, last - hr, 9).getValues(); // 年月|店舗|媒体|プラン|広告費|入力日|更新日|備考|キー
+  var lines = [];
+  for (var i = 0; i < vals.length; i++) {
+    var r2 = vals[i];
+    if (String(r2[0]) === '' && String(r2[1]) === '') continue;
+    var amt2 = Number(r2[4]);
+    var upd = r2[6] instanceof Date ? Utilities.formatDate(r2[6], 'Asia/Tokyo', 'yyyy-MM-dd') : String(r2[6] || '');
+    lines.push([
+      bqCsvStr_(ymOf_(r2[0])), bqCsvStr_(r2[1]), bqCsvStr_(r2[2]), bqCsvStr_(r2[3]),
+      isFinite(amt2) ? amt2.toFixed(6) : '0', bqCsvStr_(r2[7]), bqCsvStr_(upd), bqCsvStr_(r2[8])
+    ].join(','));
+  }
+  return bqLoadSheetToTable_(lines.join('\n'), 'stg_ad_cost', BQ_STG_AD_COST_SCHEMA);
 }
 
 // PL経費の期間一括計上：開始月〜終了月の各月に 店舗×科目×補助科目 の行を作成（既存の同科目・同補助科目行は差し替え）。
