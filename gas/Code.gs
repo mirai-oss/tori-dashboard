@@ -53,7 +53,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-adcost', time: new Date().toISOString() }); // adcost=A-8 writeAdCost/bqSyncAdCost追加（2026-08-31）のデプロイ確認用に更新
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-plcat', time: new Date().toISOString() }); // plcat=A-9 syncSeisanCategoriesToPl追加（2026-08-31）のデプロイ確認用に更新
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'storeNameAudit') return out(storeNameAudit(p)); // BQミラー全8テーブルの店舗名をstore_aliasesと突合し未登録表記を洗い出す（専用トークン認証・読み取り専用。2026-08-28追加）
@@ -62,6 +62,7 @@ function handle(p) {
     if (action === 'dataKeysDiag') return out(dataKeysDiag(p)); // getData()が実際にどのキーを返すか確認（専用トークン認証・読み取り専用・一時的）
     if (action === 'mediaDateRangeDiag') return out(mediaDateRangeDiag(p)); // stg_media（媒体別日次）の最古/最新日付を確認（担当D依頼の前年比調査用・専用トークン認証・読み取り専用・一時的）
     if (action === 'syncSeisanFeeToPl') return out(syncSeisanFeeToPl(p)); // 運営委託費のPL自動連携（専用トークン認証・ログイン不要。2026-08-23追加）
+    if (action === 'syncSeisanCategoriesToPl') return out(syncSeisanCategoriesToPl(p)); // 精算書の勘定科目→PL自動連携（専用トークン認証・ログイン不要。2026-08-31追加・A-9）
     if (action === 'syncSpotLaborToPl') return out(syncSpotLaborToPl(p)); // スポット人件費の月次PL自動連携（専用トークン認証・ログイン不要。2026-08-23追加）
     if (action === 'syncBankLoanToPl') return out(syncBankLoanToPl(p)); // 銀行借入 利息・元金のPL自動連携（専用トークン認証・ログイン不要。2026-08-26追加・A-5）
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
@@ -2732,6 +2733,152 @@ function syncSeisanFeeToPl(p) {
   var bqSync = bqSyncPL({ token: tk });
 
   return { ok: true, ym: ym, synced: Object.keys(byStore).length, detail: results, errors: errors, plsys: plsysSeisan, bqSync: bqSync };
+}
+
+// ================== A-9: 精算書の勘定科目・補助科目→PL自動連携（2026-08-31追加） ==================
+// ns-portal/docs/設計書_広告費自動連携と精算書PL科目連携_2026-08-31.md §2・§4。
+// 精算ダッシュボード側（SeisanDashboard.gs）で明細に勘定科目・補助科目を付けられるようになった
+// （A-9・sd_apiCategorizedLines）。ここではその明細を店舗×年月×勘定科目×補助科目でDB_PLへ
+// 「自動｜精算書」として計上する。既存のsyncSeisanFeeToPl（運営委託費）とは別メモで完全に独立
+// （SeisanDashboard側が「対象外」「運営委託費」を除外して送ってくるため、こちらは受け取った行を
+// そのまま計上するだけで二重計上にはならない）。
+var PL_SEISAN_CAT_MEMO = '自動｜精算書';
+// 勘定科目名→区分(S/F/L/A/R/O/X)。tori-dashboard/app.jsのPL_ITEM_CATと同じ24科目
+// （SeisanDashboard.gsのSD_ACCOUNT_LISTとも同じ名前で揃えてある）。
+// フロントJS(app.js)からは直接参照できない別ファイルのため、区分判定にだけ使う最小限を複製している。
+// この一覧を変更した場合はapp.jsのPL_ITEM_CAT・SeisanDashboard.gsのSD_ACCOUNT_LISTも合わせて直すこと
+// （変更頻度が低い固定リストのため、3箇所を自動同期する仕組みまでは作らない＝過剰実装を避ける）。
+var PL_SEISAN_ACCOUNT_CAT_ = {
+  '役員報酬': 'L', '法定福利費': 'L', '通勤手当': 'L', '旅費交通費': 'L', '賞与積立': 'L', '退職金等': 'L',
+  '家賃': 'R', 'リース料': 'R', '家賃更新按分': 'R', '広告宣伝費': 'A', '販売促進費': 'A',
+  '水道光熱費': 'O', '通信費': 'O', '消耗品・備品費': 'O', '修繕費': 'O', '衛生管理費': 'O', 'カード手数料': 'O',
+  '支払手数料': 'O', '支払報酬料': 'O', '採用教育費': 'O', '接待交際費': 'O', '会議費': 'O', '慶弔見舞費': 'O',
+  '保険料': 'O', '租税公課': 'O', '減価償却費': 'O', '福利厚生費': 'O', '諸会費': 'O', '雑費': 'O', '本部経費（按分）': 'O',
+  'その他売上': 'S', '銀行返済': 'X', '仕入（食材・飲料）': 'F', '運営委託費': 'O'
+};
+function plSeisanGuessCat_(name) {
+  if (PL_SEISAN_ACCOUNT_CAT_[name]) return PL_SEISAN_ACCOUNT_CAT_[name];
+  if (/給料|雑給|人件費|法定福利|通勤/.test(name)) return 'L';
+  if (/広告|販促/.test(name)) return 'A';
+  if (/家賃|賃料/.test(name)) return 'R';
+  if (/仕入/.test(name)) return 'F';
+  if (/売上/.test(name)) return 'S';
+  return 'O';
+}
+// ym単月、またはymFrom〜ymTo（さかのぼり一括同期用）のどちらかを指定する。
+function syncSeisanCategoriesToPl(p) {
+  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+  if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
+  var seisanUrl = PropertiesService.getScriptProperties().getProperty('SEISAN_WEBAPP_URL');
+  var plSyncToken = PropertiesService.getScriptProperties().getProperty('PL_SYNC_TOKEN');
+  if (!seisanUrl || !plSyncToken) return { ok: false, error: 'SEISAN_WEBAPP_URL または PL_SYNC_TOKEN が未設定です（スクリプトプロパティ）' };
+
+  var months = [];
+  var ymFrom = String((p || {}).ymFrom || '').trim(), ymTo = String((p || {}).ymTo || '').trim();
+  if (ymFrom && ymTo) {
+    if (!/^\d{4}-\d{2}$/.test(ymFrom) || !/^\d{4}-\d{2}$/.test(ymTo)) return { ok: false, error: '対象期間が不正です' };
+    var y1 = +ymFrom.slice(0, 4), m1 = +ymFrom.slice(5, 7), y2 = +ymTo.slice(0, 4), m2 = +ymTo.slice(5, 7);
+    var n = (y2 - y1) * 12 + (m2 - m1) + 1;
+    if (n < 1) return { ok: false, error: '終了月が開始月より前です' };
+    if (n > 36) return { ok: false, error: 'さかのぼりは36ヶ月までです（分割して実行してください）' };
+    for (var i = 0; i < n; i++) { var yy = y1 + Math.floor((m1 - 1 + i) / 12), mm = (m1 - 1 + i) % 12 + 1; months.push(yy + '-' + ('0' + mm).slice(-2)); }
+  } else {
+    var ym = String((p || {}).ym || '').trim();
+    if (!/^\d{4}-\d{2}$/.test(ym)) {
+      var d0 = new Date(); d0.setMonth(d0.getMonth() - 1);
+      ym = Utilities.formatDate(d0, 'Asia/Tokyo', 'yyyy-MM');
+    }
+    months = [ym];
+  }
+
+  var storeRes = UrlFetchApp.fetch(
+    'https://uuvsxzhpxtghojoubjcc.supabase.co/rest/v1/store_directory_v?select=name,seisan_target,seisan_store_name,aliases',
+    { headers: { apikey: STORE_DIRECTORY_ANON_KEY_, Authorization: 'Bearer ' + STORE_DIRECTORY_ANON_KEY_ }, muteHttpExceptions: true }
+  );
+  if (storeRes.getResponseCode() !== 200) return { ok: false, error: '店舗一覧の取得に失敗しました' };
+  var allStoreRows = JSON.parse(storeRes.getContentText());
+  var stores = allStoreRows.filter(function (s) { return s.seisan_target; })
+    .map(function (s) { return { name: s.name, seisanName: s.seisan_store_name || s.name }; });
+  if (!stores.length) return { ok: true, months: months, synced: 0, note: '精算対象の店舗がありません' };
+  var storeNames = stores.map(function (s) { return s.name; });
+
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_PL');
+  if (!sh) return { ok: false, error: 'DB_PLシートがありません' };
+  var pshS = null;
+  try { pshS = SpreadsheetApp.openById(PL_SYSTEM_ID).getSheetByName(PL_INPUT_SHEET); } catch (eOpen) {}
+
+  var monthResults = [], errors = [], subPairs = [];
+  months.forEach(function (ym) {
+    var ymSlash = ym.slice(0, 4) + '/' + ym.slice(5, 7);
+    var y = Number(ym.slice(0, 4)), mo = Number(ym.slice(5, 7));
+    var newRows = []; // [store, account, sub, amountEx]
+    stores.forEach(function (s) {
+      try {
+        var res = UrlFetchApp.fetch(seisanUrl, {
+          method: 'post', contentType: 'application/json', muteHttpExceptions: true,
+          payload: JSON.stringify({ fn: 'sd_apiCategorizedLines', args: [plSyncToken, s.seisanName, ym] })
+        });
+        var j = JSON.parse(res.getContentText());
+        if (!j.ok) { errors.push(ym + ' ' + s.name + ': ' + (j.error || 'unknown')); return; }
+        var r = j.result;
+        if (!r || !r.found || !r.hasSales || r.paid === false || !r.lines) return; // 未確定・データ無しはスキップ（syncSeisanFeeToPlと同じ方針）
+        r.lines.forEach(function (line) {
+          newRows.push([s.name, line.account, line.subAccount || '', line.amountEx]);
+          subPairs.push([line.account, line.subAccount || '']);
+        });
+      } catch (e) { errors.push(ym + ' ' + s.name + ': ' + String(e && e.message || e)); }
+    });
+
+    // DB_PL: この月×対象店舗×自分のメモの行を差し替え
+    var lastRow = sh.getLastRow();
+    var lastCol = Math.max(sh.getLastColumn(), 7);
+    var keep = [];
+    if (lastRow >= 2) {
+      sh.getRange(2, 1, lastRow - 1, lastCol).getValues().forEach(function (r2) {
+        if (r2[0] === '' && r2[1] === '' && r2[2] === '') return;
+        var sameMonth = bqPlYm_(r2[0]) === ymSlash;
+        var isMine = String(r2[5]) === PL_SEISAN_CAT_MEMO && storeNames.indexOf(String(r2[1]).trim()) >= 0;
+        if (sameMonth && isMine) return;
+        keep.push(r2);
+      });
+      newRows.forEach(function (nr) { keep.push([new Date(y, mo - 1, 1), nr[0], nr[1], plSeisanGuessCat_(nr[1]), nr[3], PL_SEISAN_CAT_MEMO, nr[2]]); });
+      sh.getRange(2, 1, lastRow - 1, lastCol).clearContent();
+      if (keep.length) { sh.getRange(2, 1, keep.length, 7).setValues(keep); sh.getRange(2, 1, keep.length, 1).setNumberFormat('yyyy/m/d'); }
+    } else if (newRows.length) {
+      var out = newRows.map(function (nr) { return [new Date(y, mo - 1, 1), nr[0], nr[1], plSeisanGuessCat_(nr[1]), nr[3], PL_SEISAN_CAT_MEMO, nr[2]]; });
+      sh.getRange(2, 1, out.length, 7).setValues(out); sh.getRange(2, 1, out.length, 1).setNumberFormat('yyyy/m/d');
+    }
+
+    // PL管理システム ✍販管費入力にも同じキーで反映（syncSeisanFeeToPlと同じ二重反映パターン）
+    if (pshS) {
+      try {
+        var lastRS = pshS.getLastRow(), nRS = Math.max(lastRS - 2, 0);
+        var AS = nRS > 0 ? pshS.getRange(3, 1, nRS, 3).getValues() : [];
+        var ES = nRS > 0 ? pshS.getRange(3, 5, nRS, 2).getValues() : [];
+        var GS = nRS > 0 ? pshS.getRange(3, 7, nRS, 1).getValues() : [];
+        var keepPS = [];
+        for (var iS = 0; iS < nRS; iS++) {
+          if (String(AS[iS][0]) === '' && String(AS[iS][2]) === '') continue;
+          var sameMonthS = bqPlYm_(AS[iS][0]) === ymSlash;
+          var isMineS = String(ES[iS][1]) === PL_SEISAN_CAT_MEMO && storeNames.indexOf(String(AS[iS][1]).trim()) >= 0;
+          if (sameMonthS && isMineS) continue;
+          keepPS.push([AS[iS][0], AS[iS][1], AS[iS][2], ES[iS][0], ES[iS][1], GS[iS][0]]);
+        }
+        newRows.forEach(function (nr) { keepPS.push([ymSlash, nr[0], nr[1], nr[3], PL_SEISAN_CAT_MEMO, nr[2]]); });
+        if (nRS > 0) { pshS.getRange(3, 1, nRS, 3).clearContent(); pshS.getRange(3, 5, nRS, 2).clearContent(); pshS.getRange(3, 7, nRS, 1).clearContent(); }
+        if (keepPS.length) {
+          pshS.getRange(3, 1, keepPS.length, 3).setValues(keepPS.map(function (r3) { return [r3[0], r3[1], r3[2]]; }));
+          pshS.getRange(3, 5, keepPS.length, 2).setValues(keepPS.map(function (r3) { return [r3[3], r3[4]]; }));
+          pshS.getRange(3, 7, keepPS.length, 1).setValues(keepPS.map(function (r3) { return [r3[5]]; }));
+        }
+      } catch (eS) { errors.push(ym + ' PL管理システム反映エラー: ' + String(eS && eS.message || eS)); }
+    }
+    monthResults.push(ym + ': ' + newRows.length + '件');
+  });
+
+  if (subPairs.length) ensureSubItemMaster_(subPairs); // 新しい補助科目をDB_補助科目マスタへ学習させる
+  var bqSync = bqSyncPL({ token: tk });
+  return { ok: true, months: months, detail: monthResults, errors: errors, plsysUpdated: !!pshS, bqSync: bqSync };
 }
 
 // ================== 銀行借入 利息・元金のPL自動連携（2026-08-26追加・A-5） ==================

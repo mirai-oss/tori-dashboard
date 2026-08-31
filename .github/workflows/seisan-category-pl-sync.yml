@@ -1,0 +1,77 @@
+name: 精算書の勘定科目PL自動連携（精算ダッシュボード→PL・A-9）
+# 精算対象(stores.seisan_target)の店舗について、精算ダッシュボードの明細に付いた勘定科目・
+# 補助科目（「対象外」「運営委託費」は除く）を、経営ダッシュボードのPL（DB_PL）へ自動反映する。
+#
+# 毎週月曜9:10 JSTに自動実行し、直近3ヶ月分（今月・先月・先々月）をまとめて再同期する
+# （seisan-fee-sync.ymlと同じ設計思想。syncSeisanCategoriesToPlは対象月×対象店舗の自動計上行を
+#  毎回まるごと差し替える設計なので、同じ月を何度実行しても安全）。
+#
+# 手動実行時は「対象月を1つだけ」または「開始月〜終了月」を指定できる（後者はさかのぼり付与モードで
+# 過去の精算書に科目を付け終えたあと、まとめてPLへ反映するための一括実行用）。
+on:
+  schedule:
+    - cron: '10 0 * * 1'   # 毎週月曜 9:10 JST（UTC 0:10）
+  workflow_dispatch:
+    inputs:
+      ym:
+        description: '対象月（YYYY-MM）。空欄なら直近3ヶ月をまとめて実行'
+        required: false
+        default: ''
+      ymFrom:
+        description: 'さかのぼり一括反映: 開始月（YYYY-MM）。ymToとセットで指定（ymが指定されていればそちらを優先）'
+        required: false
+        default: ''
+      ymTo:
+        description: 'さかのぼり一括反映: 終了月（YYYY-MM）'
+        required: false
+        default: ''
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: 実行モードを決める
+        id: mode
+        run: |
+          if [ -n "${{ github.event.inputs.ymFrom }}" ] && [ -n "${{ github.event.inputs.ymTo }}" ] && [ -z "${{ github.event.inputs.ym }}" ]; then
+            echo "kind=range" >> "$GITHUB_OUTPUT"
+          elif [ -n "${{ github.event.inputs.ym }}" ]; then
+            echo "kind=single" >> "$GITHUB_OUTPUT"
+          else
+            echo "kind=recent3" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: さかのぼり一括反映（ymFrom〜ymTo）
+        if: steps.mode.outputs.kind == 'range'
+        env:
+          BQ_LOAD_TOKEN: ${{ secrets.BQ_LOAD_TOKEN }}
+        run: |
+          curl -sL "https://script.google.com/macros/s/AKfycbz9rd37EZa6X8WRMVEBrXobN8DbYWkHRlhFNYU5rd1UZ0V8j0-6shMQjEeoi4HDWZ0B/exec?action=syncSeisanCategoriesToPl&token=$BQ_LOAD_TOKEN&ymFrom=${{ github.event.inputs.ymFrom }}&ymTo=${{ github.event.inputs.ymTo }}" \
+            | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.stringify(JSON.parse(d),null,2)));"
+
+      - name: 対象月を決める（単月／直近3ヶ月）
+        if: steps.mode.outputs.kind != 'range'
+        id: months
+        run: |
+          if [ "${{ steps.mode.outputs.kind }}" = "single" ]; then
+            echo "list=${{ github.event.inputs.ym }}" >> "$GITHUB_OUTPUT"
+          else
+            m0=$(date -u +%Y-%m)
+            m1=$(date -u -d "$m0-01 -1 month" +%Y-%m)
+            m2=$(date -u -d "$m0-01 -2 month" +%Y-%m)
+            echo "list=$m0,$m1,$m2" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: syncSeisanCategoriesToPlを対象月ごとに実行
+        if: steps.mode.outputs.kind != 'range'
+        env:
+          BQ_LOAD_TOKEN: ${{ secrets.BQ_LOAD_TOKEN }}
+        run: |
+          IFS=',' read -ra YMS <<< "${{ steps.months.outputs.list }}"
+          for ym in "${YMS[@]}"; do
+            echo "::group::$ym"
+            curl -sL "https://script.google.com/macros/s/AKfycbz9rd37EZa6X8WRMVEBrXobN8DbYWkHRlhFNYU5rd1UZ0V8j0-6shMQjEeoi4HDWZ0B/exec?action=syncSeisanCategoriesToPl&token=$BQ_LOAD_TOKEN&ym=$ym" \
+              | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.stringify(JSON.parse(d),null,2)));"
+            echo "::endgroup::"
+          done
