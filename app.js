@@ -584,6 +584,48 @@ function ingestTanka(rows){
   if(!n){ D.diag['単価設定']='0件'; return false; }
   D.tanka=map; D.tankaAvg=avg; D.tankaCv=cv; D.tankaRows=list; D.diag['単価設定']='OK '+n+'件'; return true;
 }
+// 媒体手数料設定シート（⚙媒体手数料設定: 媒体×店舗の集客手数料計算式。A-6 Phase2・2026-08-31追加）。
+// 参照モックの「予約媒体・手数料設定」モーダル・予約分析タブの媒体別テーブルの推定手数料に使う。
+function ingestMediaFee(rows){
+  if(!rows||rows.length<2) return false;
+  const H=rows[0].map(h=>String(h).trim());
+  const iMedia=colOf(H,'媒体'), iMethod=colAny(H,['計算方式','方式']), iVal=colAny(H,['手数料率／単価','手数料率/単価','手数料率','単価','値']);
+  const iStore=colOf(H,'対象店舗'), iPlan=colOf(H,'プラン'), iMemo=colOf(H,'メモ');
+  if(iMedia<0||iMethod<0||iVal<0){ D.diag['媒体手数料設定']='見出し行（媒体・計算方式・手数料率／単価）が見つかりません'; return false; }
+  const list=[];
+  for(let i=1;i<rows.length;i++){
+    const c=rows[i];
+    const media=String(c[iMedia]||'').trim();
+    const method=String(c[iMethod]||'').trim();
+    if(!media||!method) continue;
+    list.push({
+      media, method, value:String(c[iVal]||'').trim(),
+      store:iStore>=0?String(c[iStore]||'').trim():'',
+      plan:iPlan>=0?String(c[iPlan]||'').trim():'',
+      memo:iMemo>=0?String(c[iMemo]||'').trim():''
+    });
+  }
+  D.mediaFeeRows=list; D.diag['媒体手数料設定']='OK '+list.length+'件'; return true;
+}
+// 媒体×店舗の手数料設定を引く：店舗×媒体 → 全店×媒体 の順（店舗名はcanonMediaと同じ緩い一致）
+function mediaFeeOf(mediaRaw,store){
+  const media=canonMedia(mediaRaw); const rows=D.mediaFeeRows||[];
+  return rows.find(r=>canonMedia(r.media)===media&&r.store&&r.store===store)
+    ||rows.find(r=>canonMedia(r.media)===media&&!r.store)||null;
+}
+// 手数料の推定額を計算する（4方式）。予約件数・予約人数・予約売上はrsvAnalysisTopHtml_等で
+// 集計済みの値をそのまま渡す（この関数自体は再集計しない）。
+function mediaFeeEstimate(cfg,sales,ppl,cnt){
+  if(!cfg) return null;
+  const v=String(cfg.value||'').replace(/[,¥\s]/g,'');
+  const isPct=/%/.test(v);
+  const num2=Number(v.replace('%',''))||0;
+  if(cfg.method==='予約売上 × 手数料率') return Math.round(sales*(isPct?num2/100:num2));
+  if(cfg.method==='予約人数 × 単価') return Math.round(ppl*num2);
+  if(cfg.method==='予約件数 × 単価') return Math.round(cnt*num2);
+  if(cfg.method==='固定費') return Math.round(num2);
+  return null;
+}
 // 設定単価を引く：店舗×媒体 → 店舗のみ → 全店×媒体 → 全店共通 の順
 function tankaOf(store,cm){
   const t=D.tanka||{};
@@ -1141,7 +1183,7 @@ function ingestStoreParent(rows){
   return map;
 }
 function ingestSheets(sheets, partial){
-  if(!partial){ D.extra={}; D.diag={}; D.receivedKeys=Object.keys(sheets); D.ad=[]; D.adSrc=''; D.adfx=[]; D.tanka={}; D.tankaRows=[]; D.tankaAvg={}; D.tankaCv={}; D.rsv=[]; D.pl=[]; D.spot=[]; D.loanPrincipal=[]; D.dinii=[]; D.targets=[]; D.targetsM=[]; D.events=[]; D.storeAlias={}; D.storeParent={}; D.adMediaMaster=[]; D.adPlanMaster={}; D.adStoreMaster=[]; D.subItemMaster={}; D.mfCategoryMap={}; }  // 広告・PL・スポット人件費・借入返済元金・ダイニー・目標・対応表・親子・補助科目/MF科目対応マスタはフル受信のたびに入れ替え
+  if(!partial){ D.extra={}; D.diag={}; D.receivedKeys=Object.keys(sheets); D.ad=[]; D.adSrc=''; D.adfx=[]; D.tanka={}; D.tankaRows=[]; D.tankaAvg={}; D.tankaCv={}; D.rsv=[]; D.pl=[]; D.spot=[]; D.loanPrincipal=[]; D.dinii=[]; D.targets=[]; D.targetsM=[]; D.events=[]; D.storeAlias={}; D.storeParent={}; D.adMediaMaster=[]; D.adPlanMaster={}; D.adStoreMaster=[]; D.subItemMaster={}; D.mfCategoryMap={}; D.mediaFeeRows=[]; }  // 広告・PL・スポット人件費・借入返済元金・ダイニー・目標・対応表・親子・補助科目/MF科目対応マスタはフル受信のたびに入れ替え
   else { D.receivedKeys=(D.receivedKeys||[]).concat(Object.keys(sheets)); }
   const known=['daily','media','deposit','review','ad','広告'];
   if(!partial){ known.forEach(k=>{ if(!(k in sheets)) D.diag[k]='シート未受信（接続設定のシート名を確認）'; }); }
@@ -1170,6 +1212,7 @@ function ingestSheets(sheets, partial){
     else if(key==='補助科目') ingestSubItemMaster(rows);
     else if(key==='科目対応') ingestMfCategoryMap(rows);
     else if(key==='広告店舗マスタ') ingestAdStoreMaster(rows);
+    else if(key==='媒体手数料設定') ingestMediaFee(rows);
     else if(isStoreParentKey(key)){ D.storeParent=ingestStoreParent(rows); D.diag[key]='OK '+Object.keys(D.storeParent).length+'件の親子'; }
     else if(isStoreMapKey(key)){ D.storeAlias=ingestStoreMap(rows); D.diag[key]='OK '+Object.keys(D.storeAlias).length+'件の対応'; }
     else if(isRoleDefKey(key)) ingestRoleDef(rows);
@@ -4191,7 +4234,8 @@ function viewReservation(){
   let h=`<div class="no-print" style="margin-bottom:2px"><div style="font-family:var(--serif);font-size:18px;font-weight:600">予約管理</div><div class="mut" style="font-size:11px;margin-top:2px">予約帳・広告費・媒体手数料を一元管理</div></div>`;
   h+=storeSegHtml()+`<div class="ctrl-bar no-print">
     <div class="seg">${[['book','予約帳'],['analysis','予約分析']].map(([k,l])=>`<button class="${sub===k?'on':''}" onclick="App.set('rsvSubTab','${k}')">${l}</button>`).join('')}
-    <button onclick="App.tab('ad')" title="広告費・媒体手数料を含む費用対効果は経営ダッシュボードに集約">広告費用対効果 → 経営ダッシュボード</button></div>
+    <button onclick="App.openMediaFee()" title="媒体ごとの集客手数料の計算式を設定（予約分析タブの媒体別テーブルに反映）">⚙ 媒体・手数料設定</button>
+    <button onclick="App.tab('ad')" title="広告費実績・入力は経営ダッシュボードに集約">広告費用対効果 → 経営ダッシュボード</button></div>
     <span class="period-label">${selN?esc(selN):''}${D.rsvBqLoading?'（読込中…）':''}</span></div>`;
   if(D.rsvBqErr) h+=`<div class="panel no-print"><div class="panel-head"><div><h3 style="color:#b5502f">取得エラー</h3><div class="sub">${esc(D.rsvBqErr)}</div></div></div></div>`;
   if(!D.rsvBqLoaded && !D.rsvBqErr){
@@ -4670,8 +4714,9 @@ function rsvAnalysisTopHtml_(rsv,mS,mm,yy,selN){
   h+=`<div class="grid2" style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
     ${panel('当日予約分析','当日予約がいつ入っているか（'+metric+'）',['時間帯','当日予約('+metric+')','全予約('+metric+')','当日比率'],bRows,3)}
     ${panel('当日予約×媒体','媒体ごとの当日予約比率（'+metric+'）',['媒体','当日予約('+metric+')','全予約('+metric+')','比率'],mRows,3)}
-  </div>
-  <div class="grid2" style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+  </div>`;
+  h+=rsvMediaFeeHtml_(activeRows,mS,mE,selN);
+  h+=`<div class="grid2" style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
     ${panel('コース別','予約件数・人数・構成比',['コース','件数','人数','構成比'],cRows)}
     ${panel('予約目的・キーワード','特別対応が必要な予約（前月比）',['キーワード','件数','前月比'],kRows)}
   </div>`;
@@ -4680,6 +4725,41 @@ function rsvAnalysisTopHtml_(rsv,mS,mm,yy,selN){
   EXPORT.push({ title:'予約分析：コース別', headers:['コース','件数','人数','構成比'], rows:cRows });
   h+=rsvCancelAnalysisHtml_(rsv);
   return h;
+}
+// A-6 Phase2: 媒体別 集客手数料（推定 vs 実績。2026-08-31追加）。⚙媒体・手数料設定で登録した計算式から
+// 推定手数料を出し、💾広告費DB（A-8で自動反映される実際の広告費）の実績と並べて表示する
+// （参照モックの「実際の広告費・集客手数料と自動連携」注記どおり。乖離があれば料率設定の見直し材料になる）。
+function rsvMediaFeeHtml_(activeRows,mS,mE,selN){
+  const byMedia={};
+  activeRows.forEach(r=>{
+    const k=canonMedia(r.channelNorm||r.channelRaw)||'（不明）';
+    const o=byMedia[k]=byMedia[k]||{cnt:0,ppl:0,sales:0,stores:new Set()};
+    o.cnt++; o.ppl+=r.partySize; o.sales+=rsvEstRevenue_(r); o.stores.add(r.store);
+  });
+  const adInRange=(D.ad||[]).filter(a=>a.t>=mS&&a.t<=mE&&(!selN||normStore(a.store)===normStore(selN)));
+  const keys=Object.keys(byMedia);
+  if(!keys.length) return '';
+  const rows=keys.sort((a,b)=>byMedia[b].cnt-byMedia[a].cnt).map(media=>{
+    const o=byMedia[media];
+    // 対象店舗が複数ある場合（全店表示）は店舗ごとに設定が違う可能性があるため、店舗別に計算して合算する
+    let est=null;
+    o.stores.forEach(st=>{
+      const cfg=mediaFeeOf(media,st);
+      if(!cfg) return;
+      const storeRows=activeRows.filter(r=>r.store===st&&(canonMedia(r.channelNorm||r.channelRaw)||'（不明）')===media);
+      const sSales=storeRows.reduce((s,r)=>s+rsvEstRevenue_(r),0), sPpl=storeRows.reduce((s,r)=>s+r.partySize,0), sCnt=storeRows.length;
+      const e=mediaFeeEstimate(cfg,sSales,sPpl,sCnt);
+      if(e!=null) est=(est||0)+e;
+    });
+    const actual=adInRange.filter(a=>canonMedia(a.media)===media).reduce((s,a)=>s+a.cost,0);
+    return [media, cnt(o.cnt), cnt(o.ppl), yen(o.sales), est!=null?yen(est):'（未設定）', actual>0?yen(actual):'—'];
+  });
+  const hasAnyEst=rows.some(r=>r[4]!=='（未設定）');
+  return `<div class="panel"><div class="panel-head"><div><h3>媒体別 集客手数料（推定 vs 実績）</h3>
+    <div class="sub">推定＝⚙媒体・手数料設定の計算式／実績＝💾広告費DB（請求書から自動反映）${hasAnyEst?'':'／まだ手数料設定が登録されていません（「⚙ 媒体・手数料設定」から追加できます）'}</div></div></div>
+    <div class="scroll-x"><table class="tbl"><thead><tr><th>媒体</th><th>予約件数</th><th>予約人数</th><th>予約売上（推定）</th><th>推定手数料</th><th>実績広告費</th></tr></thead><tbody>
+    ${rows.map(r=>`<tr>${r.map(c=>`<td>${esc(c)}</td>`).join('')}</tr>`).join('')}
+    </tbody></table></div></div>`;
 }
 // A-6 Phase2: キャンセル分析パネル（2026-08-31追加）。ユーザー要望「キャンセルも取込んで分析したい・
 // 予約帳/日報の表示では除く」（設計書§8.6）を受け、予約分析の末尾に専用パネルとして追加する
@@ -6143,6 +6223,7 @@ function viewModal(){
   if(S.modal&&S.modal.type==='plStorePick') return plStorePickModal();
   if(S.modal&&S.modal.type==='spotInput') return spotInputModal();
   if(S.modal&&S.modal.type==='tanka') return tankaModal();
+  if(S.modal&&S.modal.type==='mediaFee') return mediaFeeModal();
   return '';
 }
 /* ---- 目標入力モーダル：日別売上（昨年同週同曜日を指標表示）＋月次目標 ---- */
@@ -7019,6 +7100,56 @@ function tankaModal(){
     ${rows.length?rows.map(r=>`<tr style="cursor:pointer" onclick="App.editTankaRow('${esc(r.store+'|'+r.media)}')">
       <td>${esc(r.store||'（全店）')}</td><td>${esc(r.media||'（全媒体）')}</td><td>${yen(r.price)}</td>
       <td>${r.avg?cnt(r.avg)+'名':'—'}</td><td>${r.cv?Math.round(r.cv*100)+'%':'—'}</td><td class="mut">${esc(r.memo||'')}</td>
+      <td><span class="mut" style="font-size:11px">編集</span></td></tr>`).join(''):`<tr><td colspan="7" class="mut">まだ設定がありません</td></tr>`}
+    </tbody></table></div>
+  </div></div>`;
+}
+// 媒体・手数料設定モーダル（A-6 Phase2・2026-08-31追加）。参照モックv3.1「予約媒体・手数料設定」準拠。
+// tankaModalと同じ「一覧クリックで編集フォームに切替」パターン。
+const MEDIA_FEE_METHODS_=['予約売上 × 手数料率','予約人数 × 単価','予約件数 × 単価','固定費'];
+function mediaFeeModal(){
+  const m=S.modal;
+  const editKey=m.key||'';
+  const rows=D.mediaFeeRows||[];
+  const editing=editKey?rows.find(r=>(r.media+'|'+r.store)===editKey):null;
+  const stores=scopeStores().slice();
+  if(editing&&editing.store&&!stores.includes(editing.store)) stores.unshift(editing.store);
+  const mediaOpts=[...new Set(['ホットペッパー','食べログ','ぐるなび','Retty','Google','Instagram','自社LP','電話'].concat(rows.map(r=>r.media)))].filter(Boolean);
+  const curMedia=editing?editing.media:'';
+  const isKnownMedia=!curMedia||mediaOpts.includes(curMedia);
+  return `<div class="modal-bg" onclick="if(event.target===this)App.closeModal()"><div class="modal" style="max-width:640px">
+    <h3>予約媒体・手数料設定</h3>
+    <div class="sub">媒体ごとの集客手数料の計算式。予約分析タブの媒体別テーブルに推定手数料として表示され、実際の広告費請求額（💾広告費DB・請求書から自動反映）と並べて確認できます。対象店舗を空欄にすると全店舗に適用されます（同じ媒体で店舗別の行を追加すればその店舗だけ上書き）。</div>
+    <div class="form-grid" style="margin-top:12px">
+      <div><label>媒体</label>
+        <select id="mf-media" onchange="App.mediaFeeMediaChange(this.value)">
+          <option value="" ${!curMedia?'selected':''}>（選択してください）</option>
+          ${mediaOpts.map(m2=>`<option value="${esc(m2)}" ${curMedia===m2?'selected':''}>${esc(m2)}</option>`).join('')}
+          <option value="__custom__" ${!isKnownMedia?'selected':''}>＋その他（自由入力）</option>
+        </select>
+        <input id="mf-media-custom" placeholder="媒体名を入力" value="${esc(isKnownMedia?'':curMedia)}" style="margin-top:6px;${isKnownMedia?'display:none':''}"></div>
+      <div><label>計算方式</label>
+        <select id="mf-method">${MEDIA_FEE_METHODS_.map(mm=>`<option ${editing&&editing.method===mm?'selected':''}>${esc(mm)}</option>`).join('')}</select></div>
+      <div><label>手数料率／単価（率は「4.0%」、単価・固定費は円額のみ）</label><input id="mf-value" value="${esc(editing?editing.value||'':'')}" placeholder="例: 4.0%"></div>
+      <div><label>対象店舗（空欄=全店）</label>
+        <select id="mf-store">
+          <option value="" ${!editing||!editing.store?'selected':''}>（全店舗）</option>
+          ${stores.map(s=>`<option value="${esc(s)}" ${editing&&editing.store===s?'selected':''}>${esc(s)}</option>`).join('')}
+        </select></div>
+      <div><label>媒体プラン（任意）</label><input id="mf-plan" value="${esc(editing?editing.plan||'':'')}"></div>
+      <div><label>メモ（任意・例外条件など）</label><input id="mf-memo" value="${esc(editing?editing.memo||'':'')}"></div>
+    </div>
+    <div id="mf-msg" style="font-size:12px;color:#b5502f;margin:8px 0"></div>
+    <div class="modal-btns">
+      <button class="icon-btn primary" onclick="App.saveMediaFeeRow('${esc(editing?editing.media:'')}','${esc(editing?editing.store:'')}')">${editing?'更新して保存':'追加'}</button>
+      ${editing?`<button class="icon-btn" onclick="App.deleteMediaFeeRow('${esc(editing.media)}','${esc(editing.store)}')">削除</button>`:''}
+      ${editing?`<button class="icon-btn" onclick="App.editMediaFeeRow('')">新規追加に戻す</button>`:''}
+      <button class="icon-btn" onclick="App.closeModal()">閉じる</button>
+    </div>
+    <div class="scroll-x" style="max-height:280px;overflow-y:auto;margin-top:14px;border-top:1px solid var(--line2);padding-top:10px">
+    <table class="tbl"><thead><tr><th>媒体</th><th>計算方式</th><th>手数料率／単価</th><th>対象店舗</th><th>プラン</th><th>メモ</th><th></th></tr></thead><tbody>
+    ${rows.length?rows.map(r=>`<tr style="cursor:pointer" onclick="App.editMediaFeeRow('${esc(r.media+'|'+r.store)}')">
+      <td>${esc(r.media)}</td><td>${esc(r.method)}</td><td>${esc(r.value)}</td><td>${esc(r.store||'（全店）')}</td><td>${esc(r.plan||'')}</td><td class="mut">${esc(r.memo||'')}</td>
       <td><span class="mut" style="font-size:11px">編集</span></td></tr>`).join(''):`<tr><td colspan="7" class="mut">まだ設定がありません</td></tr>`}
     </tbody></table></div>
   </div></div>`;
@@ -7926,6 +8057,36 @@ window.App = {
       if(!d.ok){ toast(d.error||'削除に失敗しました'); return; }
       S.modal=null; render(); toast('単価設定を削除しました');
       fetchData(true,{ only:['単価設定'], partial:true });
+    }catch(e){ toast('通信エラー: '+e.message); }
+  },
+  openMediaFee(){ S.modal={type:'mediaFee', key:''}; render(); },
+  editMediaFeeRow(key){ S.modal={type:'mediaFee', key}; render(); },
+  mediaFeeMediaChange(v){ const c=$('mf-media-custom'); if(!c)return; if(v==='__custom__'){ c.style.display=''; c.focus(); } else { c.style.display='none'; } },
+  async saveMediaFeeRow(oldMedia,oldStore){
+    const msg=$('mf-msg');
+    if(!S.auth||!S.auth.token){ msg.textContent='スプレッドシート接続時のみ保存できます'; return; }
+    let media=($('mf-media').value||'').trim();
+    if(media==='__custom__') media=($('mf-media-custom').value||'').trim();
+    if(!media){ msg.textContent='媒体を選択してください'; return; }
+    const method=($('mf-method').value||'').trim();
+    const value=($('mf-value').value||'').trim();
+    if(!value){ msg.textContent='手数料率／単価を入力してください'; return; }
+    const store=($('mf-store').value||'').trim(), plan=($('mf-plan').value||'').trim(), memo=($('mf-memo').value||'').trim();
+    msg.style.color='#8c8375'; msg.textContent='保存中…';
+    try{
+      const d=await api({ action:'saveMediaFee', token:S.auth.token, media, method, value, store, plan, memo, oldMedia:oldMedia||'', oldStore:oldStore||'' });
+      if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'保存に失敗しました'; return; }
+      S.modal=null; render(); toast('媒体・手数料設定を保存しました');
+      fetchData(true,{ only:['媒体手数料設定'], partial:true });
+    }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
+  },
+  async deleteMediaFeeRow(media,store){
+    if(!confirm('この手数料設定を削除しますか？')) return;
+    try{
+      const d=await api({ action:'deleteMediaFee', token:S.auth.token, media:media||'', store:store||'' });
+      if(!d.ok){ toast(d.error||'削除に失敗しました'); return; }
+      S.modal=null; render(); toast('手数料設定を削除しました');
+      fetchData(true,{ only:['媒体手数料設定'], partial:true });
     }catch(e){ toast('通信エラー: '+e.message); }
   },
   openEventInput(id){ S.modal={type:'event', id:id||''}; render(); },
