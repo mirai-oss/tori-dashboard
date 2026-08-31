@@ -53,7 +53,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-plcat', time: new Date().toISOString() }); // plcat=A-9 syncSeisanCategoriesToPl追加（2026-08-31）のデプロイ確認用に更新
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-a6p2', time: new Date().toISOString() }); // a6p2=運営委託費二重計上修正+A-6Phase2（キャンセル分析・お客様名・媒体手数料設定）追加（2026-08-31）のデプロイ確認用に更新
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'storeNameAudit') return out(storeNameAudit(p)); // BQミラー全8テーブルの店舗名をstore_aliasesと突合し未登録表記を洗い出す（専用トークン認証・読み取り専用。2026-08-28追加）
@@ -105,6 +105,7 @@ function handle(p) {
     if (action === 'bqGetDeposit') return out(bqGetDeposit(p, session)); // 入金管理タブ：入金DBのBQミラーを読む（データソース切替フラグ用）
     if (action === 'bqGetMedia') return out(bqGetMedia(p, session)); // 媒体別日次：媒体別DBのBQミラーを読む（ログイン直後の同期エラー対策・2026-08-23追加）
     if (action === 'bqGetReservation') return out(bqGetReservation(p, session)); // 予約タブ：stg_reservationのBQミラーを読む（2026-08-28追加・A-6）
+    if (action === 'bqGetReservationNames') return out(bqGetReservationNames(p, session)); // 予約詳細：お客様名を都度Supabaseから取得（ログイン必須・店舗スコープ制限。2026-08-31追加・A-6 Phase2）
     if (action === 'bqGetSeatMaster') return out(bqGetSeatMaster(p, session)); // 予約タブ：店舗ごとの卓一覧（DB_席マスタ）を読む（2026-08-28追加・A-6）
     if (action === 'dataFreshness') return out(dataFreshness(p, session)); // データ最新日・BQ同期時刻の表示用（実装指示書_ダッシュボード高速化タスク1・2026-08-23追加）
     if (action === 'accounts') return out(listAccounts(session));
@@ -123,6 +124,8 @@ function handle(p) {
     if (action === 'importReservations') return out(importReservations(p, session)); // 予約CSV取込（管理シート💾予約DBへ追記）
     if (action === 'saveTanka')   return out(saveTanka(p, session));   // 単価設定の保存（管理シート⚙単価設定へupsert。2026-08-30追加）
     if (action === 'deleteTanka') return out(deleteTanka(p, session)); // 単価設定の削除（2026-08-30追加）
+    if (action === 'saveMediaFee')   return out(saveMediaFee(p, session));   // 媒体手数料設定の保存（管理シート⚙媒体手数料設定へupsert。A-6 Phase2・2026-08-31追加）
+    if (action === 'deleteMediaFee') return out(deleteMediaFee(p, session)); // 媒体手数料設定の削除（A-6 Phase2・2026-08-31追加）
     if (action === 'saveDepNote') return out(saveDepNote(p, session)); // 入金備考の保存（社長・本部のみ）
     if (action === 'setPlTaxRate') return out(setPlTaxRate(p, session)); // 簡易キャッシュフローの法人税率設定（社長・本部のみ。2026-08-26追加・A-5）
     if (action === 'saveWeekly')   return out(saveWeekly(p, session));   // 週報の提出・更新
@@ -667,7 +670,8 @@ var MGMT_TABS = [
   { key: '予約',     re: /予約DB|予約明細|予約一覧/ },  // 💾予約DB → 曜日別・当日予約の時刻分析
   { key: '媒体マスタ',   re: /媒体マスタ/ },    // ⚙️媒体マスタ → 広告費入力モーダルの媒体プルダウン
   { key: 'プランマスタ', re: /プランマスタ/ },  // ⚙️プランマスタ → プランプルダウン（標準料金付き）
-  { key: '広告店舗マスタ', re: /店舗マスタ/ }   // ⚙️店舗マスタ → 広告費・売上入力の店舗プルダウン（広告側の店舗名）
+  { key: '広告店舗マスタ', re: /店舗マスタ/ },  // ⚙️店舗マスタ → 広告費・売上入力の店舗プルダウン（広告側の店舗名）
+  { key: '媒体手数料設定', re: /媒体手数料設定/ }  // ⚙媒体手数料設定 → 予約分析タブの媒体別推定手数料（A-6 Phase2・2026-08-31追加）
 ];
 
 function mgmtOpen() {
@@ -740,6 +744,21 @@ function mgmtEnsure(mss) {
           }
         }
       }
+    }
+    // ⚙媒体手数料設定タブが無ければ作成（A-6 Phase2・2026-08-31追加）
+    if (!mgmtFindTab(mss, /媒体手数料設定/)) {
+      var fee = mss.insertSheet('⚙媒体手数料設定');
+      fee.getRange(1, 1, 1, 6).setValues([['媒体', '計算方式', '手数料率／単価', '対象店舗', 'プラン', 'メモ']])
+        .setFontWeight('bold').setBackground('#efe9dd');
+      fee.getRange('A1').setNote(
+        '媒体ごとの集客手数料の計算式。予約分析タブの媒体別テーブルに推定手数料として表示される。\n' +
+        '・計算方式は「予約売上×手数料率」「予約人数×単価」「予約件数×単価」「固定費」のいずれか\n' +
+        '・手数料率は 4.0% のように%表記、単価/固定費は円額をそのまま数字で入力\n' +
+        '・対象店舗を空欄にすると全店舗に適用（同じ媒体で店舗別の行を追加すればその店舗だけ上書きできる）\n' +
+        '・実際の広告費請求額（💾広告費DB・A-8で自動反映）と並べて表示するので、乖離があれば料率を見直す目安になる'
+      );
+      fee.setFrozenRows(1);
+      fee.setColumnWidths(1, 6, 130);
     }
   } catch (e) {}
 }
@@ -1774,6 +1793,44 @@ function bqGetReservation(p, session) {
   }
 }
 
+// A-6 Phase2: お客様名の取得（2026-08-31追加）。ログイン必須・店舗スコープ制限
+// （bqGetReservationと全く同じ絞り込み方式を使う＝閲覧できる範囲は予約データ本体と同じ）。
+// 個人情報（customer_name/customer_name_kana）はBigQueryミラーに一切入れていない
+// （設計書§8.4・§8.7）ため、都度Supabase rsv_reservationsへ直接・必要な予約IDぶんだけ問い合わせる。
+// ダイニー予約台帳（source='dinii'）以外は元データに名前列が無いため常に空を返す。
+// p.keys: カンマ区切りのreservation_key（最大200件・詳細モーダルで1件ずつ呼ぶ想定だが複数もOK）。
+function bqGetReservationNames(p, session) {
+  var keys = String((p || {}).keys || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean).slice(0, 200);
+  if (!keys.length) return { ok: true, names: {} };
+  var sessStores = String(session && session.stores || '').trim();
+  var restricted = sessStores && sessStores !== '全店';
+  var allowIds = [];
+  if (restricted) {
+    var storeMap = rsvStoreMap_();
+    var allowNames = sessStores.split(/[,、]/).map(function (s) { return s.trim(); }).filter(Boolean);
+    for (var id in storeMap) { if (allowNames.indexOf(storeMap[id]) >= 0) allowIds.push(id); }
+    if (!allowIds.length) return { ok: true, names: {} };
+  }
+  var supaUrl = PropertiesService.getScriptProperties().getProperty('SUPABASE_URL');
+  var supaKey = PropertiesService.getScriptProperties().getProperty('SUPABASE_SERVICE_KEY');
+  if (!supaUrl || !supaKey) return { ok: false, error: 'Script PropertiesにSUPABASE_URL/SUPABASE_SERVICE_KEYが未設定です' };
+  try {
+    var keyList = keys.map(function (k) { return '"' + String(k).replace(/"/g, '').replace(/,/g, '') + '"'; }).join(',');
+    var qs = 'select=reservation_key,customer_name,customer_name_kana,store_id&source=eq.dinii&reservation_key=in.(' + keyList + ')';
+    if (restricted) qs += '&store_id=in.(' + allowIds.join(',') + ')';
+    var res = UrlFetchApp.fetch(supaUrl + '/rest/v1/rsv_reservations?' + qs, {
+      headers: { apikey: supaKey, Authorization: 'Bearer ' + supaKey }, muteHttpExceptions: true
+    });
+    if (res.getResponseCode() !== 200) return { ok: false, error: 'Supabase取得失敗[' + res.getResponseCode() + ']: ' + res.getContentText().slice(0, 200) };
+    var rows = JSON.parse(res.getContentText() || '[]');
+    var names = {};
+    rows.forEach(function (r) { names[r.reservation_key] = { name: r.customer_name || '', kana: r.customer_name_kana || '' }; });
+    return { ok: true, names: names };
+  } catch (e) {
+    return { ok: false, error: String(e && e.message || e) };
+  }
+}
+
 // 予約タブの日別タイムライン用: 店舗ごとの卓（テーブル）一覧（2026-08-28追加・A-6）。
 // rsv_reservations/stg_reservationには「その日実際に使われた卓番号」しか無く、空席（その日
 // 予約が無い卓）を含めた店舗の卓構成そのものはどこにも無いため、ユーザーが直接入力するシートを新設。
@@ -2677,7 +2734,13 @@ function syncSeisanFeeToPl(p) {
     sh.getRange(2, 1, lastRow - 1, lastColSeisan).getValues().forEach(function (r) {
       if (r[0] === '' && r[1] === '' && r[2] === '') return;
       var sameMonth = bqPlYm_(r[0]) === ymSlash;
-      var isMyAuto = String(r[5]) === PL_SEISAN_MEMO && storeNames.indexOf(String(r[1]).trim()) >= 0;
+      // 2026-08-31修正（ユーザー報告「運営委託費が2倍になっている」で発覚）: 以前はstoreNames
+      // （今回のstores.nameそのもの）としか一致判定しておらず、店舗名の表記が過去に変わった
+      // （エイリアス統合等）場合、旧い表記で書き込まれた自動計上行がstoreNamesに含まれず
+      // 一致せず、削除されずに残り続けていた（じんべぇ川崎／じんべえ川崎店 のように新旧の表記で
+      // 同額が二重に計上される不具合）。isOldManualと同じcleanupNames（正準名＋全別名）で
+      // 判定するよう修正し、どの表記で書かれていても確実に一掃されるようにする。
+      var isMyAuto = String(r[5]) === PL_SEISAN_MEMO && cleanupNames[String(r[1]).trim()];
       // 自動化前の手入力「運営委託費」行（表記ゆれの店舗名・別メモ）も対象店舗なら一緒に差し替える
       // （メモが自分のものでなくても、勘定科目が運営委託費で対象店舗なら旧手入力とみなす）
       var isOldManual = String(r[2]).trim() === '運営委託費' && String(r[5]) !== PL_SEISAN_MEMO && cleanupNames[String(r[1]).trim()];
@@ -2709,7 +2772,7 @@ function syncSeisanFeeToPl(p) {
       for (var iS = 0; iS < nRS; iS++) {
         if (String(AS[iS][0]) === '' && String(AS[iS][2]) === '') continue;
         var sameMonthS = bqPlYm_(AS[iS][0]) === ymSlash;
-        var isMyAutoS = String(ES[iS][1]) === PL_SEISAN_MEMO && storeNames.indexOf(String(AS[iS][1]).trim()) >= 0;
+        var isMyAutoS = String(ES[iS][1]) === PL_SEISAN_MEMO && cleanupNames[String(AS[iS][1]).trim()]; // 2026-08-31修正（上のDB_PL側と同じ理由。storeNames単独一致だと旧表記の行が一掃されない）
         var isOldManualS = String(AS[iS][2]).trim() === '運営委託費' && String(ES[iS][1]) !== PL_SEISAN_MEMO && cleanupNames[String(AS[iS][1]).trim()];
         if (sameMonthS && (isMyAutoS || isOldManualS)) continue;
         keepPS.push([AS[iS][0], AS[iS][1], AS[iS][2], ES[iS][0], ES[iS][1], GS[iS][0]]);
@@ -2801,6 +2864,15 @@ function syncSeisanCategoriesToPl(p) {
     .map(function (s) { return { name: s.name, seisanName: s.seisan_store_name || s.name }; });
   if (!stores.length) return { ok: true, months: months, synced: 0, note: '精算対象の店舗がありません' };
   var storeNames = stores.map(function (s) { return s.name; });
+  // syncSeisanFeeToPlの2026-08-31修正と同じ理由: 店舗名の表記が過去に変わった場合でも
+  // 自分が書いた行を確実に一掃できるよう、正準名＋全別名（kind='name'）のセットで判定する
+  // （storeNames単独一致だと、旧い表記で書かれた行が削除されず二重計上になる）。
+  var cleanupNames = {};
+  allStoreRows.forEach(function (s) {
+    if (storeNames.indexOf(s.name) < 0) return;
+    cleanupNames[s.name] = true;
+    (s.aliases || []).forEach(function (a) { if (a.kind === 'name') cleanupNames[a.alias] = true; });
+  });
 
   var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_PL');
   if (!sh) return { ok: false, error: 'DB_PLシートがありません' };
@@ -2837,7 +2909,7 @@ function syncSeisanCategoriesToPl(p) {
       sh.getRange(2, 1, lastRow - 1, lastCol).getValues().forEach(function (r2) {
         if (r2[0] === '' && r2[1] === '' && r2[2] === '') return;
         var sameMonth = bqPlYm_(r2[0]) === ymSlash;
-        var isMine = String(r2[5]) === PL_SEISAN_CAT_MEMO && storeNames.indexOf(String(r2[1]).trim()) >= 0;
+        var isMine = String(r2[5]) === PL_SEISAN_CAT_MEMO && cleanupNames[String(r2[1]).trim()];
         if (sameMonth && isMine) return;
         keep.push(r2);
       });
@@ -2860,7 +2932,7 @@ function syncSeisanCategoriesToPl(p) {
         for (var iS = 0; iS < nRS; iS++) {
           if (String(AS[iS][0]) === '' && String(AS[iS][2]) === '') continue;
           var sameMonthS = bqPlYm_(AS[iS][0]) === ymSlash;
-          var isMineS = String(ES[iS][1]) === PL_SEISAN_CAT_MEMO && storeNames.indexOf(String(AS[iS][1]).trim()) >= 0;
+          var isMineS = String(ES[iS][1]) === PL_SEISAN_CAT_MEMO && cleanupNames[String(AS[iS][1]).trim()];
           if (sameMonthS && isMineS) continue;
           keepPS.push([AS[iS][0], AS[iS][1], AS[iS][2], ES[iS][0], ES[iS][1], GS[iS][0]]);
         }
@@ -4557,6 +4629,56 @@ function deleteTanka(p, session) {
     var vals = sh.getRange(2, 1, last - 1, 2).getValues();
     for (var i = 0; i < vals.length; i++) {
       if (String(vals[i][0] || '').trim() === store && String(vals[i][1] || '').trim() === media) { sh.deleteRow(i + 2); return { ok: true }; }
+    }
+  }
+  return { ok: false, error: '該当の設定が見つかりませんでした（既に削除済みかもしれません）' };
+}
+
+// ================== 媒体手数料設定（A-6 Phase2・2026-08-31追加） ==================
+// 参照モック`docs/mockups/NStyle_統合ポータル_予約管理_UI_v3`v3.1の「予約媒体・手数料設定」モーダル。
+// 計算方式=予約売上×手数料率／予約人数×単価／予約件数×単価／固定費、のいずれか。
+// 対象店舗が空欄＝全店（saveTanka/deleteTankaと同じ「店舗×媒体」キー設計・同じ権限方式を踏襲）。
+var MEDIA_FEE_METHODS = ['予約売上 × 手数料率', '予約人数 × 単価', '予約件数 × 単価', '固定費'];
+function saveMediaFee(p, session) {
+  var media = String(p.media || '').trim();
+  if (!media) return { ok: false, error: '媒体を選択してください' };
+  var method = String(p.method || '').trim();
+  if (MEDIA_FEE_METHODS.indexOf(method) < 0) return { ok: false, error: '計算方式が不正です' };
+  var value = String(p.value || '').trim();
+  if (!value) return { ok: false, error: '手数料率／単価を入力してください' };
+  var store = String(p.store || '').trim();
+  var plan = String(p.plan || '').trim();
+  var memo = String(p.memo || '').trim();
+  var oldMedia = String(p.oldMedia || '').trim() || media;
+  var oldStore = String(p.oldStore || '').trim();
+  if (!tankaEditAllowed_(session, store)) return { ok: false, error: '全店共通の手数料設定は社長・本部のみ編集できます' };
+  if (oldStore && oldStore !== store && !tankaEditAllowed_(session, oldStore)) return { ok: false, error: '元の店舗の手数料設定を編集する権限がありません' };
+  var mss = mgmtOpen(); if (!mss) return { ok: false, error: '管理シートを開けません（MGMT_SHEET_ID）' };
+  mgmtEnsure(mss);
+  var sh = mgmtFindTab(mss, /媒体手数料設定/); if (!sh) return { ok: false, error: '⚙媒体手数料設定タブが見つかりません' };
+  var last = sh.getLastRow(), found = -1;
+  if (last >= 2) {
+    var vals = sh.getRange(2, 1, last - 1, 4).getValues();
+    for (var i = 0; i < vals.length; i++) {
+      if (String(vals[i][0] || '').trim() === oldMedia && String(vals[i][3] || '').trim() === oldStore) { found = i + 2; break; }
+    }
+  }
+  var row = [media, method, value, store, plan, memo];
+  var target = found > 0 ? found : sh.getLastRow() + 1;
+  sh.getRange(target, 1, 1, 6).setValues([row]);
+  return { ok: true };
+}
+function deleteMediaFee(p, session) {
+  var media = String(p.media || '').trim();
+  var store = String(p.store || '').trim();
+  if (!tankaEditAllowed_(session, store)) return { ok: false, error: 'この手数料設定を削除する権限がありません' };
+  var mss = mgmtOpen(); if (!mss) return { ok: false, error: '管理シートを開けません（MGMT_SHEET_ID）' };
+  var sh = mgmtFindTab(mss, /媒体手数料設定/); if (!sh) return { ok: false, error: '⚙媒体手数料設定タブが見つかりません' };
+  var last = sh.getLastRow();
+  if (last >= 2) {
+    var vals = sh.getRange(2, 1, last - 1, 4).getValues();
+    for (var i = 0; i < vals.length; i++) {
+      if (String(vals[i][0] || '').trim() === media && String(vals[i][3] || '').trim() === store) { sh.deleteRow(i + 2); return { ok: true }; }
     }
   }
   return { ok: false, error: '該当の設定が見つかりませんでした（既に削除済みかもしれません）' };

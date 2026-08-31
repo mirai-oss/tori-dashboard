@@ -4523,9 +4523,13 @@ function rsvListHtml_(dayRows){
   EXPORT.push({ title:'予約リスト', headers:['時刻','店舗','人数','受付窓口','コース','メニュー','卓','ステータス','作成日'], rows:exp });
   return h;
 }
+// お客様名（A-6 Phase2・2026-08-31追加）。設計書§8.7・§8.8 R3のとおりダイニー分のみSupabase限定
+// 保存・BigQueryミラーには含めていない個人情報のため、一覧・分析画面には一切出さず、この詳細モーダルで
+// 「押した人だけ・その予約だけ」を都度サーバーへ取りに行く（勝手に表示しない＝プライバシー配慮の既定）。
+// サーバー側(bqGetReservationNames)がログイン中ユーザーの店舗権限で絞り込むため、閲覧できる範囲は
+// 予約データ本体と同じになる。取得結果はタブを閉じるまでのメモリ内キャッシュのみ（保存しない）。
+function rsvNameCache_(){ return D.rsvNames=D.rsvNames||{}; }
 // 予約詳細モーダル（読み取り専用。2026-08-29追加）: タイムライン/リストの予約をクリックすると開く。
-// お客様名はダイニー分のみSupabase限定で持っているがBQには入れておらず（設計書§8.7・§8.8 R3、
-// Phase2で対応予定）、現時点ではまだ表示できない。
 function rsvDetailModal(){
   const key=S.modal.key;
   const r=rsvAllRows_().find(x=>x.key===key);
@@ -4554,9 +4558,22 @@ function rsvDetailModal(){
       ${row('取込元', r.source==='dinii'?'ダイニー予約台帳':r.source==='tabelog_note'?'食べログノート':r.source==='manual'?'手動アップロード（💾予約DB）':esc(r.source||''))}
       ${row('作成日', rsvCreatedAtDisp_(r)+(rsvIsSameDay_(r)?'<span style="color:var(--accent,#b5502f);font-weight:700;margin-left:6px">（当日予約）</span>':''))}
     </table>
-    <div class="note-box" style="margin-top:10px;font-size:11.5px">お客様名の表示は今後の対応予定です（現在はダイニー分のみSupabaseに限定保存・BigQueryには入れていません）。</div>
+    ${rsvNameSectionHtml_(r)}
     <div class="modal-btns"><button class="icon-btn" onclick="App.closeModal()">閉じる</button></div>
   </div></div>`;
+}
+function rsvNameSectionHtml_(r){
+  if(r.source!=='dinii') return `<div class="note-box" style="margin-top:10px;font-size:11.5px">お客様名は取込元がダイニー予約台帳の予約のみ保存しています（この予約は${r.source==='tabelog_note'?'食べログノート':r.source==='manual'?'手動アップロード':'この取込元'}のため名前データがありません）。</div>`;
+  const cache=rsvNameCache_();
+  if(Object.prototype.hasOwnProperty.call(cache,r.key)){
+    const n=cache[r.key];
+    if(!n) return `<div class="note-box" style="margin-top:10px;font-size:11.5px">この予約のお客様名は登録されていません（またはこの予約を閲覧する権限がありません）。</div>`;
+    return `<div class="note-box" style="margin-top:10px;font-size:12.5px"><b>お客様名</b>　${esc(n.name||'（未登録）')}${n.kana?'　<span class="mut">（'+esc(n.kana)+'）</span>':''}</div>`;
+  }
+  return `<div class="note-box" style="margin-top:10px;font-size:11.5px;display:flex;align-items:center;justify-content:space-between;gap:10px">
+    <span>お客様名はダイニー予約台帳のみ保存している個人情報のため、既定では表示していません。</span>
+    <button class="icon-btn sm" onclick="App.rsvShowCustomerName('${esc(r.key)}')">🔍 表示する</button>
+  </div>`;
 }
 // 予約分析（曜日別・当日予約の時刻）— viewAd内の既存ブロック（D.rsv・管理シート💾予約DB）と同じロジックを
 // D.rsvBq（BQ・自動取込）向けに移植したもの。数字を突き合わせて確認できたら、viewAd側は削除しリンクに置き換える予定。
@@ -4661,6 +4678,62 @@ function rsvAnalysisTopHtml_(rsv,mS,mm,yy,selN){
   EXPORT.push({ title:'予約分析：時間帯別当日予約（'+metric+'）', headers:['時間帯','当日予約','全予約','当日比率'], rows:bRows });
   EXPORT.push({ title:'予約分析：当日予約×媒体（'+metric+'）', headers:['媒体','当日予約','全予約','比率'], rows:mRows });
   EXPORT.push({ title:'予約分析：コース別', headers:['コース','件数','人数','構成比'], rows:cRows });
+  h+=rsvCancelAnalysisHtml_(rsv);
+  return h;
+}
+// A-6 Phase2: キャンセル分析パネル（2026-08-31追加）。ユーザー要望「キャンセルも取込んで分析したい・
+// 予約帳/日報の表示では除く」（設計書§8.6）を受け、予約分析の末尾に専用パネルとして追加する
+// （参照モック`docs/mockups/NStyle_統合ポータル_予約管理_UI_v3`v3.1のキャンセル分析セクション準拠）。
+// rsvはその月・その店舗スコープの全予約（キャンセル含む。rsvAnalysisTopHtml_の引数と同じ）。
+function rsvCancelAnalysisHtml_(rsv){
+  const total=rsv.length;
+  const cxlRows=rsv.filter(r=>r.isCancelled);
+  const cxlPpl=cxlRows.reduce((s,r)=>s+r.partySize,0);
+  const noShow=cxlRows.filter(r=>r.statusNorm==='cancelled_noshow');
+  const pct=(x,z)=>z>0?(x/z*100).toFixed(1)+'%':'—';
+  // 予約日（来店予定日）から何日前にキャンセルされたか。cancelAtが無い行（旧・手動取込分など）は
+  // 分布に含めない（母数はleadRowsとして別カウントし、表側にも明記する）。
+  const leadRows=cxlRows.map(r=>{
+    if(!r.cancelAt) return null;
+    const cAt=parseDateStr(r.cancelAt); if(!cAt) return null;
+    return Math.max(0,Math.round((r.t-cAt)/86400000));
+  }).filter(v=>v!=null);
+  const avgLead=leadRows.length?(leadRows.reduce((s,v)=>s+v,0)/leadRows.length).toFixed(1):'—';
+  const sameDayCxl=leadRows.filter(v=>v===0).length;
+  const dayBeforeCxl=leadRows.filter(v=>v===1).length;
+  const dayBeforePct=leadRows.length?Math.round(dayBeforeCxl/leadRows.length*100):0;
+  let h=`<div class="note-box no-print">🚫 <b>キャンセル分析</b> — キャンセルは予約帳・日報の表示からは除外していますが、データは全部残してここで分析できます</div>`;
+  h+=`<div class="kpi-grid">
+    <div class="kpi"><div class="lb">キャンセル</div><div class="vl">${cnt(cxlRows.length)}組 / ${cnt(cxlPpl)}名</div><div class="yy mut">今期累計</div></div>
+    <div class="kpi" style="background:var(--warn-bg,#faf0ec)"><div class="lb">キャンセル率</div><div class="vl" style="color:var(--accent,#b5502f)">${pct(cxlRows.length,total)}</div><div class="yy mut">全予約に対する組数比</div></div>
+    <div class="kpi"><div class="lb">無断キャンセル</div><div class="vl">${cnt(noShow.length)}組</div><div class="yy mut">率 ${pct(noShow.length,total)}・別掲</div></div>
+    <div class="kpi"><div class="lb">来店予定日までの日数</div><div class="vl">平均 ${avgLead}日</div><div class="yy mut">前日キャンセル ${dayBeforePct}%（当日${cnt(sameDayCxl)}組含む）</div></div>
+  </div>`;
+  // 媒体別キャンセル率（店舗都合キャンセル=cancelled_storeは母数・分子とも除外して比較。「店都合キャンセルは
+  // 除外して比較」というモックの注記どおり＝媒体側の予約の質を見る指標のため店都合分は混ぜない）
+  const byMedia={};
+  rsv.filter(r=>r.statusNorm!=='cancelled_store').forEach(r=>{
+    const k=canonMedia(r.channelNorm||r.channelRaw)||'（不明）';
+    const o=byMedia[k]=byMedia[k]||{cxl:0,total:0,noShow:0};
+    o.total++;
+    if(r.isCancelled){ o.cxl++; if(r.statusNorm==='cancelled_noshow') o.noShow++; }
+  });
+  const mediaRows=Object.keys(byMedia).sort((a,b)=>byMedia[b].total-byMedia[a].total).map(k=>{
+    const o=byMedia[k]; return [k,cnt(o.cxl)+'組',cnt(o.total),pct(o.cxl,o.total),cnt(o.noShow)];
+  });
+  // キャンセルまでの日数分布
+  const buckets=[['当日キャンセル',v=>v===0],['前日',v=>v===1],['2〜3日前',v=>v>=2&&v<=3],['4〜7日前',v=>v>=4&&v<=7],['8日以上前',v=>v>=8]];
+  const distRows=buckets.map(([lb,f])=>{ const n=leadRows.filter(f).length; return [lb,cnt(n)+'組',pct(n,leadRows.length)]; });
+  const panel2=(title,desc,headers,rows,hiIdx)=>`<div class="panel"><div class="panel-head"><div><h3>${esc(title)}</h3><div class="sub">${esc(desc)}</div></div></div>
+    <div class="scroll-x"><table class="tbl"><thead><tr>${headers.map(hd=>`<th>${esc(hd)}</th>`).join('')}</tr></thead><tbody>
+    ${rows.length?rows.map(r=>`<tr${hiIdx!=null&&Number(String(r[hiIdx]).replace('%',''))>=15?' class="hi"':''}>${r.map(c=>`<td>${esc(c)}</td>`).join('')}</tr>`).join(''):`<tr><td colspan="${headers.length}" class="mut">データなし</td></tr>`}
+    </tbody></table></div></div>`;
+  h+=`<div class="grid2" style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+    ${panel2('媒体別キャンセル率','どの媒体のキャンセルが多いか（店都合キャンセルは除外して比較）',['媒体','キャンセル','全予約','率','うち無断'],mediaRows,3)}
+    ${panel2('キャンセルまでの日数分布','来店予定日から何日前にキャンセルされたか（cancel_at記録が無い'+cnt(cxlRows.length-leadRows.length)+'組は含まず）',['タイミング','組数','構成比'],distRows,2)}
+  </div>`;
+  EXPORT.push({ title:'予約分析：媒体別キャンセル率', headers:['媒体','キャンセル','全予約','率','うち無断'], rows:mediaRows });
+  EXPORT.push({ title:'予約分析：キャンセルまでの日数分布', headers:['タイミング','組数','構成比'], rows:distRows });
   return h;
 }
 function rsvAnalysisHtml_(){
@@ -7857,6 +7930,16 @@ window.App = {
   },
   openEventInput(id){ S.modal={type:'event', id:id||''}; render(); },
   rsvOpenDetail(key){ S.modal={type:'rsvDetail', key}; render(); },
+  async rsvShowCustomerName(key){
+    if(!S.auth||!S.auth.token) return;
+    const cache=rsvNameCache_();
+    try{
+      const d=await api({ action:'bqGetReservationNames', token:S.auth.token, keys:key });
+      if(!d||!d.ok){ toast((d&&d.error)||'お客様名の取得に失敗しました'); return; }
+      cache[key]=(d.names&&d.names[key])||null;
+      render();
+    }catch(e){ toast('通信エラー: '+e.message); }
+  },
   rsvSetFloorTime(v){ S.rsvFloorTime=v; render(); },
   async saveEventInput(){
     const msg=$('ev-msg');
