@@ -1893,10 +1893,11 @@ function bqGetSeatMaster(p, session) {
 // fact_daily_storeの社員人件費(fulltime_labor_cost)・アルバイト人件費(parttime_labor_cost)は、
 // 従来スプレッドシート「社員人件費DB」の店舗×月合計を暦日割りしたもの（分析_日別店舗経由でミラー
 // されるだけ・計算自体はこのプロジェクトの外）だった。担当Bが構築したAPI連携（sf_payroll_sync・
-// sf_payroll_allocations・labor_cost_daily）の方が正確なため、**2026年8月分から**そちらに切り替える
-// （それより前の月は8月よりスマレジタイムカード未導入の場合があり、無理に混ぜないユーザー指示）。
+// sf_payroll_allocations・labor_cost_daily）の方が正確なため、**2026年9月分から**そちらに切り替える
+// （2026-08-31 ユーザー指示で当初の8月から9月に変更。それより前の月はスマレジタイムカード未導入の
+// 場合があり、無理に混ぜない）。
 // 法定福利費(statutory_welfare)はAPI側にデータが無いため今回は対象外＝常にスプレッドシート値のまま。
-var API_LABOR_COST_FROM_YM_ = '2026-08';
+var API_LABOR_COST_FROM_YM_ = '2026-09';
 // 汎用: Supabaseの任意テーブル/ビューをページング付きで全件取得（bqFetchReservationRows_を一般化）。
 // filterQSはPostgRESTのクエリ文字列（例:'work_date=gte.2026-08-01'）。空文字なら絞り込み無し。
 function bqFetchSupabaseRows_(table, selectCols, filterQS) {
