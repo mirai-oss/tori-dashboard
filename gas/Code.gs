@@ -2005,8 +2005,14 @@ function bqBuildApiLaborCostMap_() {
 // store_name=9,…parttime_labor_cost=23,fulltime_labor_cost=24,labor_cost_total=25,…
 // employee_salary_bonus=32,statutory_welfare=33,commute_allowance=34）。
 function bqApplyApiLaborCostRow_(row, laborData, storeIdx) {
-  var ym = String(row[1] || '');
-  if (ym < API_LABOR_COST_FROM_YM_) return row;
+  // 2026-08-31修正: シートの「年月」列は見た目こそ"2026-08"だが、スプレッドシート側でDATE型セルに
+  // 自動変換されており、GASでStringify すると"Sat Aug 01 2026 00:00:00 GMT+0900..."のような文字列に
+  // なってしまう（診断用アクションで実データを直接確認して判明。年月比較が常に不成立になり、
+  // このAPI切替が一切発火しない状態だった）。年(row[2])・月(row[3])はINTEGER型で素直な数値のため、
+  // そちらから"YYYY-MM"を組み立てる。
+  var year0 = Number(row[2]), month0 = Number(row[3]);
+  var ym = (year0 && month0) ? (year0 + '-' + String(month0).padStart(2, '0')) : '';
+  if (!ym || ym < API_LABOR_COST_FROM_YM_) return row;
   var storeName = bqResolveStoreName_(storeIdx, row[9]);
   var dateStr = (row[0] instanceof Date) ? Utilities.formatDate(row[0], 'Asia/Tokyo', 'yyyy-MM-dd') : String(row[0]).slice(0, 10);
   var changed = false;
@@ -2018,8 +2024,7 @@ function bqApplyApiLaborCostRow_(row, laborData, storeIdx) {
   var salBonus = Number(row[32]) || 0, commute = Number(row[34]) || 0;
   var em = laborData.empMonthly[storeName] && laborData.empMonthly[storeName][ym];
   if (em) {
-    var year = Number(row[2]), month = Number(row[3]);
-    var daysInMonth = (year && month) ? new Date(year, month, 0).getDate() : 30;
+    var daysInMonth = new Date(year0, month0, 0).getDate();
     salBonus = em.fulltimeBase / daysInMonth; // 月合計を暦日割り（社員人件費DBと同じ考え方）
     commute = em.commute / daysInMonth;
     changed = true;
