@@ -1,0 +1,18 @@
+name: 予約(stg_reservation)の店舗別日付範囲・件数を確認（送信なし・一時的）
+# ユーザー報告「予約管理タブのデータ連携が止まっている・予約分析がデータなしになる」の調査用。読み取り専用。
+# 用が済んだら削除してよい（WORKLOG.md 2026-08-31付「担当Aスレッド」参照）。
+on:
+  workflow_dispatch: {}
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: rsvDateRangeDiagを実行
+        env:
+          BQ_LOAD_TOKEN: ${{ secrets.BQ_LOAD_TOKEN }}
+        run: |
+          curl -sL -G "https://script.google.com/macros/s/AKfycbz9rd37EZa6X8WRMVEBrXobN8DbYWkHRlhFNYU5rd1UZ0V8j0-6shMQjEeoi4HDWZ0B/exec" \
+            --data-urlencode "action=rsvDateRangeDiag" \
+            --data-urlencode "token=$BQ_LOAD_TOKEN" \
+            | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.stringify(JSON.parse(d),null,2)));"

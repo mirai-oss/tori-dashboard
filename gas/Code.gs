@@ -61,6 +61,7 @@ function handle(p) {
     if (action === 'bqPerfDiag') return out(bqPerfDiag(p)); // BQモード各アクションの所要時間計測（専用トークン認証・読み取り専用・一時的）
     if (action === 'dataKeysDiag') return out(dataKeysDiag(p)); // getData()が実際にどのキーを返すか確認（専用トークン認証・読み取り専用・一時的）
     if (action === 'mediaDateRangeDiag') return out(mediaDateRangeDiag(p)); // stg_media（媒体別日次）の最古/最新日付を確認（担当D依頼の前年比調査用・専用トークン認証・読み取り専用・一時的）
+    if (action === 'rsvDateRangeDiag') return out(rsvDateRangeDiag_(p)); // stg_reservation（予約）の店舗別最新日付・件数を確認（専用トークン認証・読み取り専用。2026-08-31追加）
     if (action === 'syncSeisanFeeToPl') return out(syncSeisanFeeToPl(p)); // 運営委託費のPL自動連携（専用トークン認証・ログイン不要。2026-08-23追加）
     if (action === 'syncSeisanCategoriesToPl') return out(syncSeisanCategoriesToPl(p)); // 精算書の勘定科目→PL自動連携（専用トークン認証・ログイン不要。2026-08-31追加・A-9）
     if (action === 'syncSpotLaborToPl') return out(syncSpotLaborToPl(p)); // スポット人件費の月次PL自動連携（専用トークン認証・ログイン不要。2026-08-23追加）
@@ -3367,6 +3368,28 @@ function dataKeysDiag(p) {
 // 一時的な診断用（2026-08-26）: 担当D依頼「媒体別売上パネルの前年比が全行前年比較不可になる」の調査用。
 // stg_media（媒体別日次のBQミラー）に前年同期間のデータがそもそも存在しないのでは、という仮説の確認。
 // 読み取り専用・数値の書き換えは一切行わない。
+// 診断用（2026-08-31）: ユーザー報告「予約管理タブの同期がずっと止まっている・予約分析が
+// データなしになる」の調査用。stg_reservationの店舗別・最新日付・件数を返す（読み取り専用）。
+// store省略可（省略時は全店の内訳を返す）。
+function rsvDateRangeDiag_(p) {
+  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+  if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
+  try {
+    var storeMap = rsvStoreMap_();
+    var sql = 'SELECT store_id, MIN(visit_date) AS min_d, MAX(visit_date) AS max_d, COUNT(*) AS n, MAX(imported_at) AS last_imported ' +
+      'FROM `' + BQ_PROJECT + '.' + BQ_SALES_DATASET + '.stg_reservation` GROUP BY store_id ORDER BY max_d DESC';
+    var rows = bqRows_(sql);
+    if (!rows) return { ok: false, error: 'BigQueryクエリ失敗' };
+    var out = [];
+    for (var i = 1; i < rows.length; i++) {
+      var r = rows[i];
+      out.push({ store: storeMap[r[0]] || r[0], minDate: r[1], maxDate: r[2], count: Number(r[3]), lastImported: r[4] });
+    }
+    return { ok: true, byStore: out };
+  } catch (e) {
+    return { ok: false, error: String(e && e.message || e) };
+  }
+}
 function mediaDateRangeDiag(p) {
   var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
   if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
