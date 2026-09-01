@@ -74,6 +74,7 @@ function handle(p) {
     if (action === 'bqReconcileSales') return out(bqReconcileSales(p)); // BQとシートの突合（専用トークン認証・ログイン不要）
     if (action === 'bqSyncPL') return out(bqSyncPL(p)); // PL経費(DB_PL)のBQミラー同期（専用トークン認証・ログイン不要）
     if (action === 'writeAdCost') return out(writeAdCost(p)); // A-8: 広告費書き込み（invoices側ad-cost-reflectから・AD_COST_WRITE_TOKEN認証・ログイン不要。2026-08-31追加）
+    if (action === 'writePlFee') return out(writePlFee(p)); // A-8拡張: 勘定科目汎用のPL自動計上（invoices側pl-fee-reflectから・AD_COST_WRITE_TOKEN認証・ログイン不要。2026-09-01追加・設計書§5）
     if (action === 'bqSyncAdCost') return out(bqSyncAdCost(p)); // 💾広告費DBのBQミラー同期（専用トークン認証・ログイン不要。writeAdCostから毎回自動で呼ばれるほか単独でも可。2026-08-31追加・A-8）
     if (action === 'bqSyncReservation') return out(bqSyncReservation(p)); // 予約(stg_reservation)のBQミラー同期（専用トークン認証・ログイン不要。2026-08-28追加・A-6）
     if (action === 'perf') return out(perfDiag(p)); // パフォーマンス計測（専用トークン認証・ログイン不要・数字は返さず時間だけ）
@@ -4153,6 +4154,13 @@ function saveAdFee(p, session) {
 function writeAdCost(p) {
   var tk = PropertiesService.getScriptProperties().getProperty('AD_COST_WRITE_TOKEN');
   if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
+  // 2026-09-01追加（設計書_広告費自動連携と精算書PL科目連携_2026-08-31.md §5・ラウンド5指示書§6.1
+  // 「A-8拡張」）: p.account/p.account_name が指定された場合は勘定科目汎用の経路（DB_PL直接計上＋
+  // 精算対象店舗は精算書へも自動追加）へ分岐する。実際の呼び出しはaction='writePlFee'（下のwritePlFee
+  // 経由）を使う想定だが、念のためwriteAdCost経由でも同じ経路に入れるようここにも残す。p.media指定時
+  // （従来どおり）は下の💾広告費DBへの書き込みのまま・完全に独立した経路のため、担当C invoicesの
+  // ad-cost-reflect（既存の広告費呼び出し）には一切影響しない。
+  if (p.account || p.account_name) return writeAccountCostToPl_(p);
   var ym = String(p.year_month || '').trim();
   if (!/^\d{4}-\d{2}$/.test(ym)) return { ok: false, error: '年月が不正です（例: 2026-08）' };
   var media = String(p.media || '').trim().slice(0, 40);
@@ -4217,6 +4225,149 @@ function writeAdCost(p) {
   try { bqRes = bqSyncAdCost({ token: PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN') }); }
   catch (eBq) { bqRes = { ok: false, error: String(eBq && eBq.message || eBq) }; }
   return { ok: true, media: media, year_month: ym, results: results, bq: bqRes };
+}
+
+// ================== A-8拡張: 勘定科目汎用のPL自動計上（2026-09-01・設計書§5） ==================
+// invoices側 pl-fee-reflect/confirm から呼ばれる本来の入口（action='writePlFee'）。writeAdCostと
+// 同じAD_COST_WRITE_TOKEN認証をここでも行う（writeAdCost経由の分岐と処理は完全に共通）。
+function writePlFee(p) {
+  var tk = PropertiesService.getScriptProperties().getProperty('AD_COST_WRITE_TOKEN');
+  if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
+  return writeAccountCostToPl_(p);
+}
+// カード手数料・PayPay手数料など、MF会計仕訳（invoices側の会計入力）で確定した経費を、writeAdCostと
+// 同じAD_COST_WRITE_TOKEN認証のまま、任意の勘定科目でDB_PL（＋PL管理システム）へ自動計上する。
+// syncSeisanCategoriesToPl等の既存PL自動連携と違い、この処理は「1回の呼び出し=1件の仕訳」という
+// 増分呼び出し（invoices側が仕訳を処理するたびに都度呼ぶ想定）のため、月全体を洗い替える方式ではなく
+// 「この月×このメモ×このsource_key」の行だけを店舗単位でupsertする（他の仕訳の行には一切触れない）。
+// これにより「同じ仕訳からは1回だけ」の二重計上ガード（design§5）と、同じ科目・同じ月に複数の別々の
+// 仕訳が積み上がっても正しく合算される、の両方を満たす。
+// 精算対象店舗（Supabase stores.seisan_target）については、精算書側の新規token authアクション
+// sd_apiAddExternalLine（seisan-dashboard）を呼び、同じ内容を精算書の明細にも自動追加する。
+// 呼び出し例（invoices側pl-fee-reflect/confirmが実際に送ってくる形）: {token,
+//   year_month:'2026-08', account_name:'カード手数料', allocations:[{store_name:'鳥一代 恵比寿', amount:12345}],
+//   source_invoice_id:'...', vendor_name:'○○カード'}（account/sub_account/source_key/taxは別名または追加項目として許容）
+function writeAccountCostToPl_(p) {
+  var ym = String(p.year_month || '').trim();
+  if (!/^\d{4}-\d{2}$/.test(ym)) return { ok: false, error: '年月が不正です（例: 2026-08）' };
+  var account = String(p.account_name || p.account || '').trim().slice(0, 60);
+  if (!account) return { ok: false, error: '勘定科目（account_name）が未指定です' };
+  var subAccount = String(p.sub_account || '').trim().slice(0, 60);
+  var sourceKey = String(p.source_key || p.source_invoice_id || p.mf_journal_id || '').trim().slice(0, 80);
+  if (!sourceKey) return { ok: false, error: 'source_key（冪等キー・仕訳ID等）が未指定です' };
+  var allocations = Array.isArray(p.allocations) ? p.allocations : [];
+  if (!allocations.length) return { ok: false, error: 'allocations（店舗×金額）が空です' };
+  var tax = String(p.tax || '10%');
+  var vendorLabel = p.vendor_name ? String(p.vendor_name).trim().slice(0, 40) : '';
+  var memo = '自動｜' + account;
+  var noteTag = '外部連携:' + sourceKey;
+  var y = Number(ym.slice(0, 4)), mo = Number(ym.slice(5, 7));
+  var ymSlash = ym.slice(0, 4) + '/' + ym.slice(5, 7);
+
+  var results = [], validAllocs = [];
+  allocations.forEach(function (a) {
+    var dashStore = String((a && a.store_name) || '').trim();
+    var amt = Number((a && a.amount) || 0);
+    if (!dashStore) { results.push({ store: dashStore, ok: false, error: '店舗名が空です' }); return; }
+    if (!isFinite(amt) || amt < 0) { results.push({ store: dashStore, ok: false, error: '金額が不正です' }); return; }
+    validAllocs.push({ store: dashStore, amount: amt });
+  });
+  if (!validAllocs.length) return { ok: false, error: '有効な店舗×金額がありません', results: results };
+
+  // ① DB_PL：この月×このメモ×このsource_keyの行だけを店舗単位でupsert
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_PL');
+  if (!sh) return { ok: false, error: 'DB_PLシートがありません' };
+  var lastRow = sh.getLastRow();
+  var lastCol = Math.max(sh.getLastColumn(), 7);
+  var allRows = lastRow >= 2 ? sh.getRange(2, 1, lastRow - 1, lastCol).getValues() : [];
+  var byStoreIdx = {}; // store -> allRowsのindex（同月・同メモ・同source_keyの既存行のみ）
+  for (var i = 0; i < allRows.length; i++) {
+    var r = allRows[i];
+    if (r[0] === '' && r[1] === '') continue;
+    if (bqPlYm_(r[0]) !== ymSlash || String(r[5]) !== memo || String(r[6]) !== noteTag) continue;
+    byStoreIdx[String(r[1]).trim()] = i;
+  }
+  var cat = plSeisanGuessCat_(account);
+  validAllocs.forEach(function (a) {
+    var idx = byStoreIdx[a.store];
+    var row = [new Date(y, mo - 1, 1), a.store, account, cat, a.amount, memo, noteTag];
+    if (idx != null) { allRows[idx] = row; results.push({ store: a.store, ok: true, updated: true }); }
+    else { allRows.push(row); results.push({ store: a.store, ok: true, updated: false }); }
+  });
+  if (lastRow >= 2) sh.getRange(2, 1, lastRow - 1, lastCol).clearContent();
+  if (allRows.length) { sh.getRange(2, 1, allRows.length, 7).setValues(allRows); sh.getRange(2, 1, allRows.length, 1).setNumberFormat('yyyy/m/d'); }
+
+  // ② PL管理システム（✍販管費入力）にも同じキーでupsert（既存の各PL自動連携と同じ二重反映パターン）
+  var plsysNote = '';
+  try {
+    var pshS = SpreadsheetApp.openById(PL_SYSTEM_ID).getSheetByName(PL_INPUT_SHEET);
+    if (pshS) {
+      var lastRS = pshS.getLastRow(), nRS = Math.max(lastRS - 2, 0);
+      var AS = nRS > 0 ? pshS.getRange(3, 1, nRS, 3).getValues() : [];
+      var ES = nRS > 0 ? pshS.getRange(3, 5, nRS, 2).getValues() : [];
+      var GS = nRS > 0 ? pshS.getRange(3, 7, nRS, 1).getValues() : [];
+      var byStoreIdxS = {};
+      for (var iS = 0; iS < nRS; iS++) {
+        if (String(AS[iS][0]) === '' && String(AS[iS][2]) === '') continue;
+        if (bqPlYm_(AS[iS][0]) !== ymSlash || String(ES[iS][1]) !== memo || String(GS[iS][0]) !== noteTag) continue;
+        byStoreIdxS[String(AS[iS][1]).trim()] = iS;
+      }
+      validAllocs.forEach(function (a) {
+        var idxS = byStoreIdxS[a.store];
+        if (idxS != null) { AS[idxS] = [ymSlash, a.store, account]; ES[idxS] = [a.amount, memo]; GS[idxS] = [noteTag]; }
+        else { AS.push([ymSlash, a.store, account]); ES.push([a.amount, memo]); GS.push([noteTag]); }
+      });
+      if (nRS > 0) { pshS.getRange(3, 1, nRS, 3).clearContent(); pshS.getRange(3, 5, nRS, 2).clearContent(); pshS.getRange(3, 7, nRS, 1).clearContent(); }
+      if (AS.length) {
+        pshS.getRange(3, 1, AS.length, 3).setValues(AS);
+        pshS.getRange(3, 5, AS.length, 2).setValues(ES);
+        pshS.getRange(3, 7, AS.length, 1).setValues(GS);
+      }
+      plsysNote = 'PL管理システムにも反映しました';
+    } else plsysNote = 'PL管理システムに「' + PL_INPUT_SHEET + '」シートが見つかりません（DB_PLのみ反映）';
+  } catch (eP) { plsysNote = 'PL管理システムへの反映に失敗（DB_PLのみ反映）: ' + String(eP && eP.message || eP); }
+
+  // ③ 精算対象店舗（Supabase stores.seisan_target）は精算書にも同じ内容を自動追加
+  var seisanResults = [];
+  try {
+    var seisanUrl = PropertiesService.getScriptProperties().getProperty('SEISAN_WEBAPP_URL');
+    var plSyncToken = PropertiesService.getScriptProperties().getProperty('PL_SYNC_TOKEN');
+    if (seisanUrl && plSyncToken) {
+      var storeRes = UrlFetchApp.fetch(
+        'https://uuvsxzhpxtghojoubjcc.supabase.co/rest/v1/store_directory_v?select=name,seisan_target,seisan_store_name',
+        { headers: { apikey: STORE_DIRECTORY_ANON_KEY_, Authorization: 'Bearer ' + STORE_DIRECTORY_ANON_KEY_ }, muteHttpExceptions: true }
+      );
+      if (storeRes.getResponseCode() === 200) {
+        var dirRows = JSON.parse(storeRes.getContentText());
+        var seisanNameOf = {};
+        dirRows.forEach(function (s) { if (s.seisan_target) seisanNameOf[s.name] = s.seisan_store_name || s.name; });
+        validAllocs.forEach(function (a) {
+          var seisanName = seisanNameOf[a.store];
+          if (!seisanName) return; // 精算対象外の店舗はスキップ
+          try {
+            var res = UrlFetchApp.fetch(seisanUrl, {
+              method: 'post', contentType: 'application/json', muteHttpExceptions: true,
+              payload: JSON.stringify({
+                fn: 'sd_apiAddExternalLine',
+                args: [plSyncToken, seisanName, ym, {
+                  item: vendorLabel ? account + '（' + vendorLabel + '）' : account,
+                  amount: a.amount, tax: tax, account: account, subAccount: subAccount, sourceKey: sourceKey
+                }]
+              })
+            });
+            var j = JSON.parse(res.getContentText());
+            seisanResults.push({ store: a.store, ok: !!(j.ok && j.result && j.result.ok), detail: j.result || j });
+          } catch (eSd) { seisanResults.push({ store: a.store, ok: false, error: String(eSd && eSd.message || eSd) }); }
+        });
+      }
+    }
+  } catch (eDir) { /* 店舗一覧取得に失敗しても致命的ではない（DB_PL計上自体は完了しているため） */ }
+
+  var bqRes2 = null;
+  try { bqRes2 = bqSyncPL({ token: PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN') }); }
+  catch (eBq2) { bqRes2 = { ok: false, error: String(eBq2 && eBq2.message || eBq2) }; }
+
+  return { ok: true, account: account, year_month: ym, results: results, plsys: plsysNote, seisan: seisanResults, bq: bqRes2 };
 }
 
 // 💾広告費DBシート全体を stg_ad_cost へミラー（WRITE_TRUNCATE。bqSyncPLと同じ方式）。
