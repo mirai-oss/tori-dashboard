@@ -64,6 +64,7 @@ function handle(p) {
     if (action === 'mediaDateRangeDiag') return out(mediaDateRangeDiag(p)); // stg_media（媒体別日次）の最古/最新日付を確認（担当D依頼の前年比調査用・専用トークン認証・読み取り専用・一時的）
     if (action === 'rsvDateRangeDiag') return out(rsvDateRangeDiag_(p)); // stg_reservation（予約）の店舗別最新日付・件数を確認（専用トークン認証・読み取り専用。2026-08-31追加）
     if (action === 'rsvAccountBreakdownDiag') return out(rsvAccountBreakdownDiag(p)); // 診断用（2026-09-02・使用後削除予定）: store_account別の内訳確認
+    if (action === 'rsvDupCheckDiag') return out(rsvDupCheckDiag(p)); // 診断用（2026-09-02・使用後削除予定）: 2アカウント間の重複疑いチェック
     if (action === 'syncSeisanFeeToPl') return out(syncSeisanFeeToPl(p)); // 運営委託費のPL自動連携（専用トークン認証・ログイン不要。2026-08-23追加）
     if (action === 'syncSeisanCategoriesToPl') return out(syncSeisanCategoriesToPl(p)); // 精算書の勘定科目→PL自動連携（専用トークン認証・ログイン不要。2026-08-31追加・A-9）
     if (action === 'syncSpotLaborToPl') return out(syncSpotLaborToPl(p)); // スポット人件費の月次PL自動連携（専用トークン認証・ログイン不要。2026-08-23追加）
@@ -1810,6 +1811,23 @@ function rsvAccountBreakdownDiag(p) {
     out.push({ store: storeMap[r[0]] || r[0], store_account: r[1], count: Number(r[2]), minDate: r[3], maxDate: r[4] });
   }
   return { ok: true, rows: out };
+}
+// 診断用（2026-09-02追加・使用後削除予定）: 鶏武者川崎店の2アカウント間で、同じ来店日・来店時間・
+// 人数の予約が両方に存在する（＝重複計上の疑い）かを確認する。専用トークン認証・読み取り専用。
+function rsvDupCheckDiag(p) {
+  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+  if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
+  var sql = "SELECT visit_date, visit_time, party_size, " +
+    "COUNTIF(store_account='匠味 川崎') AS a, COUNTIF(store_account='鶏武者 川崎店') AS b " +
+    "FROM `" + BQ_PROJECT + "." + BQ_SALES_DATASET + ".stg_reservation` " +
+    "WHERE store_id = (SELECT store_id FROM `" + BQ_PROJECT + "." + BQ_SALES_DATASET + ".stg_reservation` WHERE store_account='鶏武者 川崎店' LIMIT 1) " +
+    "AND visit_date BETWEEN '" + (p.from || '2026-08-20') + "' AND '" + (p.to || '2026-09-10') + "' " +
+    "GROUP BY visit_date, visit_time, party_size HAVING a > 0 AND b > 0 ORDER BY visit_date, visit_time";
+  var rows = bqRows_(sql);
+  if (!rows) return { ok: false, error: 'query failed' };
+  var out = [];
+  for (var i = 1; i < rows.length; i++) out.push({ date: rows[i][0], time: rows[i][1], party: rows[i][2], countA匠味: rows[i][3], countB鶏武者: rows[i][4] });
+  return { ok: true, possibleDuplicateSlots: out.length, rows: out };
 }
 function bqGetReservation(p, session) {
   try {
