@@ -63,6 +63,7 @@ function handle(p) {
     if (action === 'dataKeysDiag') return out(dataKeysDiag(p)); // getData()が実際にどのキーを返すか確認（専用トークン認証・読み取り専用・一時的）
     if (action === 'mediaDateRangeDiag') return out(mediaDateRangeDiag(p)); // stg_media（媒体別日次）の最古/最新日付を確認（担当D依頼の前年比調査用・専用トークン認証・読み取り専用・一時的）
     if (action === 'rsvDateRangeDiag') return out(rsvDateRangeDiag_(p)); // stg_reservation（予約）の店舗別最新日付・件数を確認（専用トークン認証・読み取り専用。2026-08-31追加）
+    if (action === 'rsvAccountBreakdownDiag') return out(rsvAccountBreakdownDiag(p)); // 診断用（2026-09-02・使用後削除予定）: store_account別の内訳確認
     if (action === 'syncSeisanFeeToPl') return out(syncSeisanFeeToPl(p)); // 運営委託費のPL自動連携（専用トークン認証・ログイン不要。2026-08-23追加）
     if (action === 'syncSeisanCategoriesToPl') return out(syncSeisanCategoriesToPl(p)); // 精算書の勘定科目→PL自動連携（専用トークン認証・ログイン不要。2026-08-31追加・A-9）
     if (action === 'syncSpotLaborToPl') return out(syncSpotLaborToPl(p)); // スポット人件費の月次PL自動連携（専用トークン認証・ログイン不要。2026-08-23追加）
@@ -1792,6 +1793,24 @@ function bqSyncReservation(p) {
 // 読み取り: ログイン必須・店舗スコープ制限。stg_reservationのstore_idはSupabase `stores`テーブルのUUID
 // のため、rsvStoreMap_()（Supabase直参照）で店舗名に変換する（bqStoreMap_ではない。上部コメント参照）。
 // 既定はキャンセル系ステータス(status_normalizedがcancelled_*)を除外（p.includeCancelled='true'で分析用に全件）。
+// 診断用（2026-09-02追加・使用後削除予定）: EXCLUDE_ACCOUNTS（鶏武者川崎店/鶏武者新横浜/黒霧屋新横浜）
+// が実際にどれだけの予約を除外してしまっているか、store_account別の内訳を確認する。専用トークン認証・
+// 読み取り専用。ユーザー報告「鶏武者川崎店の予約帳が空になっている」の調査用。
+function rsvAccountBreakdownDiag(p) {
+  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+  if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
+  var storeMap = rsvStoreMap_();
+  var sql = 'SELECT store_id, store_account, COUNT(*) n, MIN(visit_date) minD, MAX(visit_date) maxD ' +
+    'FROM `' + BQ_PROJECT + '.' + BQ_SALES_DATASET + '.stg_reservation` GROUP BY store_id, store_account ORDER BY store_id, store_account';
+  var rows = bqRows_(sql);
+  if (!rows) return { ok: false, error: 'query failed' };
+  var out = [];
+  for (var i = 1; i < rows.length; i++) {
+    var r = rows[i];
+    out.push({ store: storeMap[r[0]] || r[0], store_account: r[1], count: Number(r[2]), minDate: r[3], maxDate: r[4] });
+  }
+  return { ok: true, rows: out };
+}
 function bqGetReservation(p, session) {
   try {
     var sessStores = String(session && session.stores || '').trim();
