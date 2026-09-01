@@ -1199,6 +1199,10 @@ function bqMediaSegOf_(map, media) {
   if (hit && hit.seg) return hit.seg;
   return /ランチ|昼/.test(s) ? 'ランチ' : 'ディナー';
 }
+// bqDetail()の集計ロジックのバージョン。キャッシュキーに含める（2026-09-02追加・担当D提案）。
+// 計算式・分類ロジック等、返す数字が変わりうる変更をしたら1つ増やすこと（デプロイ直後に古い
+// キャッシュ結果が最大15分残ってしまう混乱を防ぐ）。v2=TK-38（stg_mediaベースの営業区分集計へ変更）。
+var BQ_DETAIL_LOGIC_VER = 2;
 // 明細分析（対話的）：期間 from〜to・店舗で絞り、時間帯別/商品別/店舗別を集計して返す。
 // guests=客数・checks=組数は、店舗別(st)の集計だけレジ実績(fact_daily_store)の実数に差し替える
 // （2026-08-23〜。2026-08-30に部分差し替えへ変更）。実績が期間の一部までしか揃っていない場合は、
@@ -1269,7 +1273,12 @@ function bqDetail(p, session) {
   // キャッシュ（同じ条件は再クエリしない・15分）。scopeKeyを含め、権限の違うユーザー間でキャッシュが混ざらないようにする。
   var cache = CacheService.getScriptCache();
   // 担当店舗が多いとscopeKey(店舗IDの連結)が長くなりキー上限250字を超える→MD5で短縮する
-  var ckRaw = 'det_' + from + '_' + to + '_' + (p.store || 'all') + '_' + basis + '_' + (segment || 'all') + '_' + scopeKey;
+  // BQ_DETAIL_LOGIC_VERをキーに含める（2026-09-02追加・担当D提案）: TK-38のように計算式自体を
+  // 変えるデプロイをした直後、既存の「全店・ディナー」等のキャッシュが最大15分古い計算結果の
+  // まま残り、店舗を個別選択したときだけ直って見える、という混乱が実際に起きた。今後、bqDetail()
+  // の集計ロジックを変える変更をする時はこの定数を手で1つ増やすこと（デプロイのたびにキャッシュが
+  // 自動的に無効化される）。
+  var ckRaw = 'det_v' + BQ_DETAIL_LOGIC_VER + '_' + from + '_' + to + '_' + (p.store || 'all') + '_' + basis + '_' + (segment || 'all') + '_' + scopeKey;
   var ck = ckRaw.length > 200 ? 'det_' + md5Hex_(ckRaw) : ckRaw;
   var hit = cache.get(ck);
   if (hit) { try { var o = JSON.parse(hit); o.cached = true; return o; } catch (e2) {} }
