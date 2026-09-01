@@ -56,6 +56,7 @@ function handle(p) {
     if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-a6p2', time: new Date().toISOString() }); // a6p2=運営委託費二重計上修正+A-6Phase2（キャンセル分析・お客様名・媒体手数料設定）追加（2026-08-31）のデプロイ確認用に更新
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
+    if (action === 'roleDefDiag') return out(roleDefDiag(p)); // DB_権限定義シートの内容を返す（専用トークン認証・読み取り専用。2026-09-02追加）
     if (action === 'storeNameAudit') return out(storeNameAudit(p)); // BQミラー全8テーブルの店舗名をstore_aliasesと突合し未登録表記を洗い出す（専用トークン認証・読み取り専用。2026-08-28追加）
     if (action === 'detailVsDailyDiag') return out(detailVsDailyDiag(p)); // 明細分析とダッシュボードの売上・客数・組数の差を実測で突合（専用トークン認証・読み取り専用・一時的）
     if (action === 'bqPerfDiag') return out(bqPerfDiag(p)); // BQモード各アクションの所要時間計測（専用トークン認証・読み取り専用・一時的）
@@ -1374,19 +1375,30 @@ function bqDetail(p, session) {
               var dayChecks = rm.checks + tm.checks;
               var dayGuests = rm.guests + tm.guests;
               var daySalesExcl = rm.sales_excl + tm.sales_excl;
-              // segChecks0/segGuests0/oldExclは「絞り込み後（segment適用済み）」のdinii明細推定・按分前の値
+              // segChecks0/oldExclは「絞り込み後（segment適用済み）」のdinii明細推定・按分前の値
+              // （2026-09-02修正でsegGuests0=お通しベースの絞り込み後客数推定は未使用になったため削除）
               var segChecks0 = Number(st[si][3]) || 0;
-              var segGuests0 = Number(st[si][4]) || 0;
               var oldExcl = Number(st[si][2]) || 0;
               var finalChecks, finalGuests, finalSalesExcl;
               if (segment) {
                 var full = stFullMap[st[si][0]];
-                if (!full || !(full.checks > 0) || !(full.guests > 0) || !(full.sales_excl > 0)) continue; // 按分の材料が無ければこの店舗はdinii推定のまま触らない
+                // 2026-09-02修正: 客数按分をfull.guests（お通し数）ベースからfull.checks（会計数）ベースへ
+                // 変更したのにあわせ、このガードもfull.guests>0の要求を外す（お通しをあまり出さない店舗が
+                // 不要にdinii推定のまま取り残されるのを防ぐ）。
+                if (!full || !(full.checks > 0) || !(full.sales_excl > 0)) continue; // 按分の材料が無ければこの店舗はdinii推定のまま触らない
                 // 客数・組数・売上のいずれも「絞り込み後の推定 ÷ フルデイの推定」＝その区分の構成比を
                 // フルデイの実績（dayChecks等）に掛けて按分する（例: ディナーの明細推定客数が
                 // フルデイ明細推定客数の60%なら、実績客数の60%をディナーの客数とみなす）。
+                // 2026-09-02修正（担当D調査・ユーザー報告「ランチの客数が0人になる」）: 客数の按分だけは
+                // 「お通し」注文数ベースの構成比（segGuests0/full.guests）を使わず、会計数（VCHK）ベースの
+                // 構成比に変更する。お通しは居酒屋の夜営業(ディナー)特有の慣習でランチには基本出ないため、
+                // segGuests0（ランチ帯のお通し数）が常にほぼ0になり、按分後のランチ客数も常に0になっていた
+                // （副作用として、full.guestsがほぼディナー分のみになるためディナー側の構成比が実質100%に
+                // 張り付き、ディナーの客数が「その日全体（ランチ＋ディナー）の実績客数」とほぼ同じ値になって
+                // しまっていた）。客数と会計数は強く相関し、VCHKはランチでも必ず非ゼロのため、代替の構成比
+                // として使う（組数の按分は元々VCHKベースのため変更不要）。
                 finalChecks = dayChecks * (segChecks0 / full.checks);
-                finalGuests = dayGuests * (segGuests0 / full.guests);
+                finalGuests = dayGuests * (segChecks0 / full.checks);
                 finalSalesExcl = daySalesExcl * (oldExcl / full.sales_excl);
               } else {
                 finalChecks = dayChecks; finalGuests = dayGuests; finalSalesExcl = daySalesExcl;
@@ -3279,6 +3291,23 @@ function plSeisanDiag(p) {
 // 一時的な診断用（2026-08-23）: DB_店舗ID対応（dinii明細の店舗名）とfact_daily_store.store_name
 // （店舗別実績の店舗名）が一致しているか突合する。明細分析の店舗別・客数/組数の実績差し替えが
 // 効かない店舗（表記ゆれで突合できていない店舗）を特定するため。読み取り専用。
+// 診断用（2026-09-02追加）: 「DB_権限定義」シートの内容をそのまま返す（読み取り専用・専用トークン
+// 認証）。ユーザー報告「予約タブがチーム長等で開くと経営ダッシュボードになる」の調査用。新しいタブを
+// 追加したときにこのシートの更新が追いつかない、という同種の問題が今後も起こり得るため、一時使い捨て
+// にせず常設の診断actionとして残す（storeNameAudit等と同じ方針）。
+// 使い方: ?action=roleDefDiag&token=<BQ_LOAD_TOKEN>
+function roleDefDiag(p) {
+  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+  if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_権限定義');
+  if (!sh) return { ok: true, exists: false, rows: [] };
+  var last = sh.getLastRow();
+  if (last < 2) return { ok: true, exists: true, rows: [] };
+  var vals = sh.getRange(2, 1, last - 1, 4).getValues();
+  var rows = vals.filter(function (r) { return String(r[0]).trim() || String(r[1]).trim(); })
+    .map(function (r) { return { 区分: r[0], 名称: r[1], 表示するタブ: r[2], 使える機能: r[3] }; });
+  return { ok: true, exists: true, rows: rows };
+}
 function storeMapDiag(p) {
   var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
   if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };

@@ -1526,9 +1526,11 @@ async function fetchData(silent, opts){
       S.connState=(D.diag.daily&&D.diag.daily.indexOf('OK')===0)?'live':'livewarn';
     }
     S.lastSync=stampNow();
-    render();
+    // 2026-09-02追加: bqFallbackToSheet_経由でこの関数が呼ばれた場合、ここのrender()が
+    // 目標管理モーダル入力中のDOMを巻き戻してしまう不具合があった（targetModalOpen_参照）。
+    if(!targetModalOpen_()) render();
   }catch(e){
-    if(!opts.partial){ S.connState='error'; if(!silent) toast('データ取得エラー: '+e.message); render(); }
+    if(!opts.partial){ S.connState='error'; if(!silent) toast('データ取得エラー: '+e.message); if(!targetModalOpen_()) render(); }
   }
 }
 // 初回・更新で「本当に重い」データだけ（実測：media=12s/dinii=6.3s/deposit=5.4s/予約=3.3s）。
@@ -1546,7 +1548,8 @@ async function fetchDataFast(){
   await fetchData(true, { exclude:excl });               // 軽い必須のみ → すぐ表示
   if(S.useBqDaily){ fetchDailyBQ(); fetchPlBQ(); fetchDepositBQ(); fetchMediaBQ(); fetchSpotBQ(); fetchLoanBQ(); }
   fetchFreshness();                                       // データ鮮度表示（5分キャッシュ・下のfetchFreshness参照）
-  render();
+  // 2026-09-02追加: 更新(⌘R)ボタンは目標管理モーダルを開いたまま押せてしまうため、ここもガードする
+  if(!targetModalOpen_()) render();
   // data は version を返さないので、初回に署名を取得（次の自動更新のムダ取得を防ぐ）
   fetchVersion().then(v=>{ if(v!==null) S.dataVersion=v; });
   // フェーズ2：裏で先読み。優先順＝ダッシュボード関連(口コミ明細・媒体別)→他タブ(入金・予約)
@@ -1560,17 +1563,23 @@ async function fetchDataFast(){
     for(const g of groups){
       if(myRun!==prefetchRun) return;                    // 新しい読込が始まったら中断（多重先読み防止）
       try{ await fetchData(true, { only:g, partial:true }); }catch(e){}
-      if(g.indexOf('media')>=0){ D.mediaPending=false; render(); }
+      if(g.indexOf('media')>=0){ D.mediaPending=false; if(!targetModalOpen_()) render(); }
     }
-    if(!S.useBqDaily){ D.mediaPending=false; render(); }  // BQモードはfetchMediaBQ側でクリアする
+    if(!S.useBqDaily){ D.mediaPending=false; if(!targetModalOpen_()) render(); }  // BQモードはfetchMediaBQ側でクリアする
   })();
 }
+// 2026-09-02追加（担当D調査・ユーザー報告「目標管理で入力途中に画面が更新され入力が消える」）:
+// 目標管理タブはBQゲート対象タブのため、タブを開いた直後にfetchXxxBQ系が裏で走っている。
+// その完了と「✎目標を入力」モーダルでの入力開始が重なると、無条件のrender()でモーダルのDOMごと
+// 作り直され入力中の値が消えていた。広告管理のadInputモーダル（App.saveAdFee等）が使っている
+// 「該当モーダル表示中はrenderを抑制」パターンを、目標管理の2種類のモーダル(target/targetDay)にも適用する。
+function targetModalOpen_(){ return !!(S.modal && (S.modal.type==='target' || S.modal.type==='targetDay')); }
 // 推移分析のデータ元をBigQuery(fact_daily_store)に切り替えているときに呼ぶ。
 // GAS側のbqDailyStoreは既存action:'data'と同じ形({sheets:{daily:[...]}})で返すので、
 // 既存のingestSheets()/ingestDaily()をそのまま使い回せる（2026-08-22追加）。
 async function fetchDailyBQ(){
   if(!S.auth||!S.auth.token) return;
-  D.dailyBqLoading=true; render();
+  D.dailyBqLoading=true; if(!targetModalOpen_()) render();
   try{
     const d=await api({ action:'bqDailyStore', token:S.auth.token, months:monthsWindow() });
     if(d&&d.ok&&d.sheets){ ingestSheets(d.sheets, true); D.dailyBqErr=''; D.bqFallback.daily=false; }
@@ -1581,52 +1590,52 @@ async function fetchDailyBQ(){
   // D.diag.dailyがまだ空のため必ず'livewarn'になってしまう。ここで初めてdailyが届くので、
   // 判定をやり直す（2026-08-22の初回実装の抜け漏れ・同日中に発見し修正）。
   if(S.useBqDaily) S.connState=(!D.dailyBqErr && D.diag.daily && D.diag.daily.indexOf('OK')===0)?'live':'livewarn';
-  render();
+  if(!targetModalOpen_()) render();
 }
 // PLタブ用: DB_PLのBQミラーを読む（2026-08-22追加。fetchDailyBQと同じ考え方）
 async function fetchPlBQ(){
   if(!S.auth||!S.auth.token) return;
-  D.plBqLoading=true; render();
+  D.plBqLoading=true; if(!targetModalOpen_()) render();
   try{
     const d=await api({ action:'bqGetPL', token:S.auth.token });
     if(d&&d.ok&&d.sheets){ ingestSheets(d.sheets, true); D.plBqErr=''; D.bqFallback.PL=false; }
     else{ D.plBqErr=(d&&d.error)||'取得に失敗しました'; await bqFallbackToSheet_('PL'); }
   }catch(e){ D.plBqErr=String(e&&e.message||e); await bqFallbackToSheet_('PL'); }
-  D.plBqLoading=false; render();
+  D.plBqLoading=false; if(!targetModalOpen_()) render();
 }
 // スポット人件費タブ用: DB_スポット人件費のBQミラーを読む（2026-08-23追加。fetchPlBQと同じ考え方）
 async function fetchSpotBQ(){
   if(!S.auth||!S.auth.token) return;
-  D.spotBqLoading=true; render();
+  D.spotBqLoading=true; if(!targetModalOpen_()) render();
   try{
     const d=await api({ action:'bqGetSpot', token:S.auth.token });
     if(d&&d.ok&&d.sheets){ ingestSheets(d.sheets, true); D.spotBqErr=''; D.bqFallback['スポット人件費']=false; }
     else{ D.spotBqErr=(d&&d.error)||'取得に失敗しました'; await bqFallbackToSheet_('スポット人件費'); }
   }catch(e){ D.spotBqErr=String(e&&e.message||e); await bqFallbackToSheet_('スポット人件費'); }
-  D.spotBqLoading=false; render();
+  D.spotBqLoading=false; if(!targetModalOpen_()) render();
 }
 // 借入返済元金タブ用: DB_借入返済元金のBQミラーを読む（A-5・2026-08-26追加。fetchSpotBQと同じ考え方）
 async function fetchLoanBQ(){
   if(!S.auth||!S.auth.token) return;
-  D.loanBqLoading=true; render();
+  D.loanBqLoading=true; if(!targetModalOpen_()) render();
   try{
     const d=await api({ action:'bqGetLoanPrincipal', token:S.auth.token });
     if(d&&d.ok&&d.sheets){ ingestSheets(d.sheets, true); D.loanBqErr=''; D.bqFallback['借入返済元金']=false; }
     else{ D.loanBqErr=(d&&d.error)||'取得に失敗しました'; await bqFallbackToSheet_('借入返済元金'); }
   }catch(e){ D.loanBqErr=String(e&&e.message||e); await bqFallbackToSheet_('借入返済元金'); }
-  D.loanBqLoading=false; render();
+  D.loanBqLoading=false; if(!targetModalOpen_()) render();
 }
 // 入金管理タブ用: 入金DBのBQミラーを読む（2026-08-22追加。fetchPlBQと同じ考え方。
 // 繰越〔開始残高〕は別途fetchDepCarryがサーバー全期間計算で常に取得するため、ここでは影響しない）
 async function fetchDepositBQ(){
   if(!S.auth||!S.auth.token) return;
-  D.depositBqLoading=true; render();
+  D.depositBqLoading=true; if(!targetModalOpen_()) render();
   try{
     const d=await api({ action:'bqGetDeposit', token:S.auth.token });
     if(d&&d.ok&&d.sheets){ ingestSheets(d.sheets, true); D.depositBqErr=''; D.bqFallback.deposit=false; }
     else{ D.depositBqErr=(d&&d.error)||'取得に失敗しました'; await bqFallbackToSheet_('deposit'); }
   }catch(e){ D.depositBqErr=String(e&&e.message||e); await bqFallbackToSheet_('deposit'); }
-  D.depositBqLoading=false; render();
+  D.depositBqLoading=false; if(!targetModalOpen_()) render();
 }
 // 媒体別日次用: 媒体別DBのBQミラーを読む（2026-08-23追加。fetchDepositBQと同じ考え方）。
 // D.mediaPendingはここでクリアする（ログイン処理のDATA_WAITがこのフラグを見ているため、
@@ -1644,7 +1653,7 @@ async function fetchMediaBQ(){
     if(d&&d.ok&&d.sheets){ ingestSheets(d.sheets, true); D.bqFallback.media=false; }
     else{ await bqFallbackToSheet_('media'); }
   }catch(e){ await bqFallbackToSheet_('media'); }
-  D.mediaPending=false; render();
+  D.mediaPending=false; if(!targetModalOpen_()) render();
 }
 // BQ取得が失敗した時、自動でシート経路へ切替えて再取得する（実装指示書_ダッシュボード高速化タスク3・
 // フォールバック実装。fetchStoreDirectory_のフォールバックと同じ思想）。呼び出し元(fetchXxxBQ)が
@@ -1652,7 +1661,7 @@ async function fetchMediaBQ(){
 async function bqFallbackToSheet_(key){
   D.bqFallback[key]=true;
   try{ await fetchData(true, { only:[key], partial:true }); }catch(e){}
-  render();
+  if(!targetModalOpen_()) render();
 }
 // 上のフォールバックが効いている間、タブの見出し付近に出す小さな注意書き（管理者以外にも見える）。
 function bqFallbackNote_(key){
