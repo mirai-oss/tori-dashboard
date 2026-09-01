@@ -6,11 +6,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: rsvDupCheckDiagを実行
+      - name: rsvDupSampleDiagを実行
         env:
           BQ_LOAD_TOKEN: ${{ secrets.BQ_LOAD_TOKEN }}
         run: |
           curl -sL -G "https://script.google.com/macros/s/AKfycbz9rd37EZa6X8WRMVEBrXobN8DbYWkHRlhFNYU5rd1UZ0V8j0-6shMQjEeoi4HDWZ0B/exec" \
-            --data-urlencode "action=rsvDupCheckDiag" \
+            --data-urlencode "action=rsvDupSampleDiag" \
             --data-urlencode "token=$BQ_LOAD_TOKEN" \
             | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.stringify(JSON.parse(d),null,2)));"
