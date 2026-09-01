@@ -1,0 +1,17 @@
+name: DB_権限定義シートの内容を確認（送信なし・読み取り専用）
+# ユーザー報告「予約タブがチーム長等で開くと経営ダッシュボードになる」の調査用。読み取り専用。
+on:
+  workflow_dispatch: {}
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: roleDefDiagを実行
+        env:
+          BQ_LOAD_TOKEN: ${{ secrets.BQ_LOAD_TOKEN }}
+        run: |
+          curl -sL -G "https://script.google.com/macros/s/AKfycbz9rd37EZa6X8WRMVEBrXobN8DbYWkHRlhFNYU5rd1UZ0V8j0-6shMQjEeoi4HDWZ0B/exec" \
+            --data-urlencode "action=roleDefDiag" \
+            --data-urlencode "token=$BQ_LOAD_TOKEN" \
+            | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.stringify(JSON.parse(d),null,2)));"
