@@ -1173,6 +1173,32 @@ function lunchCutoffMatrix_() {
   }
   return out; // {店舗名: [dow0(日)〜dow6(土)の {lunchOk,cutoff}|{lunchOk:false}|null]}（未設定店舗はキー無し）
 }
+// 2026-09-02追加（担当D調査・調査レポート_ユーザー報告3件_2026-09-02.md③追記）: 経営ダッシュボードの
+// 「営業区分別売上」パネル(app.js segSplit())が使っている分類ロジックのサーバー側移植。DB_媒体分類
+// シート（媒体名→入店用途・営業区分の対応表）を読み、app.jsのmediaClassOf()と同じ規則（シート優先・
+// 無ければ「ランチ|昼」を含む媒体名だけランチ、それ以外はディナー）で分類する。
+// この一覧を変更した場合はapp.jsのmediaClassOf()も合わせて直すこと（DB_媒体分類という同じシートを
+// 読んでいるのでロジックの意味は共通・正規表現の実体だけ2箇所に複製している）。
+function bqMediaClassMap_() {
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_媒体分類');
+  var map = {};
+  if (!sh) return map;
+  var last = sh.getLastRow();
+  if (last < 2) return map;
+  var vals = sh.getRange(2, 1, last - 1, 3).getValues();
+  for (var i = 0; i < vals.length; i++) {
+    var media = String(vals[i][0] || '').trim();
+    if (!media) continue;
+    map[media] = { use: String(vals[i][1] || '').trim(), seg: String(vals[i][2] || '').trim() };
+  }
+  return map;
+}
+function bqMediaSegOf_(map, media) {
+  var s = String(media == null ? '' : media).trim();
+  var hit = map[s];
+  if (hit && hit.seg) return hit.seg;
+  return /ランチ|昼/.test(s) ? 'ランチ' : 'ディナー';
+}
 // 明細分析（対話的）：期間 from〜to・店舗で絞り、時間帯別/商品別/店舗別を集計して返す。
 // guests=客数・checks=組数は、店舗別(st)の集計だけレジ実績(fact_daily_store)の実数に差し替える
 // （2026-08-23〜。2026-08-30に部分差し替えへ変更）。実績が期間の一部までしか揃っていない場合は、
@@ -1351,7 +1377,9 @@ function bqDetail(p, session) {
             }
           }
           // segmentがある時だけ、按分の分母（その店舗・期間の営業区分を問わないdinii推定合計）を
-          // 追加で取得する（whereBase＝segment条件を付ける前のwhere）。
+          // 追加で取得する（whereBase＝segment条件を付ける前のwhere）。stg_media側で実データが
+          // 取れる店舗ではこの按分自体を使わなくなる（下のmediaSegMap参照）が、stg_mediaに data が
+          // 無い店舗・期間向けのフォールバックとして残す。
           var stFullMap = {};
           if (segment) {
             var stFull = bqRows_("SELECT store_id, SUM(price_excl*qty) AS sales_excl, " + VCHK + ", " + G + " FROM " + T + " " + whereBase + " GROUP BY store_id");
@@ -1360,6 +1388,35 @@ function bqDetail(p, session) {
               for (var fi = 1; fi < stFull.length; fi++) {
                 var fname = bqResolveStoreName_(snIdx2, m2[stFull[fi][0]] || stFull[fi][0]);
                 stFullMap[fname] = { sales_excl: Number(stFull[fi][1] || 0), checks: Number(stFull[fi][2] || 0), guests: Number(stFull[fi][3] || 0) };
+              }
+            }
+          }
+          // 2026-09-02追加（担当D調査③追記・経営ダッシュボードと数字が一致しない件への根本対応）:
+          // 経営ダッシュボードの「営業区分別売上」パネルはstg_media（媒体ごとの実客数・実売上）を
+          // DB_媒体分類で分類して集計しており、上のdinii明細按分（お通し/VCHKベースの推定）とは全く
+          // 別のデータ源。segmentがある時は、可能な限りこちらの実データを直接使い、ダッシュボードと
+          // 原理的に一致する数字を返す（stg_mediaに対象店舗・期間のデータが無い場合だけ、上の按分に
+          // フォールバックする）。
+          var mediaSegMap = {};
+          if (segment) {
+            var mWhere = "WHERE date BETWEEN DATE('" + from + "') AND DATE('" + to + "')";
+            if (restricted) {
+              mWhere += " AND store_name IN ('" + allowNames.map(function (n) { return String(n).replace(/'/g, "''"); }).join("','") + "')";
+            } else if (p.store && p.store !== 'all') {
+              mWhere += " AND store_name = '" + String(p.store).replace(/'/g, "''") + "'";
+            }
+            var mRows = bqRows_("SELECT store_name, media_name, SUM(guests) g, SUM(parties) p, SUM(net_sales) s FROM `" +
+              BQ_PROJECT + "." + BQ_SALES_DATASET + ".stg_media` " + mWhere + " GROUP BY store_name, media_name");
+            if (mRows) {
+              var mcMap = bqMediaClassMap_();
+              var wantSeg = segment === 'lunch' ? 'ランチ' : 'ディナー';
+              for (var mi = 1; mi < mRows.length; mi++) {
+                var mr = mRows[mi];
+                if (bqMediaSegOf_(mcMap, mr[1]) !== wantSeg) continue;
+                var mStore = String(mr[0] || '').trim();
+                var acc = mediaSegMap[mStore] || { guests: 0, checks: 0, sales_excl: 0 };
+                acc.guests += Number(mr[2] || 0); acc.checks += Number(mr[3] || 0); acc.sales_excl += Number(mr[4] || 0);
+                mediaSegMap[mStore] = acc;
               }
             }
           }
@@ -1381,25 +1438,23 @@ function bqDetail(p, session) {
               var oldExcl = Number(st[si][2]) || 0;
               var finalChecks, finalGuests, finalSalesExcl;
               if (segment) {
-                var full = stFullMap[st[si][0]];
-                // 2026-09-02修正: 客数按分をfull.guests（お通し数）ベースからfull.checks（会計数）ベースへ
-                // 変更したのにあわせ、このガードもfull.guests>0の要求を外す（お通しをあまり出さない店舗が
-                // 不要にdinii推定のまま取り残されるのを防ぐ）。
-                if (!full || !(full.checks > 0) || !(full.sales_excl > 0)) continue; // 按分の材料が無ければこの店舗はdinii推定のまま触らない
-                // 客数・組数・売上のいずれも「絞り込み後の推定 ÷ フルデイの推定」＝その区分の構成比を
-                // フルデイの実績（dayChecks等）に掛けて按分する（例: ディナーの明細推定客数が
-                // フルデイ明細推定客数の60%なら、実績客数の60%をディナーの客数とみなす）。
-                // 2026-09-02修正（担当D調査・ユーザー報告「ランチの客数が0人になる」）: 客数の按分だけは
-                // 「お通し」注文数ベースの構成比（segGuests0/full.guests）を使わず、会計数（VCHK）ベースの
-                // 構成比に変更する。お通しは居酒屋の夜営業(ディナー)特有の慣習でランチには基本出ないため、
-                // segGuests0（ランチ帯のお通し数）が常にほぼ0になり、按分後のランチ客数も常に0になっていた
-                // （副作用として、full.guestsがほぼディナー分のみになるためディナー側の構成比が実質100%に
-                // 張り付き、ディナーの客数が「その日全体（ランチ＋ディナー）の実績客数」とほぼ同じ値になって
-                // しまっていた）。客数と会計数は強く相関し、VCHKはランチでも必ず非ゼロのため、代替の構成比
-                // として使う（組数の按分は元々VCHKベースのため変更不要）。
-                finalChecks = dayChecks * (segChecks0 / full.checks);
-                finalGuests = dayGuests * (segChecks0 / full.checks);
-                finalSalesExcl = daySalesExcl * (oldExcl / full.sales_excl);
+                var msm = mediaSegMap[st[si][0]];
+                if (msm && (msm.guests > 0 || msm.sales_excl > 0)) {
+                  // 2026-09-02修正（担当D調査③追記・経営ダッシュボードと数字が一致しない件）: dinii明細
+                  // からの按分ではなく、stg_media（経営ダッシュボードのsegSplit()と同じ実データ源）を
+                  // 直接使う。按分ではなく実測値そのものなので、原理的にダッシュボードと一致する。
+                  finalChecks = msm.checks; finalGuests = msm.guests; finalSalesExcl = msm.sales_excl;
+                } else {
+                  // stg_mediaにこの店舗・期間のデータが無い場合だけ、従来のdinii明細按分にフォールバック。
+                  var full = stFullMap[st[si][0]];
+                  if (!full || !(full.checks > 0) || !(full.sales_excl > 0)) continue; // 按分の材料も無ければこの店舗はdinii推定のまま触らない
+                  // 客数・組数・売上のいずれも「絞り込み後の推定 ÷ フルデイの推定」＝その区分の構成比を
+                  // フルデイの実績（dayChecks等）に掛けて按分する。客数按分は会計数（VCHK）ベースの
+                  // 構成比を使う（お通し数ベースだとランチが常に0になっていたため。2026-09-02修正）。
+                  finalChecks = dayChecks * (segChecks0 / full.checks);
+                  finalGuests = dayGuests * (segChecks0 / full.checks);
+                  finalSalesExcl = daySalesExcl * (oldExcl / full.sales_excl);
+                }
               } else {
                 finalChecks = dayChecks; finalGuests = dayGuests; finalSalesExcl = daySalesExcl;
               }
