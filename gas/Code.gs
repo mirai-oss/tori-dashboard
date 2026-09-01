@@ -63,9 +63,6 @@ function handle(p) {
     if (action === 'dataKeysDiag') return out(dataKeysDiag(p)); // getData()が実際にどのキーを返すか確認（専用トークン認証・読み取り専用・一時的）
     if (action === 'mediaDateRangeDiag') return out(mediaDateRangeDiag(p)); // stg_media（媒体別日次）の最古/最新日付を確認（担当D依頼の前年比調査用・専用トークン認証・読み取り専用・一時的）
     if (action === 'rsvDateRangeDiag') return out(rsvDateRangeDiag_(p)); // stg_reservation（予約）の店舗別最新日付・件数を確認（専用トークン認証・読み取り専用。2026-08-31追加）
-    if (action === 'rsvAccountBreakdownDiag') return out(rsvAccountBreakdownDiag(p)); // 診断用（2026-09-02・使用後削除予定）: store_account別の内訳確認
-    if (action === 'rsvDupCheckDiag') return out(rsvDupCheckDiag(p)); // 診断用（2026-09-02・使用後削除予定）: 2アカウント間の重複疑いチェック
-    if (action === 'rsvDupSampleDiag') return out(rsvDupSampleDiag(p)); // 診断用（2026-09-02・使用後削除予定）: 重複疑いレコードの実サンプル
     if (action === 'syncSeisanFeeToPl') return out(syncSeisanFeeToPl(p)); // 運営委託費のPL自動連携（専用トークン認証・ログイン不要。2026-08-23追加）
     if (action === 'syncSeisanCategoriesToPl') return out(syncSeisanCategoriesToPl(p)); // 精算書の勘定科目→PL自動連携（専用トークン認証・ログイン不要。2026-08-31追加・A-9）
     if (action === 'syncSpotLaborToPl') return out(syncSpotLaborToPl(p)); // スポット人件費の月次PL自動連携（専用トークン認証・ログイン不要。2026-08-23追加）
@@ -1026,6 +1023,13 @@ function bqStoreMap_() {
   return map;
 }
 // BQクエリを実行して [[見出し...],[行...]] を返す。失敗時は null。
+// 2026-09-02修正（重大バグ）: BigQuery.Jobs.query()は1回の呼び出しでは結果の「1ページ目」しか
+// 返さない（応答サイズの上限に達すると、まだ行が残っていてもpageTokenを付けて打ち切る）。
+// 今まではres.rowsをそのまま使っており、行数が多いテーブル（予約等、データが積み上がって
+// 大きくなったテーブル）ではORDER BYの先頭側（古い日付）だけが返り、直近・未来分がごっそり
+// 欠落するという実害が出ていた（ユーザー報告「予約帳・予約分析が急に空になった」の根本原因。
+// stg_reservationの行数が増えたタイミングで顕在化したとみられる）。pageTokenが無くなるまで
+// Jobs.getQueryResults()でページを取り切るよう修正。
 function bqRows_(sql) {
   var res = BigQuery.Jobs.query({ query: sql, useLegacySql: false, timeoutMs: 30000 }, BQ_PROJECT);
   if (!res || !res.jobComplete) return null;
@@ -1033,6 +1037,16 @@ function bqRows_(sql) {
   var out = [fields.map(function (f) { return f.name; })];
   var rows = res.rows || [];
   for (var i = 0; i < rows.length; i++) out.push(rows[i].f.map(function (c) { return c.v; }));
+  var jobId = res.jobReference && res.jobReference.jobId;
+  var pageToken = res.pageToken;
+  var guard = 0; // 無限ループ対策（1ページ最低数千行は返る想定のため、これで十分な上限）
+  while (pageToken && jobId && guard < 500) {
+    guard++;
+    var page = BigQuery.Jobs.getQueryResults(BQ_PROJECT, jobId, { pageToken: pageToken });
+    var prows = page.rows || [];
+    for (var j = 0; j < prows.length; j++) out.push(prows[j].f.map(function (c) { return c.v; }));
+    pageToken = page.pageToken;
+  }
   return out;
 }
 // キャッシュ付きでBQ明細集計を取得（10分キャッシュ＝再表示で再クエリしない）
@@ -1795,54 +1809,6 @@ function bqSyncReservation(p) {
 // 読み取り: ログイン必須・店舗スコープ制限。stg_reservationのstore_idはSupabase `stores`テーブルのUUID
 // のため、rsvStoreMap_()（Supabase直参照）で店舗名に変換する（bqStoreMap_ではない。上部コメント参照）。
 // 既定はキャンセル系ステータス(status_normalizedがcancelled_*)を除外（p.includeCancelled='true'で分析用に全件）。
-// 診断用（2026-09-02追加・使用後削除予定）: EXCLUDE_ACCOUNTS（鶏武者川崎店/鶏武者新横浜/黒霧屋新横浜）
-// が実際にどれだけの予約を除外してしまっているか、store_account別の内訳を確認する。専用トークン認証・
-// 読み取り専用。ユーザー報告「鶏武者川崎店の予約帳が空になっている」の調査用。
-function rsvAccountBreakdownDiag(p) {
-  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
-  if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
-  var storeMap = rsvStoreMap_();
-  var sql = 'SELECT store_id, store_account, COUNT(*) n, MIN(visit_date) minD, MAX(visit_date) maxD ' +
-    'FROM `' + BQ_PROJECT + '.' + BQ_SALES_DATASET + '.stg_reservation` GROUP BY store_id, store_account ORDER BY store_id, store_account';
-  var rows = bqRows_(sql);
-  if (!rows) return { ok: false, error: 'query failed' };
-  var out = [];
-  for (var i = 1; i < rows.length; i++) {
-    var r = rows[i];
-    out.push({ store: storeMap[r[0]] || r[0], store_account: r[1], count: Number(r[2]), minDate: r[3], maxDate: r[4] });
-  }
-  return { ok: true, rows: out };
-}
-// 診断用（2026-09-02追加・使用後削除予定）: 鶏武者川崎店の2アカウント間で、同じ来店日・来店時間・
-// 人数の予約が両方に存在する（＝重複計上の疑い）かを確認する。専用トークン認証・読み取り専用。
-function rsvDupCheckDiag(p) {
-  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
-  if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
-  var sql = "SELECT visit_date, visit_time, party_size, " +
-    "COUNTIF(store_account='匠味 川崎') AS a, COUNTIF(store_account='鶏武者 川崎店') AS b " +
-    "FROM `" + BQ_PROJECT + "." + BQ_SALES_DATASET + ".stg_reservation` " +
-    "WHERE store_id = (SELECT store_id FROM `" + BQ_PROJECT + "." + BQ_SALES_DATASET + ".stg_reservation` WHERE store_account='鶏武者 川崎店' LIMIT 1) " +
-    "AND visit_date BETWEEN '" + (p.from || '2026-08-20') + "' AND '" + (p.to || '2026-09-10') + "' " +
-    "GROUP BY visit_date, visit_time, party_size HAVING a > 0 AND b > 0 ORDER BY visit_date, visit_time";
-  var rows = bqRows_(sql);
-  if (!rows) return { ok: false, error: 'query failed' };
-  var out = [];
-  for (var i = 1; i < rows.length; i++) out.push({ date: rows[i][0], time: rows[i][1], party: rows[i][2], countA匠味: rows[i][3], countB鶏武者: rows[i][4] });
-  return { ok: true, possibleDuplicateSlots: out.length, rows: out };
-}
-// 診断用（2026-09-02追加・使用後削除予定）: 重複疑いスロットの実レコードを両アカウント分並べて見比べる。
-function rsvDupSampleDiag(p) {
-  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
-  if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
-  var sql = "SELECT reservation_key, store_account, visit_date, visit_time, party_size, course, channel_raw, customer_no, " +
-    "FORMAT_TIMESTAMP('%Y-%m-%dT%H:%M:%S', created_at_source, 'Asia/Tokyo') AS created_at_source " +
-    "FROM `" + BQ_PROJECT + "." + BQ_SALES_DATASET + ".stg_reservation` " +
-    "WHERE store_account IN ('匠味 川崎','鶏武者 川崎店') AND visit_date = '" + (p.date || '2026-08-20') + "' " +
-    "ORDER BY visit_time, store_account";
-  var rows = bqRows_(sql);
-  if (!rows) return { ok: false, error: 'query failed' };
-  return { ok: true, rows: rows };
-}
 function bqGetReservation(p, session) {
   try {
     var sessStores = String(session && session.stores || '').trim();
