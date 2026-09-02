@@ -63,7 +63,6 @@ function handle(p) {
     if (action === 'dataKeysDiag') return out(dataKeysDiag(p)); // getData()が実際にどのキーを返すか確認（専用トークン認証・読み取り専用・一時的）
     if (action === 'mediaDateRangeDiag') return out(mediaDateRangeDiag(p)); // stg_media（媒体別日次）の最古/最新日付を確認（担当D依頼の前年比調査用・専用トークン認証・読み取り専用・一時的）
     if (action === 'rsvDateRangeDiag') return out(rsvDateRangeDiag_(p)); // stg_reservation（予約）の店舗別最新日付・件数を確認（専用トークン認証・読み取り専用。2026-08-31追加）
-    if (action === 'ssoMigrationDiag') return out(ssoMigrationDiag_(p)); // P-2a差し替え前の統合アカウント化件数確認（専用トークン認証・読み取り専用・PII無し・一時的。2026-09-02追加）
     if (action === 'syncSeisanFeeToPl') return out(syncSeisanFeeToPl(p)); // 運営委託費のPL自動連携（専用トークン認証・ログイン不要。2026-08-23追加）
     if (action === 'syncSeisanCategoriesToPl') return out(syncSeisanCategoriesToPl(p)); // 精算書の勘定科目→PL自動連携（専用トークン認証・ログイン不要。2026-08-31追加・A-9）
     if (action === 'syncSpotLaborToPl') return out(syncSpotLaborToPl(p)); // スポット人件費の月次PL自動連携（専用トークン認証・ログイン不要。2026-08-23追加）
@@ -3500,31 +3499,6 @@ function dataKeysDiag(p) {
 // 診断用（2026-08-31）: ユーザー報告「予約管理タブの同期がずっと止まっている・予約分析が
 // データなしになる」の調査用。stg_reservationの店舗別・最新日付・件数を返す（読み取り専用）。
 // store省略可（省略時は全店の内訳を返す）。
-// P-2a差し替え前の事前確認用（2026-09-02・一時的・調査後削除予定）: keiei-api-reservationは
-// Supabase AuthのJWTが必須のため、統合アカウント化（アカウント管理シートのメール欄に対応する
-// Supabase Authユーザーが存在）していないGAS独自ID/PW専用アカウントは呼べない。件数だけを返す
-// （氏名・メール等のPIIは一切含めない）。
-function ssoMigrationDiag_(p) {
-  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
-  if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
-  try {
-    var rows = accountRows();
-    var byRole = {};
-    var out = { activeTotal: 0, activeWithEmail: 0, activeNoEmail: 0, inactiveTotal: 0 };
-    rows.forEach(function (a) {
-      if (!a.active) { out.inactiveTotal++; return; }
-      out.activeTotal++;
-      if (a.email) out.activeWithEmail++; else out.activeNoEmail++;
-      var r = a.role || '(未設定)';
-      byRole[r] = byRole[r] || { withEmail: 0, noEmail: 0 };
-      if (a.email) byRole[r].withEmail++; else byRole[r].noEmail++;
-    });
-    out.byRole = byRole;
-    return { ok: true, counts: out };
-  } catch (e) {
-    return { ok: false, error: String(e && e.message || e) };
-  }
-}
 function rsvDateRangeDiag_(p) {
   var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
   if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
