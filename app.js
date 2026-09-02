@@ -4121,7 +4121,13 @@ async function fetchReservationBQ(){
         D.rsvBqErr=(d&&d.error)||(errType==='timeout'?'応答がありません（60秒でタイムアウト）':('取得に失敗しました（HTTP '+(res&&res.status)+'）'));
       }
     } else {
-      const d=await api({ action:'bqGetReservation', token:S.auth.token, includeCancelled:'true' });
+      // 🚨応急の期間絞り込み（2026-09-02）: 無期間・全店・キャンセル込みのbqGetReservationは
+      // 91,801件フルスキャンで実測128〜145秒・時々GAS自体がタイムアウトして失敗すると判明
+      // （ユーザー報告「読み込み中のまま止まる」を実測で確認）。恒久対応はkd_reservation_daily_summary
+      // （レーンP・W2）だが、それまでの間だけ範囲を絞ってタイムアウトを回避する（14ヶ月前〜3ヶ月先＝
+      // 前年同月比較は引き続きカバーしつつ、対象行数を大きく減らす）。
+      const rf=rsvGasRangeFrom_(), rt=rsvGasRangeTo_();
+      const d=await api({ action:'bqGetReservation', token:S.auth.token, includeCancelled:'true', from:rf, to:rt });
       if(d&&d.ok&&d.sheets&&d.sheets.reservationBq){ ingestReservationBq_(d.sheets.reservationBq); D.rsvBqErr=''; D.rsvBqLoaded=true; D.rsvBqSrc='gas'; }
       else{ D.rsvBqErr=(d&&d.error)||'取得に失敗しました'; }
     }
@@ -4134,6 +4140,17 @@ async function fetchReservationBQ(){
 // この程度の窓なら一括取得しても軽い（旧経路が抱えていた「毎回フルスキャン」問題そのものが無い）。
 function rsvApiRangeFrom_(){ const d=new Date(); d.setFullYear(d.getFullYear()-3); return ymdStr(d); }
 function rsvApiRangeTo_(){ const d=new Date(); d.setFullYear(d.getFullYear()+1); return ymdStr(d); }
+// 🚨応急（2026-09-02）: 旧GAS bqGetReservationのタイムアウト回避用の絞り込み窓。
+// 実測で切り分け済み: ±30日(4,742件)=16.2秒で成功、14ヶ月前〜3ヶ月先(約35,000件)は
+// 従来の無期間(91,801件)と同じ約114秒でGAS側がタイムアウト（=ボトルネックは行数/ページ数に
+// 比例するpagination回数と判明。BigQueryのクエリ自体は速いが、GAS BigQuery Advanced Serviceの
+// ページ取得1回ごとのラウンドトリップが積み重なる）。安全マージンを見て90日前〜90日先に設定
+// （約60日窓の3倍・見積り約45〜60秒で完走する想定）。この結果、予約分析の「前年同月比較」は
+// データが無い期間として扱われる（既存の「前年同月の予約データがまだありません」表示に自然に
+// フォールバックする・エラーにはならない）。恒久対応(kd_reservation_daily_summary・W2)が
+// 入ったらこの絞り込み自体が不要になる想定。
+function rsvGasRangeFrom_(){ const d=new Date(); d.setDate(d.getDate()-90); return ymdStr(d); }
+function rsvGasRangeTo_(){ const d=new Date(); d.setDate(d.getDate()+90); return ymdStr(d); }
 // keiei-api-reservationのtimestamptz列（created_at_source/cancel_at）はUTC付きISO文字列で返る。
 // 旧GAS経路はFORMAT_TIMESTAMPで'YYYY-MM-DDTHH:MM:SS'のJST壁時計文字列にして返していたため、
 // そのまま使うと日付・時刻がずれる（例: JST2:00=UTC前日17:00）。同じ形式に変換して既存の
@@ -4172,7 +4189,7 @@ let RSV_SHADOW_DONE_=false;
 async function rsvShadowCompareOnce_(from,to,newCount){
   if(RSV_SHADOW_DONE_) return; RSV_SHADOW_DONE_=true;
   try{
-    const d=await api({ action:'bqGetReservation', token:S.auth.token, includeCancelled:'true' });
+    const d=await api({ action:'bqGetReservation', token:S.auth.token, includeCancelled:'true', from, to });
     if(!(d&&d.ok&&d.sheets&&d.sheets.reservationBq)) { console.log('[P-2a新旧突合] 旧経路(GAS)の取得に失敗のため比較できず:', d&&d.error); return; }
     const rows=d.sheets.reservationBq;
     let oldCount=0;

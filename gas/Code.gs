@@ -60,7 +60,6 @@ function handle(p) {
     if (action === 'storeNameAudit') return out(storeNameAudit(p)); // BQミラー全8テーブルの店舗名をstore_aliasesと突合し未登録表記を洗い出す（専用トークン認証・読み取り専用。2026-08-28追加）
     if (action === 'detailVsDailyDiag') return out(detailVsDailyDiag(p)); // 明細分析とダッシュボードの売上・客数・組数の差を実測で突合（専用トークン認証・読み取り専用・一時的）
     if (action === 'bqPerfDiag') return out(bqPerfDiag(p)); // BQモード各アクションの所要時間計測（専用トークン認証・読み取り専用・一時的）
-    if (action === 'rsvPerfDiag') return out(rsvPerfDiag_(p)); // 予約タブ「読み込み中で止まる」調査用のbqGetReservation所要時間計測（専用トークン認証・読み取り専用・一時的。2026-09-02追加）
     if (action === 'dataKeysDiag') return out(dataKeysDiag(p)); // getData()が実際にどのキーを返すか確認（専用トークン認証・読み取り専用・一時的）
     if (action === 'mediaDateRangeDiag') return out(mediaDateRangeDiag(p)); // stg_media（媒体別日次）の最古/最新日付を確認（担当D依頼の前年比調査用・専用トークン認証・読み取り専用・一時的）
     if (action === 'rsvDateRangeDiag') return out(rsvDateRangeDiag_(p)); // stg_reservation（予約）の店舗別最新日付・件数を確認（専用トークン認証・読み取り専用。2026-08-31追加）
@@ -1834,8 +1833,18 @@ function bqGetReservation(p, session) {
     // 比較確認の方針に反する）。新タブ専用の別データとして明確に分離する。
     if (restricted && !allowIds.length) return { ok: true, sheets: { reservationBq: [HEADERS] } };
 
+    // 🚨応急の期間絞り込み（2026-09-02・実装指示書_表示集計層kdと高速化実行計画§6「一覧系APIは
+    // limitと期間指定を必須」の方向性を先取り）: 全店・キャンセル込みの無期間クエリは91,801件
+    // フルスキャン＋BigQueryページネーション約92回で、実測128〜145秒かつ時々GAS自体がタイムアウト
+    // して失敗する（ユーザー報告「予約管理タブが読み込み中のまま止まる」で確認）。恒久対応は
+    // kd_reservation_daily_summary（レーンP・W2）だが、それまでの間、from/toが指定されたら
+    // visit_dateで絞り込み、対象行数を大きく減らしてタイムアウトを回避する。指定が無い呼び出し
+    // （後方互換）は従来どおり無期間のまま＝挙動を変えない。
+    var rsvFrom = /^\d{4}-\d{2}-\d{2}$/.test(String(p.from || '')) ? String(p.from) : '';
+    var rsvTo = /^\d{4}-\d{2}-\d{2}$/.test(String(p.to || '')) ? String(p.to) : '';
+
     var ck = bqCacheKey_('reservation', [bqCacheGen_('reservation'), includeCancelled ? 'all' : 'active',
-      restricted ? allowIds.slice().sort().join('.') : 'all']);
+      restricted ? allowIds.slice().sort().join('.') : 'all', rsvFrom, rsvTo]);
     var cached = bqCacheGet_(ck);
     if (cached) return cached;
 
@@ -1845,6 +1854,8 @@ function bqGetReservation(p, session) {
     var where = [];
     if (restricted) where.push("store_id IN ('" + allowIds.map(function (id) { return String(id).replace(/'/g, "''"); }).join("','") + "')");
     if (!includeCancelled) where.push("status_normalized NOT LIKE 'cancelled%'");
+    if (rsvFrom) where.push("visit_date >= '" + rsvFrom + "'");
+    if (rsvTo) where.push("visit_date <= '" + rsvTo + "'");
     // 一時的な措置（2026-08-28・ユーザー確認済み）: 別々に取得したデータが同じ物理店舗（store_id）へ
     // 合算される構造のため、同一予約が両方に記録されている可能性がある（設計書§8.8 R1「初回突合必須」
     // がまだ未実施）。突合が済むまでは予約帳の運用上メインの表記（匠味川崎/匠味新横浜/うお蔵新横浜）
@@ -3454,21 +3465,6 @@ function storeNameAudit(p) {
 // 一時的な診断用（2026-08-23）: 「ダッシュボード全体が遅い」報告を受け、BQモード(useBqDaily)の各アクション
 // 実体を計測し、ボトルネックが「BigQueryのクエリ実行そのもの」なのか別要因なのかを切り分ける。
 // 読み取り専用・専用トークン認証。実データは返さず時間だけ返す（全店・直近13ヶ月＝クライアントの既定と同条件）。
-// ユーザー報告「予約管理タブがずっと読み込み中で止まっている」の調査用（2026-09-02・一時的）。
-// bqGetReservation（旧経路・全店・キャンセル込み＝クライアントと同条件）の実際の所要時間を測る。
-function rsvPerfDiag_(p) {
-  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
-  if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
-  var now = function () { return new Date().getTime(); };
-  var sess = { stores: '全店' };
-  var s = now();
-  try {
-    var d = bqGetReservation({ includeCancelled: 'true' }, sess);
-    return { ok: true, ms: now() - s, resultOk: !!(d && d.ok), rowCount: (d && d.sheets && d.sheets.reservationBq) ? d.sheets.reservationBq.length - 1 : null, error: d && d.error };
-  } catch (e) {
-    return { ok: true, ms: now() - s, resultOk: false, error: String(e && e.message || e) };
-  }
-}
 function bqPerfDiag(p) {
   var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
   if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
