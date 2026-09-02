@@ -55,6 +55,7 @@ function handle(p) {
   try {
     if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-a6p2', time: new Date().toISOString() }); // a6p2=運営委託費二重計上修正+A-6Phase2（キャンセル分析・お客様名・媒体手数料設定）追加（2026-08-31）のデプロイ確認用に更新
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
+    if (action === 'statutoryWelfareDiag') return out(statutoryWelfareDiag_(p)); // 一時テスト用（2026-09-02・使用後削除予定）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'roleDefDiag') return out(roleDefDiag(p)); // DB_権限定義シートの内容を返す（専用トークン認証・読み取り専用。2026-09-02追加）
     if (action === 'storeNameAudit') return out(storeNameAudit(p)); // BQミラー全8テーブルの店舗名をstore_aliasesと突合し未登録表記を洗い出す（専用トークン認証・読み取り専用。2026-08-28追加）
@@ -2056,7 +2057,8 @@ function bqGetSeatMaster(p, session) {
 // sf_payroll_allocations・labor_cost_daily）の方が正確なため、**2026年9月分から**そちらに切り替える
 // （2026-08-31 ユーザー指示で当初の8月から9月に変更。それより前の月はスマレジタイムカード未導入の
 // 場合があり、無理に混ぜない）。
-// 法定福利費(statutory_welfare)はAPI側にデータが無いため今回は対象外＝常にスプレッドシート値のまま。
+// 法定福利費(statutory_welfare)はAPI側に直接のデータが無いため、（基本給+インセンティブ+賞与）×15%
+// で自動計算する（2026-09-02追加・担当Bからの依頼。PL管理システム側の既存ロジックと同じ係数）。
 var API_LABOR_COST_FROM_YM_ = '2026-09';
 // 汎用: Supabaseの任意テーブル/ビューをページング付きで全件取得（bqFetchReservationRows_を一般化）。
 // filterQSはPostgRESTのクエリ文字列（例:'work_date=gte.2026-08-01'）。空文字なら絞り込み無し。
@@ -2182,18 +2184,23 @@ function bqApplyApiLaborCostRow_(row, laborData, storeIdx) {
     var d = laborData.ptDaily[storeName]; pt = (d && d[dateStr] != null) ? d[dateStr] : 0; // 実績0円の日も信用する
     changed = true;
   }
-  var salBonus = Number(row[32]) || 0, commute = Number(row[34]) || 0;
+  var salBonus = Number(row[32]) || 0, commute = Number(row[34]) || 0, statutory = Number(row[33]) || 0;
   var em = laborData.empMonthly[storeName] && laborData.empMonthly[storeName][ym];
   if (em) {
     var daysInMonth = new Date(year0, month0, 0).getDate();
     salBonus = em.fulltimeBase / daysInMonth; // 月合計を暦日割り（社員人件費DBと同じ考え方）
     commute = em.commute / daysInMonth;
+    // 2026-09-02追加（担当Bからの依頼・ユーザー報告「社員人件費に法定福利費が入っていない」）:
+    // 法定福利費はsf_payroll_sync/sf_payroll_allocations側に直接のデータが無いため、
+    // （基本給+インセンティブ+賞与）×15%（＝salBonus。交通費は対象外）で自動計算する。
+    // 15%はPL管理システム側の既存ロジック（L04法定福利費の自動化）と同じ、社内で確立済みの係数
+    // （ユーザー提示の計算式・担当Bの調査で裏付け済み）。
+    statutory = salBonus * 0.15;
     changed = true;
   }
   if (!changed) return row;
   var out = row.slice();
-  var statutory = Number(row[33]) || 0; // 法定福利費はAPI側にデータが無く今回は対象外・常にシート値
-  out[23] = pt; out[32] = salBonus; out[34] = commute;
+  out[23] = pt; out[32] = salBonus; out[33] = statutory; out[34] = commute;
   out[24] = salBonus + statutory + commute; // fulltime_labor_cost
   out[25] = pt + out[24];                   // labor_cost_total
   return out;
@@ -3360,6 +3367,17 @@ function bqReconcileSales(p) {
 // これらが無くても正常に動く設計になっている）。
 // 一時的な診断用（2026-08-23）: DB_PLの運営委託費(自動計上)行を年月×店舗ごとに件数と
 // 合計を返す。二重計上が無いか確認するため。読み取り専用（BigQuery stg_plを見るだけ）。
+// 一時テスト用（2026-09-02・使用後削除予定）: fact_daily_storeの2026-09分・法定福利費計算を確認。
+function statutoryWelfareDiag_(p) {
+  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+  if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
+  var sql = "SELECT date, store_name, fulltime_labor_cost, statutory_welfare, employee_salary_bonus, commute_allowance " +
+    "FROM `" + BQ_PROJECT + "." + BQ_SALES_DATASET + ".fact_daily_store` " +
+    "WHERE year_month = '2026-09' AND employee_salary_bonus > 0 ORDER BY date, store_name LIMIT 20";
+  var rows = bqRows_(sql);
+  if (!rows) return { ok: false, error: 'query failed' };
+  return { ok: true, rows: rows };
+}
 function plSeisanDiag(p) {
   var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
   if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
