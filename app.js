@@ -1823,6 +1823,11 @@ async function doSsoLogin(){
     }
     S.auth={ token:d.token, account:d.account };
     try{ localStorage.setItem(LS.sess, JSON.stringify(S.auth)); }catch(e){}
+    // P-2a（2026-09-02）: このフォームからの直接ログインでもportalAccessToken()（予約タブの
+    // Supabase直読みが使うJWT）がすぐ使えるよう、取得済みのアクセス/リフレッシュトークンを
+    // ns-portalと同じ場所に保存しておく。これが無いと「統合アカウントでログインしたのに
+    // ns-portal側に一度もログインしていない」ケースでは予約タブが毎回旧GAS経路のままになる。
+    try{ localStorage.setItem(PORTAL_LS_KEY, JSON.stringify({ at:j.access_token, rt:j.refresh_token, uid:j.user&&j.user.id })); }catch(e){}
     afterLogin();
     S.connState='connecting';
     render();
@@ -1846,7 +1851,14 @@ async function portalAccessToken(){
     method:'POST', headers:{ apikey:SSO_SUPA_KEY, 'Content-Type':'application/json' },
     body:JSON.stringify({ refresh_token:s.rt })
   }).catch(()=>null);
-  if(!r||!r.ok) return null;
+  if(!r||!r.ok){
+    // リフレッシュトークン自体が失効/使用済み（400等）の場合、消さずに残すと次回以降も毎回
+    // このAPIを叩いて同じ失敗を繰り返す（コンソールに毎回400エラーが出る・無駄な通信）。
+    // 消しておけば次回からportalSession()が即nullを返すようになり、GAS経路への切替も速くなる
+    // （2026-09-02・ユーザー報告「速くなってない」の調査で発見）。
+    if(r) try{ localStorage.removeItem(PORTAL_LS_KEY); }catch(e){}
+    return null;
+  }
   const j=await r.json().catch(()=>null);
   if(!j||!j.access_token) return null;
   try{ localStorage.setItem(PORTAL_LS_KEY, JSON.stringify({ at:j.access_token, rt:j.refresh_token, uid:j.user&&j.user.id })); }catch(e){}
