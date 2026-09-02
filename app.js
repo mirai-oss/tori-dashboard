@@ -1476,20 +1476,40 @@ function apiUrl(){ try{ return localStorage.getItem(LS.api)||DEFAULT_API_URL||''
 // GASは応答が遅いことがあるため既定3分でタイムアウトさせる。無制限だと通信が切れたときに
 // 「保存中…」「取込中…」のまま永久に止まって見えるため（実際に発生）。
 const API_TIMEOUT_MS=180000;
+// A-p0 計測フック（2026-09-02追加・実装指示書_脱GAS移行_Phase0-1）: api()呼び出しのたびに
+// action名・所要ms・成否・エラー種別を、レーンPが用意する予定のkeiei-api-perflog（Edge
+// Function・kd_perf_logテーブル受け）へnavigator.sendBeaconで送る。sendBeaconは応答を待たず
+// 失敗も例外を投げないため、画面には一切影響しない（受け皿が未完成の間も安全に無視される）。
+// エンドポイントURL・認証方式（apikeyをクエリ文字列に載せる＝sendBeaconはヘッダーを付けられ
+// ないための代替）はレーンPのP-0a実装時に確定・必要なら合わせて直してもらう想定の暫定値。
+const PERF_LOG_URL='https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/keiei-api-perflog';
+const PERF_LOG_ANON_KEY='sb_publishable_MrwPJAx_Ws_fdRutprKCiQ_dg3wCiTr';
+function logApiPerf_(actionName, ms, ok, errType){
+  try{
+    if(typeof navigator==='undefined'||!navigator.sendBeacon) return;
+    const payload=JSON.stringify({ app:'tori-dashboard', action:actionName||'', ms:Math.round(ms), ok:!!ok, errType:errType||'', t:Date.now() });
+    navigator.sendBeacon(PERF_LOG_URL+'?apikey='+PERF_LOG_ANON_KEY, new Blob([payload], { type:'text/plain;charset=utf-8' }));
+  }catch(e){ /* 計測の失敗は握りつぶす。本来の処理には一切影響させない */ }
+}
+function nowMs_(){ return (typeof performance!=='undefined'&&performance.now)?performance.now():Date.now(); }
 async function api(params, timeoutMs){
   const url=apiUrl();
   if(!url) throw new Error('APIが未設定です');
   const lim=timeoutMs||API_TIMEOUT_MS;
   const ctl=(typeof AbortController!=='undefined')?new AbortController():null;
   const tm=ctl?setTimeout(()=>ctl.abort(),lim):null;
+  const t0=nowMs_(), actionName=params&&params.action;
   try{
     const opt={ method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'}, body:JSON.stringify(params) };
     if(ctl) opt.signal=ctl.signal;
     const r=await fetch(url,opt);
-    if(!r.ok) throw new Error('HTTP '+r.status);
-    return r.json();
+    if(!r.ok){ logApiPerf_(actionName, nowMs_()-t0, false, 'http_'+r.status); throw new Error('HTTP '+r.status); }
+    const d=await r.json();
+    logApiPerf_(actionName, nowMs_()-t0, !(d&&d.ok===false), (d&&d.ok===false)?'api_error':'');
+    return d;
   }catch(e){
-    if(e&&(e.name==='AbortError'||e.code===20)) throw new Error('応答がありません（'+Math.round(lim/1000)+'秒でタイムアウト）。通信環境を確認してもう一度お試しください');
+    if(e&&(e.name==='AbortError'||e.code===20)){ logApiPerf_(actionName, nowMs_()-t0, false, 'timeout'); throw new Error('応答がありません（'+Math.round(lim/1000)+'秒でタイムアウト）。通信環境を確認してもう一度お試しください'); }
+    logApiPerf_(actionName, nowMs_()-t0, false, 'network');
     throw e;
   }finally{ if(tm) clearTimeout(tm); }
 }
