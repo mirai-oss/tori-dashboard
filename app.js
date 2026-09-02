@@ -4356,7 +4356,9 @@ function viewReservation(){
     <button onclick="App.openMediaFee()" title="媒体ごとの集客手数料の計算式を設定（予約分析タブの媒体別テーブルに反映）">⚙ 媒体・手数料設定</button>
     <button onclick="App.tab('ad')" title="広告費実績・入力は経営ダッシュボードに集約">広告費用対効果 → 経営ダッシュボード</button></div>
     <span class="period-label">${selN?esc(selN):''}${D.rsvBqLoading?'（読込中…）':''}</span></div>`;
-  if(D.rsvBqErr) h+=`<div class="panel no-print"><div class="panel-head"><div><h3 style="color:#b5502f">取得エラー</h3><div class="sub">${esc(D.rsvBqErr)}</div></div></div></div>`;
+  // A-p1c（2026-09-02・実装指示書§9応急対応）: エラー表示のまま何もできず固まって見えるのを解消。
+  // 再試行ボタンを押すとD.rsvBqLoaded/ErrをリセットしてfetchReservationBQ()を再実行できるようにする。
+  if(D.rsvBqErr) h+=`<div class="panel no-print"><div class="panel-head"><div><h3 style="color:#b5502f">⚠️ 読み込みに失敗しました</h3><div class="sub">${esc(D.rsvBqErr)}</div></div><button onclick="App.retryReservationBq()">🔄 再試行</button></div></div>`;
   if(!D.rsvBqLoaded && !D.rsvBqErr){
     h+=`<div class="panel no-print"><div class="panel-head"><div><h3>予約データを読み込み中…</h3></div></div></div>`;
     return h;
@@ -8178,6 +8180,9 @@ window.App = {
       fetchData(true,{ only:['単価設定'], partial:true });
     }catch(e){ toast('通信エラー: '+e.message); }
   },
+  // A-hf④応急対応（2026-09-02・実装指示書§9）: 予約データ取得エラー時の「🔄再試行」ボタン用。
+  // D.rsvBqLoaded/rsvBqErrをリセットしてfetchReservationBQ()のガード（一度読めば十分）を外し、再取得させる。
+  retryReservationBq(){ D.rsvBqErr=''; D.rsvBqLoaded=false; render(); fetchReservationBQ(); },
   openMediaFee(){ S.modal={type:'mediaFee', key:''}; render(); },
   editMediaFeeRow(key){ S.modal={type:'mediaFee', key}; render(); },
   mediaFeeMediaChange(v){ const c=$('mf-media-custom'); if(!c)return; if(v==='__custom__'){ c.style.display=''; c.focus(); } else { c.style.display='none'; } },
