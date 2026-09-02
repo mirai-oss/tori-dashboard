@@ -16,6 +16,20 @@
  * 空のままなら、従来どおり各ブラウザの接続設定（社長のみ）で設定します。
  * ===================================================================== */
 const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbwW0qhyEr0-uQWTaLg7MkQhurHq6wMoaOKL7uCCnI_bgnAsGB5-auqG_dm_Q9uJc3Kc/exec';
+// 🚨自動移行（2026-09-02）: `apiUrl()`は「各自の接続設定」（localStorage.toriApiUrl）を
+// DEFAULT_API_URLより優先する設計のため、GASプロジェクト移行（2026-09-02・旧プロジェクトが
+// バージョン上限200到達）より前に誰かが接続設定で旧URLを保存していたブラウザは、DEFAULT_API_URLを
+// 何度更新しても永遠に旧URL（今は動かない）を使い続けてしまう。ユーザー報告「予約管理が読み込み中の
+// まま止まる・何をしても変わらない」の真因がこれだった（実機コンソールでCORSエラー＋旧URL末尾
+// jEeoi4HDWZ0Bを直接確認）。既知の旧URLだけをピンポイントで検知して自動的に消す（=DEFAULT_API_URLに
+// フォールバックさせる）。それ以外のカスタム接続設定（別環境等）には一切影響しない。
+(function migrateStaleApiUrl_(){
+  try{
+    var OLD_KNOWN_BAD = ['https://script.google.com/macros/s/AKfycbz9rd37EZa6X8WRMVEBrXobN8DbYWkHRlhFNYU5rd1UZ0V8j0-6shMQjEeoi4HDWZ0B/exec'];
+    var cur = localStorage.getItem('toriApiUrl');
+    if(cur && OLD_KNOWN_BAD.indexOf(cur.trim()) >= 0){ localStorage.removeItem('toriApiUrl'); }
+  }catch(e){}
+})();
 
 // 統合アカウント（N-Styleポータル / 日報Supabase）ログイン用。publishableキーは公開前提の値。
 const SSO_SUPA_URL = 'https://uuvsxzhpxtghojoubjcc.supabase.co';
