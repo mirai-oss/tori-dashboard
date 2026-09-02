@@ -56,6 +56,7 @@ function handle(p) {
     if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-a6p2', time: new Date().toISOString() }); // a6p2=運営委託費二重計上修正+A-6Phase2（キャンセル分析・お客様名・媒体手数料設定）追加（2026-08-31）のデプロイ確認用に更新
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'dailySheetTailDiag') return out(dailySheetTailDiag_(p)); // 一時テスト用（2026-09-02・使用後削除予定）
+    if (action === 'statutoryWelfareDiag3') return out(statutoryWelfareDiag3_(p)); // 一時テスト用（2026-09-02・使用後削除予定）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'roleDefDiag') return out(roleDefDiag(p)); // DB_権限定義シートの内容を返す（専用トークン認証・読み取り専用。2026-09-02追加）
     if (action === 'storeNameAudit') return out(storeNameAudit(p)); // BQミラー全8テーブルの店舗名をstore_aliasesと突合し未登録表記を洗い出す（専用トークン認証・読み取り専用。2026-08-28追加）
@@ -3377,6 +3378,17 @@ function dailySheetTailDiag_(p) {
   var n = Math.min(20, lastRow - 1);
   var vals = sh.getRange(lastRow - n + 1, 1, n, 13).getDisplayValues();
   return { ok: true, lastRow: lastRow, tail: vals };
+}
+// 一時テスト用（2026-09-02・使用後削除予定）: fact_daily_storeの2026-09分・法定福利費計算を確認。
+function statutoryWelfareDiag3_(p) {
+  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+  if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
+  var sql = "SELECT date, store_name, fulltime_labor_cost, statutory_welfare, employee_salary_bonus, commute_allowance " +
+    "FROM `" + BQ_PROJECT + "." + BQ_SALES_DATASET + ".fact_daily_store` " +
+    "WHERE year_month = '2026-09' ORDER BY date, store_name LIMIT 30";
+  var rows = bqRows_(sql);
+  if (!rows) return { ok: false, error: 'query failed' };
+  return { ok: true, rows: rows };
 }
 function plSeisanDiag(p) {
   var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
