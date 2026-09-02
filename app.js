@@ -1278,8 +1278,16 @@ function parseTabsSpec(s){
 }
 function myTabs(){
   const acc=S.auth&&S.auth.account;
-  // 既定はシート（DB_権限定義）→ 無ければコード内の既定
-  const base=parseTabsSpec(roleDefOf('tabs'))||ROLE_TABS[acc&&acc.role]||ROLE_TABS['店舗'];
+  // 既定はシート（DB_権限定義）→ 無ければコード内の既定。
+  // 2026-09-02追加（担当D報告②の救済ロジック）: シート側の指定が「空」ではなく「一部だけ」
+  // だった場合（例: DB_権限定義に予約タブの追加を反映し忘れた）、そのままだとコード内既定
+  // （ROLE_TABS）に丸ごと救済されず、その役職全員が該当タブを見られなくなる事故が起きた。
+  // シート指定はコード内既定に「追加」できるだけにし（積集合ではなく和集合）、コード側の
+  // 役職ごとの必須タブ一覧を誤って削れないようにする（シートで意図的にタブを絞りたい場合は
+  // アカウント個別の「表示タブ」指定=accのov側を使う。こちらは従来どおり完全上書き）。
+  const roleDefault=ROLE_TABS[acc&&acc.role]||ROLE_TABS['店舗'];
+  const sheetTabs=parseTabsSpec(roleDefOf('tabs'));
+  const base=sheetTabs?[...new Set([...roleDefault,...sheetTabs])]:roleDefault;
   const ov=parseTabsSpec(acc&&acc.tabs);
   if(!ov) return base;
   const admin=acc&&(acc.role==='社長'||acc.role==='本部');
