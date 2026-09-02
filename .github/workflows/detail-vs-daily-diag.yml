@@ -22,7 +22,7 @@ jobs:
           YM: ${{ github.event.inputs.ym }}
           STORE: ${{ github.event.inputs.store }}
         run: |
-          curl -sL -G "https://script.google.com/macros/s/AKfycbz9rd37EZa6X8WRMVEBrXobN8DbYWkHRlhFNYU5rd1UZ0V8j0-6shMQjEeoi4HDWZ0B/exec" \
+          curl -sL -G "https://script.google.com/macros/s/AKfycbwW0qhyEr0-uQWTaLg7MkQhurHq6wMoaOKL7uCCnI_bgnAsGB5-auqG_dm_Q9uJc3Kc/exec" \
             --data-urlencode "action=detailVsDailyDiag" \
             --data-urlencode "token=$BQ_LOAD_TOKEN" \
             --data-urlencode "ym=$YM" \

@@ -50,7 +50,7 @@ jobs:
             echo "missing=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          RES=$(curl -s -L -G "https://script.google.com/macros/s/AKfycbz9rd37EZa6X8WRMVEBrXobN8DbYWkHRlhFNYU5rd1UZ0V8j0-6shMQjEeoi4HDWZ0B/exec" \
+          RES=$(curl -s -L -G "https://script.google.com/macros/s/AKfycbwW0qhyEr0-uQWTaLg7MkQhurHq6wMoaOKL7uCCnI_bgnAsGB5-auqG_dm_Q9uJc3Kc/exec" \
             --data-urlencode "action=reportDataBQ" \
             --data-urlencode "token=$BQ_LOAD_TOKEN" \
             --data-urlencode "kind=daily" \

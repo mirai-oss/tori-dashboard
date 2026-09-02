@@ -11,7 +11,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
-GAS_URL='https://script.google.com/macros/s/AKfycbz9rd37EZa6X8WRMVEBrXobN8DbYWkHRlhFNYU5rd1UZ0V8j0-6shMQjEeoi4HDWZ0B/exec'
+GAS_URL='https://script.google.com/macros/s/AKfycbwW0qhyEr0-uQWTaLg7MkQhurHq6wMoaOKL7uCCnI_bgnAsGB5-auqG_dm_Q9uJc3Kc/exec'
 PAGES_URL='https://mirai-oss.github.io/tori-dashboard'
 warn=0
 

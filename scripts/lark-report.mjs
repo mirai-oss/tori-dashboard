@@ -34,7 +34,7 @@ import fs from 'node:fs';
 
 const MODE = (process.argv[2] || 'send').trim();
 const SITE_URL = process.env.SITE_URL || 'https://mirai-oss.github.io/tori-dashboard/';
-const GAS_URL = process.env.GAS_URL || 'https://script.google.com/macros/s/AKfycbz9rd37EZa6X8WRMVEBrXobN8DbYWkHRlhFNYU5rd1UZ0V8j0-6shMQjEeoi4HDWZ0B/exec';
+const GAS_URL = process.env.GAS_URL || 'https://script.google.com/macros/s/AKfycbwW0qhyEr0-uQWTaLg7MkQhurHq6wMoaOKL7uCCnI_bgnAsGB5-auqG_dm_Q9uJc3Kc/exec';
 const KIND = (process.env.REPORT_KIND || 'daily').trim();
 const CHANNEL_KIND = (process.env.CHANNEL_KIND || 'lark').trim();
 const WEBHOOK = process.env.LARK_WEBHOOK || '';

@@ -1038,11 +1038,16 @@ function bqRows_(sql) {
   var rows = res.rows || [];
   for (var i = 0; i < rows.length; i++) out.push(rows[i].f.map(function (c) { return c.v; }));
   var jobId = res.jobReference && res.jobReference.jobId;
+  // 2026-09-02追加修正: ジョブが東京リージョン(asia-northeast1)で実行されている場合、
+  // Jobs.getQueryResults()にlocationを渡さないと「Not found: Job」で失敗する（既存の
+  // Jobs.get()呼び出し箇所と同じ注意点）。res.jobReference.locationを優先し、無ければ
+  // このデータセットの既定リージョンにフォールバックする。
+  var loc = (res.jobReference && res.jobReference.location) || 'asia-northeast1';
   var pageToken = res.pageToken;
   var guard = 0; // 無限ループ対策（1ページ最低数千行は返る想定のため、これで十分な上限）
   while (pageToken && jobId && guard < 500) {
     guard++;
-    var page = BigQuery.Jobs.getQueryResults(BQ_PROJECT, jobId, { pageToken: pageToken });
+    var page = BigQuery.Jobs.getQueryResults(BQ_PROJECT, jobId, { pageToken: pageToken, location: loc });
     var prows = page.rows || [];
     for (var j = 0; j < prows.length; j++) out.push(prows[j].f.map(function (c) { return c.v; }));
     pageToken = page.pageToken;

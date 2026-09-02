@@ -16,7 +16,7 @@ jobs:
           BQ_LOAD_TOKEN: ${{ secrets.BQ_LOAD_TOKEN }}
           EXCLUDE_KEYS: ${{ github.event.inputs.exclude }}
         run: |
-          curl -sL -m 250 -G "https://script.google.com/macros/s/AKfycbz9rd37EZa6X8WRMVEBrXobN8DbYWkHRlhFNYU5rd1UZ0V8j0-6shMQjEeoi4HDWZ0B/exec" \
+          curl -sL -m 250 -G "https://script.google.com/macros/s/AKfycbwW0qhyEr0-uQWTaLg7MkQhurHq6wMoaOKL7uCCnI_bgnAsGB5-auqG_dm_Q9uJc3Kc/exec" \
             --data-urlencode "action=dataKeysDiag" \
             --data-urlencode "token=$BQ_LOAD_TOKEN" \
             --data-urlencode "exclude=$EXCLUDE_KEYS" \

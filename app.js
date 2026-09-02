@@ -15,7 +15,7 @@
  * 例: const DEFAULT_API_URL = 'https://script.google.com/macros/s/XXXX/exec';
  * 空のままなら、従来どおり各ブラウザの接続設定（社長のみ）で設定します。
  * ===================================================================== */
-const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbz9rd37EZa6X8WRMVEBrXobN8DbYWkHRlhFNYU5rd1UZ0V8j0-6shMQjEeoi4HDWZ0B/exec';
+const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbwW0qhyEr0-uQWTaLg7MkQhurHq6wMoaOKL7uCCnI_bgnAsGB5-auqG_dm_Q9uJc3Kc/exec';
 
 // 統合アカウント（N-Styleポータル / 日報Supabase）ログイン用。publishableキーは公開前提の値。
 const SSO_SUPA_URL = 'https://uuvsxzhpxtghojoubjcc.supabase.co';
