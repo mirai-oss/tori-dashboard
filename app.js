@@ -1575,15 +1575,21 @@ async function fetchDepCarry(beforeStr){
   }
   render();
 }
-async function fetchData(silent, opts){
+// preD（W1・2026-09-02追加）: bootstrap actionで既に取得済みの結果があれば、自前でapi()を
+// 呼ばずそれを使う（GAS往復を増やさないため）。渡されなければ従来どおり単独で取得する。
+async function fetchData(silent, opts, preD){
   if(!S.auth||!S.auth.token) return;
   opts=opts||{};
   if(!silent){ S.connState='connecting'; renderHeaderOnly(); }
   try{
-    const params={ action:'data', token:S.auth.token, months:monthsWindow() };
-    if(opts.only) params.keys=opts.only.join(',');
-    if(opts.exclude) params.exclude=opts.exclude.join(',');
-    const d=await api(params);
+    let d;
+    if(preD){ d=preD; }
+    else{
+      const params={ action:'data', token:S.auth.token, months:monthsWindow() };
+      if(opts.only) params.keys=opts.only.join(',');
+      if(opts.exclude) params.exclude=opts.exclude.join(',');
+      d=await api(params);
+    }
     if(!d.ok){
       if(String(d.error||'').includes('unauthorized')){ doLogout('セッションの有効期限が切れました。再度ログインしてください'); return; }
       throw new Error(d.error||'取得に失敗しました');
@@ -1648,11 +1654,11 @@ function targetModalOpen_(){ return !!(S.modal && (S.modal.type==='target' || S.
 // 推移分析のデータ元をBigQuery(fact_daily_store)に切り替えているときに呼ぶ。
 // GAS側のbqDailyStoreは既存action:'data'と同じ形({sheets:{daily:[...]}})で返すので、
 // 既存のingestSheets()/ingestDaily()をそのまま使い回せる（2026-08-22追加）。
-async function fetchDailyBQ(){
+async function fetchDailyBQ(preD){
   if(!S.auth||!S.auth.token) return;
   D.dailyBqLoading=true; if(!targetModalOpen_()) render();
   try{
-    const d=await api({ action:'bqDailyStore', token:S.auth.token, months:monthsWindow() });
+    const d=preD||await api({ action:'bqDailyStore', token:S.auth.token, months:monthsWindow() });
     if(d&&d.ok&&d.sheets){ ingestSheets(d.sheets, true); D.dailyBqErr=''; D.bqFallback.daily=false; }
     else{ D.dailyBqErr=(d&&d.error)||'取得に失敗しました'; await bqFallbackToSheet_('daily'); }
   }catch(e){ D.dailyBqErr=String(e&&e.message||e); await bqFallbackToSheet_('daily'); }
@@ -1664,33 +1670,33 @@ async function fetchDailyBQ(){
   if(!targetModalOpen_()) render();
 }
 // PLタブ用: DB_PLのBQミラーを読む（2026-08-22追加。fetchDailyBQと同じ考え方）
-async function fetchPlBQ(){
+async function fetchPlBQ(preD){
   if(!S.auth||!S.auth.token) return;
   D.plBqLoading=true; if(!targetModalOpen_()) render();
   try{
-    const d=await api({ action:'bqGetPL', token:S.auth.token });
+    const d=preD||await api({ action:'bqGetPL', token:S.auth.token });
     if(d&&d.ok&&d.sheets){ ingestSheets(d.sheets, true); D.plBqErr=''; D.bqFallback.PL=false; }
     else{ D.plBqErr=(d&&d.error)||'取得に失敗しました'; await bqFallbackToSheet_('PL'); }
   }catch(e){ D.plBqErr=String(e&&e.message||e); await bqFallbackToSheet_('PL'); }
   D.plBqLoading=false; if(!targetModalOpen_()) render();
 }
 // スポット人件費タブ用: DB_スポット人件費のBQミラーを読む（2026-08-23追加。fetchPlBQと同じ考え方）
-async function fetchSpotBQ(){
+async function fetchSpotBQ(preD){
   if(!S.auth||!S.auth.token) return;
   D.spotBqLoading=true; if(!targetModalOpen_()) render();
   try{
-    const d=await api({ action:'bqGetSpot', token:S.auth.token });
+    const d=preD||await api({ action:'bqGetSpot', token:S.auth.token });
     if(d&&d.ok&&d.sheets){ ingestSheets(d.sheets, true); D.spotBqErr=''; D.bqFallback['スポット人件費']=false; }
     else{ D.spotBqErr=(d&&d.error)||'取得に失敗しました'; await bqFallbackToSheet_('スポット人件費'); }
   }catch(e){ D.spotBqErr=String(e&&e.message||e); await bqFallbackToSheet_('スポット人件費'); }
   D.spotBqLoading=false; if(!targetModalOpen_()) render();
 }
 // 借入返済元金タブ用: DB_借入返済元金のBQミラーを読む（A-5・2026-08-26追加。fetchSpotBQと同じ考え方）
-async function fetchLoanBQ(){
+async function fetchLoanBQ(preD){
   if(!S.auth||!S.auth.token) return;
   D.loanBqLoading=true; if(!targetModalOpen_()) render();
   try{
-    const d=await api({ action:'bqGetLoanPrincipal', token:S.auth.token });
+    const d=preD||await api({ action:'bqGetLoanPrincipal', token:S.auth.token });
     if(d&&d.ok&&d.sheets){ ingestSheets(d.sheets, true); D.loanBqErr=''; D.bqFallback['借入返済元金']=false; }
     else{ D.loanBqErr=(d&&d.error)||'取得に失敗しました'; await bqFallbackToSheet_('借入返済元金'); }
   }catch(e){ D.loanBqErr=String(e&&e.message||e); await bqFallbackToSheet_('借入返済元金'); }
@@ -1698,11 +1704,11 @@ async function fetchLoanBQ(){
 }
 // 入金管理タブ用: 入金DBのBQミラーを読む（2026-08-22追加。fetchPlBQと同じ考え方。
 // 繰越〔開始残高〕は別途fetchDepCarryがサーバー全期間計算で常に取得するため、ここでは影響しない）
-async function fetchDepositBQ(){
+async function fetchDepositBQ(preD){
   if(!S.auth||!S.auth.token) return;
   D.depositBqLoading=true; if(!targetModalOpen_()) render();
   try{
-    const d=await api({ action:'bqGetDeposit', token:S.auth.token });
+    const d=preD||await api({ action:'bqGetDeposit', token:S.auth.token });
     if(d&&d.ok&&d.sheets){ ingestSheets(d.sheets, true); D.depositBqErr=''; D.bqFallback.deposit=false; }
     else{ D.depositBqErr=(d&&d.error)||'取得に失敗しました'; await bqFallbackToSheet_('deposit'); }
   }catch(e){ D.depositBqErr=String(e&&e.message||e); await bqFallbackToSheet_('deposit'); }
@@ -1711,7 +1717,7 @@ async function fetchDepositBQ(){
 // 媒体別日次用: 媒体別DBのBQミラーを読む（2026-08-23追加。fetchDepositBQと同じ考え方）。
 // D.mediaPendingはここでクリアする（ログイン処理のDATA_WAITがこのフラグを見ているため、
 // 成功・失敗どちらでも必ずfalseにして固まらないようにする＝他のfetchXxxBQ()と同じ設計）。
-async function fetchMediaBQ(){
+async function fetchMediaBQ(preD){
   if(!S.auth||!S.auth.token) return;
   try{
     // 媒体別日次は「店舗×媒体×日」の粒度で分析_日別店舗より遥かに件数が多いため
@@ -1720,7 +1726,7 @@ async function fetchMediaBQ(){
     // alsoPriorYear=1（2026-08-26追加）: 「媒体別 売上」パネルの前年比（mediaTableRows()）が
     // 直近3ヶ月しか無いD.mediaでは常に「前年 ―」になっていた不具合の修正。ちょうど1年前の
     // 同じ3ヶ月分もあわせて取得する（全期間を取るより遥かに軽い）。
-    const d=await api({ action:'bqGetMedia', token:S.auth.token, months:3, alsoPriorYear:1 });
+    const d=preD||await api({ action:'bqGetMedia', token:S.auth.token, months:3, alsoPriorYear:1 });
     if(d&&d.ok&&d.sheets){ ingestSheets(d.sheets, true); D.bqFallback.media=false; }
     else{ await bqFallbackToSheet_('media'); }
   }catch(e){ await bqFallbackToSheet_('media'); }
@@ -1741,11 +1747,11 @@ function bqFallbackNote_(key){
 }
 // データ鮮度表示（実装指示書_ダッシュボード高速化タスク1・2026-08-23追加）。
 // 「数字が古い/処理中/失敗」を画面で判別できるようにする。5分キャッシュ（毎render時には叩かない）。
-async function fetchFreshness(){
+async function fetchFreshness(preD){
   if(!S.auth||!S.auth.token) return;
-  if(D.freshness && Date.now()-D.freshnessAt<5*60*1000) return;   // 5分以内なら再取得しない
+  if(!preD && D.freshness && Date.now()-D.freshnessAt<5*60*1000) return;   // 5分以内なら再取得しない
   try{
-    const d=await api({ action:'dataFreshness', token:S.auth.token });
+    const d=preD||await api({ action:'dataFreshness', token:S.auth.token });
     if(d&&d.ok){ D.freshness=d; D.freshnessAt=Date.now(); }
     else{ D.freshness={ ok:false }; D.freshnessAt=Date.now(); }
   }catch(e){ D.freshness={ ok:false }; D.freshnessAt=Date.now(); }

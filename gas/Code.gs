@@ -63,7 +63,6 @@ function handle(p) {
     if (action === 'dataKeysDiag') return out(dataKeysDiag(p)); // getData()が実際にどのキーを返すか確認（専用トークン認証・読み取り専用・一時的）
     if (action === 'mediaDateRangeDiag') return out(mediaDateRangeDiag(p)); // stg_media（媒体別日次）の最古/最新日付を確認（担当D依頼の前年比調査用・専用トークン認証・読み取り専用・一時的）
     if (action === 'rsvDateRangeDiag') return out(rsvDateRangeDiag_(p)); // stg_reservation（予約）の店舗別最新日付・件数を確認（専用トークン認証・読み取り専用。2026-08-31追加）
-    if (action === 'bootstrapDiag') return out(bootstrapDiag_(p)); // bootstrap actionの正常性・所要時間を確認（専用トークン認証・読み取り専用・一時的。2026-09-02追加）
     if (action === 'syncSeisanFeeToPl') return out(syncSeisanFeeToPl(p)); // 運営委託費のPL自動連携（専用トークン認証・ログイン不要。2026-08-23追加）
     if (action === 'syncSeisanCategoriesToPl') return out(syncSeisanCategoriesToPl(p)); // 精算書の勘定科目→PL自動連携（専用トークン認証・ログイン不要。2026-08-31追加・A-9）
     if (action === 'syncSpotLaborToPl') return out(syncSpotLaborToPl(p)); // スポット人件費の月次PL自動連携（専用トークン認証・ログイン不要。2026-08-23追加）
@@ -2422,31 +2421,22 @@ function dataFreshness(p, session) {
   return out;
 }
 
-// 検証用（2026-09-02・一時的・調査後削除予定）: bootstrap本体の正常性・所要時間を、実ログイン
-// セッション無しで確認する（既存のrsvPerfDiag_等と同じtoken認証パターン）。実データは行数のみ返す。
-function bootstrapDiag_(p) {
-  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
-  if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
-  var now = function () { return new Date().getTime(); };
-  var s = now();
-  var r = bootstrapDashboard_({ months: 13, bq: '1' }, { stores: '全店' });
-  var summary = {};
-  ['data', 'version', 'daily', 'pl', 'spot', 'loan', 'deposit', 'media', 'freshness'].forEach(function (k) {
-    var v = r[k];
-    if (v == null) { summary[k] = 'missing'; return; }
-    if (typeof v !== 'object') { summary[k] = v; return; }
-    var rowCounts = {};
-    if (v.sheets) { for (var sk in v.sheets) rowCounts[sk] = (v.sheets[sk] || []).length; }
-    summary[k] = { ok: v.ok, error: v.error, rowCounts: v.sheets ? rowCounts : undefined };
-  });
-  return { ok: true, ms: now() - s, summary: summary };
-}
 // W1: 初回表示のGAS往復集約（2026-09-02・実装指示書_表示集計層kdと高速化実行計画§10.1 W1）。
 // fetchDataFast()（app.js）がログイン直後に個別に呼んでいた「data＋BQ系6action＋freshness＋version」
-// の計9回のGAS往復（各回に数百ms〜数秒の起動・セッション検証コストがかかる。ランキング原因#1）を、
-// セッション検証を1回だけにしたうえで1回の実行にまとめる。BigQuery呼び出し自体は（Apps Script内で
-// 並列化できないため）順番に実行するが、GAS呼び出し自体のオーバーヘッドが8回分減る効果が主眼。
-// 1つでも失敗しても他の結果は返す（個別のfetchXxxBQ()と同じ「部分成功」の考え方をサーバー側に集約）。
+// の計9回のGAS往復を、セッション検証を1回だけにしたうえで1回の実行にまとめる。1つでも失敗しても
+// 他の結果は返す（個別のfetchXxxBQ()と同じ「部分成功」の考え方をサーバー側に集約）。
+//
+// 🔍実測での重要な注意（2026-09-02・app.jsへの組み込みは見送り）: 全店(社長)スコープで実測した
+// ところ、data+BQ系6action+freshnessの合計が約34秒かかった。これはBigQuery呼び出しがApps Script
+// 内では並列化できず順番に実行されるため。一方、現行のfetchDataFast()は6つのBQ系actionを
+// awaitせず並列発火しており、ブラウザ側の同時接続で実質並列に走る＝合計時間はおそらく最も遅い
+// 1本（media想定・実測12秒）に近い。つまり「1回にまとめる」とGAS呼び出しのオーバーヘッドは
+// 8回分減らせるが、その代わりブラウザ側の並列性を失い、体感はむしろ悪化する可能性が高いと判断し、
+// 本関数はfetchDataFast()に組み込んでいない（データは正しく返る・関数自体は動作確認済み）。
+// 真のボトルネックは「GAS呼び出し回数」より「個々のBigQueryクエリ自体の重さ（媒体別日次の
+// 21,000件超スキャン等）」であり、これはkd_dashboard_daily_summary等の事前集計テーブル
+// （レーンP・W2）でしか根本解決できない。将来的にkd_側の集計テーブルが揃った時点で、
+// 「kd_サマリ1回＋BQ系の裏読みは並列のまま」という形の利用を検討すること。
 function bootstrapDashboard_(p, session) {
   var out = { ok: true };
   function safe(key, fn) {
