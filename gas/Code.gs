@@ -55,7 +55,6 @@ function handle(p) {
   try {
     if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-a6p2', time: new Date().toISOString() }); // a6p2=運営委託費二重計上修正+A-6Phase2（キャンセル分析・お客様名・媒体手数料設定）追加（2026-08-31）のデプロイ確認用に更新
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
-    if (action === 'depositDupDiag') return out(depositDupDiag_(p)); // 一時テスト用（2026-09-02・使用後削除予定）: 入金二重計上調査
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'roleDefDiag') return out(roleDefDiag(p)); // DB_権限定義シートの内容を返す（専用トークン認証・読み取り専用。2026-09-02追加）
     if (action === 'storeNameAudit') return out(storeNameAudit(p)); // BQミラー全8テーブルの店舗名をstore_aliasesと突合し未登録表記を洗い出す（専用トークン認証・読み取り専用。2026-08-28追加）
@@ -3367,37 +3366,6 @@ function bqReconcileSales(p) {
 // これらが無くても正常に動く設計になっている）。
 // 一時的な診断用（2026-08-23）: DB_PLの運営委託費(自動計上)行を年月×店舗ごとに件数と
 // 合計を返す。二重計上が無いか確認するため。読み取り専用（BigQuery stg_plを見るだけ）。
-// 一時テスト用（2026-09-02・使用後削除予定）: 入金の二重計上疑い調査（ユーザー報告・A-hf⑤）。
-// stg_deposit（正規化後）で同一store_name×date×amountが複数件になっている組を抽出し、
-// その原因となった可能性のある「入金DB」シート側の生の店舗名表記（正規化前）も突き合わせる。
-function depositDupDiag_(p) {
-  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
-  if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
-  var sql = "SELECT store_name, date, amount, COUNT(*) n, STRING_AGG(DISTINCT memo, ' / ') memos " +
-    "FROM `" + BQ_PROJECT + "." + BQ_SALES_DATASET + ".stg_deposit` " +
-    "GROUP BY store_name, date, amount HAVING n > 1 ORDER BY date DESC LIMIT 50";
-  var rows = bqRows_(sql);
-  if (!rows) return { ok: false, error: 'query failed' };
-  var dupGroups = [];
-  for (var i = 1; i < rows.length; i++) {
-    dupGroups.push({ store: rows[i][0], date: rows[i][1], amount: rows[i][2], count: Number(rows[i][3]), memos: rows[i][4] });
-  }
-  // 入金DBシート（ダッシュボード本体側）の生の店舗名一覧（正規化前・重複含む）も返す
-  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('入金DB');
-  var rawStoreNames = [];
-  if (sh) {
-    var head = depositHeaderRow_(sh);
-    if (head > 0 && sh.getLastRow() > head) {
-      var vals = sh.getRange(head + 1, 1, sh.getLastRow() - head, 1).getValues();
-      var seen = {};
-      for (var j = 0; j < vals.length; j++) {
-        var nm = String(vals[j][0] || '').trim();
-        if (nm && !seen[nm]) { seen[nm] = true; rawStoreNames.push(nm); }
-      }
-    }
-  }
-  return { ok: true, dupGroupCount: dupGroups.length, dupGroups: dupGroups, rawStoreNamesInSheet: rawStoreNames };
-}
 function plSeisanDiag(p) {
   var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
   if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
