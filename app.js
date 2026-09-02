@@ -2912,6 +2912,25 @@ function viewDowCompare(){
   return h;
 }
 
+// A-p1a キャッシュ優先＋裏で更新（2026-09-02追加・実装指示書_脱GAS移行_Phase0-1 §2）: 汎用ヘルパー。
+// パラメータが変わるたび（店舗・期間切替等）に画面が一度真っ白の「読み込み中…」に戻っていたのが
+// 「タブ移動が遅い」体感の主因だった。localStorageにキー単位で前回の結果を残しておき、
+// 新しいキーへ切り替わった瞬間はまず「前回（別条件）の結果」をそのまま出し続け、裏で新しい
+// データを取りに行って届き次第すり替える（真っ白にしない・体感を0秒にする）。
+const CACHE_TTL_MS=30*60*1000; // 30分より古いキャッシュは初期表示に使わない（さすがに古すぎる）
+function cacheLoad_(key){
+  try{
+    const raw=localStorage.getItem('toriCache_'+key);
+    if(!raw) return null;
+    const o=JSON.parse(raw);
+    if(!o||typeof o.t!=='number'||Date.now()-o.t>CACHE_TTL_MS) return null;
+    return o.data;
+  }catch(e){ return null; }
+}
+function cacheSave_(key, data){
+  try{ localStorage.setItem('toriCache_'+key, JSON.stringify({ data, t:Date.now() })); }catch(e){ /* 容量超過等は無視（キャッシュ無しで従来どおり動く） */ }
+}
+
 /* ---------------- 明細分析（BigQuery連携：時間帯別・商品別） ---------------- */
 // D.extra の中から、キー名に候補語を含むシート（生の2次元配列）を取り出す
 function extraSheet(...cands){
@@ -2950,18 +2969,39 @@ function detailRange(){
   return { from:fmt(s), to:fmt(e), label };
 }
 // BQに明細（期間・店舗絞り）を問い合わせ。キーで重複取得を防ぎ、取得後にrender。
+// A-p1a対応（2026-09-02）: キーが変わった瞬間に画面を空にせず、まずlocalStorageの前回結果
+// （無ければ直前に表示していたデータをそのまま）を出し続けながら裏で取りに行く。
+function fetchDetailKey_(){
+  const r=detailRange(); const seg=(S.dSegment==='lunch'||S.dSegment==='dinner')?S.dSegment:'';
+  return 'detail|'+[r.from,r.to,S.dStore,S.dBasis||'checkout',seg].join('|');
+}
 async function fetchDetail(){
   if(!S.auth||!S.auth.token) return;
   const r=detailRange(); const seg=(S.dSegment==='lunch'||S.dSegment==='dinner')?S.dSegment:'';
-  const key=[r.from,r.to,S.dStore,S.dBasis||'checkout',seg].join('|');
-  if(D.detailKey===key && D.detailData) return;
+  const key=fetchDetailKey_();
+  if(D.detailKey===key && D.detailData && !D.detailLoading) return;
   if(D.detailLoading===key) return;
+  if(D.detailKey!==key){
+    // 新しい条件＝まだ何も持っていない。localStorageに前回結果があれば即座に「参考表示」として出す
+    // （無ければ、直前に表示していた別条件のデータをそのまま残す＝App側でtrueにするkeyチェックで
+    // 「更新中」ラベルを出す。どちらも真っ白の「読み込み中…」より体感が良い）。
+    const cached=cacheLoad_(key);
+    if(cached){ D.detailData=cached; D.detailKey=key; D.detailStaleKey=key; render(); }
+    else { D.detailStaleKey=D.detailKey||null; }
+  }
   D.detailLoading=key;
+  render(); // 「更新中」バッジを即座に出す
   try{
     const d=await api({ action:'bqDetail', token:S.auth.token, from:r.from, to:r.to, store:S.dStore, basis:S.dBasis||'checkout', segment:seg });
-    if(d&&d.ok){ D.detailData={ hour:d.hour||[], item:d.item||[], store:d.store||[], hourItem:d.hourItem||[], segment:d.segment||'' }; D.detailKey=key; }
-    else { D.detailData={ hour:[], item:[], store:[], hourItem:[], err:(d&&d.error)||'取得失敗' }; D.detailKey=key; }
-  }catch(e){ D.detailData={ hour:[], item:[], store:[], hourItem:[], err:String(e.message||e) }; D.detailKey=key; }
+    if(D.detailLoading!==key) return; // 途中でさらに別条件へ切り替わっていたら、この結果は捨てる（古い結果で上書きしない）
+    if(d&&d.ok){
+      D.detailData={ hour:d.hour||[], item:d.item||[], store:d.store||[], hourItem:d.hourItem||[], segment:d.segment||'' };
+      D.detailKey=key; D.detailStaleKey=null; cacheSave_(key, D.detailData);
+    } else { D.detailData={ hour:[], item:[], store:[], hourItem:[], err:(d&&d.error)||'取得失敗' }; D.detailKey=key; D.detailStaleKey=null; }
+  }catch(e){
+    if(D.detailLoading!==key) return;
+    D.detailData={ hour:[], item:[], store:[], hourItem:[], err:String(e.message||e) }; D.detailKey=key; D.detailStaleKey=null;
+  }
   D.detailLoading=''; render();
 }
 function viewDetail(){
@@ -2975,7 +3015,7 @@ function viewDetail(){
   const stores=fullAccess?allStores():allowed;
   const taxExcl=(S.detailTax||'excl')==='excl'; const taxLb=taxExcl?'税別':'税込';
   const seg=(S.dSegment==='lunch'||S.dSegment==='dinner')?S.dSegment:'';
-  const r=detailRange(); const key=[r.from,r.to,S.dStore,S.dBasis||'checkout',seg].join('|');
+  const r=detailRange(); const key=fetchDetailKey_();
   fetchDetail(); // 必要なら取得（キー一致なら何もしない）
   const ref=D.refDate||new Date();
   const defMonth=ref.getFullYear()+'-'+String(ref.getMonth()+1).padStart(2,'0');
@@ -3019,7 +3059,12 @@ function viewDetail(){
     if(evs.length){ h+=`<div class="panel" style="border-left:3px solid #7a6f9a;padding:12px 16px;margin:4px 0"><div style="font-size:12px;font-weight:700;color:#5c5348;margin-bottom:4px">🎪 この日のイベント</div>`+
       evs.map(e=>`<div style="font-size:12.5px;color:#5c5348;padding:2px 0">${e.venue?esc(e.venue)+'：':''}${esc(e.name)}${e.memo?' <span class="mut" style="font-size:11px">'+esc(e.memo)+'</span>':''}</div>`).join('')+`</div>`; } }
   if(!S.auth){ return h+`<div class="panel"><div class="empty">ログイン後、BigQueryの明細が表示されます</div></div>`; }
-  if(D.detailKey!==key || !D.detailData){ return h+`<div class="panel"><div class="empty">読み込み中…（BigQuery集計）</div></div>`; }
+  // A-p1a: 今の条件(key)のデータがまだ無い場合でも、直前に見ていた別条件のデータ(D.detailStaleKey経由)が
+  // あれば真っ白にせず「更新中」バッジ付きでそのまま出す。本当に何も無い時だけ従来の読み込み中表示。
+  const isStale = D.detailKey!==key;
+  if(isStale && !D.detailData){ return h+`<div class="panel"><div class="empty">読み込み中…（BigQuery集計）</div></div>`; }
+  const updating = isStale || !!D.detailLoading;
+  if(updating){ h+=`<div class="note-box no-print" style="margin:2px 0 6px;padding:6px 13px;font-size:11.5px;color:#8c8375">⏳ 更新中…（前回の結果を表示中）</div>`; }
   const dd=D.detailData;
   if(dd.err){ return h+`<div class="panel"><div class="empty">取得エラー: ${esc(dd.err)}</div></div>`; }
   const salesAt=(H,row)=>{ const ie=hcol(H,'sales_excl'),is=hcol(H,'sales'); return num(row[taxExcl?(ie>=0?ie:is):(is>=0?is:ie)]); };
