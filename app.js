@@ -4376,7 +4376,16 @@ function rsvSmokeIcon_(tags){
 }
 // 予約UI刷新（2026-08-29・モックアップv1準拠）で追加した共通ヘルパー群。
 // 当日予約・ウォークインは既存のインライン判定を切り出し、予約帳・予約分析の両方から使う。
-function rsvIsWalkin_(r){ return /ウォークイン|walk-?in/i.test(r.channelNorm||r.channelRaw||''); }
+function rsvIsWalkin_(r){
+  const ch=String(r.channelNorm||r.channelRaw||'').trim();
+  if(/ウォークイン|walk-?in/i.test(ch)) return true;
+  // 「Ring-style」「いちご屋」は受付窓口(channel_raw)の値。実態はウォークインとのこと
+  // （ユーザー指示・2026-09-03。黒霧屋 新横浜と同じ物理店舗のうお蔵 新横浜アカウント経由で
+  // 記録されているデータで実データ確認済み）。判定は計算式（保存データは書き換えない）のため、
+  // 過去分も含め該当する予約は自動的にウォークイン扱いになる。
+  if(ch==='Ring-style' || ch==='いちご屋') return true;
+  return false;
+}
 function rsvIsSameDay_(r){
   if(r.isCancelled||rsvIsWalkin_(r)) return false;
   const ct=r.createdAt?parseDateStr(r.createdAt):0;
