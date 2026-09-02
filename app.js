@@ -1492,7 +1492,7 @@ function logApiPerf_(actionName, ms, ok, errType){
   }catch(e){ /* 計測の失敗は握りつぶす。本来の処理には一切影響させない */ }
 }
 function nowMs_(){ return (typeof performance!=='undefined'&&performance.now)?performance.now():Date.now(); }
-async function api(params, timeoutMs){
+async function apiOnce_(params, timeoutMs){
   const url=apiUrl();
   if(!url) throw new Error('APIが未設定です');
   const lim=timeoutMs||API_TIMEOUT_MS;
@@ -1503,15 +1503,34 @@ async function api(params, timeoutMs){
     const opt={ method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'}, body:JSON.stringify(params) };
     if(ctl) opt.signal=ctl.signal;
     const r=await fetch(url,opt);
-    if(!r.ok){ logApiPerf_(actionName, nowMs_()-t0, false, 'http_'+r.status); throw new Error('HTTP '+r.status); }
+    if(!r.ok){
+      logApiPerf_(actionName, nowMs_()-t0, false, 'http_'+r.status);
+      const err=new Error('HTTP '+r.status); err._retriable=(r.status>=500); throw err;
+    }
     const d=await r.json();
     logApiPerf_(actionName, nowMs_()-t0, !(d&&d.ok===false), (d&&d.ok===false)?'api_error':'');
     return d;
   }catch(e){
-    if(e&&(e.name==='AbortError'||e.code===20)){ logApiPerf_(actionName, nowMs_()-t0, false, 'timeout'); throw new Error('応答がありません（'+Math.round(lim/1000)+'秒でタイムアウト）。通信環境を確認してもう一度お試しください'); }
-    logApiPerf_(actionName, nowMs_()-t0, false, 'network');
+    if(e&&(e.name==='AbortError'||e.code===20)){
+      logApiPerf_(actionName, nowMs_()-t0, false, 'timeout');
+      const err=new Error('応答がありません（'+Math.round(lim/1000)+'秒でタイムアウト）。通信環境を確認してもう一度お試しください'); err._retriable=true; throw err;
+    }
+    if(!('_retriable' in e)){ logApiPerf_(actionName, nowMs_()-t0, false, 'network'); e._retriable=true; } // fetch自体が失敗＝ネットワーク瞬断はリトライ対象
     throw e;
   }finally{ if(tm) clearTimeout(tm); }
+}
+// A-p1c 自動リトライ（2026-09-02追加・実装指示書_脱GAS移行_Phase0-1 §2）: ネットワーク瞬断・
+// タイムアウト・GAS側5xxなど「もう一度呼べば直るかもしれない」失敗だけ、指数バックオフ
+// （0.5秒→1.5秒）で最大2回まで自動的に再試行する。HTTP 4xxやアプリ側{ok:false}応答（ログイン
+// 失敗・権限エラー等＝再試行しても結果が変わらない）はリトライしない。
+async function api(params, timeoutMs){
+  let lastErr;
+  for(let attempt=0; attempt<=2; attempt++){
+    if(attempt>0) await new Promise(res=>setTimeout(res, attempt===1?500:1500));
+    try{ return await apiOnce_(params, timeoutMs); }
+    catch(e){ lastErr=e; if(!e._retriable) throw e; }
+  }
+  throw lastErr;
 }
 function stampNow(){ const n=new Date(); return (n.getMonth()+1)+'/'+n.getDate()+' '+String(n.getHours()).padStart(2,'0')+':'+String(n.getMinutes()).padStart(2,'0'); }
 // タイムスタンプ(ms)を「M/D HH:mm」に整形（週報の提出・編集日時表示用）
