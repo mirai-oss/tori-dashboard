@@ -55,7 +55,6 @@ function handle(p) {
   try {
     if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-a6p2', time: new Date().toISOString() }); // a6p2=運営委託費二重計上修正+A-6Phase2（キャンセル分析・お客様名・媒体手数料設定）追加（2026-08-31）のデプロイ確認用に更新
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
-    if (action === 'depositDupFixOnce') return out(depositDupFixOnce_(p.onceKey, p.dryRun !== 'false')); // 一時クリーンアップ用（2026-09-02・使用後削除予定）: A-hf⑤既存データ修正
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'roleDefDiag') return out(roleDefDiag(p)); // DB_権限定義シートの内容を返す（専用トークン認証・読み取り専用。2026-09-02追加）
     if (action === 'storeNameAudit') return out(storeNameAudit(p)); // BQミラー全8テーブルの店舗名をstore_aliasesと突合し未登録表記を洗い出す（専用トークン認証・読み取り専用。2026-08-28追加）
@@ -2059,7 +2058,13 @@ function bqGetSeatMaster(p, session) {
 // 場合があり、無理に混ぜない）。
 // 法定福利費(statutory_welfare)はAPI側に直接のデータが無いため、（基本給+インセンティブ+賞与）×15%
 // で自動計算する（2026-09-02追加・担当Bからの依頼。PL管理システム側の既存ロジックと同じ係数）。
-var API_LABOR_COST_FROM_YM_ = '2026-09';
+// 2026-09-02緊急一時停止（担当D→担当A依頼・ユーザー指示）: labor_cost_daily（アルバイト人件費API
+// 連携の元データ）が実は「ポータルログインアカウントを持つ人だけ」しか同期しておらず、会社全体で
+// 19人分しかカバーしていない重大なギャップが判明（9月1日は会社全体でわずか2人分のみ記録）。
+// スマレジタイムカード登録者全員の連携が完了するまで、社員・アルバイト人件費とも従来どおり
+// スプレッドシート値のまま運用する（この定数を遠い未来日付にして、年月比較(ym < ...)が常に
+// 成立せずAPI切替が発火しないようにする＝コード自体は消さず、後日日付を戻すだけで再開できる）。
+var API_LABOR_COST_FROM_YM_ = '2099-01'; // 一時停止中。スマレジタイムカード全員連携完了後、対象月に戻すこと
 // 汎用: Supabaseの任意テーブル/ビューをページング付きで全件取得（bqFetchReservationRows_を一般化）。
 // filterQSはPostgRESTのクエリ文字列（例:'work_date=gte.2026-08-01'）。空文字なら絞り込み無し。
 function bqFetchSupabaseRows_(table, selectCols, filterQS) {
@@ -3367,69 +3372,6 @@ function bqReconcileSales(p) {
 // これらが無くても正常に動く設計になっている）。
 // 一時的な診断用（2026-08-23）: DB_PLの運営委託費(自動計上)行を年月×店舗ごとに件数と
 // 合計を返す。二重計上が無いか確認するため。読み取り専用（BigQuery stg_plを見るだけ）。
-// 一時クリーンアップ用（2026-09-02・使用後削除予定）: A-hf⑤入金二重計上の既存データ修正。
-// ①じんべぇ川崎・新横浜の旧表記セルを正準表記へ書き換え ②店舗+日付+時刻+金額が完全一致する
-// 重複行を、各グループの最初の1件だけ残して削除（新しく追加した方＝行番号が大きい方を消す）。
-// dryRun=true（既定）は実際には何も変更せず、削除予定の行を一覧で返すだけ。
-function depositDupFixOnce_(onceKey, dryRun) {
-  if (String(onceKey || '') !== 'DtvGq74OXa4ctmDc1oE4qcos8DEH') return { ok: false, error: 'unauthorized' };
-  dryRun = dryRun !== false;
-  var RENAME_MAP = { 'じんべえ 川崎店': 'じんべぇ 川崎', 'じんべえ 新横浜': 'じんべぇ 新横浜', 'じんべえ 新横浜店': 'じんべぇ 新横浜' };
-  var result = { dryRun: dryRun, sheets: [] };
-  var targets = [];
-  try {
-    var src = SpreadsheetApp.openById(SALES_DB_ID).getSheetByName('入金DB');
-    if (src) targets.push({ label: '売上DB', sh: src });
-  } catch (e) {}
-  var dst = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('入金DB');
-  if (dst) targets.push({ label: 'ダッシュボード', sh: dst });
-
-  targets.forEach(function (t) {
-    var sh = t.sh, head = depositHeaderRow_(sh);
-    if (head < 0) { result.sheets.push({ label: t.label, error: 'ヘッダー行なし' }); return; }
-    var last = sh.getLastRow();
-    if (last <= head) { result.sheets.push({ label: t.label, renamed: 0, deletedRows: [] }); return; }
-    var n = last - head;
-    var vals = sh.getRange(head + 1, 1, n, 6).getValues();
-    // ①表記ゆれの是正（対象セルだけ書き換え。他の値には一切触れない）
-    var renamed = 0;
-    for (var i = 0; i < n; i++) {
-      var cur = String(vals[i][0] || '').trim();
-      if (RENAME_MAP[cur]) {
-        if (!dryRun) sh.getRange(head + 1 + i, 1).setValue(RENAME_MAP[cur]);
-        vals[i][0] = RENAME_MAP[cur];
-        renamed++;
-      }
-    }
-    // ②完全一致重複の特定（正規化後の店舗名＋日付＋時刻＋金額）。グループ内で最初の行だけ残す。
-    function dKey2(v) { if (v instanceof Date) return v.getFullYear() + '/' + (v.getMonth() + 1) + '/' + v.getDate(); return String(v); }
-    function tKey2(v) {
-      if (v instanceof Date) return Utilities.formatDate(v, Session.getScriptTimeZone() || 'Asia/Tokyo', 'HH:mm');
-      var digits = String(v == null ? '' : v).replace(/[^\d]/g, '');
-      if (!digits) return '';
-      digits = digits.padStart(4, '0');
-      return digits.slice(0, 2) + ':' + digits.slice(2, 4);
-    }
-    var seen = {}, toDelete = [];
-    for (var j = 0; j < n; j++) {
-      var storeName = String(vals[j][0] || '').trim();
-      if (!storeName) continue;
-      var key = storeName + '__' + dKey2(vals[j][1]) + '__' + tKey2(vals[j][4]) + '__' + (Number(vals[j][2]) || 0);
-      if (seen[key] != null) {
-        toDelete.push({ row: head + 1 + j, store: storeName, date: dKey2(vals[j][1]), time: tKey2(vals[j][4]), amount: vals[j][2] });
-      } else {
-        seen[key] = j;
-      }
-    }
-    if (!dryRun) {
-      toDelete.sort(function (a, b) { return b.row - a.row; }).forEach(function (d) { sh.deleteRow(d.row); });
-    }
-    result.sheets.push({ label: t.label, renamed: renamed, deletedCount: toDelete.length,
-      deletedTotalAmount: toDelete.reduce(function (s, d) { return s + (Number(d.amount) || 0); }, 0),
-      deletedSample: toDelete.slice(0, 10) });
-  });
-  return result;
-}
 function plSeisanDiag(p) {
   var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
   if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
