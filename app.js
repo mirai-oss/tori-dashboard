@@ -4615,7 +4615,7 @@ function rsvBookHtml_(){
   // 出せるようにしておく（listビューはrsvListHtml_が自前でEXPORTするため、ここでは重複させない。
   // 2026-08-29追加: ユーザー要望「このページにもCSV/PDFをダウンロードできるようにしてほしい」対応）。
   if(view!=='list' && dayRows.length){
-    const sorted=dayRows.slice().sort((a,b)=>a.hh-b.hh);
+    const sorted=dayRows.slice().sort((a,b)=>rsvSortHh_(a.hh)-rsvSortHh_(b.hh));
     EXPORT.push({ title:'予約一覧（'+dLabel+'）',
       headers:['時刻','店舗','人数','受付窓口','コース','メニュー','卓','ステータス'],
       rows:sorted.map(r=>[r.timeStr,r.store,r.partySize,r.channelNorm||r.channelRaw,r.course||'',r.menu||'',r.tableNo||'',r.statusRaw]) });
@@ -4701,7 +4701,7 @@ function rsvTimelineHtml_(dayRows,date,selN,periodSel){
     <div style="position:relative;padding:8px 4px">
       <div style="display:flex;font-size:11px;color:var(--mut2,#8a7f6f);margin-left:140px">${hourMarks.map(hh=>`<div style="flex:1">${fmtH(hh)}</div>`).join('')}</div>`;
   rowKeys.forEach(st=>{
-    const rows=(byRow[st]||[]).slice().sort((a,b)=>a.hh-b.hh);
+    const rows=(byRow[st]||[]).slice().sort((a,b)=>rsvSortHh_(a.hh)-rsvSortHh_(b.hh));
     const cap=seatCap[st];
     const tags=seatTags[st]||[];
     const empty=byTable && !rows.length;
@@ -4821,8 +4821,16 @@ function rsvCreatedAtDisp_(r){
   if(!m) return esc(r.createdAt);
   return (+m[2])+'/'+(+m[3])+(m[4]?' '+m[4]+':'+m[5]:'');
 }
+// 営業時間の並び順ソート（2026-09-03追加・ユーザー報告「深夜0時以降の予約がリストの先頭に来てしまう」）。
+// dayRowsは「その営業日の分」として正しくまとめられている（食べログノート側が深夜の予約も
+// 当日の来店日として記録しているため、rsvDayRowsForStore_の日またぎ合算を待たずとも0:xx等の
+// hhがそのまま入っている）が、単純な数値ソートだとhh=0.1（0:07）がhh=17.05（17:03）より
+// 先に来てしまう。開店前の早朝（6時未満）は「前の営業の続き」とみなし、ソート用のキーだけ
+// +24して末尾に来るようにする（表示するhh・時刻文字列自体は変更しない）。
+const RSV_SORT_EARLY_CUTOFF_=6;
+function rsvSortHh_(hh){ return hh<RSV_SORT_EARLY_CUTOFF_?hh+24:hh; }
 function rsvListHtml_(dayRows){
-  const rows=dayRows.slice().sort((a,b)=>a.hh-b.hh);
+  const rows=dayRows.slice().sort((a,b)=>rsvSortHh_(a.hh)-rsvSortHh_(b.hh));
   if(!rows.length) return `<div class="panel no-print"><div class="panel-head"><div><h3>この日の予約はありません</h3></div></div></div>`;
   let h=`<div class="panel"><div class="panel-head"><div><h3>予約リスト</h3>
     <div class="sub">「作成日」＝取込元（食べログノート等）の作成日時。来店日と同じ日の予約に <span style="color:var(--accent,#b5502f);font-weight:700">オレンジ文字</span> を付けています（＝当日予約と判定した行）／ <span style="color:#7a6f9a;font-weight:700">✎手動</span> ＝広告管理から手動アップロードした予約（自動取込にまだ無いもののみ表示）</div></div></div>
