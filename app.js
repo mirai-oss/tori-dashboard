@@ -1886,6 +1886,14 @@ function afterLogin(){
   S.store=(sc.length===1)?sc[0]:'all';
   S.loginErr='';
   applyBqDailyRoleDefault_();
+  // A-p1b（2026-09-02・実装指示書 §2）: 予約管理タブは初回訪問時に全件（9万行超）を取りに行くため、
+  // タブをまだ開いていなくても、権限があるアカウントならログイン直後に裏で先読みしておく。
+  // タブを開いた時にはすでに読み込み済み＝体感の「予約分析を押しても固まる」を解消する狙い。
+  // fetchReservationBQ/fetchSeatMasterはどちらも「一度読めば十分」ガード付きなので、実際に
+  // viewReservation()側から呼ばれた時は二重取得にならない。
+  if(tabs.includes('reservation')){
+    setTimeout(()=>{ fetchReservationBQ(); fetchSeatMaster(); }, 300);
+  }
 }
 function doLogout(msg){
   if(S.auth&&S.auth.token){ api({action:'logout',token:S.auth.token}).catch(()=>{}); }
