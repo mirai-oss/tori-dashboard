@@ -1,0 +1,19 @@
+name: 予約(stg_reservation)の全削除→再ミラーを1回実行（送信なし・一時的）
+# 実装指示書_脱GAS移行_Phase0-1_2026-09-02.md §1 A-hf④（予約設計書§9の復旧手順②）用。
+# bqSyncReservation自体がWRITE_TRUNCATE（全置換）のため、これを1回叩くだけで
+# 「stg_reservation全削除→再ミラー」に相当する。用が済んだら削除してよい。
+on:
+  workflow_dispatch: {}
+jobs:
+  remirror:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: bqSyncReservationを実行
+        env:
+          BQ_LOAD_TOKEN: ${{ secrets.BQ_LOAD_TOKEN }}
+        run: |
+          curl -sL --data-urlencode "action=bqSyncReservation" \
+            --data-urlencode "token=$BQ_LOAD_TOKEN" \
+            "https://script.google.com/macros/s/AKfycbwW0qhyEr0-uQWTaLg7MkQhurHq6wMoaOKL7uCCnI_bgnAsGB5-auqG_dm_Q9uJc3Kc/exec" \
+            | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.stringify(JSON.parse(d),null,2))}catch(e){console.log('RAW:',d)}});"
