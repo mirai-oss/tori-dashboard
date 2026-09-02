@@ -23,6 +23,13 @@ const SSO_SUPA_KEY = 'sb_publishable_MrwPJAx_Ws_fdRutprKCiQ_dg3wCiTr';
 // P-2a（2026-09-02・実装指示書§9恒久対応）: 予約タブの読み取りをSupabase直読みへ。
 // 統合アカウント（メール連携）のJWTが取れるアカウントだけが呼べる（併用方式。下のfetchReservationBQ参照）。
 const RSV_API_URL = 'https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/keiei-api-reservation';
+// 🚨一時停止中（2026-09-02・ユーザー報告「自動取込の予約が表示されない」で発覚）: keiei-api-reservation
+// （レーンP管轄）はPostgRESTの既定1000行上限に達するとそこで打ち切られ、来店日の古い順に並べている
+// ため2023年分だけが返り、直近（今日など）の自動取込データが一切含まれていなかった（service_role
+// での直接検証で確認済み。旧GASのbqRows_にあったのと同種のページネーション欠落バグ）。
+// レーンP側の修正（WORKLOG依頼済み）が入るまでは新経路を使わず、必ず旧GAS経路にフォールバックする。
+// 修正確認後はこの値をtrueに戻すだけで再度Supabase直読みが有効になる。
+const RSV_API_ENABLED_ = false;
 
 /* ---------------- 定数 ---------------- */
 const CANON_STORES = ['芝の鳥一代','鳥一代 はなれ','鳥一代 恵比寿','鳥一代 新橋','鳥一代 本店','鶏武者 新横浜','鶏武者 川崎店','黒霧屋 新横浜'];
@@ -4091,7 +4098,7 @@ async function fetchReservationBQ(){
   if(D.rsvBqLoading||D.rsvBqLoaded) return;   // 一度読めば十分（全件ミラー・軽量。データ更新はbqSyncReservation側のキャッシュ世代で検知）
   D.rsvBqLoading=true;
   try{
-    const jwt=await portalAccessToken().catch(()=>null);
+    const jwt=RSV_API_ENABLED_?await portalAccessToken().catch(()=>null):null;
     if(jwt){
       const from=rsvApiRangeFrom_(), to=rsvApiRangeTo_();
       const ctl=(typeof AbortController!=='undefined')?new AbortController():null;
