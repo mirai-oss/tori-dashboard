@@ -94,8 +94,33 @@ jobs:
             echo "missing=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Larkへ警告（どちらか欠けている時だけ・正常時は無送信）
-        if: steps.sales.outputs.missing == 'true' || steps.attendance.outputs.missing == 'true'
+      - name: 店舗名ゲートウェイの未解決件数を確認（kd_unresolved_names）
+        # 2026-09-02追加（設計書_表示集計層kdと高速化実行計画_2026-09-02.md §5・§10.2-5・担当D）。
+        # ns-daily-import等の取込ジョブがstore_aliasesに無い店舗名を検知するとkd_unresolved_names
+        # へ隔離する（店舗名ゲートウェイ原則）。ここが増え続けている＝どこかの店舗の取込データが
+        # 静かに欠落し続けている合図なので、他の2チェックと同じく「無視できない件数の時だけ」警告する。
+        id: unresolved
+        env:
+          BQ_LOAD_TOKEN: ${{ secrets.BQ_LOAD_TOKEN }}
+        run: |
+          if [ -z "$BQ_LOAD_TOKEN" ]; then
+            echo "::warning::BQ_LOAD_TOKEN未設定のためkd_unresolvedチェックをスキップ"
+            echo "count=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          RES=$(curl -s "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/kd-unresolved-check?token=$BQ_LOAD_TOKEN")
+          echo "$RES"
+          OK=$(echo "$RES" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).ok)}catch(e){console.log('false')}})")
+          if [ "$OK" != "true" ]; then
+            echo "::warning::kd-unresolved-check取得に失敗（判定不能のため異常とはみなさない）"
+            echo "count=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          COUNT=$(echo "$RES" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).openCount||0)}catch(e){console.log(0)}})")
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+
+      - name: Larkへ警告（どれか欠けている/未解決件数がある時だけ・正常時は無送信）
+        if: steps.sales.outputs.missing == 'true' || steps.attendance.outputs.missing == 'true' || steps.unresolved.outputs.count != '0'
         env:
           LARK_WEBHOOK: ${{ secrets.LARK_WEBHOOK }}
         run: |
@@ -109,6 +134,13 @@ jobs:
             if [ -n "$PARTS" ]; then PARTS="$PARTS・勤怠"; else PARTS="勤怠"; fi
           fi
           TEXT="⚠️ ${{ steps.date.outputs.target }} の取込が確認できません（${PARTS}）。Mac mini停止・cron失敗等の可能性があります。"
+          if [ -z "$PARTS" ]; then
+            TEXT="✅ ${{ steps.date.outputs.target }} の売上・勤怠取込は正常です。"
+          fi
+          COUNT="${{ steps.unresolved.outputs.count }}"
+          if [ "$COUNT" != "0" ] && [ -n "$COUNT" ]; then
+            TEXT="${TEXT}$(printf '\n⚠️ 店舗名ゲートウェイで保留中のデータが %s 件あります（未知の店舗名でstore_aliasesに未登録のため取込を保留中）。store_aliasesへ登録すると自動的に解消します。' "$COUNT")"
+          fi
           BODY=$(TEXT="$TEXT" node -e "console.log(JSON.stringify({msg_type:'text', content:{text: process.env.TEXT}}))")
           RES=$(curl -s -w "\n%{http_code}" -X POST "$LARK_WEBHOOK" -H "Content-Type: application/json" -d "$BODY")
           echo "$RES"
