@@ -20,6 +20,9 @@ const DEFAULT_API_URL = 'https://script.google.com/macros/s/AKfycbwW0qhyEr0-uQWT
 // 統合アカウント（N-Styleポータル / 日報Supabase）ログイン用。publishableキーは公開前提の値。
 const SSO_SUPA_URL = 'https://uuvsxzhpxtghojoubjcc.supabase.co';
 const SSO_SUPA_KEY = 'sb_publishable_MrwPJAx_Ws_fdRutprKCiQ_dg3wCiTr';
+// P-2a（2026-09-02・実装指示書§9恒久対応）: 予約タブの読み取りをSupabase直読みへ。
+// 統合アカウント（メール連携）のJWTが取れるアカウントだけが呼べる（併用方式。下のfetchReservationBQ参照）。
+const RSV_API_URL = 'https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/keiei-api-reservation';
 
 /* ---------------- 定数 ---------------- */
 const CANON_STORES = ['芝の鳥一代','鳥一代 はなれ','鳥一代 恵比寿','鳥一代 新橋','鳥一代 本店','鶏武者 新横浜','鶏武者 川崎店','黒霧屋 新横浜'];
@@ -4065,16 +4068,99 @@ function plMonthDate(){
 // 既存の「予約分析」（viewAd内・D.rsv・管理シート💾予約DB手動貼付け）とは別データとして並行保持する
 // （設計書§8.9: 数字を突き合わせて確認できてから、旧ブロックの扱いをユーザーに確認して整理する。
 // 手動CSV取込モーダル・GASメニュー④は今回いっさい変更しない）。
+// P-2a（2026-09-02・設計書_予約データ基盤_食べログノート_2026-08-27.md§9の恒久対応・併用方式）:
+// 統合アカウント（ns-portal/nippoと同じSupabase Authでログイン済み＝portalAccessToken()でJWTが
+// 取れる）なら、GAS/BQを経由せずkeiei-api-reservation（Supabase直読み）を使う。まだ統合アカウント化
+// していないアカウント（アカウント管理シートの「メール」欄が空欄）はJWTが取れないため、従来どおり
+// GAS bqGetReservationを使う（現状維持・何も壊れない）。ユーザー確認済みの段階移行方針：7/14アカウント
+// （店舗ロール全4件含む）が2026-09-02時点で未対応のため、全アカウント一律の切替はまだ行わない。
 async function fetchReservationBQ(){
   if(!S.auth||!S.auth.token) return;
   if(D.rsvBqLoading||D.rsvBqLoaded) return;   // 一度読めば十分（全件ミラー・軽量。データ更新はbqSyncReservation側のキャッシュ世代で検知）
   D.rsvBqLoading=true;
   try{
-    const d=await api({ action:'bqGetReservation', token:S.auth.token, includeCancelled:'true' });
-    if(d&&d.ok&&d.sheets&&d.sheets.reservationBq){ ingestReservationBq_(d.sheets.reservationBq); D.rsvBqErr=''; D.rsvBqLoaded=true; }
-    else{ D.rsvBqErr=(d&&d.error)||'取得に失敗しました'; }
+    const jwt=await portalAccessToken().catch(()=>null);
+    if(jwt){
+      const from=rsvApiRangeFrom_(), to=rsvApiRangeTo_();
+      const ctl=(typeof AbortController!=='undefined')?new AbortController():null;
+      const tm=ctl?setTimeout(()=>ctl.abort(),60000):null; // GAS/BQを経由しない単純な範囲検索のため60秒で十分な想定
+      const t0=nowMs_();
+      let res=null, d=null, errType='';
+      try{
+        res=await fetch(RSV_API_URL,{ method:'POST', headers:{ 'Content-Type':'application/json', apikey:SSO_SUPA_KEY, Authorization:'Bearer '+jwt },
+          body:JSON.stringify({ from, to, includeCancelled:true, includeSubBrand:false, mode:'list' }), signal:ctl?ctl.signal:undefined });
+        d=await res.json().catch(()=>null);
+      }catch(fe){ errType=(fe&&(fe.name==='AbortError'||fe.code===20))?'timeout':'network'; }
+      finally{ if(tm) clearTimeout(tm); }
+      if(res && res.ok && d && d.ok){
+        ingestReservationApi_(d.rows||[]);
+        D.rsvBqErr=''; D.rsvBqLoaded=true; D.rsvBqSrc='api';
+        logApiPerf_('keiei-api-reservation', nowMs_()-t0, true, '');
+        rsvShadowCompareOnce_(from,to,(d.rows||[]).length); // 新旧突合（コンソールログのみ・失敗しても画面に影響しない）
+      } else {
+        logApiPerf_('keiei-api-reservation', nowMs_()-t0, false, errType||(d&&d.error?'api_error':'http_'+(res&&res.status)));
+        D.rsvBqErr=(d&&d.error)||(errType==='timeout'?'応答がありません（60秒でタイムアウト）':('取得に失敗しました（HTTP '+(res&&res.status)+'）'));
+      }
+    } else {
+      const d=await api({ action:'bqGetReservation', token:S.auth.token, includeCancelled:'true' });
+      if(d&&d.ok&&d.sheets&&d.sheets.reservationBq){ ingestReservationBq_(d.sheets.reservationBq); D.rsvBqErr=''; D.rsvBqLoaded=true; D.rsvBqSrc='gas'; }
+      else{ D.rsvBqErr=(d&&d.error)||'取得に失敗しました'; }
+    }
   }catch(e){ D.rsvBqErr=String(e&&e.message||e); }
   D.rsvBqLoading=false; render();
+}
+// keiei-api-reservationに渡す取得範囲。予約帳・予約分析（前年同月比較含む）で使う実際の範囲を
+// 十分にカバーする固定の広めの窓（stg_reservationの実データ範囲=2023-02〜2026-10より広い）。
+// 本番のPostgREST直読みはGASのBQページネーションと違い単純な範囲インデックス検索のため、
+// この程度の窓なら一括取得しても軽い（旧経路が抱えていた「毎回フルスキャン」問題そのものが無い）。
+function rsvApiRangeFrom_(){ const d=new Date(); d.setFullYear(d.getFullYear()-3); return ymdStr(d); }
+function rsvApiRangeTo_(){ const d=new Date(); d.setFullYear(d.getFullYear()+1); return ymdStr(d); }
+// keiei-api-reservationのtimestamptz列（created_at_source/cancel_at）はUTC付きISO文字列で返る。
+// 旧GAS経路はFORMAT_TIMESTAMPで'YYYY-MM-DDTHH:MM:SS'のJST壁時計文字列にして返していたため、
+// そのまま使うと日付・時刻がずれる（例: JST2:00=UTC前日17:00）。同じ形式に変換して既存の
+// 表示・日数計算コード（rsvKeywords_・キャンセル分析等）を一切変更せずに使えるようにする。
+function toJstStr_(iso){
+  if(!iso) return '';
+  const t=Date.parse(iso); if(!Number.isFinite(t)) return '';
+  const d=new Date(t+9*3600*1000); // UTC→JSTへ9時間シフトしてからUTC基準のgetterで読む
+  const p=(n)=>String(n).padStart(2,'0');
+  return d.getUTCFullYear()+'-'+p(d.getUTCMonth()+1)+'-'+p(d.getUTCDate())+'T'+p(d.getUTCHours())+':'+p(d.getUTCMinutes())+':'+p(d.getUTCSeconds());
+}
+// keiei-api-reservationの行（JSONオブジェクト）をD.rsvBqへ変換。ingestReservationBq_と同じ
+// レコード形状を作るため、予約帳・予約分析・キャンセル分析などの表示コードは一切変更不要。
+function ingestReservationApi_(rows){
+  const hhmm=(v)=>{ const m=String(v==null?'':v).match(/(\d{1,2}):(\d{2})/); return m?(+m[1]+(+m[2])/60):-1; };
+  const recs=[];
+  (rows||[]).forEach(r=>{
+    const t=parseDateStr(r.visit_date); if(!t) return;
+    const statusNorm=String(r.status_normalized||'');
+    recs.push({ key:r.reservation_key, storeId:r.store_id, store:String(r.store_name||''), source:r.source,
+      t, dateStr:String(r.visit_date||'').slice(0,10), timeStr:String(r.visit_time||''), hh:hhmm(r.visit_time),
+      stayMin:(r.stay_duration_min===''||r.stay_duration_min==null)?null:Number(r.stay_duration_min),
+      partySize:(r.party_size===''||r.party_size==null)?0:Number(r.party_size), childCount:(r.child_count===''||r.child_count==null)?0:Number(r.child_count),
+      statusRaw:String(r.status_raw||''), statusNorm, isCancelled:/^cancelled/.test(statusNorm),
+      channelRaw:String(r.channel_raw||''), channelNorm:String(r.channel_normalized||r.channel_raw||''),
+      tableNo:String(r.table_no||''), course:String(r.course||''), menu:String(r.menu||''),
+      attribute:String(r.attribute||''), tag:String(r.tag||''), customerNo:String(r.customer_no||''),
+      createdAt:toJstStr_(r.created_at_source), cancelAt:toJstStr_(r.cancel_at) });
+  });
+  D.rsvBq=recs;
+}
+// 新旧突合（2026-09-02・設計書§9の手順どおり。新APIが使われた時だけ、裏でGASの旧経路も1回だけ
+// 呼んで件数を突き合わせ、コンソールログに残す。UIには一切出さない・失敗しても無視する・
+// セッション中1回だけ＝旧経路への負荷を最小限にする）。段階的に旧経路を縮小する判断材料用。
+let RSV_SHADOW_DONE_=false;
+async function rsvShadowCompareOnce_(from,to,newCount){
+  if(RSV_SHADOW_DONE_) return; RSV_SHADOW_DONE_=true;
+  try{
+    const d=await api({ action:'bqGetReservation', token:S.auth.token, includeCancelled:'true' });
+    if(!(d&&d.ok&&d.sheets&&d.sheets.reservationBq)) { console.log('[P-2a新旧突合] 旧経路(GAS)の取得に失敗のため比較できず:', d&&d.error); return; }
+    const rows=d.sheets.reservationBq;
+    let oldCount=0;
+    for(let i=1;i<rows.length;i++){ const ds=String(rows[i][4]||'').slice(0,10); if(ds>=from&&ds<=to) oldCount++; }
+    const diff=newCount-oldCount;
+    console.log('[P-2a新旧突合] 新API(Supabase直読み)='+newCount+'件 / 旧経路(GAS・同期間で絞込)='+oldCount+'件 / 差='+diff+(diff===0?'（完全一致）':''));
+  }catch(e){ console.log('[P-2a新旧突合] 比較中にエラー（無視）:', e&&e.message); }
 }
 // bqGetReservationの[[見出し],[行...]]をD.rsvBq（オブジェクト配列）へ変換。列順はGAS側のHEADERSと対応。
 function ingestReservationBq_(rows){
