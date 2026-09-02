@@ -55,6 +55,7 @@ function handle(p) {
   try {
     if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-a6p2', time: new Date().toISOString() }); // a6p2=運営委託費二重計上修正+A-6Phase2（キャンセル分析・お客様名・媒体手数料設定）追加（2026-08-31）のデプロイ確認用に更新
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
+    if (action === 'depositDupFixOnce') return out(depositDupFixOnce_(p.onceKey, p.dryRun !== 'false')); // 一時クリーンアップ用（2026-09-02・使用後削除予定）: A-hf⑤既存データ修正
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'roleDefDiag') return out(roleDefDiag(p)); // DB_権限定義シートの内容を返す（専用トークン認証・読み取り専用。2026-09-02追加）
     if (action === 'storeNameAudit') return out(storeNameAudit(p)); // BQミラー全8テーブルの店舗名をstore_aliasesと突合し未登録表記を洗い出す（専用トークン認証・読み取り専用。2026-08-28追加）
@@ -3366,6 +3367,69 @@ function bqReconcileSales(p) {
 // これらが無くても正常に動く設計になっている）。
 // 一時的な診断用（2026-08-23）: DB_PLの運営委託費(自動計上)行を年月×店舗ごとに件数と
 // 合計を返す。二重計上が無いか確認するため。読み取り専用（BigQuery stg_plを見るだけ）。
+// 一時クリーンアップ用（2026-09-02・使用後削除予定）: A-hf⑤入金二重計上の既存データ修正。
+// ①じんべぇ川崎・新横浜の旧表記セルを正準表記へ書き換え ②店舗+日付+時刻+金額が完全一致する
+// 重複行を、各グループの最初の1件だけ残して削除（新しく追加した方＝行番号が大きい方を消す）。
+// dryRun=true（既定）は実際には何も変更せず、削除予定の行を一覧で返すだけ。
+function depositDupFixOnce_(onceKey, dryRun) {
+  if (String(onceKey || '') !== 'DtvGq74OXa4ctmDc1oE4qcos8DEH') return { ok: false, error: 'unauthorized' };
+  dryRun = dryRun !== false;
+  var RENAME_MAP = { 'じんべえ 川崎店': 'じんべぇ 川崎', 'じんべえ 新横浜': 'じんべぇ 新横浜', 'じんべえ 新横浜店': 'じんべぇ 新横浜' };
+  var result = { dryRun: dryRun, sheets: [] };
+  var targets = [];
+  try {
+    var src = SpreadsheetApp.openById(SALES_DB_ID).getSheetByName('入金DB');
+    if (src) targets.push({ label: '売上DB', sh: src });
+  } catch (e) {}
+  var dst = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('入金DB');
+  if (dst) targets.push({ label: 'ダッシュボード', sh: dst });
+
+  targets.forEach(function (t) {
+    var sh = t.sh, head = depositHeaderRow_(sh);
+    if (head < 0) { result.sheets.push({ label: t.label, error: 'ヘッダー行なし' }); return; }
+    var last = sh.getLastRow();
+    if (last <= head) { result.sheets.push({ label: t.label, renamed: 0, deletedRows: [] }); return; }
+    var n = last - head;
+    var vals = sh.getRange(head + 1, 1, n, 6).getValues();
+    // ①表記ゆれの是正（対象セルだけ書き換え。他の値には一切触れない）
+    var renamed = 0;
+    for (var i = 0; i < n; i++) {
+      var cur = String(vals[i][0] || '').trim();
+      if (RENAME_MAP[cur]) {
+        if (!dryRun) sh.getRange(head + 1 + i, 1).setValue(RENAME_MAP[cur]);
+        vals[i][0] = RENAME_MAP[cur];
+        renamed++;
+      }
+    }
+    // ②完全一致重複の特定（正規化後の店舗名＋日付＋時刻＋金額）。グループ内で最初の行だけ残す。
+    function dKey2(v) { if (v instanceof Date) return v.getFullYear() + '/' + (v.getMonth() + 1) + '/' + v.getDate(); return String(v); }
+    function tKey2(v) {
+      if (v instanceof Date) return Utilities.formatDate(v, Session.getScriptTimeZone() || 'Asia/Tokyo', 'HH:mm');
+      var digits = String(v == null ? '' : v).replace(/[^\d]/g, '');
+      if (!digits) return '';
+      digits = digits.padStart(4, '0');
+      return digits.slice(0, 2) + ':' + digits.slice(2, 4);
+    }
+    var seen = {}, toDelete = [];
+    for (var j = 0; j < n; j++) {
+      var storeName = String(vals[j][0] || '').trim();
+      if (!storeName) continue;
+      var key = storeName + '__' + dKey2(vals[j][1]) + '__' + tKey2(vals[j][4]) + '__' + (Number(vals[j][2]) || 0);
+      if (seen[key] != null) {
+        toDelete.push({ row: head + 1 + j, store: storeName, date: dKey2(vals[j][1]), time: tKey2(vals[j][4]), amount: vals[j][2] });
+      } else {
+        seen[key] = j;
+      }
+    }
+    if (!dryRun) {
+      toDelete.sort(function (a, b) { return b.row - a.row; }).forEach(function (d) { sh.deleteRow(d.row); });
+    }
+    result.sheets.push({ label: t.label, renamed: renamed, deletedCount: toDelete.length,
+      deletedTotalAmount: toDelete.reduce(function (s, d) { return s + (Number(d.amount) || 0); }, 0),
+      deletedSample: toDelete.slice(0, 10) });
+  });
+  return result;
+}
 function plSeisanDiag(p) {
   var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
   if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
@@ -3915,14 +3979,33 @@ function depositHeaderRow_(sh) {
   for (var r = 0; r < scan; r++) { if (String(v[r][0]).trim() === '店舗') return r + 1; }
   return -1;
 }
-// 店舗名の正規化（売上DB側の既存スクリプト _normStoreName と同一ルール）。
-// スペース違いを吸収し、登録した店舗だけ正解表記に統一。登録外はトリムのみ。
+// 店舗名の正規化。
+// 2026-09-02修正（重大バグ・ユーザー報告A-hf⑤入金二重計上）: 従来はごく一部の店舗だけを
+// 手作業で登録した静的な表（STORE_CANONICAL_BY_NOSPACE_）で正規化しており、新しい表記ゆれ
+// （例:「じんべえ 川崎店」旧表記と「じんべぇ 川崎」新表記が入金DBシートに混在）が来ると
+// スルーしてしまい、店舗名が一致しないため入金取込の重複防止（exist[]キー）が効かず、
+// 同じ入金が二重計上される実害が出ていた（じんべぇ川崎・新横浜だけで過大計上¥6,708,000）。
+// resolveAdStore_と同じ方式（Supabase store_aliasesを正本として解決・取得できない間だけ
+// 旧・静的表にフォールバック）に統一し、未登録の新しい表記ゆれにも自動対応できるようにした。
 var STORE_CANONICAL_BY_NOSPACE_ = {
   '横濱ホルモン会館エース本厚木店': '横濱ホルモン会館　エース　本厚木店',
   'うお蔵新横浜店': '黒霧屋 新横浜'
 };
 function normStoreName_(s) {
   var t = String(s == null ? '' : s).trim();
+  if (!t) return t;
+  var key = storeKey_(t);
+  var dir = fetchStoreDirectory_();
+  if (dir) {
+    for (var i = 0; i < dir.length; i++) {
+      var aliases = dir[i].aliases || [];
+      for (var j = 0; j < aliases.length; j++) {
+        if (storeKey_(aliases[j].alias) === key) return dir[i].name;
+      }
+    }
+    return t; // 未登録の表記は解決できない（ゲートウェイ原則②：無理に推測して誤爆させない）
+  }
+  // フォールバック: store_aliasesが取得できない間だけ、旧・静的表（ごく一部のみ登録）を使う
   var nospace = t.replace(/[\s　]/g, '');
   return STORE_CANONICAL_BY_NOSPACE_[nospace] || t;
 }
@@ -3999,9 +4082,18 @@ function importDeposits(p, session) {
     var m = String(v).match(/(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
     return m ? (+m[1]) + '/' + (+m[2]) + '/' + (+m[3]) : String(v);
   }
-  function tKey(v) {   // 既存スクリプト _normTime と同じ（時刻型に化けても文字列比較を一致させる）
-    if (v instanceof Date) return Utilities.formatDate(v, tz, 'HH:mm:ss');
-    return String(v == null ? '' : v).trim();
+  // 2026-09-02修正（重大バグ・ユーザー報告A-hf⑤の原因②: 表記ゆれとは無関係の完全一致重複が
+  // 34件・2年分見つかった）: 従来は「時刻型ならHH:mm:ssへ整形・文字列ならそのままtrim」だけで、
+  // 既存行（シート保存済み・Date型に化けている場合あり）と新規取込行（取込元サイトの生文字列。
+  // 秒の有無や区切り文字が回によって微妙に違うことがある）とで表記が食い違うと、同じ取引でも
+  // 別キー扱いになり重複防止が効かなかった。時刻を「数字だけ抜き出してHH:MM（秒は切り捨て）」に
+  // 統一し、多少表記が違っても同じ取引なら同じキーになるようにする。
+  function tKey(v) {
+    if (v instanceof Date) return Utilities.formatDate(v, tz, 'HH:mm');
+    var digits = String(v == null ? '' : v).replace(/[^\d]/g, ''); // "10:30:00"→"103000" "10:30"→"1030"
+    if (!digits) return '';
+    digits = digits.padStart(4, '0');
+    return digits.slice(0, 2) + ':' + digits.slice(2, 4); // 秒以降は切り捨て
   }
   function aKey(v) { return String(Number(String(v).replace(/[,¥\s]/g, '')) || 0); }
   var added = 0, dup = 0, detail = {};
@@ -4024,7 +4116,10 @@ function importDeposits(p, session) {
       var m = String(a[0]).match(/^(\d{4})-(\d{2})-(\d{2})$/); if (!m) return;
       var amt = Number(a[1]) || 0; if (!(amt > 0)) return;
       var desc = String(a[2] || '').slice(0, 100), tok = String(a[3] == null ? '' : a[3]).trim();
-      var key = store + '__' + ((+m[1]) + '/' + (+m[2]) + '/' + (+m[3])) + '__' + tok + '__' + amt;
+      // 2026-09-02修正: 既存行側のキーはtKey()（時刻をHH:MMへ正規化）を通しているのに、新規取込側は
+      // 生の文字列(tok)のままキーに使っていたため、表記が少しでも違う（秒の有無等）と重複防止が
+      // すり抜けていた（実害34件・過大計上¥1,975,000）。両側とも同じtKey()を通して揃える。
+      var key = store + '__' + ((+m[1]) + '/' + (+m[2]) + '/' + (+m[3])) + '__' + tKey(tok) + '__' + amt;
       if (exist[key]) { skipped++; return; }
       exist[key] = 1;
       out.push([store, new Date(+m[1], +m[2] - 1, +m[3]), amt, desc, tok, now]);

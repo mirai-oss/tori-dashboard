@@ -1,0 +1,20 @@
+name: 入金二重計上のクリーンアップ実行（送信あり・使用後削除予定）
+on:
+  workflow_dispatch:
+    inputs:
+      dryRun:
+        description: "true=下見のみ（何も変更しない） / false=実際に修正を実行"
+        required: true
+        default: "true"
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: depositDupFixOnceを実行
+        run: |
+          curl -sL -G "https://script.google.com/macros/s/AKfycbwW0qhyEr0-uQWTaLg7MkQhurHq6wMoaOKL7uCCnI_bgnAsGB5-auqG_dm_Q9uJc3Kc/exec" \
+            --data-urlencode "action=depositDupFixOnce" \
+            --data-urlencode "onceKey=DtvGq74OXa4ctmDc1oE4qcos8DEH" \
+            --data-urlencode "dryRun=${{ github.event.inputs.dryRun }}" \
+            | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.stringify(JSON.parse(d),null,2)));"
