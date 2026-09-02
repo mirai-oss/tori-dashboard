@@ -63,6 +63,7 @@ function handle(p) {
     if (action === 'dataKeysDiag') return out(dataKeysDiag(p)); // getData()が実際にどのキーを返すか確認（専用トークン認証・読み取り専用・一時的）
     if (action === 'mediaDateRangeDiag') return out(mediaDateRangeDiag(p)); // stg_media（媒体別日次）の最古/最新日付を確認（担当D依頼の前年比調査用・専用トークン認証・読み取り専用・一時的）
     if (action === 'rsvDateRangeDiag') return out(rsvDateRangeDiag_(p)); // stg_reservation（予約）の店舗別最新日付・件数を確認（専用トークン認証・読み取り専用。2026-08-31追加）
+    if (action === 'bootstrapDiag') return out(bootstrapDiag_(p)); // bootstrap actionの正常性・所要時間を確認（専用トークン認証・読み取り専用・一時的。2026-09-02追加）
     if (action === 'syncSeisanFeeToPl') return out(syncSeisanFeeToPl(p)); // 運営委託費のPL自動連携（専用トークン認証・ログイン不要。2026-08-23追加）
     if (action === 'syncSeisanCategoriesToPl') return out(syncSeisanCategoriesToPl(p)); // 精算書の勘定科目→PL自動連携（専用トークン認証・ログイン不要。2026-08-31追加・A-9）
     if (action === 'syncSpotLaborToPl') return out(syncSpotLaborToPl(p)); // スポット人件費の月次PL自動連携（専用トークン認証・ログイン不要。2026-08-23追加）
@@ -111,6 +112,7 @@ function handle(p) {
     if (action === 'bqGetReservationNames') return out(bqGetReservationNames(p, session)); // 予約詳細：お客様名を都度Supabaseから取得（ログイン必須・店舗スコープ制限。2026-08-31追加・A-6 Phase2）
     if (action === 'bqGetSeatMaster') return out(bqGetSeatMaster(p, session)); // 予約タブ：店舗ごとの卓一覧（DB_席マスタ）を読む（2026-08-28追加・A-6）
     if (action === 'dataFreshness') return out(dataFreshness(p, session)); // データ最新日・BQ同期時刻の表示用（実装指示書_ダッシュボード高速化タスク1・2026-08-23追加）
+    if (action === 'bootstrap') return out(bootstrapDashboard_(p, session)); // W1: 初回表示のGAS往復10回→1回に集約（実装指示書_表示集計層kdと高速化実行計画§10.1 W1・2026-09-02追加）
     if (action === 'accounts') return out(listAccounts(session));
     if (action === 'saveAccount')   return out(saveAccount(p, session));
     if (action === 'deleteAccount') return out(deleteAccount(p, session));
@@ -2417,6 +2419,52 @@ function dataFreshness(p, session) {
     var raw = PropertiesService.getScriptProperties().getProperty('BQ_SYNC_LAST_OK');
     if (raw) { var j = JSON.parse(raw); out.bqSyncedAt = j.time || null; out.bqSyncedOk = !!j.ok; }
   } catch (eProp2) {}
+  return out;
+}
+
+// 検証用（2026-09-02・一時的・調査後削除予定）: bootstrap本体の正常性・所要時間を、実ログイン
+// セッション無しで確認する（既存のrsvPerfDiag_等と同じtoken認証パターン）。実データは行数のみ返す。
+function bootstrapDiag_(p) {
+  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+  if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
+  var now = function () { return new Date().getTime(); };
+  var s = now();
+  var r = bootstrapDashboard_({ months: 13, bq: '1' }, { stores: '全店' });
+  var summary = {};
+  ['data', 'version', 'daily', 'pl', 'spot', 'loan', 'deposit', 'media', 'freshness'].forEach(function (k) {
+    var v = r[k];
+    if (v == null) { summary[k] = 'missing'; return; }
+    if (typeof v !== 'object') { summary[k] = v; return; }
+    var rowCounts = {};
+    if (v.sheets) { for (var sk in v.sheets) rowCounts[sk] = (v.sheets[sk] || []).length; }
+    summary[k] = { ok: v.ok, error: v.error, rowCounts: v.sheets ? rowCounts : undefined };
+  });
+  return { ok: true, ms: now() - s, summary: summary };
+}
+// W1: 初回表示のGAS往復集約（2026-09-02・実装指示書_表示集計層kdと高速化実行計画§10.1 W1）。
+// fetchDataFast()（app.js）がログイン直後に個別に呼んでいた「data＋BQ系6action＋freshness＋version」
+// の計9回のGAS往復（各回に数百ms〜数秒の起動・セッション検証コストがかかる。ランキング原因#1）を、
+// セッション検証を1回だけにしたうえで1回の実行にまとめる。BigQuery呼び出し自体は（Apps Script内で
+// 並列化できないため）順番に実行するが、GAS呼び出し自体のオーバーヘッドが8回分減る効果が主眼。
+// 1つでも失敗しても他の結果は返す（個別のfetchXxxBQ()と同じ「部分成功」の考え方をサーバー側に集約）。
+function bootstrapDashboard_(p, session) {
+  var out = { ok: true };
+  function safe(key, fn) {
+    try { out[key] = fn(); } catch (e) { out[key] = { ok: false, error: String(e && e.message || e) }; }
+  }
+  safe('data', function () { return getData(p, session); });
+  safe('version', function () { return dataVersion(); });
+  // BQモード用の6系統。p.bq==='1'のとき（=クライアントのS.useBqDaily時）だけ実行する
+  // （シートモードのアカウントに余計なBigQueryクエリを発生させないため）
+  if (String(p.bq) === '1') {
+    safe('daily', function () { return bqDailyStore({ months: p.months }, session); });
+    safe('pl', function () { return bqGetPL({}, session); });
+    safe('spot', function () { return bqGetSpot({}, session); });
+    safe('loan', function () { return bqGetLoanPrincipal({}, session); });
+    safe('deposit', function () { return bqGetDeposit({}, session); });
+    safe('media', function () { return bqGetMedia({ months: 3, alsoPriorYear: 1 }, session); });
+  }
+  safe('freshness', function () { return dataFreshness(p, session); });
   return out;
 }
 
