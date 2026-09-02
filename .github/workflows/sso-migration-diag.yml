@@ -1,0 +1,18 @@
+name: P-2a差し替え前の統合アカウント化件数確認（送信なし・一時的）
+# アカウント管理シートの「メール」欄が埋まっている（=統合アカウント化済み）アクティブ
+# アカウントの件数を確認する。氏名・メール等のPIIは含まない。用が済んだら削除してよい。
+on:
+  workflow_dispatch: {}
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: ssoMigrationDiagを実行
+        env:
+          BQ_LOAD_TOKEN: ${{ secrets.BQ_LOAD_TOKEN }}
+        run: |
+          curl -sL -G "https://script.google.com/macros/s/AKfycbwW0qhyEr0-uQWTaLg7MkQhurHq6wMoaOKL7uCCnI_bgnAsGB5-auqG_dm_Q9uJc3Kc/exec" \
+            --data-urlencode "action=ssoMigrationDiag" \
+            --data-urlencode "token=$BQ_LOAD_TOKEN" \
+            | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.stringify(JSON.parse(d),null,2)));"
