@@ -53,7 +53,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-a6p2', time: new Date().toISOString() }); // a6p2=運営委託費二重計上修正+A-6Phase2（キャンセル分析・お客様名・媒体手数料設定）追加（2026-08-31）のデプロイ確認用に更新
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-a6p3', time: new Date().toISOString() }); // a6p3=bqGetReservationNamesのSupabase呼び出しにUser-Agent追加（ブラウザ判定によるsecret key拒否エラーを解消・2026-09-04）
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'roleDefDiag') return out(roleDefDiag(p)); // DB_権限定義シートの内容を返す（専用トークン認証・読み取り専用。2026-09-02追加）
@@ -1932,7 +1932,7 @@ function bqGetReservationNames(p, session) {
     var qs = 'select=reservation_key,customer_name,customer_name_kana,store_id&source=eq.dinii&reservation_key=in.(' + keyList + ')';
     if (restricted) qs += '&store_id=in.(' + allowIds.join(',') + ')';
     var res = UrlFetchApp.fetch(supaUrl + '/rest/v1/rsv_reservations?' + qs, {
-      headers: { apikey: supaKey, Authorization: 'Bearer ' + supaKey }, muteHttpExceptions: true
+      headers: { apikey: supaKey, Authorization: 'Bearer ' + supaKey, 'User-Agent': 'ns0314-dashboard-server-gas/1.0' }, muteHttpExceptions: true
     });
     if (res.getResponseCode() !== 200) return { ok: false, error: 'Supabase取得失敗[' + res.getResponseCode() + ']: ' + res.getContentText().slice(0, 200) };
     var rows = JSON.parse(res.getContentText() || '[]');
