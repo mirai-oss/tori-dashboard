@@ -153,6 +153,45 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 
 ## 5. 作業ログ
 
+### 2026-09-06（担当A実行スレッド・続き）W3②: 媒体別・入金にkeiei-api-dashboard-summaryを接続、PLは新旧突合の検証パネルのみ（司令塔指示・コミット`03971fc`・`app.js?v=174`）
+
+司令塔指示「`keiei-api-dashboard-summary`が本番稼働済みなのでPL・売上分析・入金画面の差し替え調査を開始。
+PLは4店舗で原価・人件費0円のデータ穴があるため本番表示は切り替えず旧結果との裏突合・検証表示までに。
+データ欠損リスクが低い画面から優先して切り替え」を受け対応。
+
+**事前調査**: `kd_pl_monthly_summary`/`kd_media_monthly_summary`/`kd_deposit_monthly_summary`を
+Supabaseで直接確認。media(263行・2026-05〜09)・deposit(178行・2024-01〜2026-09)とも12店舗全て
+データが揃っており欠損なし（**低リスク確認**）。PLの4店舗（じんべぇ川崎・じんべぇ新横浜・エース本厚木・
+秋葉原肉寿司）は8月分で`cost_total=0`/`labor_total=0`を実データで確認、**司令塔からの補足で「業務委託店舗の
+原価・人件費は業務委託精算書側で計算しており通常PL集計にまだ出ていない既知の状態（異常ではない）」と
+確認済み**。原因調査は不要と判断し、正しく異常扱いしない設計にした。
+
+**実装（app.js）**:
+- `fetchDashboardSummaryApi_(kind,ym)`新設: `keiei-api-dashboard-summary`（`kind:'pl'|'media'|'deposit'`）
+  を叩く汎用ヘルパー。`fetchHomeApi_`と同じ「統合アカウントJWTが取れる場合だけ」パターン
+- `storeNameById_(id)`新設: kd_系テーブルの`store_id`(UUID)を`D.home.stores`の`storeId→storeName`
+  対応で店舗名文字列に変換（app.jsの既存コードは全て店舗名ベースのため必須の橋渡し。`fetchHomeApi_()`の
+  後に呼ぶ前提）
+- **媒体別（`mediaPanel`）**: `D.media`未着・当月表示中・媒体別モードのときだけ`mediaPanelFast_`で
+  `kd_media_monthly_summary`の速報値を表示（前年比・入店用途/営業区分別はv1未対応のため出さない）
+- **入金（`viewDeposit`）**: 従来ローディング状態のガードが無く無言でゼロ表示していた不具合を副次的に
+  解消。`D.deposit`未着・当月表示中は`viewDepositFast_`で`kd_deposit_monthly_summary`の速報値
+  （現金売上・入金額・差額のみ）を表示。累計未入金（繰越）・日別明細は複数月履歴が必要なため対象外
+  とし「準備中」と明記
+- **PL（`viewPL`）**: 本番のKPI・PLテーブル等には一切使わず、`plShadowCompareNote_`で
+  `kd_pl_monthly_summary`と旧GAS/BQ集計（`stat()`+`plAgg()`の既存合成ロジック）の店舗別突合パネルを
+  追加。**マスター/本部限定表示・`DASH_SUMMARY_PL_LIVE_=false`固定**（本番表示切替は司令塔/ユーザー
+  確認後に判断）。業務委託精算4店舗は「業務委託精算書反映前」と表示し差異判定から除外、それ以外の
+  店舗で差額1,000円超は「⚠️差異あり」と表示
+
+構文チェック済み・GitHub Pages反映確認済み（`app.js?v=174`・console.errorなし）。**実機でのログイン後の
+表示確認（媒体別・入金の速報表示、PL突合パネルの内容）はユーザー確認待ち**（統合アカウントのJWTが
+必要なためこのセッションからは認証済み状態を再現できない）。
+
+**申し送り**: `kd_pl_monthly_summary`へ業務委託精算書由来のPL反映分を取り込む対応はレーンP側で進行中
+（別スレッドで確認済み）。それが入った後、突合パネルで4店舗の差異が解消したことを確認できたら
+`DASH_SUMMARY_PL_LIVE_=true`への切替を検討する。
+
 ### 2026-09-06（担当A実行スレッド）P-0c: keiei-api-homeをホーム初期表示に接続・GAS action:dataを裏更新に降格（体感速度改善の最優先対応・コミット`b95b5e4`・`app.js?v=173`）
 
 ユーザー指示「体感速度改善を最優先。いちばんストレスが大きいのは売上確認・PL確認・売上分析」を受け着手。
