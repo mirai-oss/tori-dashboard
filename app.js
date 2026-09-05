@@ -44,6 +44,13 @@ const RSV_API_URL = 'https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/keiei
 // レーンP側の修正（WORKLOG依頼済み）が入るまでは新経路を使わず、必ず旧GAS経路にフォールバックする。
 // 修正確認後はこの値をtrueに戻すだけで再度Supabase直読みが有効になる。
 const RSV_API_ENABLED_ = false;
+// P-0c（2026-09-06・体感速度改善の最優先タスク）: ホーム/ダッシュボード初期表示の速報値を
+// keiei-api-home（レーンP管轄・kd_home_kpi_snapshot等のSupabase集計済みテーブルを読む軽量API。
+// GAS/Sheets/BigQuery非経由）から取得する。RSV_API同様、統合アカウントのJWTが取れる場合だけ使い、
+// 取れなければ黙って何もしない（=D.homeがnullのままなので、従来どおりD.daily到着後の通常描画に
+// 自然にフォールバックする。何も壊れない）。問題が起きた場合はこの値をfalseに戻すだけで即無効化できる。
+const HOME_API_URL = SSO_SUPA_URL + '/functions/v1/keiei-api-home';
+const HOME_API_ENABLED_ = true;
 
 /* ---------------- 定数 ---------------- */
 const CANON_STORES = ['芝の鳥一代','鳥一代 はなれ','鳥一代 恵比寿','鳥一代 新橋','鳥一代 本店','鶏武者 新横浜','鶏武者 川崎店','黒霧屋 新横浜'];
@@ -211,7 +218,8 @@ const D = { daily:[], media:[], deposit:[], review:[], ad:[], adfx:[], tanka:{},
   wkTpl:{}, wkRep:[], wkAns:{}, wkFb:{}, roleDef:{}, depNote:{}, dailyBqLoading:false, dailyBqErr:'', plBqLoading:false, plBqErr:'', storeDirectory:null,
   freshness:null, freshnessAt:0, bqFallback:{},
   rsvBq:[], rsvBqLoading:false, rsvBqErr:'',    // 予約タブ（2026-08-28追加・A-6。stg_reservationのBQミラー。D.rsv（旧・管理シート💾予約DB手動貼付け）とは別物として並行保持
-  rsvSeats:[], rsvSeatsLoaded:false, rsvHours:{} };  // 予約タブ：店舗ごとの卓一覧（DB_席マスタ）・営業時間（DB_営業時間、店舗名→[{spec,open,close}]の配列。resolveStoreHours_で日付ごとに1件選ぶ）
+  rsvSeats:[], rsvSeatsLoaded:false, rsvHours:{},  // 予約タブ：店舗ごとの卓一覧（DB_席マスタ）・営業時間（DB_営業時間、店舗名→[{spec,open,close}]の配列。resolveStoreHours_で日付ごとに1件選ぶ）
+  home:null, homeLoading:false, homeErr:'' };  // P-0c(2026-09-06): keiei-api-homeの速報値。D.dailyが届くまでの間だけviewDashFast_で使う
 let EXPORT = [];      // 現在タブのCSVエクスポート対象 [{title,headers,rows}]
 let pollTimer = null;
 
@@ -1610,6 +1618,37 @@ async function fetchData(silent, opts, preD){
     if(!opts.partial){ S.connState='error'; if(!silent) toast('データ取得エラー: '+e.message); if(!targetModalOpen_()) render(); }
   }
 }
+// P-0c（2026-09-06）: keiei-api-homeを叩いて速報KPI（当月累計・本日実績・店舗別サマリ）を取得する。
+// RSV_API（予約タブ）と同じ「統合アカウントのJWTが取れる場合だけSupabase直読み」方式。
+// GASフォールバックは持たない＝失敗してもD.homeがnullのままなので、fetchDataFast内で並行して
+// 動いているfetchData()（従来のGAS action:data）到着後の通常描画に何も変えずフォールバックする
+// （このAPI自体が落ちても既存の表示経路を壊さない設計）。
+async function fetchHomeApi_(){
+  if(!S.auth||!S.auth.token||!HOME_API_ENABLED_) return;
+  D.homeLoading=true;
+  try{
+    const jwt=await portalAccessToken().catch(()=>null);
+    if(!jwt){ D.homeLoading=false; return; }   // 統合アカウント未連携。従来経路のみで表示させる
+    const ctl=(typeof AbortController!=='undefined')?new AbortController():null;
+    const tm=ctl?setTimeout(()=>ctl.abort(),15000):null;   // 集計済みテーブル読みのみなので15秒で十分な想定
+    const t0=nowMs_();
+    let res=null,d=null,errType='';
+    try{
+      res=await fetch(HOME_API_URL,{ method:'POST', headers:{ 'Content-Type':'application/json', apikey:SSO_SUPA_KEY, Authorization:'Bearer '+jwt },
+        body:JSON.stringify({}), signal:ctl?ctl.signal:undefined });
+      d=await res.json().catch(()=>null);
+    }catch(fe){ errType=(fe&&(fe.name==='AbortError'||fe.code===20))?'timeout':'network'; }
+    finally{ if(tm) clearTimeout(tm); }
+    if(res && res.ok && d && d.ok){
+      D.home=d; D.homeErr='';
+      logApiPerf_('keiei-api-home', nowMs_()-t0, true, '');
+    } else {
+      D.homeErr=(d&&d.error)||(errType==='timeout'?'応答がありません（15秒でタイムアウト）':('取得に失敗しました（HTTP '+(res&&res.status)+'）'));
+      logApiPerf_('keiei-api-home', nowMs_()-t0, false, errType||(d&&d.error?'api_error':'http_'+(res&&res.status)));
+    }
+  }catch(e){ D.homeErr=String(e&&e.message||e); }
+  D.homeLoading=false;
+}
 // 初回・更新で「本当に重い」データだけ（実測：media=12s/dinii=6.3s/deposit=5.4s/予約=3.3s）。
 // 広告・広告効果・単価設定は実測200〜250msと軽いためフェーズ1に含める（除外すると広告管理タブが
 // 裏読み完了前に開かれた場合「未接続」と誤診断されてしまうため）。
@@ -1622,7 +1661,13 @@ async function fetchDataFast(){
   // BigQueryモード中は、シート側のdaily/PL/depositを毎回上書きしないよう除外し、
   // 代わりにfetchDailyBQ()/fetchPlBQ()/fetchDepositBQ()で取得する（2026-08-22追加）
   const excl = S.useBqDaily ? HEAVY_KEYS.concat(['daily','PL','スポット人件費','借入返済元金']) : HEAVY_KEYS;
-  await fetchData(true, { exclude:excl });               // 軽い必須のみ → すぐ表示
+  // P-0c（2026-09-06・体感速度改善の優先順位変更）: 従来のGAS action:dataは初期表示の必須待ちから
+  // 外し、裏更新（完了次第fetchData内部のrender()で反映）に降格した。代わりにkeiei-api-homeだけを
+  // 待って先に速報表示する（両方とも並行して投げるので合計の通信時間は増えない。fetchDataは内部で
+  // 例外を握りつぶす実装のためawaitしなくても安全）。action:dataはHANDOFF.md記載の実測で失敗率38%
+  // （最頻出のGAS action）と分かっており、初期表示をこれに依存させないことが体感速度改善の要。
+  fetchData(true, { exclude:excl });
+  await fetchHomeApi_();                                  // 速報KPI・当月累計・店舗別サマリをここで待つ
   if(S.useBqDaily){ fetchDailyBQ(); fetchPlBQ(); fetchDepositBQ(); fetchMediaBQ(); fetchSpotBQ(); fetchLoanBQ(); }
   fetchFreshness();                                       // データ鮮度表示（5分キャッシュ・下のfetchFreshness参照）
   // 2026-09-02追加: 更新(⌘R)ボタンは目標管理モーダルを開いたまま押せてしまうため、ここもガードする
@@ -2269,7 +2314,37 @@ function mediaTableRows(a,b,pa,pb,scopeSet,selName,mode){
   return { total, rows:Object.keys(agg).map(m=>({media:m,...agg[m],prev:prevAgg[m]||0})).sort((x,y)=>y.net-x.net) };
 }
 
+// P-0c（2026-09-06）: keiei-api-homeの速報値だけで描く簡易ダッシュボード（D.daily到着までのつなぎ）。
+// 既存のkpi-grid/panel/tblクラスをそのまま流用し、新しいUIパーツは作らない。D.dailyが届き次第、
+// viewDash()側の分岐で自動的に呼ばれなくなり従来の詳細描画に切り替わる（この関数は使い捨て）。
+function viewDashFast_(){
+  const t=D.home.totals||{}, stores=D.home.stores||[];
+  const targetRateTxt=t.targetRate!=null?(t.targetRate*100).toFixed(1)+'%':'—';
+  const yoyTxt=t.priorYearSameWeekdayRatio!=null?(t.priorYearSameWeekdayRatio*100).toFixed(1)+'%':'—';
+  const yoyCls=t.priorYearSameWeekdayRatio==null?'mut':t.priorYearSameWeekdayRatio>=1?'pos':'neg';
+  let h=`<div class="mut" style="font-size:11px;margin:2px 0 8px">⚡ 速報値を表示中（詳細データを読み込んでいます…）</div>`;
+  h+=`<div class="kpi-grid">
+    <div class="kpi"><div class="lb">当月累計売上</div><div class="vl">${yen(t.mtdSales)}</div><div class="yy mut">目標 ${yen(t.target)}（達成率 ${targetRateTxt}）</div></div>
+    <div class="kpi"><div class="lb">本日売上</div><div class="vl">${yen(t.todaySales)}</div><div class="yy ${yoyCls}">前年同曜日比 ${yoyTxt}</div></div>
+    <div class="kpi"><div class="lb">本日客数</div><div class="vl">${cnt(t.todayGuests)}人</div><div class="yy mut">客単価 ${yen(t.todayAvgCheck||0)}</div></div>
+    <div class="kpi"><div class="lb">本日組数</div><div class="vl">${cnt(t.todayParties)}組</div><div class="yy mut">${esc(D.home.asOf||'')} 時点</div></div>
+  </div>`;
+  if(stores.length){
+    h+=`<div class="panel"><div class="panel-head"><div><h3>店舗別サマリ（速報）</h3><div class="sub">原価率・人件費率等の詳細指標は読み込み完了後に表示されます</div></div></div>
+    <div class="scroll-x"><table class="tbl"><thead><tr><th>店舗</th><th>当月累計</th><th>達成率</th><th>本日売上</th><th>本日客数</th></tr></thead><tbody>`;
+    stores.forEach(s=>{
+      const rt=s.targetRate!=null?(s.targetRate*100).toFixed(1)+'%':'—';
+      h+=`<tr><td>${shortStoreTd(s.storeName)}</td><td>${yen(s.mtdSales)}</td><td>${rt}</td><td>${yen(s.todaySales)}</td><td>${cnt(s.todayGuests)}人</td></tr>`;
+    });
+    h+=`</tbody></table></div></div>`;
+  }
+  return h;
+}
 function viewDash(){
+  // P-0c（2026-09-06）: D.daily（GAS action:data / BQ由来の日別実績）がまだ届いていない間は、
+  // 先に届いたkeiei-api-homeの速報値だけで簡易表示する。D.dailyが届き次第、次回のrender()で
+  // 自動的にこの分岐を通らなくなり、以下の従来どおりの詳細描画に戻る（この関数自体は無改修）。
+  if(!D.daily.length && D.home) return viewDashFast_();
   const sc=scopeStores(); const scopeSet=new Set(sc); const selName=selStoreName();
   const r=periodRange(), p=prevRange(r);
   const a=dayMs(r.s), b=dayMs(r.e), pa2=dayMs(p.s), pb2=dayMs(p.e);
