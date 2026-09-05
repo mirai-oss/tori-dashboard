@@ -51,6 +51,15 @@ const RSV_API_ENABLED_ = false;
 // 自然にフォールバックする。何も壊れない）。問題が起きた場合はこの値をfalseに戻すだけで即無効化できる。
 const HOME_API_URL = SSO_SUPA_URL + '/functions/v1/keiei-api-home';
 const HOME_API_ENABLED_ = true;
+// W3②（2026-09-06・司令塔指示「PL・売上分析・入金画面の差し替え調査」）: kd_pl_monthly_summary/
+// kd_media_monthly_summary/kd_deposit_monthly_summaryをまとめて読む軽量API。媒体別・入金は
+// データ欠損が確認されていないため速報表示に使う。PLは4店舗(業務委託精算店舗)の原価/人件費が
+// 業務委託精算書側に計上されており通常PL集計にまだ現れない既知の状態（異常ではない）のため、
+// 精算書反映が入るまでは本番表示に使わず旧GAS/BQ結果との裏突合・検証表示にのみ使う
+// （DASH_SUMMARY_PL_LIVE_=falseで固定。trueにする＝本番表示切替の判断は司令塔/ユーザー確認後）。
+const DASH_SUMMARY_API_URL = SSO_SUPA_URL + '/functions/v1/keiei-api-dashboard-summary';
+const DASH_SUMMARY_ENABLED_ = true;
+const DASH_SUMMARY_PL_LIVE_ = false;
 
 /* ---------------- 定数 ---------------- */
 const CANON_STORES = ['芝の鳥一代','鳥一代 はなれ','鳥一代 恵比寿','鳥一代 新橋','鳥一代 本店','鶏武者 新横浜','鶏武者 川崎店','黒霧屋 新横浜'];
@@ -219,7 +228,8 @@ const D = { daily:[], media:[], deposit:[], review:[], ad:[], adfx:[], tanka:{},
   freshness:null, freshnessAt:0, bqFallback:{},
   rsvBq:[], rsvBqLoading:false, rsvBqErr:'',    // 予約タブ（2026-08-28追加・A-6。stg_reservationのBQミラー。D.rsv（旧・管理シート💾予約DB手動貼付け）とは別物として並行保持
   rsvSeats:[], rsvSeatsLoaded:false, rsvHours:{},  // 予約タブ：店舗ごとの卓一覧（DB_席マスタ）・営業時間（DB_営業時間、店舗名→[{spec,open,close}]の配列。resolveStoreHours_で日付ごとに1件選ぶ）
-  home:null, homeLoading:false, homeErr:'' };  // P-0c(2026-09-06): keiei-api-homeの速報値。D.dailyが届くまでの間だけviewDashFast_で使う
+  home:null, homeLoading:false, homeErr:'',  // P-0c(2026-09-06): keiei-api-homeの速報値。D.dailyが届くまでの間だけviewDashFast_で使う
+  mediaSummaryFast:null, depositSummaryFast:null, depositSummaryFastYm:'', plSummaryFast:null, plSummaryFastYm:'' };  // W3②(2026-09-06): keiei-api-dashboard-summaryの速報値（媒体別・入金は先読み表示、PLは裏突合のみ）
 let EXPORT = [];      // 現在タブのCSVエクスポート対象 [{title,headers,rows}]
 let pollTimer = null;
 
@@ -1649,6 +1659,37 @@ async function fetchHomeApi_(){
   }catch(e){ D.homeErr=String(e&&e.message||e); }
   D.homeLoading=false;
 }
+// D.home.storesのstoreId→storeName対応を使ってUUIDを店舗名に変換する（GAS/app.jsの他コードは
+// 全て店舗名文字列ベースのため、kd_*テーブル由来のstore_idはここで一度だけ変換して橋渡しする）。
+// D.home（keiei-api-home）が届く前は変換できないため、必ずfetchHomeApi_()の後に使うこと。
+function storeNameById_(id){
+  if(!D.home||!D.home.stores) return null;
+  const hit=D.home.stores.find(s=>s.storeId===id);
+  return hit?hit.storeName:null;
+}
+// W3②（2026-09-06）: keiei-api-dashboard-summary（kind:'pl'|'media'|'deposit'）を叩く汎用ヘルパー。
+// fetchHomeApi_と同じ「統合アカウントのJWTが取れる場合だけ」パターン。失敗時はnullを返すだけで
+// 呼び出し側は従来経路（GAS/BQ）の到着を待てば良い（何も壊れない設計）。
+async function fetchDashboardSummaryApi_(kind, ym){
+  if(!S.auth||!S.auth.token||!DASH_SUMMARY_ENABLED_) return null;
+  try{
+    const jwt=await portalAccessToken().catch(()=>null);
+    if(!jwt) return null;
+    const ctl=(typeof AbortController!=='undefined')?new AbortController():null;
+    const tm=ctl?setTimeout(()=>ctl.abort(),15000):null;
+    const t0=nowMs_();
+    let res=null,d=null,errType='';
+    try{
+      res=await fetch(DASH_SUMMARY_API_URL,{ method:'POST', headers:{ 'Content-Type':'application/json', apikey:SSO_SUPA_KEY, Authorization:'Bearer '+jwt },
+        body:JSON.stringify({ kind, year_month:ym }), signal:ctl?ctl.signal:undefined });
+      d=await res.json().catch(()=>null);
+    }catch(fe){ errType=(fe&&(fe.name==='AbortError'||fe.code===20))?'timeout':'network'; }
+    finally{ if(tm) clearTimeout(tm); }
+    if(res&&res.ok&&d&&d.ok){ logApiPerf_('keiei-api-dashboard-summary:'+kind, nowMs_()-t0, true, ''); return d; }
+    logApiPerf_('keiei-api-dashboard-summary:'+kind, nowMs_()-t0, false, errType||(d&&d.error?'api_error':'http_'+(res&&res.status)));
+    return null;
+  }catch(e){ return null; }
+}
 // 初回・更新で「本当に重い」データだけ（実測：media=12s/dinii=6.3s/deposit=5.4s/予約=3.3s）。
 // 広告・広告効果・単価設定は実測200〜250msと軽いためフェーズ1に含める（除外すると広告管理タブが
 // 裏読み完了前に開かれた場合「未接続」と誤診断されてしまうため）。
@@ -1668,6 +1709,13 @@ async function fetchDataFast(){
   // （最頻出のGAS action）と分かっており、初期表示をこれに依存させないことが体感速度改善の要。
   fetchData(true, { exclude:excl });
   await fetchHomeApi_();                                  // 速報KPI・当月累計・店舗別サマリをここで待つ
+  // W3②（2026-09-06）: 媒体別・入金の当月速報（低リスクのため先読み表示に使う）＋PL（本番表示には
+  // 使わず旧結果との裏突合専用）をawaitせず並行取得。storeNameById_がD.home.stores依存のため
+  // fetchHomeApi_()の後に呼ぶ（順序が重要）。
+  const curYm_=ymdStr(Date.now()).slice(0,7);
+  fetchDashboardSummaryApi_('media', curYm_).then(d=>{ if(d){ D.mediaSummaryFast=d.rows; if(!targetModalOpen_()) render(); } });
+  fetchDashboardSummaryApi_('deposit', curYm_).then(d=>{ if(d){ D.depositSummaryFast=d.rows; D.depositSummaryFastYm=curYm_; if(!targetModalOpen_()) render(); } });
+  fetchDashboardSummaryApi_('pl', curYm_).then(d=>{ if(d){ D.plSummaryFast=d.rows; D.plSummaryFastYm=curYm_; if(!targetModalOpen_()) render(); } });
   if(S.useBqDaily){ fetchDailyBQ(); fetchPlBQ(); fetchDepositBQ(); fetchMediaBQ(); fetchSpotBQ(); fetchLoanBQ(); }
   fetchFreshness();                                       // データ鮮度表示（5分キャッシュ・下のfetchFreshness参照）
   // 2026-09-02追加: 更新(⌘R)ボタンは目標管理モーダルを開いたまま押せてしまうため、ここもガードする
@@ -2766,6 +2814,33 @@ function flPanel(cur,prev){
   return h;
 }
 
+// W3②（2026-09-06）: kd_media_monthly_summaryの速報値だけで描く簡易版mediaPanel。
+// 既存のtbl/panelクラスをそのまま使い、D.mediaが届き次第この関数は呼ばれなくなる（使い捨て）。
+function mediaPanelFast_(M,picker,scopeSet,selName){
+  const agg={};
+  D.mediaSummaryFast.forEach(r=>{
+    const nm=storeNameById_(r.store_id);
+    if(!nm) return;
+    const inScope=selName?(nm===selName):scopeSet.has(nm);
+    if(!inScope) return;
+    const k=r.media_name||'（不明）';
+    const o=agg[k]||(agg[k]={net:0,g:0});
+    o.net+=Number(r.net_sales||0); o.g+=Number(r.guests||0);
+  });
+  const rows=Object.keys(agg).map(m=>({media:m,...agg[m]})).sort((x,y)=>y.net-x.net);
+  const total=rows.reduce((s,x)=>s+x.net,0);
+  if(!rows.length) return `<div class="panel"><div class="panel-head"><div><h3>${M.t}</h3><div class="sub">読み込み中…</div></div>${picker}</div><div class="empty">媒体別データを読み込んでいます…</div></div>`;
+  let h=`<div class="mut" style="font-size:11px;margin:2px 0 8px">⚡ 速報値を表示中（詳細データを読み込んでいます…）</div>
+  <div class="panel"><div class="panel-head"><div><h3>${M.t}</h3><div class="sub">${M.sub}（速報・前年比は詳細読み込み後に表示）</div></div>${picker}</div>
+  <div class="scroll-x"><table class="tbl"><thead><tr><th>${M.col}</th><th>売上</th><th>構成比</th><th>客数</th><th>客単価</th></tr></thead><tbody>`;
+  rows.slice(0,12).forEach(x=>{
+    h+=`<tr><td>${esc(x.media)}</td><td>${yen(x.net)}</td><td>${total>0?(x.net/total*100).toFixed(1):'—'}%</td><td>${cnt(x.g)}人</td><td>${yen(x.g>0?x.net/x.g:0)}</td></tr>`;
+  });
+  const tG=rows.reduce((s,x)=>s+x.g,0);
+  h+=`<tr class="total"><td>合計</td><td>${yen(total)}</td><td>100%</td><td>${cnt(tG)}人</td><td>${yen(tG>0?total/tG:0)}</td></tr>`;
+  h+=`</tbody></table></div></div>`;
+  return h;
+}
 function mediaPanel(a,b,pa2,pb2,scopeSet,selName){
   const mode=S.mediaMode||'media';
   const MODES={ media:{t:'媒体別 売上',col:'媒体',sub:'予約媒体・チャネル別の実績'},
@@ -2778,6 +2853,12 @@ function mediaPanel(a,b,pa2,pb2,scopeSet,selName){
     <option value="seg" ${mode==='seg'?'selected':''}>営業区分別</option>
   </select>`;
   const { total, rows }=mediaTableRows(a,b,pa2,pb2,scopeSet,selName,mode);
+  // W3②（2026-09-06）: D.media（GAS/BQ）がまだ届いていない・今月表示中・媒体別モードのときだけ、
+  // 先に届いたkd_media_monthly_summary（低リスク＝欠損が確認されていないため優先切替対象）の速報値で
+  // 埋める。前年比・入店用途/営業区分別（DB_媒体分類のロジックが必要）はv1未対応のため出さない。
+  if(!rows.length && D.mediaPending && mode==='media' && S.period==='month' && D.mediaSummaryFast && D.mediaSummaryFast.length){
+    return mediaPanelFast_(M,picker,scopeSet,selName);
+  }
   if(!rows.length && D.mediaPending) return `<div class="panel"><div class="panel-head"><div><h3>${M.t}</h3><div class="sub">読み込み中…</div></div>${picker}</div><div class="empty">媒体別データを読み込んでいます…</div></div>`;
   if(!rows.length) return `<div class="panel"><div class="panel-head"><div><h3>${M.t}</h3></div>${picker}</div><div class="empty">媒体別データがありません</div></div>`;
   let h=bqFallbackNote_('media')+`<div class="panel"><div class="panel-head"><div><h3>${M.t}</h3><div class="sub">${M.sub}</div></div>${picker}</div>
@@ -3395,9 +3476,33 @@ function viewPartner(){
   return h;
 }
 
+// W3②（2026-09-06）: kd_deposit_monthly_summaryの速報値だけで描く簡易版。累計未入金（繰越）は
+// 複数月の履歴が必要なため出さない＝当月の入金予定(現金売上)・入金済み・差額のみの速報。
+// viewDeposit()は元々「読み込み中」の空状態ガードが無く無言でゼロ表示していたため、これは純粋な改善。
+function viewDepositFast_(scopeSet,selName){
+  const rows=D.depositSummaryFast.filter(r=>{
+    const nm=storeNameById_(r.store_id);
+    if(!nm) return false;
+    return selName?(nm===selName):scopeSet.has(nm);
+  }).map(r=>({ store:storeNameById_(r.store_id), dep:Number(r.deposit_total||0), sales:Number(r.sales_total||0), diff:Number(r.diff||0) }));
+  if(!rows.length) return null;
+  let h=`<div class="mut" style="font-size:11px;margin:2px 0 8px">⚡ 速報値を表示中（詳細データ・日別明細・累計未入金は読み込み後に表示）</div>`;
+  h+=`<div class="panel"><div class="panel-head"><div><h3>入金確認（速報）</h3><div class="sub">当月の現金売上・ATM入金・差額のみ（累計未入金・日別明細は準備中）</div></div></div>
+  <div class="scroll-x"><table class="tbl"><thead><tr><th>店舗</th><th>現金売上</th><th>入金額</th><th>差額</th></tr></thead><tbody>`;
+  let tS=0,tD=0;
+  rows.forEach(r=>{ tS+=r.sales; tD+=r.dep; h+=`<tr><td>${shortStoreTd(r.store)}</td><td>${yen(r.sales)}</td><td>${yen(r.dep)}</td><td class="${r.diff<0?'neg':'mut'}">${yen(r.diff)}</td></tr>`; });
+  h+=`<tr class="total"><td>合計</td><td>${yen(tS)}</td><td>${yen(tD)}</td><td class="${(tS-tD)<0?'neg':'mut'}">${yen(tD-tS)}</td></tr>`;
+  h+=`</tbody></table></div></div>`;
+  return h;
+}
 function viewDeposit(){
   const sc=scopeStores(); const selName=selStoreName();
   const m0=depMonthDate();
+  // W3②: D.depositがまだ届いていない・当月表示中のときだけ速報値で先に見せる
+  if(!D.deposit.length && D.depositSummaryFast && D.depositSummaryFast.length && D.depositSummaryFastYm===ymdStr(m0).slice(0,7)){
+    const fast=viewDepositFast_(new Set(sc),selName);
+    if(fast) return fast;
+  }
   const y=m0.getFullYear(), m=m0.getMonth(), lastDay=new Date(y,m+1,0).getDate();
   const mS=dayMs(new Date(y,m,1)), mE=dayMs(new Date(y,m,lastDay));
   const targets=selName?[selName]:sc; const tSet=new Set(targets); const tKey=new Set(targets.map(normStore));
@@ -5266,6 +5371,36 @@ function rsvAnalysisHtml_(){
   return h;
 }
 
+// W3②（2026-09-06・司令塔指示「PL・売上分析・入金画面の差し替え調査」）: kd_pl_monthly_summary（新）
+// と旧GAS/BQ集計（旧）の突合パネル。本番表示（KPI・PLテーブル等）には一切使わず、マスター/本部にだけ
+// 見せる検証専用（DASH_SUMMARY_PL_LIVE_=false固定）。じんべぇ川崎・じんべぇ新横浜・エース本厚木・
+// 秋葉原肉寿司の4店舗（業務委託精算店舗）は、原価・人件費が業務委託精算書側で計算されており通常PL集計
+// にまだ現れない既知の状態（異常ではない・司令塔確認済み）なので「業務委託精算書反映前」と明記し、
+// 差異として扱わない（Pがkd_pl_monthly_summaryへ精算書反映分を取り込めるようにする設計は別途進行中）。
+const SEISAN_STORES_ = ['じんべぇ 川崎','じんべぇ 新横浜','エース 本厚木','秋葉原 肉寿司'];
+function plShadowCompareNote_(sc, mS, mE, ym){
+  if(!isAdminRole() || !ym || !D.plSummaryFast || D.plSummaryFastYm!==ym) return '';
+  const rows=sc.map(nm=>{
+    const s1=new Set([nm]);
+    const c1=stat(s1,mS,mE,null);
+    const p1=plAgg(s1,nm,mS,mE);
+    const costOld=c1.cost+p1.catTotal.F, laborOld=c1.labor+p1.catTotal.L, salesOld=c1.sales;
+    const hit=D.plSummaryFast.find(r=>storeNameById_(r.store_id)===nm);
+    if(!hit) return null;
+    return { nm, salesOld, salesNew:Number(hit.sales||0), costOld, costNew:Number(hit.cost_total||0), laborOld, laborNew:Number(hit.labor_total||0), seisan:SEISAN_STORES_.includes(nm) };
+  }).filter(Boolean);
+  if(!rows.length) return '';
+  let h=`<div class="panel" style="border:1px dashed #999"><div class="panel-head"><div><h3>🔍 PL新旧突合（検証用・マスター/本部限定・本番表示には未使用）</h3><div class="sub">kd_pl_monthly_summary(新)と旧GAS/BQ集計(旧)の比較。業務委託精算店舗4店は精算書反映前のため原価/人件費0円が既知の状態</div></div></div>
+  <div class="scroll-x"><table class="tbl"><thead><tr><th>店舗</th><th>売上(旧/新)</th><th>原価(旧/新)</th><th>人件費(旧/新)</th><th>判定</th></tr></thead><tbody>`;
+  rows.forEach(r=>{
+    const diffCost=r.costNew-r.costOld, diffLabor=r.laborNew-r.laborOld;
+    const note=r.seisan?'業務委託精算書反映前':(Math.abs(diffCost)>1000||Math.abs(diffLabor)>1000?'⚠️差異あり':'一致');
+    const cls=r.seisan?'mut':(note==='一致'?'pos':'neg');
+    h+=`<tr><td>${shortStoreTd(r.nm)}</td><td>${yen(r.salesOld)} / ${yen(r.salesNew)}</td><td>${yen(r.costOld)} / ${yen(r.costNew)}</td><td>${yen(r.laborOld)} / ${yen(r.laborNew)}</td><td class="${cls}">${note}</td></tr>`;
+  });
+  h+=`</tbody></table></div></div>`;
+  return h;
+}
 function viewPL(){
   const sc=scopeStores(); const selN=selStoreName();
   // 複数店舗の自由選択（2026-08-23追加）。業態・ブランドでの自動グルーピングではなく、
@@ -5312,6 +5447,9 @@ function viewPL(){
     mLabel=y+'年 '+(m+1)+'月';
     ctrlHtml=ymSelect('plMonth', y, m);
   }
+  // W3②（2026-09-06）: PL新旧突合パネル用。月次表示のときだけ、表示中の年月とD.plSummaryFastの
+  // 対象年月が一致するかを見る（過去月表示中に誤って別月と比較しないよう厳密一致にする）。
+  const curMonthYm_=(P==='month')?(()=>{ const m0=plMonthDate(); return m0.getFullYear()+'-'+String(m0.getMonth()+1).padStart(2,'0'); })():null;
   const isAll=!selN&&!multiActive&&sc.length===allStores().length;
   const scopeLabel=multiActive
     ? (multiIsFullScope?'全店合算（個別選択）':(multiStores.length<=3?multiStores.map(shortStore).join('・'):multiStores.length+'店舗を選択'))
@@ -5574,6 +5712,8 @@ function viewPL(){
     h+=`</tbody></table></div></div>`;
     EXPORT.push({ title:'店舗別損益比較（'+mLabel+'）', headers:['店舗','売上高','粗利','人件費','広告費','経費','営業利益','利益率'], rows:expC });
   }
+
+  h+=plShadowCompareNote_(sc, mS, mE, curMonthYm_);
 
   // ---- 未突合のPL店舗名 ----
   const umKeys=Object.keys(exCur.unmatched);
