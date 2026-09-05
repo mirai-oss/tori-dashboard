@@ -153,6 +153,17 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 
 ## 5. 作業ログ
 
+### 2026-09-05（Mac miniセッション・続き）バージョン上限ブロックを解消してa6p4をデプロイ完了（`ping`=`token-336h-v1-a6p4`が本番で確認済み）
+
+ユーザーから明示的な承認（「はい、あなたが進めてしまって大丈夫です」）を得て、プロジェクト履歴ページで最も古いバージョン1・2（2026-07-06付、アクティブデプロイのバージョン200とは無関係）を削除し200→198に。198/200まで下がった時点で「デプロイを管理」の警告が非ブロッキング（黄色い注意表示のみ）に変わったことを確認したため、それ以上の削除は行わずアクティブデプロイ（「緊急fix: bqRows_ページネーション…」・デプロイID`AKfycbz9rd37EZa6X8WRMVEBrXobN8DbYWkHRlhFNYU5rd1UZ0V8j0-6shMQjEeoi4HDWZ0B`）を編集→バージョン欄で「新バージョン」を選択→説明に今回2件の修正内容を記載→デプロイ実行。バージョン201として反映され、デプロイID・ウェブアプリURLは変更なし（`app.js`の`DEFAULT_API_URL`は無修正でOK）。
+
+**検証**:
+- `curl '<GAS_URL>?action=ping'` → `ver: "token-336h-v1-a6p4"` を確認（前日9/4付・当日9/5付エントリの2件の修正が本番反映）
+- `node run.js bq-reservation-sync`（ns-daily-import）を再実行 → 92,265件を3分10秒で同期成功（タイムアウトなし）。ORDER BY削除の修正が本番で効いていることを実地確認
+- `bqGetReservationNames`（User-Agent追加の修正）は今回未実地検証（ダッシュボードの予約タブ等での確認は次回セッションでも可）
+
+**残課題**: プロジェクト履歴はまだ198バージョン残っており、直近の開発ペース（1日10〜20バージョン増えることもある）だと数日〜1週間程度で再び上限に近づく可能性がある。次回この警告が出たら同じ手順（プロジェクト履歴の最古バージョンから削除）で対応すればよい。恒久対応として`(source_month, store_account, reservation_key)`への複合index追加（9/5付前エントリ参照）はスキーマ変更のためユーザー確認が必要・未実施のまま。
+
 ### 2026-09-05（Mac miniセッション）bq-reservation-sync失敗（statement timeout）を修正・原因は9/1バックフィルで9万行超に増えたテーブルの無索引ORDER BY（`ping`=`token-336h-v1-a6p4`・**GASデプロイは引き続きバージョン上限200でブロック中**）
 
 Larkに`bqSyncReservation失敗: Supabase取得失敗[500]: canceling statement due to statement timeout`が飛んできた件を調査。
