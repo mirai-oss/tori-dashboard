@@ -53,7 +53,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-a6p6', time: new Date().toISOString() }); // a6p4=bqGetReservationNamesにUser-Agent追加(2026-09-04)+bqFetchReservationRows_のORDER BY削除(92000行超でstatement timeout・2026-09-05)。a6p5=syncSeisanCategoriesToPlが店舗×月の同期結果を精算書側(sd_apiMarkPlSynced)へ書き戻すように追加（2026-09-05・業務委託精算書自動連携）。a6p6=dbPlDiag追加（実機E2E不一致の一時調査用）
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-a6p7', time: new Date().toISOString() }); // a6p4=bqGetReservationNamesにUser-Agent追加(2026-09-04)+bqFetchReservationRows_のORDER BY削除(92000行超でstatement timeout・2026-09-05)。a6p5=syncSeisanCategoriesToPlが店舗×月の同期結果を精算書側(sd_apiMarkPlSynced)へ書き戻すように追加（2026-09-05・業務委託精算書自動連携）。a6p6=dbPlDiag追加（実機E2E不一致の一時調査用）。a6p7=syncSeisanCategoriesToPlの対象店舗判定をseisan_target→seisan_pl_categories_targetに変更（運営委託費と経費PL反映を別々にON/OFFできるように・黒霧屋 新横浜対応）
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'dbPlDiag') return out(dbPlDiag(p)); // 2026-09-05一時追加: DB_PLシートの生データを店舗×月で確認（読み取り専用・原因特定でき次第削除）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
@@ -3017,12 +3017,17 @@ function syncSeisanCategoriesToPl(p) {
   }
 
   var storeRes = UrlFetchApp.fetch(
-    'https://uuvsxzhpxtghojoubjcc.supabase.co/rest/v1/store_directory_v?select=name,seisan_target,seisan_store_name,aliases',
+    'https://uuvsxzhpxtghojoubjcc.supabase.co/rest/v1/store_directory_v?select=name,seisan_target,seisan_pl_categories_target,seisan_store_name,aliases',
     { headers: { apikey: STORE_DIRECTORY_ANON_KEY_, Authorization: 'Bearer ' + STORE_DIRECTORY_ANON_KEY_ }, muteHttpExceptions: true }
   );
   if (storeRes.getResponseCode() !== 200) return { ok: false, error: '店舗一覧の取得に失敗しました' };
   var allStoreRows = JSON.parse(storeRes.getContentText());
-  var stores = allStoreRows.filter(function (s) { return s.seisan_target; })
+  // 2026-09-05変更: この関数（勘定科目ベースの経費PL連携）だけはseisan_targetではなく
+  // seisan_pl_categories_targetで対象店舗を判定する（syncSeisanFeeToPl＝運営委託費の自動連携とは
+  // 独立にON/OFFできるようにするため。設計書_業務委託精算書自動連携_2026-09-04.md参照。
+  // 既存店舗はマイグレーションでseisan_targetの値をそのまま引き継いでいるため挙動は変わらない。
+  // 黒霧屋 新横浜のみ「運営委託費は対象外・個別経費のPL反映は対象」という設定になっている）。
+  var stores = allStoreRows.filter(function (s) { return s.seisan_pl_categories_target; })
     .map(function (s) { return { name: s.name, seisanName: s.seisan_store_name || s.name }; });
   if (!stores.length) return { ok: true, months: months, synced: 0, note: '精算対象の店舗がありません' };
   var storeNames = stores.map(function (s) { return s.name; });
