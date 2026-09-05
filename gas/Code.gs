@@ -53,8 +53,9 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-a6p5', time: new Date().toISOString() }); // a6p4=bqGetReservationNamesにUser-Agent追加(2026-09-04)+bqFetchReservationRows_のORDER BY削除(92000行超でstatement timeout・2026-09-05)。a6p5=syncSeisanCategoriesToPlが店舗×月の同期結果を精算書側(sd_apiMarkPlSynced)へ書き戻すように追加（2026-09-05・業務委託精算書自動連携）
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-a6p6', time: new Date().toISOString() }); // a6p4=bqGetReservationNamesにUser-Agent追加(2026-09-04)+bqFetchReservationRows_のORDER BY削除(92000行超でstatement timeout・2026-09-05)。a6p5=syncSeisanCategoriesToPlが店舗×月の同期結果を精算書側(sd_apiMarkPlSynced)へ書き戻すように追加（2026-09-05・業務委託精算書自動連携）。a6p6=dbPlDiag追加（実機E2E不一致の一時調査用）
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
+    if (action === 'dbPlDiag') return out(dbPlDiag(p)); // 2026-09-05一時追加: DB_PLシートの生データを店舗×月で確認（読み取り専用・原因特定でき次第削除）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'roleDefDiag') return out(roleDefDiag(p)); // DB_権限定義シートの内容を返す（専用トークン認証・読み取り専用。2026-09-02追加）
     if (action === 'storeNameAudit') return out(storeNameAudit(p)); // BQミラー全8テーブルの店舗名をstore_aliasesと突合し未登録表記を洗い出す（専用トークン認証・読み取り専用。2026-08-28追加）
@@ -3450,6 +3451,26 @@ function bqReconcileSales(p) {
 // これらが無くても正常に動く設計になっている）。
 // 一時的な診断用（2026-08-23）: DB_PLの運営委託費(自動計上)行を年月×店舗ごとに件数と
 // 合計を返す。二重計上が無いか確認するため。読み取り専用（BigQuery stg_plを見るだけ）。
+// 2026-09-05一時追加（実機E2E不一致の調査用・読み取り専用・原因特定でき次第削除）:
+// DB_PLシート（BigQueryミラーの元になっているスプレッドシート本体）の生データを、
+// 店舗名・対象月で絞り込んでそのまま返す。
+function dbPlDiag(p) {
+  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+  if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
+  var store = String((p || {}).store || '').trim();
+  var ymSlash = String((p || {}).ymSlash || '').trim(); // 例: '2026/08'
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_PL');
+  if (!sh) return { ok: false, error: 'DB_PLシートがありません' };
+  var lastRow = sh.getLastRow(), lastCol = Math.max(sh.getLastColumn(), 7);
+  var all = lastRow >= 2 ? sh.getRange(2, 1, lastRow - 1, lastCol).getValues() : [];
+  var rows = all.filter(function (r) {
+    if (r[0] === '' && r[1] === '') return false;
+    if (store && String(r[1]).trim() !== store) return false;
+    if (ymSlash && bqPlYm_(r[0]) !== ymSlash) return false;
+    return true;
+  }).map(function (r) { return { 対象月: bqPlYm_(r[0]), 店舗: r[1], 勘定科目: r[2], 区分: r[3], 金額: r[4], メモ: r[5], 補助科目: r[6] }; });
+  return { ok: true, totalRows: all.length, matched: rows.length, rows: rows };
+}
 function plSeisanDiag(p) {
   var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
   if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
