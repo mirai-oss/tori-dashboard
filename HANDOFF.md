@@ -153,6 +153,16 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 
 ## 5. 作業ログ
 
+### 2026-09-05（Mac miniセッション）bq-reservation-sync失敗（statement timeout）を修正・原因は9/1バックフィルで9万行超に増えたテーブルの無索引ORDER BY（`ping`=`token-336h-v1-a6p4`・**GASデプロイは引き続きバージョン上限200でブロック中**）
+
+Larkに`bqSyncReservation失敗: Supabase取得失敗[500]: canceling statement due to statement timeout`が飛んできた件を調査。
+
+**原因**: `bqFetchReservationRows_`が`rsv_reservations`を`order=source_month.asc,store_account.asc,reservation_key.asc`でページ取得しているが、この3カラムの複合indexが無いため**1ページ目から毎回フルテーブルソートが発生**していた。9/1に食べログノート/ダイニー予約台帳の全期間バックフィルを実施し、テーブルが約7,000行→**92,265行**に急増したことで、このソートがSupabaseのstatement timeout（実測: ORDER BY無しなら566ms、有りだと8.4秒超で必ずタイムアウト）に達するようになった。オフセットの大小に関係なく1ページ目から発生することを実測で確認済み（深いページネーションの劣化ではなく、無索引ソートそのものが原因）。
+
+**対応**: `bqFetchReservationRows_`から`ORDER BY`句を削除。`bqSyncReservation`はSupabase→BigQueryへのWRITE_TRUNCATE全置換ミラーのため、取得順序に意味は無い（重複排除も並び順に依存しない設計）。GASエディタ上で保存・リロード後の反映を確認済み。**恒久対応としては`(source_month, store_account, reservation_key)`への複合index追加が望ましいが、本番Supabaseへのスキーマ変更はユーザー確認が必要なため今回は実施していない**（レーンI=担当D管轄のテーブルのため、次に触るセッションはこの案も検討してほしい）。
+
+**⚠️引き続きGASデプロイがブロック中**（前日9/4付エントリの`bqGetReservationNames`修正と同じ理由）。今回のORDER BY削除も含め2件の修正がGASエディタ上には保存済みだが本番未反映。担当者へ: プロジェクト履歴での未使用バージョン削除→デプロイ更新→`?action=ping`で`ver`が`a6p4`になったことを確認、の順で反映させること。
+
 ### 2026-09-04（Mac miniセッション）計測レポートで判明したbqGetReservationNames 100%失敗を修正（`ping`=`token-336h-v1-a6p3`・**GASデプロイはバージョン上限200到達でブロック中**）
 
 ユーザーから「経営D/精算D 計測レポート」でtori-dashboard:bqGetReservationNamesが失敗10/10（100%）と報告された件を調査。原因は2026-09-01に`bqFetchReservationRows_`（`bqSyncReservation`用）で修正したのと**全く同じバグ**：SupabaseへのUrlFetchApp呼び出しにUser-Agentヘッダーが無く、GASのデフォルトUser-Agent（`Mozilla/5.0...`で始まる）がSupabase側の「ブラウザからのアクセス」判定に引っかかり、secret鍵の使用を拒否される（`Forbidden use of secret API key in browser`）。`bqGetReservationNames`は2026-08-31追加（A-6 Phase2）の別関数で、9/1の修正時には存在を把握しておらず取りこぼしていた。

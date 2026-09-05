@@ -53,7 +53,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-a6p3', time: new Date().toISOString() }); // a6p3=bqGetReservationNamesのSupabase呼び出しにUser-Agent追加（ブラウザ判定によるsecret key拒否エラーを解消・2026-09-04）
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-a6p4', time: new Date().toISOString() }); // a6p4=bqGetReservationNamesにUser-Agent追加(2026-09-04)+bqFetchReservationRows_のORDER BY削除(92000行超でstatement timeout・2026-09-05)
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'roleDefDiag') return out(roleDefDiag(p)); // DB_権限定義シートの内容を返す（専用トークン認証・読み取り専用。2026-09-02追加）
@@ -1760,8 +1760,7 @@ function bqFetchReservationRows_() {
   var pageSize = 1000, offset = 0, all = [];
   while (true) {
     var res = UrlFetchApp.fetch(
-      supaUrl + '/rest/v1/rsv_reservations?select=' + encodeURIComponent(cols) +
-      '&order=source_month.asc,store_account.asc,reservation_key.asc',
+      supaUrl + '/rest/v1/rsv_reservations?select=' + encodeURIComponent(cols),
       { headers: { apikey: supaKey, Authorization: 'Bearer ' + supaKey, Range: offset + '-' + (offset + pageSize - 1) },
         muteHttpExceptions: true }
     );
