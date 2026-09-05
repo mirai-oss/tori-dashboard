@@ -153,6 +153,50 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 
 ## 5. 作業ログ
 
+### 2026-09-06（担当A実行スレッド）P-0c: keiei-api-homeをホーム初期表示に接続・GAS action:dataを裏更新に降格（体感速度改善の最優先対応・コミット`b95b5e4`・`app.js?v=173`）
+
+ユーザー指示「体感速度改善を最優先。いちばんストレスが大きいのは売上確認・PL確認・売上分析」を受け着手。
+**実装内容（app.js）**:
+- `fetchHomeApi_()`新設: レーンP管轄の軽量Edge Function `keiei-api-home`（`kd_home_kpi_snapshot`/
+  `kd_dashboard_daily_summary`/`kd_reservation_daily_summary`を読む。GAS/Sheets/BigQuery非経由）を、
+  既存の`RSV_API`（予約タブ・`keiei-api-reservation`）と全く同じ「統合アカウントのJWTが取れる場合だけ
+  Supabase直読み、取れなければ黙って何もしない」パターンで呼ぶ
+- `fetchDataFast()`: 従来`await`していたGAS `action:'data'`を非同期（裏更新）に変更し、代わりに
+  `fetchHomeApi_()`を待つように順序変更（両方とも並行して投げるため合計通信時間は増えない）。
+  `action:data`は2026-09-04付ログに実測失敗率38%（167呼び出し中で最頻出）と記録されており、
+  初期表示をこれに依存させないことが速度改善の要と判断
+- `viewDash()`: `D.daily`未着で`D.home`着済みの間だけ`viewDashFast_()`（新設）を表示。既存の
+  `kpi-grid`/`panel`/`tbl`クラスをそのまま流用し新しいUIパーツは作っていない（画面の大改修はしない、
+  というユーザー指示を遵守）。`D.daily`到着後は次回`render()`で自動的に従来の詳細描画に戻る
+  （`viewDash()`本体は無改修）
+- キルスイッチ`HOME_API_ENABLED_`（既定true）を`RSV_API_ENABLED_`と同じ方式で用意。問題が起きたら
+  `false`に戻すだけで即無効化できる
+
+**構文チェック済み・GitHub Pages反映確認済み（`app.js?v=173`・console.errorなし）。実機でのログイン後の
+表示確認（速報表示→詳細表示への切り替わり）はユーザー確認待ち**（統合アカウントのJWTが必要なため、
+このセッションからは認証済み状態を再現してテストできない）。
+
+**item4: `bqGetPL`/`bqDetail`/`bqGetMedia`/`bqDailyStore`呼び出し箇所の棚卸し（今回の副産物）**:
+
+| 関数 | クライアント側 | サーバー側 | 呼ばれ方 |
+|---|---|---|---|
+| `bqGetPL` | `fetchPlBQ()` | `gas/Code.gs`の`bqGetPL` | **eager**（`S.useBqDaily`時、`fetchDataFast()`内で毎回無条件に発火。PLタブを開いていなくても走る） |
+| `bqDailyStore` | `fetchDailyBQ()` | `gas/Code.gs:1524`の`bqDailyStore` | **eager**（同上。推移分析／ダッシュボード／目標管理タブが共有する`D.daily`の元） |
+| `bqGetMedia` | `fetchMediaBQ()` | `gas/Code.gs:3352`の`bqGetMedia` | **eager**（同上。実測12秒と最重量） |
+| `bqDetail`（参考：これは「明細分析」タブ専用で売上分析＝推移分析とは別物） | `fetchDetail()` | `gas/Code.gs`の`bqDetail` | **lazy**（明細分析タブを開いたときだけ・キャッシュキー付き。既に理想形） |
+
+**item5: `kd_`テーブルへの差し替え可否**: Supabase上の`kd_`テーブルを直接確認したところ、
+`kd_dashboard_daily_summary`（1,336行・2026-06-03〜09-30・毎日更新中）は`net_sales/guests/parties/
+avg_check/前年同曜日比`は持つが、**`bqDailyStore`が返す原価（cogs）・人件費（parttime/fulltime/
+statutory_welfare/commute_allowance等）は持っていない**（テーブルにカラム自体が無い）。`viewDash`の
+原価率(F)・人件費率(L)・FL合計・`viewAnalysis`（推移分析）はこの原価/人件費データに依存しているため、
+**現時点で`bqDailyStore`→`kd_dashboard_daily_summary`への安全な差し替えはできない**（`kd_store_monthly_summary`
+のような原価/人件費込みの月次サマリはまだ未構築・テーブル一覧に存在しないことを確認済み）。同じ理由で
+`bqGetPL`（科目別経費）・`bqGetMedia`（媒体別）も対応する`kd_`テーブルが無く、今回は見送り。
+**今回安全に差し替えられたのはホーム画面の速報値（`keiei-api-home`）のみ**。`kd_store_monthly_summary`等
+の構築はレーンP待ち（TK-60②と同じ依存）。次回このタスクを引き継ぐ場合、まず`kd_`テーブル一覧
+（Supabase `information_schema.columns`）を再確認してから着手すること。
+
 ### 2026-09-05（Mac miniセッション・続き）バージョン上限ブロックを解消してa6p4をデプロイ完了（`ping`=`token-336h-v1-a6p4`が本番で確認済み）
 
 ユーザーから明示的な承認（「はい、あなたが進めてしまって大丈夫です」）を得て、プロジェクト履歴ページで最も古いバージョン1・2（2026-07-06付、アクティブデプロイのバージョン200とは無関係）を削除し200→198に。198/200まで下がった時点で「デプロイを管理」の警告が非ブロッキング（黄色い注意表示のみ）に変わったことを確認したため、それ以上の削除は行わずアクティブデプロイ（「緊急fix: bqRows_ページネーション…」・デプロイID`AKfycbz9rd37EZa6X8WRMVEBrXobN8DbYWkHRlhFNYU5rd1UZ0V8j0-6shMQjEeoi4HDWZ0B`）を編集→バージョン欄で「新バージョン」を選択→説明に今回2件の修正内容を記載→デプロイ実行。バージョン201として反映され、デプロイID・ウェブアプリURLは変更なし（`app.js`の`DEFAULT_API_URL`は無修正でOK）。
