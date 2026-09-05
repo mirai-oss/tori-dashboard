@@ -53,7 +53,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-a6p4', time: new Date().toISOString() }); // a6p4=bqGetReservationNamesにUser-Agent追加(2026-09-04)+bqFetchReservationRows_のORDER BY削除(92000行超でstatement timeout・2026-09-05)
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-a6p5', time: new Date().toISOString() }); // a6p4=bqGetReservationNamesにUser-Agent追加(2026-09-04)+bqFetchReservationRows_のORDER BY削除(92000行超でstatement timeout・2026-09-05)。a6p5=syncSeisanCategoriesToPlが店舗×月の同期結果を精算書側(sd_apiMarkPlSynced)へ書き戻すように追加（2026-09-05・業務委託精算書自動連携）
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'roleDefDiag') return out(roleDefDiag(p)); // DB_権限定義シートの内容を返す（専用トークン認証・読み取り専用。2026-09-02追加）
@@ -3045,6 +3045,10 @@ function syncSeisanCategoriesToPl(p) {
     var ymSlash = ym.slice(0, 4) + '/' + ym.slice(5, 7);
     var y = Number(ym.slice(0, 4)), mo = Number(ym.slice(5, 7));
     var newRows = []; // [store, account, sub, amountEx]
+    // 2026-09-05追加（設計書_業務委託精算書自動連携_2026-09-04.md 9-1・9-3章）: 店舗×月ごとの同期
+    // 試行結果を精算書側へ書き戻すための記録。実際に振込確定済みで同期を試みた店舗だけを対象にする
+    // （未確定の店舗は精算書側が自分のロック状態から「振込確定待ち」と判定できるため報告不要）。
+    var syncReport = {}; // seisanName -> {ok, error}
     stores.forEach(function (s) {
       try {
         var res = UrlFetchApp.fetch(seisanUrl, {
@@ -3052,59 +3056,84 @@ function syncSeisanCategoriesToPl(p) {
           payload: JSON.stringify({ fn: 'sd_apiCategorizedLines', args: [plSyncToken, s.seisanName, ym] })
         });
         var j = JSON.parse(res.getContentText());
-        if (!j.ok) { errors.push(ym + ' ' + s.name + ': ' + (j.error || 'unknown')); return; }
+        if (!j.ok) { errors.push(ym + ' ' + s.name + ': ' + (j.error || 'unknown')); syncReport[s.seisanName] = { ok: false, error: j.error || 'unknown' }; return; }
         var r = j.result;
         if (!r || !r.found || !r.hasSales || r.paid === false || !r.lines) return; // 未確定・データ無しはスキップ（syncSeisanFeeToPlと同じ方針）
+        syncReport[s.seisanName] = { ok: true }; // ここまで来れば取得は成功（対象科目0件でも成功扱い）
         r.lines.forEach(function (line) {
           newRows.push([s.name, line.account, line.subAccount || '', line.amountEx]);
           subPairs.push([line.account, line.subAccount || '']);
         });
-      } catch (e) { errors.push(ym + ' ' + s.name + ': ' + String(e && e.message || e)); }
+      } catch (e) { errors.push(ym + ' ' + s.name + ': ' + String(e && e.message || e)); syncReport[s.seisanName] = { ok: false, error: String(e && e.message || e) }; }
     });
 
-    // DB_PL: この月×対象店舗×自分のメモの行を差し替え
-    var lastRow = sh.getLastRow();
-    var lastCol = Math.max(sh.getLastColumn(), 7);
-    var keep = [];
-    if (lastRow >= 2) {
-      sh.getRange(2, 1, lastRow - 1, lastCol).getValues().forEach(function (r2) {
-        if (r2[0] === '' && r2[1] === '' && r2[2] === '') return;
-        var sameMonth = bqPlYm_(r2[0]) === ymSlash;
-        var isMine = String(r2[5]) === PL_SEISAN_CAT_MEMO && cleanupNames[String(r2[1]).trim()];
-        if (sameMonth && isMine) return;
-        keep.push(r2);
-      });
-      newRows.forEach(function (nr) { keep.push([new Date(y, mo - 1, 1), nr[0], nr[1], plSeisanGuessCat_(nr[1]), nr[3], PL_SEISAN_CAT_MEMO, nr[2]]); });
-      sh.getRange(2, 1, lastRow - 1, lastCol).clearContent();
-      if (keep.length) { sh.getRange(2, 1, keep.length, 7).setValues(keep); sh.getRange(2, 1, keep.length, 1).setNumberFormat('yyyy/m/d'); }
-    } else if (newRows.length) {
-      var out = newRows.map(function (nr) { return [new Date(y, mo - 1, 1), nr[0], nr[1], plSeisanGuessCat_(nr[1]), nr[3], PL_SEISAN_CAT_MEMO, nr[2]]; });
-      sh.getRange(2, 1, out.length, 7).setValues(out); sh.getRange(2, 1, out.length, 1).setNumberFormat('yyyy/m/d');
+    try {
+      // DB_PL: この月×対象店舗×自分のメモの行を差し替え
+      var lastRow = sh.getLastRow();
+      var lastCol = Math.max(sh.getLastColumn(), 7);
+      var keep = [];
+      if (lastRow >= 2) {
+        sh.getRange(2, 1, lastRow - 1, lastCol).getValues().forEach(function (r2) {
+          if (r2[0] === '' && r2[1] === '' && r2[2] === '') return;
+          var sameMonth = bqPlYm_(r2[0]) === ymSlash;
+          var isMine = String(r2[5]) === PL_SEISAN_CAT_MEMO && cleanupNames[String(r2[1]).trim()];
+          if (sameMonth && isMine) return;
+          keep.push(r2);
+        });
+        newRows.forEach(function (nr) { keep.push([new Date(y, mo - 1, 1), nr[0], nr[1], plSeisanGuessCat_(nr[1]), nr[3], PL_SEISAN_CAT_MEMO, nr[2]]); });
+        sh.getRange(2, 1, lastRow - 1, lastCol).clearContent();
+        if (keep.length) { sh.getRange(2, 1, keep.length, 7).setValues(keep); sh.getRange(2, 1, keep.length, 1).setNumberFormat('yyyy/m/d'); }
+      } else if (newRows.length) {
+        var out = newRows.map(function (nr) { return [new Date(y, mo - 1, 1), nr[0], nr[1], plSeisanGuessCat_(nr[1]), nr[3], PL_SEISAN_CAT_MEMO, nr[2]]; });
+        sh.getRange(2, 1, out.length, 7).setValues(out); sh.getRange(2, 1, out.length, 1).setNumberFormat('yyyy/m/d');
+      }
+
+      // PL管理システム ✍販管費入力にも同じキーで反映（syncSeisanFeeToPlと同じ二重反映パターン）
+      if (pshS) {
+        try {
+          var lastRS = pshS.getLastRow(), nRS = Math.max(lastRS - 2, 0);
+          var AS = nRS > 0 ? pshS.getRange(3, 1, nRS, 3).getValues() : [];
+          var ES = nRS > 0 ? pshS.getRange(3, 5, nRS, 2).getValues() : [];
+          var GS = nRS > 0 ? pshS.getRange(3, 7, nRS, 1).getValues() : [];
+          var keepPS = [];
+          for (var iS = 0; iS < nRS; iS++) {
+            if (String(AS[iS][0]) === '' && String(AS[iS][2]) === '') continue;
+            var sameMonthS = bqPlYm_(AS[iS][0]) === ymSlash;
+            var isMineS = String(ES[iS][1]) === PL_SEISAN_CAT_MEMO && cleanupNames[String(AS[iS][1]).trim()];
+            if (sameMonthS && isMineS) continue;
+            keepPS.push([AS[iS][0], AS[iS][1], AS[iS][2], ES[iS][0], ES[iS][1], GS[iS][0]]);
+          }
+          newRows.forEach(function (nr) { keepPS.push([ymSlash, nr[0], nr[1], nr[3], PL_SEISAN_CAT_MEMO, nr[2]]); });
+          if (nRS > 0) { pshS.getRange(3, 1, nRS, 3).clearContent(); pshS.getRange(3, 5, nRS, 2).clearContent(); pshS.getRange(3, 7, nRS, 1).clearContent(); }
+          if (keepPS.length) {
+            pshS.getRange(3, 1, keepPS.length, 3).setValues(keepPS.map(function (r3) { return [r3[0], r3[1], r3[2]]; }));
+            pshS.getRange(3, 5, keepPS.length, 2).setValues(keepPS.map(function (r3) { return [r3[3], r3[4]]; }));
+            pshS.getRange(3, 7, keepPS.length, 1).setValues(keepPS.map(function (r3) { return [r3[5]]; }));
+          }
+        } catch (eS) { errors.push(ym + ' PL管理システム反映エラー: ' + String(eS && eS.message || eS)); }
+      }
+    } catch (eWrite) {
+      // DB_PLへの書き込み自体が失敗した場合、この月に取得成功していた店舗も含めて「同期失敗」として
+      // 報告する（取得は成功したがシートに反映できていない、という誤った「成功」報告を防ぐため）。
+      errors.push(ym + ' DB_PL書き込みエラー: ' + String(eWrite && eWrite.message || eWrite));
+      Object.keys(syncReport).forEach(function (k) { if (syncReport[k].ok) syncReport[k] = { ok: false, error: 'DB_PL書き込みエラー: ' + String(eWrite && eWrite.message || eWrite) }; });
     }
 
-    // PL管理システム ✍販管費入力にも同じキーで反映（syncSeisanFeeToPlと同じ二重反映パターン）
-    if (pshS) {
-      try {
-        var lastRS = pshS.getLastRow(), nRS = Math.max(lastRS - 2, 0);
-        var AS = nRS > 0 ? pshS.getRange(3, 1, nRS, 3).getValues() : [];
-        var ES = nRS > 0 ? pshS.getRange(3, 5, nRS, 2).getValues() : [];
-        var GS = nRS > 0 ? pshS.getRange(3, 7, nRS, 1).getValues() : [];
-        var keepPS = [];
-        for (var iS = 0; iS < nRS; iS++) {
-          if (String(AS[iS][0]) === '' && String(AS[iS][2]) === '') continue;
-          var sameMonthS = bqPlYm_(AS[iS][0]) === ymSlash;
-          var isMineS = String(ES[iS][1]) === PL_SEISAN_CAT_MEMO && cleanupNames[String(AS[iS][1]).trim()];
-          if (sameMonthS && isMineS) continue;
-          keepPS.push([AS[iS][0], AS[iS][1], AS[iS][2], ES[iS][0], ES[iS][1], GS[iS][0]]);
-        }
-        newRows.forEach(function (nr) { keepPS.push([ymSlash, nr[0], nr[1], nr[3], PL_SEISAN_CAT_MEMO, nr[2]]); });
-        if (nRS > 0) { pshS.getRange(3, 1, nRS, 3).clearContent(); pshS.getRange(3, 5, nRS, 2).clearContent(); pshS.getRange(3, 7, nRS, 1).clearContent(); }
-        if (keepPS.length) {
-          pshS.getRange(3, 1, keepPS.length, 3).setValues(keepPS.map(function (r3) { return [r3[0], r3[1], r3[2]]; }));
-          pshS.getRange(3, 5, keepPS.length, 2).setValues(keepPS.map(function (r3) { return [r3[3], r3[4]]; }));
-          pshS.getRange(3, 7, keepPS.length, 1).setValues(keepPS.map(function (r3) { return [r3[5]]; }));
-        }
-      } catch (eS) { errors.push(ym + ' PL管理システム反映エラー: ' + String(eS && eS.message || eS)); }
+    // 精算書側（seisan-dashboard）へ店舗×月の同期試行結果を書き戻す（設計書9-2の6状態モデル用）。
+    // 既存のsyncSeisanCategoriesToPl自体のトリガー・頻度は一切変更していない。
+    if (seisanUrl && plSyncToken) {
+      var syncedAtIso = new Date().toISOString();
+      Object.keys(syncReport).forEach(function (seisanName) {
+        try {
+          UrlFetchApp.fetch(seisanUrl, {
+            method: 'post', contentType: 'application/json', muteHttpExceptions: true,
+            payload: JSON.stringify({
+              fn: 'sd_apiMarkPlSynced',
+              args: [plSyncToken, seisanName, ym, { ok: syncReport[seisanName].ok, error: syncReport[seisanName].error || '', syncedAt: syncedAtIso }]
+            })
+          });
+        } catch (eMark) { errors.push(ym + ' ' + seisanName + ': 同期状態の書き戻しに失敗: ' + String(eMark && eMark.message || eMark)); }
+      });
     }
     monthResults.push(ym + ': ' + newRows.length + '件');
   });
