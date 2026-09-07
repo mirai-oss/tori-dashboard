@@ -5438,6 +5438,32 @@ function plShadowCompareNote_(sc, mS, mE, ym){
 // 無いため今回は含めていない。営業利益より下は、既存の「簡易キャッシュフロー」パネル（ユーザー指示で
 // 現状維持・変更していない）と同じ計算式（営業利益－法人税等＝当期純利益、＋減価償却費＝税引後CF、
 // －銀行返済元金＝営業CF）を月次で展開する（2026-09-07追加・ユーザー指示）。
+
+// 2026-09-07追加（ユーザー要望「明らかに毎月入っている費用が漏れていたらアラートを出してほしい」）:
+// F/L/A/R/O全カテゴリ横断で、直近2ヶ月連続で計上されていた費目が対象月に¥0（未計上）ならアラート対象に
+// する。判定は単純な「2ヶ月連続実績→3ヶ月目0円」のルールのみ（AIによる推測はしない・誤検知を減らすため
+// 「毎月」ではなく直近2回の実績を根拠にする＝季節性の費目・稀な単発費目を誤検知しにくい設計）。
+// prevPrevEx/prevEx/curExはいずれもplAgg()の戻り値（byCatを持つオブジェクト）。
+function plDetectMissingItems_(prevPrevEx, prevEx, curEx){
+  const alerts=[];
+  ['F','L','A','R','O'].forEach(cat=>{
+    const keys=new Set([...Object.keys(prevPrevEx.byCat[cat]||{}),...Object.keys(prevEx.byCat[cat]||{})]);
+    keys.forEach(item=>{
+      const v2=(prevPrevEx.byCat[cat]||{})[item]||0, v1=(prevEx.byCat[cat]||{})[item]||0, v0=(curEx.byCat[cat]||{})[item]||0;
+      if(v2>0 && v1>0 && v0===0) alerts.push({ cat, item });
+    });
+  });
+  return alerts;
+}
+const PL_CAT_LABEL_={F:'原価',L:'人件費',A:'広告宣伝費',R:'家賃',O:'その他経費'};
+function plMissingAlertHtml_(alerts, note){
+  if(!alerts.length) return '';
+  return `<div class="panel" style="border:1px solid #b5502f;background:#faf0ec">
+    <div class="panel-head"><div><h3>⚠️ PL入力漏れの可能性</h3><div class="sub">${esc(note)}（一時的に支払いが無かった等の可能性もあるため、実際に漏れていないかご確認ください）</div></div></div>
+    <ul style="margin:0;padding-left:20px;font-size:12.5px;line-height:2">
+    ${alerts.map(a=>`<li>${a.monthLabel?esc(a.monthLabel)+'：':''}<b>${esc(a.item)}</b>（${PL_CAT_LABEL_[a.cat]}）が直近2ヶ月は計上されていましたが¥0です</li>`).join('')}
+    </ul></div>`;
+}
 function plMonthlyMatrixHtml_(scopeSet, plAggFlag, sc, selN, multiActive, multiStores, scopeLabel){
   const yy=+(S.plYear||new Date().getFullYear());
   const monthly=[];
@@ -5459,6 +5485,15 @@ function plMonthlyMatrixHtml_(scopeSet, plAggFlag, sc, selN, multiActive, multiS
     const afterTaxCf=netIncome+dep;
     const opCf=afterTaxCf-principal;
     monthly.push({ cur, adCur, exCur, costT, laborT, adT, gross, sga, op, dep, principal, tax, netIncome, afterTaxCf, opCf });
+  }
+  // 入力漏れアラート（2026-09-07追加）: 直近2ヶ月連続で計上されていた費目が対象月に¥0なら検出。
+  // まだ到来していない未来月（表示年が今年の場合、今月より先の月）は判定対象から除外する。
+  const nowD_=new Date();
+  const lastElapsedIdx_=(yy===nowD_.getFullYear())?nowD_.getMonth():11;
+  const missingAlerts_=[];
+  for(let i=2;i<=lastElapsedIdx_;i++){
+    plDetectMissingItems_(monthly[i-2].exCur, monthly[i-1].exCur, monthly[i].exCur)
+      .forEach(a=>missingAlerts_.push({ ...a, monthLabel:(i+1)+'月' }));
   }
   const plExpAll=!!S.plExpandAll;
   const plExpSet=new Set(S.plExpandedItems||[]);
@@ -5531,7 +5566,8 @@ function plMonthlyMatrixHtml_(scopeSet, plAggFlag, sc, selN, multiActive, multiS
   rows.push({ name:'－ 銀行返済元金', vals:monthly.map(mo=>mo.principal) });
   rows.push({ name:'営業CF', bold:true, line:true, profit:true, vals:monthly.map(mo=>mo.opCf) });
 
-  let h=`<div class="panel"><div class="panel-head"><div><h3>年間PL（${yy}年・月次推移／${esc(scopeLabel)}）</h3>
+  let h=plMissingAlertHtml_(missingAlerts_, '直近2ヶ月連続で計上のあった費目が、その月は¥0になっています');
+  h+=`<div class="panel"><div class="panel-head"><div><h3>年間PL（${yy}年・月次推移／${esc(scopeLabel)}）</h3>
     <div class="sub">売上・原価・人件費＝分析_日別店舗 ／ 広告費＝DB_広告 ／ その他経費＝DB_PL（自動連携）／ Money Forward会計の月次推移表と同じ形式（営業外収益・費用・経常利益は未対応。営業利益より下は簡易キャッシュフロー欄と同じ式で当期純利益・営業CFまで表示）</div></div>
     ${plAnyHasSub?`<div class="no-print"><button class="icon-btn" style="font-size:11px" onclick="App.plExpandAllSub()">▼ すべて展開</button> <button class="icon-btn" style="font-size:11px" onclick="App.plCollapseAllSub()">▶ すべて折りたたむ</button></div>`:''}</div>
   <div class="scroll-x"><table class="tbl"><thead><tr><th style="position:sticky;left:0;background:var(--bg,#fff)">項目</th>${monthly.map((_,i)=>`<th>${i+1}月</th>`).join('')}<th>合計</th></tr></thead><tbody>`;
@@ -5567,7 +5603,7 @@ function viewPL(){
   const P=S.plPeriod||'month';
   const ref=D.refDate||new Date();
   // 期間の計算：月次（前月・前年同月比較）／年間（前年比較）／期間指定（直前の同じ長さ・前年同期比較）
-  let mS,mE,pS,pE,yS,yE,mLabel,prevName='前月',showYoY=true,ctrlHtml='';
+  let mS,mE,pS,pE,yS,yE,ppS,ppE,mLabel,prevName='前月',showYoY=true,ctrlHtml='';
   if(P==='year'){
     const yy=+(S.plYear||ref.getFullYear());
     const endD=(yy===ref.getFullYear())?ref:new Date(yy,11,31);
@@ -5594,6 +5630,7 @@ function viewPL(){
     mS=dayMs(new Date(y,m,1)); mE=dayMs(new Date(y,m+1,0));
     pS=dayMs(new Date(y,m-1,1)); pE=dayMs(new Date(y,m,0));
     yS=dayMs(new Date(y-1,m,1)); yE=dayMs(new Date(y-1,m+1,0));
+    ppS=dayMs(new Date(y,m-2,1)); ppE=dayMs(new Date(y,m-1,0));   // 入力漏れアラート用（前々月）
     mLabel=y+'年 '+(m+1)+'月';
     ctrlHtml=ymSelect('plMonth', y, m);
   }
@@ -5622,6 +5659,9 @@ function viewPL(){
   const opLyr=lyr.sales-costL-(laborL+adL+exLyr.catTotal.R+exLyr.catTotal.O);
   const pct=(n)=>cur.sales>0?(n/cur.sales*100).toFixed(1)+'%':'—';
   const mom=(c,p)=>{ if(!(Math.abs(p)>0)) return {t:prevName+' —',cls:'mut'}; const d2=(c-p)/Math.abs(p)*100; return { t:prevName+'比 '+(d2>=0?'+':'▲')+Math.abs(d2).toFixed(1)+'%', cls:d2>=0?'up':'dn' }; };
+  // 入力漏れアラート（2026-09-07追加）: 月次表示のときだけ、前々月・前月とも計上があった費目が
+  // 今月¥0なら検出する（前月＝exPrvをそのまま流用し、前々月分だけ追加で取得）。
+  const monthMissingAlerts_=(P==='month')?plDetectMissingItems_(plAgg(scopeSet,plAggFlag,ppS,ppE), exPrv, exCur):[];
 
   let h=`<div class="ctrl-bar no-print">
     <div class="seg">${[['month','月次'],['year','年間'],['custom','期間指定']].map(([k,l])=>`<button class="${P===k?'on':''}" onclick="App.set('plPeriod','${k}')">${l}</button>`).join('')}</div>
@@ -5634,6 +5674,7 @@ function viewPL(){
     +(multiActive
       ? `<div class="store-pick no-print"><span class="sp-lb">🏪 店舗（個別選択）</span><button class="icon-btn" onclick="App.openPlStorePick()">${multiStores.length}店舗を選択中・変更</button><button class="icon-btn" onclick="App.clearPlStorePick()">選択解除</button></div>`
       : storeSegHtml()+`<div class="store-pick no-print"><button class="icon-btn" onclick="App.openPlStorePick()">🏪 複数店舗を選んで合算</button></div>`);
+  h+=plMissingAlertHtml_(monthMissingAlerts_, '前々月・前月とも計上のあった費目が、今月は¥0になっています');
   // 2026-08-22追加: 売上/原価/人件費(stat())とDB_PL手入力経費(plAgg())の両方がBQトグルの対象
   if(isAdminRole()&&S.useBqDaily) h+=`<div class="mut" style="font-size:11px;margin:2px 0 8px">🧪 データ元: BigQuery（推移分析タブのトグルで切替）${D.plBqLoading?' ・PL読込中…':''}${D.plBqErr?` ・PL取得エラー: ${esc(D.plBqErr)}`:''}${D.loanBqLoading?' ・返済元金読込中…':''}${D.loanBqErr?` ・返済元金取得エラー: ${esc(D.loanBqErr)}`:''}</div>`;
   h+=bqFallbackNote_('PL');
