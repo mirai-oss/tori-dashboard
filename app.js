@@ -5457,15 +5457,17 @@ function plShadowCompareNote_(sc, mS, mE, ym){
   return h;
 }
 // 2026-09-07（ユーザー要望）: 「年間PL」表示のとき、Money Forward会計の月次推移表と同じ見た目
-// （項目×12ヶ月＋合計のマトリクス、勘定科目ごとに補助科目を開閉）に合わせる。上部KPIカード・
-// 簡易キャッシュフローは変更しない（ユーザー指示どおり現状維持）。既存の単月/期間指定PL表は無改修
-// （P==='year'のときだけこちらを使う）。既存のplExpAll/S.plExpandedItems（開閉状態）・togglePlSub等の
-// 仕組みはそのまま流用し、新しいUIパーツ（開閉ボタン等）は増やさない。
+// （項目×12ヶ月＋合計のマトリクス、勘定科目ごとに補助科目を開閉）に合わせる。上部KPIカードは変更
+// しない（ユーザー指示どおり現状維持）。既存の単月/期間指定PL表は無改修（P==='year'のときだけ
+// こちらを使う）。既存のplExpAll/S.plExpandedItems（開閉状態）・togglePlSub等の仕組みはそのまま
+// 流用し、新しいUIパーツ（開閉ボタン等）は増やさない。
 // 【正直な簡略化】MF側にある「営業外収益（受取利息・雑収入）」「営業外費用（支払利息・雑損失）」
 // 「経常利益」「特別損益」は、tori-dashboard側に対応するデータ源（受取利息・雑収入・雑損失等）が
-// 無いため今回は含めていない。営業利益より下は、既存の「簡易キャッシュフロー」パネル（ユーザー指示で
-// 現状維持・変更していない）と同じ計算式（営業利益－法人税等＝当期純利益、＋減価償却費＝税引後CF、
-// －銀行返済元金＝営業CF）を月次で展開する（2026-09-07追加・ユーザー指示）。
+// 無いため今回は含めていない。営業利益より下は、もともとの「簡易キャッシュフロー」パネルと同じ
+// 計算式（営業利益－法人税等＝当期純利益、＋減価償却費＝税引後CF、－銀行返済元金＝営業CF）を月次で
+// 展開する（2026-09-07追加・ユーザー指示）。なお独立した「簡易キャッシュフロー」パネル自体は、この
+// PLの年間・単月/期間指定どちらの表にも同じ内容が統合されたため、同日中にユーザー指示で廃止した
+// （下記の入力漏れアラート追加コメント群のさらに下、viewPL()内の対応箇所を参照）。
 
 // 2026-09-07追加（ユーザー要望「明らかに毎月入っている費用が漏れていたらアラートを出してほしい」）:
 // F/L/A/R/O全カテゴリ横断で、直近2ヶ月連続で計上されていた費目が対象月に¥0（未計上）ならアラート対象に
@@ -5616,7 +5618,7 @@ function plMonthlyMatrixHtml_(scopeSet, plAggFlag, sc, selN, multiActive, multiS
 
   let h=plMissingAlertHtml_(missingAlerts_, '直近2ヶ月連続で計上のあった費目が、その月は¥0になっています');
   h+=`<div class="panel"><div class="panel-head"><div><h3>年間PL（${yy}年・月次推移／${esc(scopeLabel)}）</h3>
-    <div class="sub">売上・原価・人件費＝分析_日別店舗 ／ 広告費＝DB_広告 ／ その他経費＝DB_PL（自動連携）／ Money Forward会計の月次推移表と同じ形式（営業外収益・費用・経常利益は未対応。営業利益より下は簡易キャッシュフロー欄と同じ式で当期純利益・営業CFまで表示）</div></div>
+    <div class="sub">売上・原価・人件費＝分析_日別店舗 ／ 広告費＝DB_広告 ／ その他経費＝DB_PL（自動連携）／ Money Forward会計の月次推移表と同じ形式（営業外収益・費用・経常利益は未対応。営業利益より下は法人税等(${(D.taxRate*100).toFixed(1)}%)を引いた当期純利益・営業CFまで表示）${isAdminRole()?` ・<a href="javascript:void(0)" onclick="App.editPlTaxRate()">税率を変更</a>`:''}${plAggFlag?'（減価償却費・銀行返済元金は全社共通ぶんを含まず、この店舗の分のみ）':''}</div></div>
     ${plAnyHasSub?`<div class="no-print"><button class="icon-btn" style="font-size:11px" onclick="App.plExpandAllSub()">▼ すべて展開</button> <button class="icon-btn" style="font-size:11px" onclick="App.plCollapseAllSub()">▶ すべて折りたたむ</button></div>`:''}</div>
   <div class="scroll-x"><table class="tbl"><thead><tr><th style="position:sticky;left:0;background:var(--bg,#fff)">項目</th>${monthly.map((_,i)=>`<th>${i+1}月</th>`).join('')}<th>合計</th></tr></thead><tbody>`;
   const expP=[];
@@ -5736,27 +5738,19 @@ function viewPL(){
     <div class="kpi"><div class="lb">営業利益</div><div class="vl" style="color:${op>=0?'#4c7d5c':'#b5502f'}">${yen(op)}</div><div class="yy ${mom(op,opPrv).cls}">${pct(op)} ／ ${mom(op,opPrv).t}</div></div>
   </div>`;
 
-  // 簡易キャッシュフロー（A-5・2026-08-26追加。実装指示書_ラウンド3のユーザー確定式:
-  // 営業利益－法人税等(既定34%・設定変更可)＋減価償却費＝税引後キャッシュ－返済元金＝CF）。
+  // 簡易キャッシュフロー相当の計算（A-5・2026-08-26追加の式をそのまま踏襲）:
+  // 営業利益－法人税等(既定34%・設定変更可)＝当期純利益、＋減価償却費＝税引後CF、－返済元金＝営業CF。
   // 返済元金はPL費用（DB_PL）には一切含めていない（勘定科目区分がF/L/A/R以外だと
   // plAgg()で一律O区分に丸められ販管費計・営業利益を汚してしまうため、専用シートに分離）。
-  const depCur=exCur.byCat.O['減価償却費']||0;
-  const principalCur=loanPrincipalAgg(scopeSet,plAggFlag,mS,mE).total;
-  const taxCur=op>0?op*D.taxRate:0;
-  const afterTaxCash=op-taxCur+depCur;
-  const cf=afterTaxCash-principalCur;
-  h+=`<div class="panel">
-    <div class="panel-head"><div><h3>簡易キャッシュフロー</h3><div class="sub">営業利益－法人税等(${(D.taxRate*100).toFixed(1)}%)＋減価償却費－返済元金${isAdminRole()?` ・<a href="javascript:void(0)" onclick="App.editPlTaxRate()">税率を変更</a>`:''}</div></div></div>
-    <div class="scroll-x"><table class="tbl"><tbody>
-      <tr><td>営業利益</td><td style="text-align:right">${yen(op)}</td></tr>
-      <tr><td>− 法人税等（${(D.taxRate*100).toFixed(1)}%）</td><td style="text-align:right">${yen(taxCur)}</td></tr>
-      <tr><td>＋ 減価償却費</td><td style="text-align:right">${yen(depCur)}</td></tr>
-      <tr style="font-weight:700;border-top:1px solid #e3dccb"><td>＝ 税引後キャッシュ</td><td style="text-align:right">${yen(afterTaxCash)}</td></tr>
-      <tr><td>− 返済元金</td><td style="text-align:right">${yen(principalCur)}</td></tr>
-      <tr style="font-weight:700;border-top:1px solid #e3dccb"><td>＝ CF（キャッシュフロー）</td><td style="text-align:right;color:${cf>=0?'#4c7d5c':'#b5502f'}">${yen(cf)}</td></tr>
-    </tbody></table></div>
-    ${plAggFlag?'<div class="mut" style="font-size:11px;padding:4px 12px 8px">※全社共通の減価償却費・返済元金はこの店舗別表示には含まれていません</div>':''}
-  </div>`;
+  // 2026-09-07: 独立した「簡易キャッシュフロー」パネルはユーザー指示により廃止し、下のPL表（年間は
+  // plMonthlyMatrixHtml_・単月/期間指定はこの下のrows）に当期純利益～営業CFの行として統合した
+  // （年間PL側に同じ内容が既にあり、単月側にも同じ行を追加したことで重複表示が不要になったため）。
+  const depCur=exCur.byCat.O['減価償却費']||0, depPrv=exPrv.byCat.O['減価償却費']||0, depLyr=exLyr.byCat.O['減価償却費']||0;
+  const principalCur=loanPrincipalAgg(scopeSet,plAggFlag,mS,mE).total, principalPrv=loanPrincipalAgg(scopeSet,plAggFlag,pS,pE).total, principalLyr=loanPrincipalAgg(scopeSet,plAggFlag,yS,yE).total;
+  const taxCur=op>0?op*D.taxRate:0, taxPrv=opPrv>0?opPrv*D.taxRate:0, taxLyr=opLyr>0?opLyr*D.taxRate:0;
+  const netIncomeCur=op-taxCur, netIncomePrv=opPrv-taxPrv, netIncomeLyr=opLyr-taxLyr;
+  const afterTaxCfCur=netIncomeCur+depCur, afterTaxCfPrv=netIncomePrv+depPrv, afterTaxCfLyr=netIncomeLyr+depLyr;
+  const opCfCur=afterTaxCfCur-principalCur, opCfPrv=afterTaxCfPrv-principalPrv, opCfLyr=afterTaxCfLyr-principalLyr;
 
   // DB_PL未接続/当月データなしの案内（未受信か・受信したが取り込めないかを明示）
   const plReceived=(D.receivedKeys||[]).some(k=>isPLKey(k));
@@ -5907,13 +5901,21 @@ function viewPL(){
 
   rows.push({name:'販管費計（L＋A＋R＋O）', c:-sga, p:-(laborP+adP+exPrv.catTotal.R+exPrv.catTotal.O), l:-(laborL+adL+exLyr.catTotal.R+exLyr.catTotal.O), bold:true, line:true});
   rows.push({name:'営業利益', c:op, p:opPrv, l:opLyr, bold:true, line:true, profit:true});
+  // 2026-09-07追加（ユーザー指示・簡易キャッシュフローパネル廃止に伴う統合）: ラベル側に＋／－の
+  // 意味を持たせ、値は常に正の実額で表示する（年間PL・plMonthlyMatrixHtml_と表記を揃える）。
+  rows.push({name:'－ 法人税等（'+(D.taxRate*100).toFixed(1)+'%）', c:-taxCur, p:-taxPrv, l:-taxLyr});
+  rows.push({name:'当期純利益', c:netIncomeCur, p:netIncomePrv, l:netIncomeLyr, bold:true, line:true, profit:true});
+  rows.push({name:'＋ 減価償却費', c:depCur, p:depPrv, l:depLyr});
+  rows.push({name:'税引後CF', c:afterTaxCfCur, p:afterTaxCfPrv, l:afterTaxCfLyr, bold:true, line:true, profit:true});
+  rows.push({name:'－ 銀行返済元金', c:-principalCur, p:-principalPrv, l:-principalLyr});
+  rows.push({name:'営業CF', c:opCfCur, p:opCfPrv, l:opCfLyr, bold:true, line:true, profit:true});
 
   const plTitle=(P==='year'?'年間PL':P==='custom'?'期間PL':'月次PL');
   // 最右列は常に「前年比」。月次/期間指定は前年同期(r2.l)、年間は前年(r2.p)を基準にする
   const yoyBase=(r2)=>showYoY?r2.l:r2.p;
   const cmp=(c,base)=>{ if(!(Math.abs(base)>0)) return {t:'—',cls:'mut'}; const d2=(c-base)/Math.abs(base)*100; return {t:(d2>=0?'+':'▲')+Math.abs(d2).toFixed(1)+'%', cls:d2>=0?'up':'dn'}; };
   h+=`<div class="panel"><div class="panel-head"><div><h3>${plTitle}（${mLabel} ／ ${esc(scopeLabel)}）</h3>
-    <div class="sub">売上・原価・人件費＝分析_日別店舗 ／ 広告費＝DB_広告 ／ その他経費＝DB_PL（自動連携）${P==='custom'?' ※経費は月単位のため、月初日が期間内の月分を計上':''}</div></div>
+    <div class="sub">売上・原価・人件費＝分析_日別店舗 ／ 広告費＝DB_広告 ／ その他経費＝DB_PL（自動連携）${P==='custom'?' ／ ※経費は月単位のため、月初日が期間内の月分を計上':''} ／ 営業利益より下は法人税等(${(D.taxRate*100).toFixed(1)}%)を引いた当期純利益～営業CFまで表示${isAdminRole()?` ・<a href="javascript:void(0)" onclick="App.editPlTaxRate()">税率を変更</a>`:''}${plAggFlag?'（減価償却費・銀行返済元金は全社共通ぶんを含まず、この店舗の分のみ）':''}</div></div>
     ${plAnyHasSub?`<div class="no-print"><button class="icon-btn" style="font-size:11px" onclick="App.plExpandAllSub()">▼ すべて展開</button> <button class="icon-btn" style="font-size:11px" onclick="App.plCollapseAllSub()">▶ すべて折りたたむ</button></div>`:''}</div>
   <div class="scroll-x"><table class="tbl"><thead><tr><th>項目</th><th>当期</th><th>売上比</th><th>${prevName}</th>${showYoY?'<th>前年同期</th>':''}<th>前年比</th></tr></thead><tbody>`;
   const expP=[];
