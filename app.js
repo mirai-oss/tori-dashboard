@@ -1225,8 +1225,6 @@ function ingestStoreParent(rows){
   return map;
 }
 function ingestSheets(sheets, partial, scope){
-  if(!partial){ D.extra={}; D.diag={}; D.receivedKeys=Object.keys(sheets); D.ad=[]; D.adSrc=''; D.adfx=[]; D.tanka={}; D.tankaRows=[]; D.tankaAvg={}; D.tankaCv={}; D.rsv=[]; D.pl=[]; D.spot=[]; D.loanPrincipal=[]; D.dinii=[]; D.targets=[]; D.targetsM=[]; D.events=[]; D.storeAlias={}; D.storeParent={}; D.adMediaMaster=[]; D.adPlanMaster={}; D.adStoreMaster=[]; D.subItemMaster={}; D.mfCategoryMap={}; D.mediaFeeRows=[]; }  // 広告・PL・スポット人件費・借入返済元金・ダイニー・目標・対応表・親子・補助科目/MF科目対応マスタはフル受信のたびに入れ替え
-  else { D.receivedKeys=(D.receivedKeys||[]).concat(Object.keys(sheets)); }
   const known=['daily','media','deposit','review','ad','広告'];
   // 2026-08-31修正（ユーザー報告「予約管理タブの同期がずっと止まっている・分析_日別店舗が
   // シート未受信になる」の調査で発覚）: fetchDataFast()の最初の呼び出しはBQモード中「daily」等を
@@ -1238,6 +1236,21 @@ function ingestSheets(sheets, partial, scope){
   const checkable = (scope && scope.only) ? known.filter(k=>scope.only.indexOf(k)>=0)
     : (scope && scope.exclude) ? known.filter(k=>scope.exclude.indexOf(k)<0)
     : known;
+  // 2026-09-07追加（担当D調査・ユーザー報告「入金管理に“実データを取り込んでいません”の警告が
+  // ずっと出ている」）: 上の2026-08-31修正は「除外したキーを誤ってエラー扱いする」問題は直したが、
+  // このすぐ下のD.diag={}によるフルリセット自体は直っていなかった。BQモードのfetchDataFast()は
+  // ①旧GAS action:data（daily/media/deposit等をexclude・重い/失敗率高い）と②fetchDailyBQ/
+  // fetchDepositBQ/fetchMediaBQ（BigQueryミラー・軽い）を並行実行しており、②が先に完了して
+  // D.diag.daily/media/deposit='OK ...'をセットしても、後から①が完了した時にD.diag={}が
+  // それを丸ごと消してしまい（①のsheetsにはexclude対象キーが元々含まれないため復元されない）、
+  // 実データは正常に表示されているのに「連携中（データ未取込）」の警告バナーだけが残り続けていた
+  // （ポーリング毎に再発するため「ずっとこの状態」に見える）。対策: このレスポンスで
+  // 「そもそも含まれるはずが無い」＝checkable対象外のキーについては、直前までのD.diagの値を
+  // リセットせず引き継ぐ（他の並行取得の結果を消さない）。
+  const preservedDiag={};
+  if(!partial){ known.forEach(k=>{ if(checkable.indexOf(k)<0 && D.diag[k]) preservedDiag[k]=D.diag[k]; }); }
+  if(!partial){ D.extra={}; D.diag=preservedDiag; D.receivedKeys=Object.keys(sheets); D.ad=[]; D.adSrc=''; D.adfx=[]; D.tanka={}; D.tankaRows=[]; D.tankaAvg={}; D.tankaCv={}; D.rsv=[]; D.pl=[]; D.spot=[]; D.loanPrincipal=[]; D.dinii=[]; D.targets=[]; D.targetsM=[]; D.events=[]; D.storeAlias={}; D.storeParent={}; D.adMediaMaster=[]; D.adPlanMaster={}; D.adStoreMaster=[]; D.subItemMaster={}; D.mfCategoryMap={}; D.mediaFeeRows=[]; }  // 広告・PL・スポット人件費・借入返済元金・ダイニー・目標・対応表・親子・補助科目/MF科目対応マスタはフル受信のたびに入れ替え
+  else { D.receivedKeys=(D.receivedKeys||[]).concat(Object.keys(sheets)); }
   if(!partial){ checkable.forEach(k=>{ if(!(k in sheets)) D.diag[k]='シート未受信（接続設定のシート名を確認）'; }); }
   for(const key in sheets){
     const rows=sheets[key];
@@ -5413,6 +5426,111 @@ function plShadowCompareNote_(sc, mS, mE, ym){
     h+=`<tr><td>${shortStoreTd(r.nm)}</td><td>${yen(r.salesOld)} / ${yen(r.salesNew)}</td><td>${yen(r.costOld)} / ${yen(r.costNew)}</td><td>${yen(r.laborOld)} / ${yen(r.laborNew)}</td><td class="${cls}">${note}</td></tr>`;
   });
   h+=`</tbody></table></div></div>`;
+  return h;
+}
+// 2026-09-07（ユーザー要望）: 「年間PL」表示のとき、Money Forward会計の月次推移表と同じ見た目
+// （項目×12ヶ月＋合計のマトリクス、勘定科目ごとに補助科目を開閉）に合わせる。上部KPIカード・
+// 簡易キャッシュフローは変更しない（ユーザー指示どおり現状維持）。既存の単月/期間指定PL表は無改修
+// （P==='year'のときだけこちらを使う）。既存のplExpAll/S.plExpandedItems（開閉状態）・togglePlSub等の
+// 仕組みはそのまま流用し、新しいUIパーツ（開閉ボタン等）は増やさない。
+// 【正直な簡略化】MF側にある「営業外収益（受取利息・雑収入）」「営業外費用（支払利息・雑損失）」
+// 「経常利益」「特別損益」「税引前/当期純利益」は、tori-dashboard側に対応するデータ源が無い
+// （支払利息はD.loanPrincipal・簡易キャッシュフロー欄に別途あるが、このマトリクス用のデータとしては
+// 未整備）ため、今回は含めていない。営業利益までの表示に留める。
+function plMonthlyMatrixHtml_(scopeSet, plAggFlag, sc, selN, multiActive, multiStores, scopeLabel){
+  const yy=+(S.plYear||new Date().getFullYear());
+  const monthly=[];
+  for(let i=0;i<12;i++){
+    const mS_=dayMs(new Date(yy,i,1)), mE_=dayMs(new Date(yy,i+1,0));
+    const cur=stat(scopeSet,mS_,mE_,null);
+    const adCur=adAgg(scopeSet,mS_,mE_).ad;
+    const exCur=plAgg(scopeSet,plAggFlag,mS_,mE_);
+    const costT=cur.cost+exCur.catTotal.F, laborT=cur.labor+exCur.catTotal.L, adT=adCur+exCur.catTotal.A;
+    const gross=cur.sales-costT;
+    const sga=laborT+adT+exCur.catTotal.R+exCur.catTotal.O;
+    monthly.push({ cur, adCur, exCur, costT, laborT, adT, gross, sga, op:cur.sales-costT-sga });
+  }
+  const plExpAll=!!S.plExpandAll;
+  const plExpSet=new Set(S.plExpandedItems||[]);
+  let plAnyHasSub=false;
+  const rows=[];   // {name, indent(0/1/2), bold, line, profit, hasSub, subKey, isOpen, vals:number[12]}
+  const catHasManual=(cat)=>monthly.some(mo=>Object.keys(mo.exCur.byCat[cat]).length>0);
+  const pushCatItems=(cat)=>{
+    const keys=new Set();
+    monthly.forEach(mo=>Object.keys(mo.exCur.byCat[cat]).forEach(k=>keys.add(k)));
+    [...keys].sort((a2,b2)=>{
+      const sa=monthly.reduce((s2,mo)=>s2+(mo.exCur.byCat[cat][a2]||0),0);
+      const sb=monthly.reduce((s2,mo)=>s2+(mo.exCur.byCat[cat][b2]||0),0);
+      return sb-sa;
+    }).forEach(it=>{
+      const subKeysAll=new Set();
+      monthly.forEach(mo=>Object.keys(mo.exCur.bySub[cat][it]||{}).forEach(k=>{ if(k) subKeysAll.add(k); }));
+      const hasSub=subKeysAll.size>0;
+      if(hasSub) plAnyHasSub=true;
+      const subKey=cat+'|'+it;
+      const isOpen=hasSub&&(plExpAll||plExpSet.has(subKey));
+      rows.push({ name:it, indent:1, hasSub, subKey, isOpen, vals:monthly.map(mo=>mo.exCur.byCat[cat][it]||0) });
+      if(isOpen){
+        [...subKeysAll].sort((a2,b2)=>{
+          const sa=monthly.reduce((s2,mo)=>s2+((mo.exCur.bySub[cat][it]||{})[a2]||0),0);
+          const sb=monthly.reduce((s2,mo)=>s2+((mo.exCur.bySub[cat][it]||{})[b2]||0),0);
+          return sb-sa;
+        }).forEach(sn=>{
+          rows.push({ name:sn, indent:2, vals:monthly.map(mo=>((mo.exCur.bySub[cat][it]||{})[sn])||0) });
+        });
+      }
+    });
+  };
+  rows.push({ name:'売上高', bold:true, vals:monthly.map(mo=>mo.cur.sales) });
+  { const key='CAT:F', open=plExpAll||plExpSet.has(key); plAnyHasSub=true;
+    rows.push({ name:'売上原価計（F）', bold:true, hasSub:true, subKey:key, isOpen:open, vals:monthly.map(mo=>mo.costT) });
+    if(open){ rows.push({ name:'仕入（自動連携）', indent:1, vals:monthly.map(mo=>mo.cur.cost) }); pushCatItems('F'); } }
+  rows.push({ name:'売上総利益（粗利）', bold:true, line:true, vals:monthly.map(mo=>mo.gross) });
+  { const key='CAT:L', open=plExpAll||plExpSet.has(key); plAnyHasSub=true;
+    rows.push({ name:'人件費計（L）', bold:true, hasSub:true, subKey:key, isOpen:open, vals:monthly.map(mo=>mo.laborT) });
+    if(open){
+      if(D.hasLaborSplit){
+        rows.push({ name:'人件費（社員給与・賞与）', indent:1, vals:monthly.map(mo=>mo.cur.empBase) });
+        rows.push({ name:'法定福利費（自動連携）', indent:1, vals:monthly.map(mo=>mo.cur.welfare) });
+        rows.push({ name:'通勤手当（自動連携）', indent:1, vals:monthly.map(mo=>mo.cur.commute) });
+      } else {
+        rows.push({ name:'人件費（社員・自動連携）', indent:1, vals:monthly.map(mo=>mo.cur.emp) });
+      }
+      rows.push({ name:'人件費（アルバイト・自動連携）', indent:1, vals:monthly.map(mo=>mo.cur.pa) });
+      pushCatItems('L');
+    } }
+  { const key='CAT:A', open=plExpAll||plExpSet.has(key); plAnyHasSub=true;
+    rows.push({ name:'広告宣伝費計（A）', bold:true, hasSub:true, subKey:key, isOpen:open, vals:monthly.map(mo=>mo.adT) });
+    if(open){ rows.push({ name:'広告費（自動連携）', indent:1, vals:monthly.map(mo=>mo.adCur) }); pushCatItems('A'); } }
+  { const key='CAT:R', hasDetail=catHasManual('R'), open=hasDetail&&(plExpAll||plExpSet.has(key));
+    if(hasDetail) plAnyHasSub=true;
+    rows.push({ name:'家賃計（R）', bold:true, hasSub:hasDetail, subKey:key, isOpen:open, vals:monthly.map(mo=>mo.exCur.catTotal.R) });
+    if(open) pushCatItems('R'); }
+  { const key='CAT:O', hasDetail=catHasManual('O'), open=hasDetail&&(plExpAll||plExpSet.has(key));
+    if(hasDetail) plAnyHasSub=true;
+    rows.push({ name:'その他経費計（O）', bold:true, hasSub:hasDetail, subKey:key, isOpen:open, vals:monthly.map(mo=>mo.exCur.catTotal.O) });
+    if(open) pushCatItems('O'); }
+  rows.push({ name:'販管費計（L＋A＋R＋O）', bold:true, line:true, vals:monthly.map(mo=>mo.sga) });
+  rows.push({ name:'営業利益', bold:true, line:true, profit:true, vals:monthly.map(mo=>mo.op) });
+
+  let h=`<div class="panel"><div class="panel-head"><div><h3>年間PL（${yy}年・月次推移／${esc(scopeLabel)}）</h3>
+    <div class="sub">売上・原価・人件費＝分析_日別店舗 ／ 広告費＝DB_広告 ／ その他経費＝DB_PL（自動連携）／ Money Forward会計の月次推移表と同じ形式（営業外収益・費用・経常利益以下は未対応）</div></div>
+    ${plAnyHasSub?`<div class="no-print"><button class="icon-btn" style="font-size:11px" onclick="App.plExpandAllSub()">▼ すべて展開</button> <button class="icon-btn" style="font-size:11px" onclick="App.plCollapseAllSub()">▶ すべて折りたたむ</button></div>`:''}</div>
+  <div class="scroll-x"><table class="tbl"><thead><tr><th style="position:sticky;left:0;background:var(--bg,#fff)">項目</th>${monthly.map((_,i)=>`<th>${i+1}月</th>`).join('')}<th>合計</th></tr></thead><tbody>`;
+  const expP=[];
+  rows.forEach(r2=>{
+    const v=(n)=>n===0?'—':(n<0?'▲'+yen(-n).slice(1):yen(n));
+    const total=r2.vals.reduce((s2,x)=>s2+x,0);
+    const color=r2.profit?(total>=0?'color:#4c7d5c;font-weight:700':'color:#b5502f;font-weight:700'):'';
+    const pad=r2.indent===2?'padding-left:40px;':(r2.indent===1?'padding-left:24px;':'');
+    const toggle=r2.hasSub?`<span class="no-print" style="cursor:pointer;display:inline-block;width:14px" onclick="App.togglePlSub('${esc(r2.subKey)}')">${r2.isOpen?'▼':'▶'}</span>`:'';
+    h+=`<tr class="${r2.line?'total':''}"><td style="position:sticky;left:0;background:var(--bg,#fff);${pad}${r2.bold?'font-weight:700':''}">${toggle}${esc(r2.name)}</td>`
+      +r2.vals.map(x=>`<td${x<0?' class="neg"':''}>${v(x)}</td>`).join('')
+      +`<td style="${color}${r2.bold?';font-weight:700':''}">${v(total)}</td></tr>`;
+    expP.push([r2.name,...r2.vals.map(x=>Math.round(x)),Math.round(total)]);
+  });
+  h+=`</tbody></table></div></div>`;
+  EXPORT.push({ title:'年間PL（'+yy+'年・月次推移／'+scopeLabel+'）', headers:['項目',...monthly.map((_,i)=>(i+1)+'月'),'合計'], rows:expP });
   return h;
 }
 function viewPL(){
