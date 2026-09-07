@@ -53,7 +53,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-a6p7', time: new Date().toISOString() }); // a6p4=bqGetReservationNamesにUser-Agent追加(2026-09-04)+bqFetchReservationRows_のORDER BY削除(92000行超でstatement timeout・2026-09-05)。a6p5=syncSeisanCategoriesToPlが店舗×月の同期結果を精算書側(sd_apiMarkPlSynced)へ書き戻すように追加（2026-09-05・業務委託精算書自動連携）。a6p6=dbPlDiag追加（実機E2E不一致の一時調査用）。a6p7=syncSeisanCategoriesToPlの対象店舗判定をseisan_target→seisan_pl_categories_targetに変更（運営委託費と経費PL反映を別々にON/OFFできるように・黒霧屋 新横浜対応）
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-a6p8', time: new Date().toISOString() }); // a6p4=bqGetReservationNamesにUser-Agent追加(2026-09-04)+bqFetchReservationRows_のORDER BY削除(92000行超でstatement timeout・2026-09-05)。a6p5=syncSeisanCategoriesToPlが店舗×月の同期結果を精算書側(sd_apiMarkPlSynced)へ書き戻すように追加（2026-09-05・業務委託精算書自動連携）。a6p6=dbPlDiag追加（実機E2E不一致の一時調査用）。a6p7=syncSeisanCategoriesToPlの対象店舗判定をseisan_target→seisan_pl_categories_targetに変更（運営委託費と経費PL反映を別々にON/OFFできるように・黒霧屋 新横浜対応）。a6p8=diagDepositsPerf追加（PayPay銀行取込46分化の原因切り分け用一時診断・2026-09-07）
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'dbPlDiag') return out(dbPlDiag(p)); // 2026-09-05一時追加: DB_PLシートの生データを店舗×月で確認（読み取り専用・原因特定でき次第削除）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
@@ -121,6 +121,7 @@ function handle(p) {
     if (action === 'saveEvent')   return out(saveEvent(p, session));   // イベント保存
     if (action === 'deleteEvent') return out(deleteEvent(p, session)); // イベント削除
     if (action === 'importDeposits') return out(importDeposits(p, session)); // 口座CSVの入金取込（入金管理タブ）
+    if (action === 'diagDepositsPerf') return out(diagDepositsPerf_(p, session)); // 一時診断: importDepositsの遅延切り分け（2026-09-07・書き込みなし）
     if (action === 'savePlEntries') return out(savePlEntries(p, session)); // PL経費の手入力（PL管理システム＋DB_PL両反映）
     if (action === 'savePlBulk') return out(savePlBulk(p, session)); // PL経費の期間一括計上（例: 家賃を12ヶ月分）
     if (action === 'mfConfirmImport') return out(mfConfirmImport(p, session)); // MF取込：プレビューで確定した行をDB_PLへ反映
@@ -4182,6 +4183,55 @@ function importDeposits(p, session) {
     if (ti === 0) { added = out.length; dup = skipped; }
   });
   return { ok: true, added: added, dup: dup, detail: detail };
+}
+
+// 2026-09-07 一時診断（PayPay銀行取込が2〜3分→46分に悪化した件の原因切り分け）。
+// importDeposits内の各ステップを個別に計測して返す。書き込みは一切行わない（読み取りのみ）。
+// 調査が終わったら削除してよい。
+function diagDepositsPerf_(p, session) {
+  var t = {};
+  var t0 = Date.now();
+  var dirBefore = CacheService.getScriptCache().get('store_directory_v1');
+  t.fetchStoreDirectory_cacheHit = !!dirBefore;
+  var dir = fetchStoreDirectory_();
+  t.fetchStoreDirectory_ms = Date.now() - t0;
+
+  var t1 = Date.now();
+  var salesSs = SpreadsheetApp.openById(SALES_DB_ID);
+  t.openSalesDB_ms = Date.now() - t1;
+
+  var t2 = Date.now();
+  var salesSh = salesSs.getSheetByName('入金DB');
+  var salesLast = salesSh ? salesSh.getLastRow() : -1;
+  t.salesDB_getLastRow_ms = Date.now() - t2;
+  t.salesDB_rowCount = salesLast;
+
+  var t3 = Date.now();
+  var salesHead = salesSh ? depositHeaderRow_(salesSh) : -1;
+  if (salesSh && salesLast > salesHead && salesHead > 0) {
+    salesSh.getRange(salesHead + 1, 1, salesLast - salesHead, 6).getValues();
+  }
+  t.salesDB_readValues_ms = Date.now() - t3;
+
+  var t4 = Date.now();
+  var localSs = SpreadsheetApp.getActiveSpreadsheet();
+  t.openLocalSS_ms = Date.now() - t4;
+
+  var t5 = Date.now();
+  var localSh = localSs.getSheetByName('入金DB');
+  var localLast = localSh ? localSh.getLastRow() : -1;
+  t.localDB_getLastRow_ms = Date.now() - t5;
+  t.localDB_rowCount = localLast;
+
+  var t6 = Date.now();
+  var localHead = localSh ? depositHeaderRow_(localSh) : -1;
+  if (localSh && localLast > localHead && localHead > 0) {
+    localSh.getRange(localHead + 1, 1, localLast - localHead, 6).getValues();
+  }
+  t.localDB_readValues_ms = Date.now() - t6;
+
+  t.total_ms = Date.now() - t0;
+  return { ok: true, timings: t };
 }
 
 // ================== 手入力の反映（PL経費・広告費・予約CSV） ==================
