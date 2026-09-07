@@ -5434,9 +5434,10 @@ function plShadowCompareNote_(sc, mS, mE, ym){
 // （P==='year'のときだけこちらを使う）。既存のplExpAll/S.plExpandedItems（開閉状態）・togglePlSub等の
 // 仕組みはそのまま流用し、新しいUIパーツ（開閉ボタン等）は増やさない。
 // 【正直な簡略化】MF側にある「営業外収益（受取利息・雑収入）」「営業外費用（支払利息・雑損失）」
-// 「経常利益」「特別損益」「税引前/当期純利益」は、tori-dashboard側に対応するデータ源が無い
-// （支払利息はD.loanPrincipal・簡易キャッシュフロー欄に別途あるが、このマトリクス用のデータとしては
-// 未整備）ため、今回は含めていない。営業利益までの表示に留める。
+// 「経常利益」「特別損益」は、tori-dashboard側に対応するデータ源（受取利息・雑収入・雑損失等）が
+// 無いため今回は含めていない。営業利益より下は、既存の「簡易キャッシュフロー」パネル（ユーザー指示で
+// 現状維持・変更していない）と同じ計算式（営業利益－法人税等＝当期純利益、＋減価償却費＝税引後CF、
+// －銀行返済元金＝営業CF）を月次で展開する（2026-09-07追加・ユーザー指示）。
 function plMonthlyMatrixHtml_(scopeSet, plAggFlag, sc, selN, multiActive, multiStores, scopeLabel){
   const yy=+(S.plYear||new Date().getFullYear());
   const monthly=[];
@@ -5448,7 +5449,16 @@ function plMonthlyMatrixHtml_(scopeSet, plAggFlag, sc, selN, multiActive, multiS
     const costT=cur.cost+exCur.catTotal.F, laborT=cur.labor+exCur.catTotal.L, adT=adCur+exCur.catTotal.A;
     const gross=cur.sales-costT;
     const sga=laborT+adT+exCur.catTotal.R+exCur.catTotal.O;
-    monthly.push({ cur, adCur, exCur, costT, laborT, adT, gross, sga, op:cur.sales-costT-sga });
+    const op=cur.sales-costT-sga;
+    // 簡易キャッシュフロー欄（既存・現状維持）と同じ式: 営業利益－法人税等(D.taxRate。黒字の月のみ課税)
+    // ＝当期純利益、＋減価償却費（DB_PLのO区分「減価償却費」）＝税引後CF、－銀行返済元金＝営業CF
+    const dep=exCur.byCat.O['減価償却費']||0;
+    const principal=loanPrincipalAgg(scopeSet,plAggFlag,mS_,mE_).total;
+    const tax=op>0?op*D.taxRate:0;
+    const netIncome=op-tax;
+    const afterTaxCf=netIncome+dep;
+    const opCf=afterTaxCf-principal;
+    monthly.push({ cur, adCur, exCur, costT, laborT, adT, gross, sga, op, dep, principal, tax, netIncome, afterTaxCf, opCf });
   }
   const plExpAll=!!S.plExpandAll;
   const plExpSet=new Set(S.plExpandedItems||[]);
@@ -5512,9 +5522,17 @@ function plMonthlyMatrixHtml_(scopeSet, plAggFlag, sc, selN, multiActive, multiS
     if(open) pushCatItems('O'); }
   rows.push({ name:'販管費計（L＋A＋R＋O）', bold:true, line:true, vals:monthly.map(mo=>mo.sga) });
   rows.push({ name:'営業利益', bold:true, line:true, profit:true, vals:monthly.map(mo=>mo.op) });
+  // ラベル側に＋／－の意味を持たせ、値自体は簡易キャッシュフロー欄と同じく常に正の実額で表示する
+  // （マトリクス内の他の経費行と表記を揃えるため。符号はrows.push側のvalsではなくラベルで表現）。
+  rows.push({ name:'－ 法人税等（'+(D.taxRate*100).toFixed(1)+'%）', vals:monthly.map(mo=>mo.tax) });
+  rows.push({ name:'当期純利益', bold:true, line:true, profit:true, vals:monthly.map(mo=>mo.netIncome) });
+  rows.push({ name:'＋ 減価償却費', vals:monthly.map(mo=>mo.dep) });
+  rows.push({ name:'税引後CF', bold:true, line:true, profit:true, vals:monthly.map(mo=>mo.afterTaxCf) });
+  rows.push({ name:'－ 銀行返済元金', vals:monthly.map(mo=>mo.principal) });
+  rows.push({ name:'営業CF', bold:true, line:true, profit:true, vals:monthly.map(mo=>mo.opCf) });
 
   let h=`<div class="panel"><div class="panel-head"><div><h3>年間PL（${yy}年・月次推移／${esc(scopeLabel)}）</h3>
-    <div class="sub">売上・原価・人件費＝分析_日別店舗 ／ 広告費＝DB_広告 ／ その他経費＝DB_PL（自動連携）／ Money Forward会計の月次推移表と同じ形式（営業外収益・費用・経常利益以下は未対応）</div></div>
+    <div class="sub">売上・原価・人件費＝分析_日別店舗 ／ 広告費＝DB_広告 ／ その他経費＝DB_PL（自動連携）／ Money Forward会計の月次推移表と同じ形式（営業外収益・費用・経常利益は未対応。営業利益より下は簡易キャッシュフロー欄と同じ式で当期純利益・営業CFまで表示）</div></div>
     ${plAnyHasSub?`<div class="no-print"><button class="icon-btn" style="font-size:11px" onclick="App.plExpandAllSub()">▼ すべて展開</button> <button class="icon-btn" style="font-size:11px" onclick="App.plCollapseAllSub()">▶ すべて折りたたむ</button></div>`:''}</div>
   <div class="scroll-x"><table class="tbl"><thead><tr><th style="position:sticky;left:0;background:var(--bg,#fff)">項目</th>${monthly.map((_,i)=>`<th>${i+1}月</th>`).join('')}<th>合計</th></tr></thead><tbody>`;
   const expP=[];
@@ -5675,9 +5693,11 @@ function viewPL(){
     h+=`<div class="note-box no-print">${mLabel}分の経費（DB_PL）はまだ入力されていません。売上・原価・人件費・広告費のみで計算しています。</div>`;
   }
 
-  // ---- 月別損益（年間・45日超の期間指定のとき：合計ではなく月別で見せる） ----
+  // ---- 月別損益（45日超の期間指定のとき：合計ではなく月別で見せる） ----
+  // 2026-09-07: P==='year'のときは下のplMonthlyMatrixHtml_（MF会計の月次推移表と同じ形式・
+  // 勘定科目ごとの内訳つき）に一本化したため、この単純な月別×区分合計表はcustom（期間指定）専用にした。
   const spanDays=Math.round((mE-mS)/86400000)+1;
-  if(P==='year'||(P==='custom'&&spanDays>45)){
+  if(P==='custom'&&spanDays>45){
     const mrows=[]; let mCur=new Date(new Date(mS).getFullYear(),new Date(mS).getMonth(),1);
     const multiYear=new Date(mS).getFullYear()!==new Date(mE).getFullYear();
     while(dayMs(mCur)<=mE){
@@ -5709,6 +5729,11 @@ function viewPL(){
     EXPORT.push({ title:'月別損益（'+mLabel+'／'+scopeLabel+'）', headers:['月','売上高','原価(F)','粗利','人件費(L)','広告費(A)','家賃(R)','他(O)','営業利益','利益率'], rows:expM });
   }
 
+  // 2026-09-07（ユーザー要望）: 年間PL表示のときは、Money Forward会計の月次推移表と同じ見た目の
+  // マトリクス（plMonthlyMatrixHtml_）に置き換える。月次/期間指定PL表は無改修のまま。
+  if(P==='year'){
+    h+=plMonthlyMatrixHtml_(scopeSet, plAggFlag, sc, selN, multiActive, multiStores, scopeLabel);
+  } else {
   // ---- PL表（区分ごとにセクション表示: F=原価 / L=人件費 / A=広告 / R=家賃 / O=他） ----
   const rows=[];   // {name, c, p, l, indent, bold, line, profit}
   // 補助科目の開閉状態（2026-08-23追加）。既定は閉じた状態。S.plExpandAllで一括展開。
@@ -5817,6 +5842,7 @@ function viewPL(){
   });
   h+=`</tbody></table></div></div>`;
   EXPORT.push({ title:plTitle+'（'+mLabel+'／'+scopeLabel+'）', headers:showYoY?['項目','当期','売上比',prevName,'前年同期']:['項目','当期','売上比',prevName], rows:expP });
+  }
 
   // ---- 店舗別PL比較（全店/合算表示・複数店舗の個別選択のときのみ） ----
   if(!selN&&sc.length>1){
