@@ -894,10 +894,11 @@ function ingestPL(rows){
   if(r.error){ D.diag['PL']=r.error; return false; }
   D.pl=r.recs; D.diag['PL']='OK '+r.recs.length+'件'; return true;
 }
-// DB_広告除外設定（2026-09-07追加）。「年月・店舗名」の行があるだけ＝その店舗×月は
-// PL画面の「広告費（自動連携）」をゼロ扱いにする（adAgg()のexcludeSet引数で参照）。
-// ヘッダー行（1行目）はスキップし、以降は列位置固定（A=年月, B=店舗名）で読む（apiSetAdExcludeの
-// 書き込み形式と対応）。
+// DB_広告除外設定（2026-09-07追加。シート名・action名は「広告」のままだが、対象は媒体販促費
+// （自動）。命名を変えるには再度GAS手動デプロイが必要になるためそのまま運用）。「年月・店舗名」の
+// 行があるだけ＝その店舗×月は、PL画面の「媒体販促費（自動）」（DB_PL・O区分）をゼロ扱いにする
+// （plAgg()のexcludeSet引数で参照）。ヘッダー行（1行目）はスキップし、以降は列位置固定
+// （A=年月, B=店舗名）で読む（apiSetAdExcludeの書き込み形式と対応）。
 function ingestAdExclude(rows){
   const set=new Set();
   for(let i=1;i<rows.length;i++){
@@ -3693,11 +3694,7 @@ function canonMedia(m){
   if(u.indexOf('GOOGLE')>=0||u.indexOf('グーグル')>=0||u.indexOf('マップ')>=0) return 'Google';
   return s;
 }
-// excludeSet（2026-09-07追加）: 「店舗名|yyyy-mm」文字列のSetを渡すと、その店舗×月のDB_広告実績を
-// 集計から除外する。PL画面が実際の販売促進費を手入力で確定させたあと、自動連携分との二重計上を避ける
-// ためのオプション引数（PLの計算箇所だけがD.adPlExcludeを渡す。媒体別画面・推移分析タブは今まで通り
-// 呼び出し側でこの引数を渡さない＝常に全件集計のまま、という約束で運用する）。
-function adAgg(scopeSet, a, b, excludeSet){
+function adAgg(scopeSet, a, b){
   const byStore={}, byMedia={}, byStoreMedia={}, unmatched={}, ownParent={};
   let ad=0;
   const pairSet=new Set();   // 表示店舗(own)|媒体（正規化後）
@@ -3719,10 +3716,6 @@ function adAgg(scopeSet, a, b, excludeSet){
       continue;
     }
     const own=res.own; ownParent[own]=res.parent;
-    if(excludeSet && excludeSet.size){
-      const d0=new Date(r.t);
-      if(excludeSet.has(own+'|'+d0.getFullYear()+'-'+String(d0.getMonth()+1).padStart(2,'0'))) continue;
-    }
     ad+=r.cost;
     (byStore[own]=byStore[own]||{cost:0,net:0,guests:0}).cost+=r.cost;
     (byMedia[md]=byMedia[md]||{cost:0,net:0,guests:0}).cost+=r.cost;
@@ -4268,7 +4261,13 @@ function isHolidayOrSunday(dt){ try{ const key=dt.getFullYear()+'-'+(dt.getMonth
 // 対象期間・対象店舗のPL経費（DB_PL）を費目別に集計。店舗名は売上側へ自動照合、子ブランドは親に合算。
 // 店舗名が空欄の行＝全社共通経費（全店/合算表示のときのみ算入）
 // 区分別に集計: byCat[区分][勘定科目]=金額, catTotal[区分]=合計（F=仕入れ/L=人件費/A=広告/R=家賃/O=他）
-function plAgg(scopeSet, selN, a, b){
+// excludeSet（2026-09-07追加）: 「店舗名|yyyy-mm」文字列のSetを渡すと、その店舗×月の
+// 「媒体販促費（自動）」行（PL管理システムの毎日トリガーが「⚙設定の対象媒体・純売上×率」で
+// 自動計算しDB_PLへ転記している見込み額。実体は無い推定値）をPL集計から除外する。実際の
+// 販売促進費を✎経費入力で確定させたあと、二重計上を避けるためのオプション引数（PL画面の
+// 計算箇所だけがD.adPlExcludeを渡す約束で運用する。ホームの経営ダッシュボードはD.pl/plAgg()を
+// 一切使わないため、この設定に関係なく今まで通り）。
+function plAgg(scopeSet, selN, a, b, excludeSet){
   const byCat={F:{},L:{},A:{},R:{},O:{}}, catTotal={F:0,L:0,A:0,R:0,O:0}, unmatched={};
   // bySub[区分][勘定科目][補助科目]=金額。補助科目なしは''キーに集計される（2026-08-23追加）。
   // 集計そのもの（byCat/catTotal）は従来どおり勘定科目合計ベースのままなので、既存の数値計算には一切影響しない。
@@ -4292,6 +4291,10 @@ function plAgg(scopeSet, selN, a, b){
     const res=(r.store in rc)?rc[r.store]:(rc[r.store]=resolveStoreEx(r.store));
     if(!res){ unmatched[r.store]=(unmatched[r.store]||0)+r.amount; continue; }
     if(!scopeSet.has(res.parent)) continue;
+    if(excludeSet && excludeSet.size && r.item==='媒体販促費（自動）'){
+      const d0=new Date(r.t);
+      if(excludeSet.has(String(r.store).trim()+'|'+d0.getFullYear()+'-'+String(d0.getMonth()+1).padStart(2,'0'))) continue;
+    }
     add(r);
   }
   return { byCat, catTotal, total, common, unmatched, bySub };
@@ -5421,7 +5424,7 @@ function plShadowCompareNote_(sc, mS, mE, ym){
   const rows=sc.map(nm=>{
     const s1=new Set([nm]);
     const c1=stat(s1,mS,mE,null);
-    const p1=plAgg(s1,nm,mS,mE);
+    const p1=plAgg(s1,nm,mS,mE,D.adPlExclude);
     const costOld=c1.cost+p1.catTotal.F, laborOld=c1.labor+p1.catTotal.L, salesOld=c1.sales;
     const hit=D.plSummaryFast.find(r=>storeNameById_(r.store_id)===nm);
     if(!hit) return null;
@@ -5474,6 +5477,7 @@ function plDetectMissingItems_(prevPrevEx, prevEx, curEx){
   ['F','L','A','R','O'].forEach(cat=>{
     const keys=new Set([...Object.keys(prevPrevEx.byCat[cat]||{}),...Object.keys(prevEx.byCat[cat]||{})]);
     keys.forEach(item=>{
+      if(item==='媒体販促費（自動）') return;   // 2026-09-07: PL側で意図的に除外できる項目なので誤検知させない
       const v2=(prevPrevEx.byCat[cat]||{})[item]||0, v1=(prevEx.byCat[cat]||{})[item]||0, v0=(curEx.byCat[cat]||{})[item]||0;
       if(v2>0 && v1>0 && v0===0) alerts.push({ cat, item });
     });
@@ -5489,20 +5493,24 @@ function plMissingAlertHtml_(alerts, note){
     ${alerts.map(a=>`<li>${a.monthLabel?esc(a.monthLabel)+'：':''}<b>${esc(a.item)}</b>（${PL_CAT_LABEL_[a.cat]}）が直近2ヶ月は計上されていましたが¥0です</li>`).join('')}
     </ul></div>`;
 }
-// 媒体販促費（自動連携）をPL表示だけから除外する設定のUI（2026-09-07追加）。店舗を1つ選んで
+// 媒体販促費（自動）をPL表示だけから除外する設定のUI（2026-09-07追加）。店舗を1つ選んで
 // 月次表示しているときだけ出す（複数店舗合算・全店合算では「どの店舗の設定か」が曖昧になるため）。
-function adExcludeToggleHtml_(store, ym){
-  if(!store||!ym||!canUse('plInput')) return '';
+// promoExists: この店舗×月にそもそも「媒体販促費（自動）」の行があるか（除外中でもDB_PL上の行自体は
+// 残るためD.plを直接見て判定する＝除外していても表示され続ける）。この項目を使っていない店舗・月では
+// 出す意味が無いので、行が無ければ何も表示しない。
+function adExcludeToggleHtml_(store, ym, promoExists){
+  if(!store||!ym||!canUse('plInput')||!promoExists) return '';
   const excluded=D.adPlExclude&&D.adPlExclude.has(store+'|'+ym);
   if(excluded){
     return `<div class="note-box no-print" style="border-color:#4c7d5c;background:#eef6ef">
-      ✅ ${esc(ym)}分「${esc(store)}」は広告費（自動連携）をPLから除外しています（実際の販売促進費を手入力で計上中。ダッシュボード側の表示には影響しません）。
+      ✅ ${esc(ym)}分「${esc(store)}」は媒体販促費（自動）をPLから除外しています（実際の販売促進費を手入力で計上中。ホームの経営ダッシュボード側の表示には影響しません）。
       <button class="icon-btn" style="margin-left:8px" onclick="App.toggleAdExclude('${esc(store)}','${esc(ym)}',false)">↩ 除外を解除</button></div>`;
   }
   return `<div class="mut no-print" style="font-size:11.5px;margin:2px 0 8px">
-    広告費（自動連携）を実際の販売促進費に差し替えたいときは、✎経費入力で実額を入力したあと
-    <button class="icon-btn" style="font-size:11px" onclick="App.toggleAdExclude('${esc(store)}','${esc(ym)}',true)">🔒 自動連携分をPLから除外</button>
-    してください（ダッシュボード側の広告費表示は今まで通りです）。</div>`;
+    「その他経費」内の<b>媒体販促費（自動）</b>（純売上×率で自動計算した見込み額）を実際の販売促進費に
+    差し替えたいときは、✎経費入力で実額を入力したあと
+    <button class="icon-btn" style="font-size:11px" onclick="App.toggleAdExclude('${esc(store)}','${esc(ym)}',true)">🔒 媒体販促費（自動）をPLから除外</button>
+    してください（ホームの経営ダッシュボード側の表示は今まで通りです）。</div>`;
 }
 function plMonthlyMatrixHtml_(scopeSet, plAggFlag, sc, selN, multiActive, multiStores, scopeLabel){
   const yy=+(S.plYear||new Date().getFullYear());
@@ -5510,8 +5518,8 @@ function plMonthlyMatrixHtml_(scopeSet, plAggFlag, sc, selN, multiActive, multiS
   for(let i=0;i<12;i++){
     const mS_=dayMs(new Date(yy,i,1)), mE_=dayMs(new Date(yy,i+1,0));
     const cur=stat(scopeSet,mS_,mE_,null);
-    const adCur=adAgg(scopeSet,mS_,mE_,D.adPlExclude).ad;
-    const exCur=plAgg(scopeSet,plAggFlag,mS_,mE_);
+    const adCur=adAgg(scopeSet,mS_,mE_).ad;
+    const exCur=plAgg(scopeSet,plAggFlag,mS_,mE_,D.adPlExclude);
     const costT=cur.cost+exCur.catTotal.F, laborT=cur.labor+exCur.catTotal.L, adT=adCur+exCur.catTotal.A;
     const gross=cur.sales-costT;
     const sga=laborT+adT+exCur.catTotal.R+exCur.catTotal.O;
@@ -5684,9 +5692,9 @@ function viewPL(){
 
   // 自動項目（売上・原価・人件費・広告）
   const cur=stat(scopeSet,mS,mE,null), prv=stat(scopeSet,pS,pE,null), lyr=stat(scopeSet,yS,yE,null);
-  const adCur=adAgg(scopeSet,mS,mE,D.adPlExclude).ad, adPrv=adAgg(scopeSet,pS,pE,D.adPlExclude).ad, adLyr=adAgg(scopeSet,yS,yE,D.adPlExclude).ad;
+  const adCur=adAgg(scopeSet,mS,mE).ad, adPrv=adAgg(scopeSet,pS,pE).ad, adLyr=adAgg(scopeSet,yS,yE).ad;
   // 手入力経費（DB_PL・月次）※期間指定のときは「月初日が期間内の月」の分を計上
-  const exCur=plAgg(scopeSet,plAggFlag,mS,mE), exPrv=plAgg(scopeSet,plAggFlag,pS,pE), exLyr=plAgg(scopeSet,plAggFlag,yS,yE);
+  const exCur=plAgg(scopeSet,plAggFlag,mS,mE,D.adPlExclude), exPrv=plAgg(scopeSet,plAggFlag,pS,pE,D.adPlExclude), exLyr=plAgg(scopeSet,plAggFlag,yS,yE,D.adPlExclude);
 
   // 区分の合成：F=自動仕入＋DB_PLのF行 ／ L=自動人件費＋L行 ／ A=DB_広告＋A行 ／ R=家賃 ／ O=他
   const costT=cur.cost+exCur.catTotal.F,  costP=prv.cost+exPrv.catTotal.F,  costL=lyr.cost+exLyr.catTotal.F;
@@ -5701,7 +5709,7 @@ function viewPL(){
   const mom=(c,p)=>{ if(!(Math.abs(p)>0)) return {t:prevName+' —',cls:'mut'}; const d2=(c-p)/Math.abs(p)*100; return { t:prevName+'比 '+(d2>=0?'+':'▲')+Math.abs(d2).toFixed(1)+'%', cls:d2>=0?'up':'dn' }; };
   // 入力漏れアラート（2026-09-07追加）: 月次表示のときだけ、前々月・前月とも計上があった費目が
   // 今月¥0なら検出する（前月＝exPrvをそのまま流用し、前々月分だけ追加で取得）。
-  const monthMissingAlerts_=(P==='month')?plDetectMissingItems_(plAgg(scopeSet,plAggFlag,ppS,ppE), exPrv, exCur):[];
+  const monthMissingAlerts_=(P==='month')?plDetectMissingItems_(plAgg(scopeSet,plAggFlag,ppS,ppE,D.adPlExclude), exPrv, exCur):[];
 
   let h=`<div class="ctrl-bar no-print">
     <div class="seg">${[['month','月次'],['year','年間'],['custom','期間指定']].map(([k,l])=>`<button class="${P===k?'on':''}" onclick="App.set('plPeriod','${k}')">${l}</button>`).join('')}</div>
@@ -5715,7 +5723,7 @@ function viewPL(){
       ? `<div class="store-pick no-print"><span class="sp-lb">🏪 店舗（個別選択）</span><button class="icon-btn" onclick="App.openPlStorePick()">${multiStores.length}店舗を選択中・変更</button><button class="icon-btn" onclick="App.clearPlStorePick()">選択解除</button></div>`
       : storeSegHtml()+`<div class="store-pick no-print"><button class="icon-btn" onclick="App.openPlStorePick()">🏪 複数店舗を選んで合算</button></div>`);
   h+=plMissingAlertHtml_(monthMissingAlerts_, '前々月・前月とも計上のあった費目が、今月は¥0になっています');
-  if(P==='month'&&selN&&!multiActive) h+=adExcludeToggleHtml_(selN, curMonthYm_);
+  if(P==='month'&&selN&&!multiActive) h+=adExcludeToggleHtml_(selN, curMonthYm_, D.pl.some(r=>String(r.store).trim()===selN && r.item==='媒体販促費（自動）' && r.t>=mS && r.t<=mE));
   // 2026-08-22追加: 売上/原価/人件費(stat())とDB_PL手入力経費(plAgg())の両方がBQトグルの対象
   if(isAdminRole()&&S.useBqDaily) h+=`<div class="mut" style="font-size:11px;margin:2px 0 8px">🧪 データ元: BigQuery（推移分析タブのトグルで切替）${D.plBqLoading?' ・PL読込中…':''}${D.plBqErr?` ・PL取得エラー: ${esc(D.plBqErr)}`:''}${D.loanBqLoading?' ・返済元金読込中…':''}${D.loanBqErr?` ・返済元金取得エラー: ${esc(D.loanBqErr)}`:''}</div>`;
   h+=bqFallbackNote_('PL');
@@ -5785,8 +5793,8 @@ function viewPL(){
     while(dayMs(mCur)<=mE){
       const a2=Math.max(dayMs(mCur),mS), b2=Math.min(dayMs(new Date(mCur.getFullYear(),mCur.getMonth()+1,0)),mE);
       const c2=stat(scopeSet,a2,b2,null);
-      const p2=plAgg(scopeSet,plAggFlag,a2,b2);
-      const ad2=adAgg(scopeSet,a2,b2,D.adPlExclude).ad+p2.catTotal.A;
+      const p2=plAgg(scopeSet,plAggFlag,a2,b2,D.adPlExclude);
+      const ad2=adAgg(scopeSet,a2,b2).ad+p2.catTotal.A;
       const cost2=c2.cost+p2.catTotal.F, labor2=c2.labor+p2.catTotal.L;
       const g2=c2.sales-cost2, rent2=p2.catTotal.R, oth2=p2.catTotal.O;
       mrows.push({ label:(multiYear?String(mCur.getFullYear()).slice(2)+'/':'')+(mCur.getMonth()+1)+'月',
@@ -5935,8 +5943,8 @@ function viewPL(){
     cmpStores.forEach(nm=>{
       const s1=new Set([nm]);
       const c1=stat(s1,mS,mE,null);
-      const p1=plAgg(s1,nm,mS,mE);
-      const a1=adAgg(s1,mS,mE,D.adPlExclude).ad + p1.catTotal.A;           // 広告費 = DB_広告 + DB_PLのA区分
+      const p1=plAgg(s1,nm,mS,mE,D.adPlExclude);
+      const a1=adAgg(s1,mS,mE).ad + p1.catTotal.A;           // 広告費 = DB_広告 + DB_PLのA区分
       const l1=c1.labor + p1.catTotal.L;                     // 人件費 = 自動 + L区分
       const g1=c1.sales - (c1.cost + p1.catTotal.F);         // 粗利 = 売上 - (自動仕入 + F区分)
       const e1=p1.catTotal.R + p1.catTotal.O;                // 経費 = 家賃 + 他
@@ -8582,13 +8590,14 @@ window.App = {
       render();
     }catch(e){ toast('通信エラー: '+e.message); }
   },
-  // 媒体販促費（自動連携）をPL表示だけから除外する設定の切り替え（2026-09-07追加）。
-  // 実際の販売促進費を✎経費入力で確定させたあと、二重計上を避けるために使う。ダッシュボード側
-  // （媒体別画面・推移分析タブ）には一切影響しない（adAgg呼び出し側で明示的に分けているため）。
+  // 「媒体販促費（自動）」（PL管理システムが純売上×率で毎日自動計算しDB_PLへ転記している見込み額）を
+  // PL表示だけから除外する設定の切り替え（2026-09-07追加）。実際の販売促進費を✎経費入力で確定させた
+  // あと、二重計上を避けるために使う。ホームの経営ダッシュボードには一切影響しない（D.pl/plAgg()を
+  // 使わないため）。
   async toggleAdExclude(store, ym, exclude){
     if(!S.auth||!S.auth.token) return;
     if(!store){ toast('店舗を1つ選んでから操作してください'); return; }
-    if(exclude && !confirm(ym+'分の「'+store+'」の広告費（自動連携）をPLから除外します。\n（実際の販売促進費を✎経費入力で入力済みであることを確認してください。ダッシュボード側の表示は変わりません）\nよろしいですか？')) return;
+    if(exclude && !confirm(ym+'分の「'+store+'」の媒体販促費（自動）をPLから除外します。\n（実際の販売促進費を✎経費入力で入力済みであることを確認してください。ホームの経営ダッシュボード側の表示は変わりません）\nよろしいですか？')) return;
     toast(exclude?'除外を設定中…':'除外を解除中…');
     try{
       const d=await api({ action:'setAdExclude', token:S.auth.token, store, ym, exclude:exclude?'true':'false' });
