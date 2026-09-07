@@ -5387,15 +5387,29 @@ function plShadowCompareNote_(sc, mS, mE, ym){
     const costOld=c1.cost+p1.catTotal.F, laborOld=c1.labor+p1.catTotal.L, salesOld=c1.sales;
     const hit=D.plSummaryFast.find(r=>storeNameById_(r.store_id)===nm);
     if(!hit) return null;
-    return { nm, salesOld, salesNew:Number(hit.sales||0), costOld, costNew:Number(hit.cost_total||0), laborOld, laborNew:Number(hit.labor_total||0), seisan:SEISAN_STORES_.includes(nm) };
+    return { nm, salesOld, salesNew:Number(hit.sales||0), costOld, costNew:Number(hit.cost_total||0), laborOld, laborNew:Number(hit.labor_total||0), seisan:SEISAN_STORES_.includes(nm), computedAt:hit.computed_at||'' };
   }).filter(Boolean);
   if(!rows.length) return '';
-  let h=`<div class="panel" style="border:1px dashed #999"><div class="panel-head"><div><h3>🔍 PL新旧突合（検証用・マスター/本部限定・本番表示には未使用）</h3><div class="sub">kd_pl_monthly_summary(新)と旧GAS/BQ集計(旧)の比較。業務委託精算店舗4店は精算書反映前のため原価/人件費0円が既知の状態</div></div></div>
+  // 2026-09-07修正（ユーザー報告「差異あり」の原因調査で判明）: kd_pl_monthly_summaryはkeiei-kd-refresh
+  // （op:pl_monthly）が1日1回だけ更新するのに対し、旧側（stat()の元になるD.daily・GAS/BigQuery）は
+  // 毎時更新されている（kd_sync_runsの実行履歴で確認済み：pl_monthlyは今日00:10 UTCの1回のみ、
+  // dashboard_dailyは毎時0分に実行）。そのため新は「最終バッチ更新時点までの月累計」・旧は「今この瞬間
+  // までの月累計」になり、当日の営業が進むほど新<旧の差が開くのが正常（バグではない）。この差を
+  // 「⚠️差異あり」と表示していたのはミスリーディングだったため、最終更新時刻を明示し、
+  // 新が旧を下回るだけの差は「更新待ち」、新が旧を上回る（バッチ更新の性質上ありえないはずの向き）
+  // ときだけ「⚠️要確認」に変更した。
+  const latestComputed=rows.reduce((m,r)=>r.computedAt&&(!m||r.computedAt>m)?r.computedAt:m,'');
+  const freshTxt=latestComputed?new Date(latestComputed).toLocaleString('ja-JP',{timeZone:'Asia/Tokyo',month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}):'不明';
+  let h=`<div class="panel" style="border:1px dashed #999"><div class="panel-head"><div><h3>🔍 PL新旧突合（検証用・マスター/本部限定・本番表示には未使用）</h3><div class="sub">kd_pl_monthly_summary(新)は1日1回更新（最終更新: ${esc(freshTxt)}）。旧（毎時更新）より当日分が少なく出るのは正常な時間差です。業務委託精算店舗4店は精算書反映前のため原価/人件費0円が既知の状態</div></div></div>
   <div class="scroll-x"><table class="tbl"><thead><tr><th>店舗</th><th>売上(旧/新)</th><th>原価(旧/新)</th><th>人件費(旧/新)</th><th>判定</th></tr></thead><tbody>`;
   rows.forEach(r=>{
-    const diffCost=r.costNew-r.costOld, diffLabor=r.laborNew-r.laborOld;
-    const note=r.seisan?'業務委託精算書反映前':(Math.abs(diffCost)>1000||Math.abs(diffLabor)>1000?'⚠️差異あり':'一致');
-    const cls=r.seisan?'mut':(note==='一致'?'pos':'neg');
+    const diffSales=r.salesNew-r.salesOld, diffCost=r.costNew-r.costOld, diffLabor=r.laborNew-r.laborOld;
+    let note,cls;
+    if(r.seisan){ note='業務委託精算書反映前'; cls='mut'; }
+    else if(diffSales<=0 && diffCost<=0 && diffLabor<=0){
+      note=(diffSales===0&&diffCost===0&&diffLabor===0)?'一致':'更新待ち（バッチ未反映分・正常）';
+      cls=note==='一致'?'pos':'mut';
+    } else { note='⚠️要確認（新が旧を上回る項目あり）'; cls='neg'; }
     h+=`<tr><td>${shortStoreTd(r.nm)}</td><td>${yen(r.salesOld)} / ${yen(r.salesNew)}</td><td>${yen(r.costOld)} / ${yen(r.costNew)}</td><td>${yen(r.laborOld)} / ${yen(r.laborNew)}</td><td class="${cls}">${note}</td></tr>`;
   });
   h+=`</tbody></table></div></div>`;
