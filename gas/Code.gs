@@ -53,7 +53,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-a6p8', time: new Date().toISOString() }); // a6p4=bqGetReservationNamesにUser-Agent追加(2026-09-04)+bqFetchReservationRows_のORDER BY削除(92000行超でstatement timeout・2026-09-05)。a6p5=syncSeisanCategoriesToPlが店舗×月の同期結果を精算書側(sd_apiMarkPlSynced)へ書き戻すように追加（2026-09-05・業務委託精算書自動連携）。a6p6=dbPlDiag追加（実機E2E不一致の一時調査用）。a6p7=syncSeisanCategoriesToPlの対象店舗判定をseisan_target→seisan_pl_categories_targetに変更（運営委託費と経費PL反映を別々にON/OFFできるように・黒霧屋 新横浜対応）。a6p8=diagDepositsPerf追加（PayPay銀行取込46分化の原因切り分け用一時診断・2026-09-07）
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-a6p9', time: new Date().toISOString() }); // a6p4=bqGetReservationNamesにUser-Agent追加(2026-09-04)+bqFetchReservationRows_のORDER BY削除(92000行超でstatement timeout・2026-09-05)。a6p5=syncSeisanCategoriesToPlが店舗×月の同期結果を精算書側(sd_apiMarkPlSynced)へ書き戻すように追加（2026-09-05・業務委託精算書自動連携）。a6p6=dbPlDiag追加（実機E2E不一致の一時調査用）。a6p7=syncSeisanCategoriesToPlの対象店舗判定をseisan_target→seisan_pl_categories_targetに変更（運営委託費と経費PL反映を別々にON/OFFできるように・黒霧屋 新横浜対応）。a6p8=diagDepositsPerf追加（PayPay銀行取込46分化の原因切り分け用一時診断・2026-09-07）。a6p9=apiSetAdExclude追加（媒体販促費を手入力で確定させたあとPL画面だけ自動連携分を除外できるように・DB_広告除外設定シート新設・2026-09-07）
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'dbPlDiag') return out(dbPlDiag(p)); // 2026-09-05一時追加: DB_PLシートの生データを店舗×月で確認（読み取り専用・原因特定でき次第削除）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
@@ -123,6 +123,7 @@ function handle(p) {
     if (action === 'importDeposits') return out(importDeposits(p, session)); // 口座CSVの入金取込（入金管理タブ）
     if (action === 'diagDepositsPerf') return out(diagDepositsPerf_(p, session)); // 一時診断: importDepositsの遅延切り分け（2026-09-07・書き込みなし）
     if (action === 'savePlEntries') return out(savePlEntries(p, session)); // PL経費の手入力（PL管理システム＋DB_PL両反映）
+    if (action === 'setAdExclude') return out(apiSetAdExclude(p, session)); // 広告費（自動連携）をPL表示だけから除外する設定（2026-09-07追加）
     if (action === 'savePlBulk') return out(savePlBulk(p, session)); // PL経費の期間一括計上（例: 家賃を12ヶ月分）
     if (action === 'mfConfirmImport') return out(mfConfirmImport(p, session)); // MF取込：プレビューで確定した行をDB_PLへ反映
     if (action === 'saveAdFee') return out(saveAdFee(p, session)); // 広告費の手入力（管理シート💾広告費DBへupsert）
@@ -4372,6 +4373,45 @@ function savePlEntries(p, session) {
     if (tkPl) bqSyncPL({ token: tkPl });
   } catch (eSync) { /* BQ同期に失敗してもシート保存自体は成功として扱う（次回同期で追いつく） */ }
   return { ok: true, saved: clean.length, plsys: plsys };
+}
+
+// 媒体販促費の実額を手入力で確定させたあと、PL画面の「広告費（DB_広告・自動連携）」を二重計上しない
+// ようにする設定（2026-09-07追加・ユーザー要望）。対象は「DB_広告除外設定」という新しいシート
+// （無ければ自動作成）。シート名が「DB_」で始まるので、読み取りは既存の自動配信の仕組み
+// （configuredSheets）にそのまま乗る＝キー「広告除外設定」としてapp.js側へ配信される。書き込みは
+// この関数だけが担当する。この設定はPL画面の集計にだけ影響し、媒体別画面・推移分析タブなど
+// ダッシュボード側の広告費表示は今まで通りDB_広告の全件を使う（意図的に無関係のまま）。
+function apiSetAdExclude(p, session) {
+  var store = String(p.store || '').trim();
+  var ym = String(p.ym || '').trim();
+  if (!store || !/^\d{4}-\d{2}$/.test(ym)) return { ok: false, error: 'store/ymが不正です' };
+  if (!scopeAllows_(session, store)) return { ok: false, error: 'この店舗を編集する権限がありません' };
+  var exclude = String(p.exclude) === 'true';
+  var y = Number(ym.slice(0, 4)), mo = Number(ym.slice(5, 7));
+  var ymSlash = ym.slice(0, 4) + '/' + ym.slice(5, 7);
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sh = ss.getSheetByName('DB_広告除外設定');
+  if (!sh) {
+    sh = ss.insertSheet('DB_広告除外設定');
+    sh.getRange(1, 1, 1, 4).setValues([['年月', '店舗名', '設定日時', '設定者']]);
+    sh.getRange(1, 1, 1, 4).setFontWeight('bold');
+    SpreadsheetApp.flush();   // 直後のgetLastRow()が古い値を返す不具合対策（seisan-dashboardと同じ理由）
+  }
+  var last = sh.getLastRow(), keep = [];
+  if (last >= 2) {
+    sh.getRange(2, 1, last - 1, 4).getValues().forEach(function (r) {
+      if (r[0] === '' && r[1] === '') return;
+      if (ymOf_(r[0]) === ymSlash && String(r[1]).trim() === store) return;   // 対象は捨てて下で入れ直す
+      keep.push(r);
+    });
+  }
+  if (exclude) keep.push([new Date(y, mo - 1, 1), store, new Date(), (session && (session.name || session.id)) || '不明']);
+  if (last >= 2) sh.getRange(2, 1, last - 1, 4).clearContent();
+  if (keep.length) {
+    sh.getRange(2, 1, keep.length, 4).setValues(keep);
+    sh.getRange(2, 1, keep.length, 1).setNumberFormat('yyyy/m/d');
+  }
+  return { ok: true, exclude: exclude };
 }
 
 // 広告費の保存：管理シートの💾広告費DBへ upsert（キー=年月×店舗×媒体×プラン・同一キー上書き）。
