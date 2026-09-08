@@ -153,6 +153,30 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 
 ## 5. 作業ログ
 
+### 2026-09-08（Mac miniセッション・続き2）BQミラーの再同期＋分析テーブル再生成（入金二重削除・N-Style売上0円の後始末）
+
+ユーザーから2件の追加報告。①「入金管理の金額がやはりおかしい・BigQuery側は重複削除されてる？」
+②「9/7のN-Style3店舗（エース本厚木・じんべぇ新横浜・じんべぇ川崎）の売上が全店比較で¥0のまま」。
+
+**①入金DBの重複削除がBQミラーに未反映だった件**: `stg_deposit`（BigQuery）はスプレッドシートからの
+`WRITE_TRUNCATE`全置換ミラーだが、直近の自動同期（`bq-sales-reconcile`・11:04 JST）が今回の重複削除
+（16:52〜17:07 JST）より**前**に走ったものだったため、削除前の古い件数のまま残っていた。
+`node run.js bq-sales-reconcile`を手動再実行し、`stg_deposit`が削除後のスプレッドシートと同じ
+4795行になったことを確認。
+
+**②N-Style売上が¥0のままだった件**: 売上表示の正本「分析_日別店舗」は「売上DB」GASの
+`buildAnalysisTables()`（`分析集計.gs`）が生成するが、これは支払いDBの取込とは**別トリガー**
+（`ns-daily-import`の`morning-refresh`が毎日08:45に`rebuildAnalysis`→`bqSyncSales`→
+`bqReconcileSales`の順で実行）。今日のmorning-refreshは08:49 JSTに完了しており、
+9/7分の支払いDB修正（15:16 JST）より前だったため、**分析テーブルには古い（N-Style除外済みの）
+データがそのまま残っていた**。`node -e "require('./lib/gas').rebuildAnalysis()"`
+（`/Users/mirai/ns-daily-import`）を手動実行して分析_日別店舗を再生成（104秒）、続けて
+`bq-sales-reconcile`を再実行してBQミラーも最新化（突合OK・完全一致）。
+
+**教訓**: 「売上DB」への生データ取込を手動で個別修正・再実行しただけでは、分析集計・BQミラーまでは
+自動で追随しない。原始データ（支払いDB等）を触ったら、`rebuildAnalysis`→`bqSyncSales`
+（`bq-sales-reconcile`タスクでまとめて可能）まで一連で流すこと。
+
 ### 2026-09-08（Mac miniセッション・続き）入金DBの二重計上バグを修正・既存重複11件を削除（v2プロジェクト・`ver`=`token-336h-v1-a6p13`）
 
 ユーザーから実機スクリーンショット付きで「口座取込した入金が2重で入ってしまっている」との報告（じんべぇ
