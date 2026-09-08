@@ -53,7 +53,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-a6p9', time: new Date().toISOString() }); // a6p4=bqGetReservationNamesにUser-Agent追加(2026-09-04)+bqFetchReservationRows_のORDER BY削除(92000行超でstatement timeout・2026-09-05)。a6p5=syncSeisanCategoriesToPlが店舗×月の同期結果を精算書側(sd_apiMarkPlSynced)へ書き戻すように追加（2026-09-05・業務委託精算書自動連携）。a6p6=dbPlDiag追加（実機E2E不一致の一時調査用）。a6p7=syncSeisanCategoriesToPlの対象店舗判定をseisan_target→seisan_pl_categories_targetに変更（運営委託費と経費PL反映を別々にON/OFFできるように・黒霧屋 新横浜対応）。a6p8=diagDepositsPerf追加（PayPay銀行取込46分化の原因切り分け用一時診断・2026-09-07）。a6p9=apiSetAdExclude追加（媒体販促費を手入力で確定させたあとPL画面だけ自動連携分を除外できるように・DB_広告除外設定シート新設・2026-09-07）
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-a6p13', time: new Date().toISOString() }); // a6p4=bqGetReservationNamesにUser-Agent追加(2026-09-04)+bqFetchReservationRows_のORDER BY削除(92000行超でstatement timeout・2026-09-05)。a6p5=syncSeisanCategoriesToPlが店舗×月の同期結果を精算書側(sd_apiMarkPlSynced)へ書き戻すように追加（2026-09-05・業務委託精算書自動連携）。a6p6=dbPlDiag追加（実機E2E不一致の一時調査用）。a6p7=syncSeisanCategoriesToPlの対象店舗判定をseisan_target→seisan_pl_categories_targetに変更（運営委託費と経費PL反映を別々にON/OFFできるように・黒霧屋 新横浜対応）。a6p8=diagDepositsPerf追加（PayPay銀行取込46分化の原因切り分け用一時診断・2026-09-07）。a6p9=apiSetAdExclude追加（媒体販促費を手入力で確定させたあとPL画面だけ自動連携分を除外できるように・DB_広告除外設定シート新設・2026-09-07）。a6p10=importDepositsにLockServiceを追加（並行実行による入金二重計上バグを修正・2026-09-08）。a6p11=diagDepositDupScan追加（入金DBの重複行を行番号付きで列挙する読み取り専用診断・2026-09-08）。a6p12=cleanupDepositDuplicates追加（特定済み重複11件をユーザー承認のうえ削除・2026-09-08）。a6p13=cleanupDepositDuplicatesの認証をトークン→セッションに変更（トークン認証で原因不明のunauthorized・実行して重複11件×2シートの削除完了確認済み・2026-09-08）
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'dbPlDiag') return out(dbPlDiag(p)); // 2026-09-05一時追加: DB_PLシートの生データを店舗×月で確認（読み取り専用・原因特定でき次第削除）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
@@ -122,6 +122,8 @@ function handle(p) {
     if (action === 'deleteEvent') return out(deleteEvent(p, session)); // イベント削除
     if (action === 'importDeposits') return out(importDeposits(p, session)); // 口座CSVの入金取込（入金管理タブ）
     if (action === 'diagDepositsPerf') return out(diagDepositsPerf_(p, session)); // 一時診断: importDepositsの遅延切り分け（2026-09-07・書き込みなし）
+    if (action === 'diagDepositDupScan') return out(diagDepositDupScan_(p, session)); // 一時診断: 入金DBの重複行を行番号付きで列挙（2026-09-08・読み取り専用）
+    if (action === 'cleanupDepositDuplicates') return out(cleanupDepositDuplicates_(p, session)); // 2026-09-08一時対応: 特定済みの重複11件をユーザー承認のうえ削除（セッション認証・1回きりの想定。当初トークン認証で原因不明のunauthorizedが出たためセッション認証に変更）
     if (action === 'savePlEntries') return out(savePlEntries(p, session)); // PL経費の手入力（PL管理システム＋DB_PL両反映）
     if (action === 'setAdExclude') return out(apiSetAdExclude(p, session)); // 広告費（自動連携）をPL表示だけから除外する設定（2026-09-07追加）
     if (action === 'savePlBulk') return out(savePlBulk(p, session)); // PL経費の期間一括計上（例: 家賃を12ヶ月分）
@@ -4112,6 +4114,26 @@ function importDeposits(p, session) {
   var rows; try { rows = JSON.parse(p.rows || '[]'); } catch (e) { rows = []; }
   if (!rows.length) return { ok: false, error: '取込対象の行がありません' };
   if (rows.length > 3000) return { ok: false, error: '一度に取り込めるのは3000行までです' };
+
+  // 2026-09-08修正（重複計上バグ・ユーザー報告「じんべぇ 川崎で同じ入金が2重に入っている」）:
+  // 下の「既存行読み取り→重複判定→書き込み」にロックが無く、同じ取込がほぼ同時に2回呼ばれると
+  // （手動取込ボタンの連打・応答が遅い間のブラウザ再送等。1回の取込が数分かかることがあるため
+  // 発生しやすい）、両方が書き込み前の状態を見て「新規行」と判定し二重に書き込まれていた
+  // （実害: じんべぇ 川崎3件が2026-09-08 12:49/12:51の2回に分けて重複書込・要データ修正別途）。
+  // 店舗をまたいでもシート書き込み位置(getLastRow)が競合しうるため、スクリプト全体でロックする。
+  var lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(120000); // 1回の取込が数分かかることがあるため長めに待つ
+  } catch (e) {
+    return { ok: false, error: '他の入金取込処理と混み合っています。1分ほど待って再試行してください' };
+  }
+  try {
+    return importDeposits_locked_(store, rows);
+  } finally {
+    lock.releaseLock();
+  }
+}
+function importDeposits_locked_(store, rows) {
   var tz = Session.getScriptTimeZone() || 'Asia/Tokyo';
   var now = new Date();
   // 取込先: ①売上DB（既存運用の本体） ②このスプレッドシート（ダッシュボードの配信元）。
@@ -4233,6 +4255,114 @@ function diagDepositsPerf_(p, session) {
 
   t.total_ms = Date.now() - t0;
   return { ok: true, timings: t };
+}
+
+// 2026-09-08 一時診断（入金の二重計上バグの実害範囲を確認するため）。importDeposits_locked_と
+// 全く同じキー（店舗+日付+取引時刻+金額）で入金DB（売上DB・ダッシュボード両方）を走査し、
+// 同一キーが2行以上ある箇所をシート上の行番号付きで返す。読み取り専用。原因のLockService修正
+// （a6p10）は別途適用済みなので、これは既存データのクリーンアップ調査用。調査が終わったら削除してよい。
+function diagDepositDupScan_(p, session) {
+  var tz = Session.getScriptTimeZone() || 'Asia/Tokyo';
+  function dKey(v) {
+    if (v instanceof Date) return v.getFullYear() + '/' + (v.getMonth() + 1) + '/' + v.getDate();
+    var m = String(v).match(/(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+    return m ? (+m[1]) + '/' + (+m[2]) + '/' + (+m[3]) : String(v);
+  }
+  function tKey(v) {
+    if (v instanceof Date) return Utilities.formatDate(v, tz, 'HH:mm');
+    var digits = String(v == null ? '' : v).replace(/[^\d]/g, '');
+    if (!digits) return '';
+    digits = digits.padStart(4, '0');
+    return digits.slice(0, 2) + ':' + digits.slice(2, 4);
+  }
+  function aKey(v) { return String(Number(String(v).replace(/[,¥\s]/g, '')) || 0); }
+  function scan(sh, label) {
+    if (!sh) return { label: label, error: 'シートなし' };
+    var head = depositHeaderRow_(sh);
+    if (head < 0) return { label: label, error: 'ヘッダー行なし' };
+    var last = sh.getLastRow();
+    if (last <= head) return { label: label, rowCount: 0, dupGroups: [] };
+    var v = sh.getRange(head + 1, 1, last - head, 6).getValues();
+    var groups = {};
+    for (var i = 0; i < v.length; i++) {
+      var r = v[i];
+      if (String(r[0]).trim() === '') continue;
+      var key = normStoreName_(r[0]) + '__' + dKey(r[1]) + '__' + tKey(r[4]) + '__' + aKey(r[2]);
+      if (!groups[key]) groups[key] = [];
+      groups[key].push({ sheetRow: head + 1 + i, store: r[0], date: dKey(r[1]), amount: r[2], desc: r[3], time: r[4], importedAt: r[5] });
+    }
+    var dupGroups = [];
+    for (var k in groups) { if (groups[k].length > 1) dupGroups.push(groups[k]); }
+    return { label: label, rowCount: v.length, dupGroupCount: dupGroups.length, dupGroups: dupGroups };
+  }
+  var results = [];
+  try {
+    var src = SpreadsheetApp.openById(SALES_DB_ID).getSheetByName('入金DB');
+    results.push(scan(src, '売上DB'));
+  } catch (e) { results.push({ label: '売上DB', error: String(e) }); }
+  var dst = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('入金DB');
+  results.push(scan(dst, 'ダッシュボード'));
+  return { ok: true, results: results };
+}
+
+// 2026-09-08 一時対応（ユーザー承認済み）: diagDepositDupScan_で見つかった11件の重複ペア（LockService
+// 修正=a6p10より前に発生・すべて2026-09-02〜09-08分）を、売上DB・ダッシュボード両方の入金DBから
+// 削除する。安全のため対象行を削除直前に再読込し、店舗/日付/金額が期待値と一致する場合だけ削除する
+// （一致しなければスキップしてreportで報告・シートが想定と変わっていた場合の誤削除を防ぐ）。
+// 行番号がずれないよう降順で処理。実行は1回きりの想定（削除後は不要）。
+function cleanupDepositDuplicates_(p, session) {
+  // 2026-09-08実機確認: 当初PropertiesService.getScriptProperties()によるBQ_LOAD_TOKEN専用トークン認証
+  // （dbPlDiag等の既存トークン系診断と全く同じコードパターン）を使っていたが、コード内容が
+  // 完全に一致するdbPlDiagは正常に動作する一方、この関数だけ原因不明の"unauthorized"を返し続けた
+  // （byte単位比較でも差異なし・再デプロイでも解消せず）。原因は特定できなかったが、
+  // diagDepositDupScan_と同じセッション認証方式に切り替えたところ問題なく動作したため、
+  // 以後の同種の書き込み系一時アクションはトークン認証よりセッション認証を優先すること。
+  if (!session) return { ok: false, error: 'unauthorized' };
+  function dKey(v) {
+    if (v instanceof Date) return v.getFullYear() + '/' + (v.getMonth() + 1) + '/' + v.getDate();
+    var m = String(v).match(/(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+    return m ? (+m[1]) + '/' + (+m[2]) + '/' + (+m[3]) : String(v);
+  }
+  function aKey(v) { return String(Number(String(v).replace(/[,¥\s]/g, '')) || 0); }
+  // 2026-09-08にdiagDepositDupScan_で特定した削除対象（各ペアのうち取込日時が新しい方の行）。
+  var TARGETS = [
+    { row: 4742, store: '鶏武者 新横浜', date: '2026/9/2', amount: 107000 },
+    { row: 4750, store: '鳥一代 恵比寿', date: '2026/9/4', amount: 139000 },
+    { row: 4753, store: '芝の鳥一代', date: '2026/9/3', amount: 41000 },
+    { row: 4756, store: 'エース 本厚木', date: '2026/9/3', amount: 37000 },
+    { row: 4760, store: 'じんべぇ 川崎', date: '2026/9/4', amount: 214000 },
+    { row: 4782, store: '鳥一代 恵比寿', date: '2026/9/6', amount: 66000 },
+    { row: 4785, store: '鶏武者 川崎店', date: '2026/9/6', amount: 44000 },
+    { row: 4787, store: '鶏武者 新横浜', date: '2026/9/6', amount: 150000 },
+    { row: 4802, store: 'じんべぇ 川崎', date: '2026/9/5', amount: 143000 },
+    { row: 4803, store: 'じんべぇ 川崎', date: '2026/9/6', amount: 109000 },
+    { row: 4804, store: 'じんべぇ 川崎', date: '2026/9/7', amount: 84000 },
+  ].sort(function (a, b) { return b.row - a.row; }); // 降順（行番号の大きい方から削除）
+  function cleanupSheet(sh, label) {
+    if (!sh) return { label: label, error: 'シートなし' };
+    var deleted = [], skipped = [];
+    TARGETS.forEach(function (t) {
+      var v = sh.getRange(t.row, 1, 1, 6).getValues()[0];
+      var storeOk = normStoreName_(v[0]) === normStoreName_(t.store) || String(v[0]).trim() === t.store;
+      var dateOk = dKey(v[1]) === t.date;
+      var amtOk = aKey(v[2]) === aKey(t.amount);
+      if (storeOk && dateOk && amtOk) {
+        sh.deleteRow(t.row);
+        deleted.push({ row: t.row, store: v[0], date: dKey(v[1]), amount: v[2] });
+      } else {
+        skipped.push({ row: t.row, expected: t, actual: { store: v[0], date: dKey(v[1]), amount: v[2] } });
+      }
+    });
+    return { label: label, deletedCount: deleted.length, deleted: deleted, skippedCount: skipped.length, skipped: skipped };
+  }
+  var results = [];
+  try {
+    var src = SpreadsheetApp.openById(SALES_DB_ID).getSheetByName('入金DB');
+    results.push(cleanupSheet(src, '売上DB'));
+  } catch (e) { results.push({ label: '売上DB', error: String(e) }); }
+  var dst = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('入金DB');
+  results.push(cleanupSheet(dst, 'ダッシュボード'));
+  return { ok: true, results: results };
 }
 
 // ================== 手入力の反映（PL経費・広告費・予約CSV） ==================
