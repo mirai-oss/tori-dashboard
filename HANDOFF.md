@@ -153,6 +153,31 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 
 ## 5. 作業ログ
 
+### 2026-09-09（Mac miniセッション）bq-reservation-sync失敗（statement timeout再発）を修正・GAS未デプロイ（`ver`=`token-336h-v1-a6p14`・要ユーザー貼替）
+
+Larkに`bq-reservation-sync`失敗（`Supabase取得失敗[500]: canceling statement due to statement timeout`）が
+2回連続で届いた件を調査。**2026-09-05付エントリと同じ症状・別原因**なので混同注意。
+
+**原因**: `bqFetchReservationRows_`は09-05の修正でORDER BY自体を削除し、以後はRangeヘッダーによる
+純粋なOFFSETページング（`Range: 92000-92999`等）のみで`rsv_reservations`を1000件ずつ取得していた。
+9/1時点で92,265行だったこのテーブルが本日93,000行近くまで増えており、ORDER BY無し・索引の効かない
+OFFSETページングは行数増加にともないコストが線形に増える（実測: 終盤ページでOFFSET指定1039ms
+vs. 後述のidカーソル指定299ms・3倍以上の差）ため、再びSupabase側のstatement timeoutに達するように
+なったと判断（09-05当時のORDER BY問題＝無索引3列複合ソートで**1ページ目から**発生、とは別の劣化パターン）。
+
+**対応**: `bqFetchReservationRows_`をOFFSETページングから、`id`（`rsv_reservations`の主キー・bigint連番・
+標準で索引あり）による**keysetページング**（`order=id.asc&id=gt.<前ページ最終id>&limit=1000`）に変更。
+主キーの索引を直接使うインデックスレンジスキャンになるため、テーブル行数によらず各ページのコストは
+ほぼ一定。09-05にORDER BYを外した理由（無索引の複合ソート）とは別の列・別の仕組みなので、同じ罠には
+当たらない（実測で確認済み）。あわせて、ORDER BY無しOFFSETページング特有の「同期中に新規予約が
+挿入されると行の重複/欠落が起こり得る」という副作用も解消される。
+
+**⚠️GASデプロイは未実施（CLAUDE.mdのルールどおりユーザーの手作業が必要）**: `gas/Code.gs`の
+`bqFetchReservationRows_`とping `ver`（`a6p14`）を更新してcommit・push済み。**次にダッシュボードGAS
+（v2プロジェクト）を開いたら、この関数を貼り替えて「デプロイを管理→編集(鉛筆)→新バージョン→デプロイ」
+で反映し、`?action=ping`で`ver`が`a6p14`になったことを確認してください。** 反映後は
+`node run.js bq-reservation-sync`（`ns-daily-import`）で成功することを確認するとよい。
+
 ### 2026-09-08（Mac miniセッション・続き3）N-Style売上0円の真因を特定・修正（前エントリの診断は誤りだった）
 
 前エントリ（続き2）で「rebuildAnalysis＋bqSyncSales再実行で解決」と報告したが、ユーザーから

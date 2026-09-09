@@ -53,7 +53,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-a6p13', time: new Date().toISOString() }); // a6p4=bqGetReservationNamesにUser-Agent追加(2026-09-04)+bqFetchReservationRows_のORDER BY削除(92000行超でstatement timeout・2026-09-05)。a6p5=syncSeisanCategoriesToPlが店舗×月の同期結果を精算書側(sd_apiMarkPlSynced)へ書き戻すように追加（2026-09-05・業務委託精算書自動連携）。a6p6=dbPlDiag追加（実機E2E不一致の一時調査用）。a6p7=syncSeisanCategoriesToPlの対象店舗判定をseisan_target→seisan_pl_categories_targetに変更（運営委託費と経費PL反映を別々にON/OFFできるように・黒霧屋 新横浜対応）。a6p8=diagDepositsPerf追加（PayPay銀行取込46分化の原因切り分け用一時診断・2026-09-07）。a6p9=apiSetAdExclude追加（媒体販促費を手入力で確定させたあとPL画面だけ自動連携分を除外できるように・DB_広告除外設定シート新設・2026-09-07）。a6p10=importDepositsにLockServiceを追加（並行実行による入金二重計上バグを修正・2026-09-08）。a6p11=diagDepositDupScan追加（入金DBの重複行を行番号付きで列挙する読み取り専用診断・2026-09-08）。a6p12=cleanupDepositDuplicates追加（特定済み重複11件をユーザー承認のうえ削除・2026-09-08）。a6p13=cleanupDepositDuplicatesの認証をトークン→セッションに変更（トークン認証で原因不明のunauthorized・実行して重複11件×2シートの削除完了確認済み・2026-09-08）
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-a6p14', time: new Date().toISOString() }); // a6p4=bqGetReservationNamesにUser-Agent追加(2026-09-04)+bqFetchReservationRows_のORDER BY削除(92000行超でstatement timeout・2026-09-05)。a6p5=syncSeisanCategoriesToPlが店舗×月の同期結果を精算書側(sd_apiMarkPlSynced)へ書き戻すように追加（2026-09-05・業務委託精算書自動連携）。a6p6=dbPlDiag追加（実機E2E不一致の一時調査用）。a6p7=syncSeisanCategoriesToPlの対象店舗判定をseisan_target→seisan_pl_categories_targetに変更（運営委託費と経費PL反映を別々にON/OFFできるように・黒霧屋 新横浜対応）。a6p8=diagDepositsPerf追加（PayPay銀行取込46分化の原因切り分け用一時診断・2026-09-07）。a6p9=apiSetAdExclude追加（媒体販促費を手入力で確定させたあとPL画面だけ自動連携分を除外できるように・DB_広告除外設定シート新設・2026-09-07）。a6p10=importDepositsにLockServiceを追加（並行実行による入金二重計上バグを修正・2026-09-08）。a6p11=diagDepositDupScan追加（入金DBの重複行を行番号付きで列挙する読み取り専用診断・2026-09-08）。a6p12=cleanupDepositDuplicates追加（特定済み重複11件をユーザー承認のうえ削除・2026-09-08）。a6p13=cleanupDepositDuplicatesの認証をトークン→セッションに変更（トークン認証で原因不明のunauthorized・実行して重複11件×2シートの削除完了確認済み・2026-09-08）。a6p14=bqFetchReservationRows_をOFFSET(Rangeヘッダー)ページングからid（主キー・索引あり）によるkeysetページングに変更（rsv_reservationsが93000行超に増えOFFSET方式でも再度statement timeoutが発生したため・2026-09-05のORDER BY削除とは別問題＝あの時は無索引3列複合ソートが原因、今回はidという主キー＝索引ありの列でORDER BYするので同じ罠には当たらない。実測でOFFSET方式の同条件比1039ms→keyset方式299msを確認済み・2026-09-09）
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'dbPlDiag') return out(dbPlDiag(p)); // 2026-09-05一時追加: DB_PLシートの生データを店舗×月で確認（読み取り専用・原因特定でき次第削除）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
@@ -1754,27 +1754,36 @@ function bqReservationCsvCell_(v, type) {
   if (!isFinite(n)) return '';
   return type === 'INTEGER' ? String(Math.round(n)) : n.toFixed(6);
 }
-// Supabase rsv_reservationsを全件取得（1000件ずつRangeヘッダーでページング）。
+// Supabase rsv_reservationsを全件取得（1000件ずつidカーソルでページング）。
 // 認証情報はGASのScript Properties（SUPABASE_URL/SUPABASE_SERVICE_KEY）に別途登録が必要
 // （コードには書かない。値はns-daily-importの.envと同じものを使えばよい）。
+// 2026-09-09修正: 従来はRangeヘッダーによるOFFSETページング（ORDER BY指定なし）だったが、
+// rsv_reservationsが9万行超に増えたことで終盤ページのOFFSETが大きくなりすぎ、Supabase側で
+// `57014 canceling statement due to statement timeout`が発生するようになった（bq-reservation-sync
+// が2回連続失敗・実測で同件数のOFFSET指定はidカーソル指定の3倍以上遅いことを確認）。
+// また元々ORDER BY無しのOFFSETページングは、実行中に新規予約が挿入されると行の重複/欠落が
+// 起こり得る（Postgres/PostgRESTの既知の注意点）という副作用もあった。idは主キー（bigint連番・
+// インデックス有り）なので、`id=gt.<最後に取得したid>&order=id.asc`によるkeysetページングに
+// 切り替え、OFFSETのコストとORDER BY省略時の不安定さを両方解消する。
 function bqFetchReservationRows_() {
   var supaUrl = PropertiesService.getScriptProperties().getProperty('SUPABASE_URL');
   var supaKey = PropertiesService.getScriptProperties().getProperty('SUPABASE_SERVICE_KEY');
   if (!supaUrl || !supaKey) throw new Error('Script PropertiesにSUPABASE_URL/SUPABASE_SERVICE_KEYが未設定です');
   var cols = BQ_RESERVATION_SCHEMA.map(function (f) { return f.name; }).join(',');
-  var pageSize = 1000, offset = 0, all = [];
+  var selectCols = 'id,' + cols; // idはページング用カーソル（BQスキーマには含めない＝bqReservationCsvCell_側で無視される）
+  var pageSize = 1000, lastId = 0, all = [];
   while (true) {
     var res = UrlFetchApp.fetch(
-      supaUrl + '/rest/v1/rsv_reservations?select=' + encodeURIComponent(cols),
-      { headers: { apikey: supaKey, Authorization: 'Bearer ' + supaKey, Range: offset + '-' + (offset + pageSize - 1) },
-        muteHttpExceptions: true }
+      supaUrl + '/rest/v1/rsv_reservations?select=' + encodeURIComponent(selectCols) +
+        '&order=id.asc&id=gt.' + lastId + '&limit=' + pageSize,
+      { headers: { apikey: supaKey, Authorization: 'Bearer ' + supaKey }, muteHttpExceptions: true }
     );
     var code = res.getResponseCode();
     if (code !== 200 && code !== 206) throw new Error('Supabase取得失敗[' + code + ']: ' + res.getContentText().slice(0, 300));
     var rows = JSON.parse(res.getContentText() || '[]');
     all = all.concat(rows);
     if (rows.length < pageSize) break;
-    offset += pageSize;
+    lastId = rows[rows.length - 1].id;
   }
   return all;
 }
