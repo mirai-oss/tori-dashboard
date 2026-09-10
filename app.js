@@ -863,6 +863,18 @@ function plCatOf(v){
 // DB_PLの行配列 → {store,t,item,cat,amount,memo,sub}の配列へ変換する純粋関数（Dを書き換えない）。
 // MF取込は常にこちらを直接使い、シートから取れた生データをその場でパースする
 // （D.plを経由すると、BigQueryモード中は日次同期しかされない古いミラーを見てしまうため）。
+// 補助科目（G列）の生の値から、内部連携用の冪等キータグ（'外部連携:<sourceKey>'。
+// writeAccountCostToPl_がGAS側で同一source_keyの行を上書き更新するための目印として、補助科目の
+// 後ろに付けて保存している）を取り除く（2026-09-10追加。PL管理画面の内訳に補助科目の代わりに
+// UUIDらしき文字列が表示される不具合の修正・担当Cからの申し送り対応）。タグは常に文字列の末尾に
+// 「（本来の補助科目があれば）補助科目　外部連携:xxx」の形で付くため、「外部連携:」以降を
+// 切り落として前後の空白を削るだけでよい。タグだけの行（＝旧バグで補助科目が保存されずタグだけが
+// 誤って補助科目欄に入っていた既存データ）は空欄表示になる。
+function plCleanSub_(raw){
+  const s=String(raw||'');
+  const i=s.indexOf('外部連携:');
+  return (i>=0?s.slice(0,i):s).trim();
+}
 function parsePLRows(rows){
   let hi=-1;
   for(let i=0;i<Math.min(rows.length,12);i++){
@@ -884,7 +896,7 @@ function parsePLRows(rows){
     const t0=parseYm(c[iD])||parseDateStr(c[iD]);
     if(!t0){ dateSkipped++; continue; }
     const d=new Date(t0);
-    recs.push({ store:String(iS>=0?c[iS]||'':'').trim(), t:new Date(d.getFullYear(),d.getMonth(),1).getTime(), item, cat:iK>=0?plCatOf(c[iK]):'O', amount:num(c[iA]), memo:iMemo>=0?String(c[iMemo]||'').trim():'', sub:iSub>=0?String(c[iSub]||'').trim():'' });
+    recs.push({ store:String(iS>=0?c[iS]||'':'').trim(), t:new Date(d.getFullYear(),d.getMonth(),1).getTime(), item, cat:iK>=0?plCatOf(c[iK]):'O', amount:num(c[iA]), memo:iMemo>=0?String(c[iMemo]||'').trim():'', sub:iSub>=0?plCleanSub_(c[iSub]):'' });
   }
   if(!recs.length) return { error:'0件'+(dateSkipped>0?'（'+dateSkipped+'行あるが年月を読めていません）':'（データ行がありません）') };
   return { recs };

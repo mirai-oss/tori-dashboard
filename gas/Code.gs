@@ -53,7 +53,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-a6p14', time: new Date().toISOString() }); // a6p4=bqGetReservationNamesにUser-Agent追加(2026-09-04)+bqFetchReservationRows_のORDER BY削除(92000行超でstatement timeout・2026-09-05)。a6p5=syncSeisanCategoriesToPlが店舗×月の同期結果を精算書側(sd_apiMarkPlSynced)へ書き戻すように追加（2026-09-05・業務委託精算書自動連携）。a6p6=dbPlDiag追加（実機E2E不一致の一時調査用）。a6p7=syncSeisanCategoriesToPlの対象店舗判定をseisan_target→seisan_pl_categories_targetに変更（運営委託費と経費PL反映を別々にON/OFFできるように・黒霧屋 新横浜対応）。a6p8=diagDepositsPerf追加（PayPay銀行取込46分化の原因切り分け用一時診断・2026-09-07）。a6p9=apiSetAdExclude追加（媒体販促費を手入力で確定させたあとPL画面だけ自動連携分を除外できるように・DB_広告除外設定シート新設・2026-09-07）。a6p10=importDepositsにLockServiceを追加（並行実行による入金二重計上バグを修正・2026-09-08）。a6p11=diagDepositDupScan追加（入金DBの重複行を行番号付きで列挙する読み取り専用診断・2026-09-08）。a6p12=cleanupDepositDuplicates追加（特定済み重複11件をユーザー承認のうえ削除・2026-09-08）。a6p13=cleanupDepositDuplicatesの認証をトークン→セッションに変更（トークン認証で原因不明のunauthorized・実行して重複11件×2シートの削除完了確認済み・2026-09-08）。a6p14=bqFetchReservationRows_をOFFSET(Rangeヘッダー)ページングからid（主キー・索引あり）によるkeysetページングに変更（rsv_reservationsが93000行超に増えOFFSET方式でも再度statement timeoutが発生したため・2026-09-05のORDER BY削除とは別問題＝あの時は無索引3列複合ソートが原因、今回はidという主キー＝索引ありの列でORDER BYするので同じ罠には当たらない。実測でOFFSET方式の同条件比1039ms→keyset方式299msを確認済み・2026-09-09）
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-a6p15', time: new Date().toISOString() }); // a6p4=bqGetReservationNamesにUser-Agent追加(2026-09-04)+bqFetchReservationRows_のORDER BY削除(92000行超でstatement timeout・2026-09-05)。a6p5=syncSeisanCategoriesToPlが店舗×月の同期結果を精算書側(sd_apiMarkPlSynced)へ書き戻すように追加（2026-09-05・業務委託精算書自動連携）。a6p6=dbPlDiag追加（実機E2E不一致の一時調査用）。a6p7=syncSeisanCategoriesToPlの対象店舗判定をseisan_target→seisan_pl_categories_targetに変更（運営委託費と経費PL反映を別々にON/OFFできるように・黒霧屋 新横浜対応）。a6p8=diagDepositsPerf追加（PayPay銀行取込46分化の原因切り分け用一時診断・2026-09-07）。a6p9=apiSetAdExclude追加（媒体販促費を手入力で確定させたあとPL画面だけ自動連携分を除外できるように・DB_広告除外設定シート新設・2026-09-07）。a6p10=importDepositsにLockServiceを追加（並行実行による入金二重計上バグを修正・2026-09-08）。a6p11=diagDepositDupScan追加（入金DBの重複行を行番号付きで列挙する読み取り専用診断・2026-09-08）。a6p12=cleanupDepositDuplicates追加（特定済み重複11件をユーザー承認のうえ削除・2026-09-08）。a6p13=cleanupDepositDuplicatesの認証をトークン→セッションに変更（トークン認証で原因不明のunauthorized・実行して重複11件×2シートの削除完了確認済み・2026-09-08）。a6p14=bqFetchReservationRows_をOFFSET(Rangeヘッダー)ページングからid（主キー・索引あり）によるkeysetページングに変更（rsv_reservationsが93000行超に増えOFFSET方式でも再度statement timeoutが発生したため・2026-09-05のORDER BY削除とは別問題＝あの時は無索引3列複合ソートが原因、今回はidという主キー＝索引ありの列でORDER BYするので同じ罠には当たらない。実測でOFFSET方式の同条件比1039ms→keyset方式299msを確認済み・2026-09-09）。a6p15=writeAccountCostToPl_の補助科目消失バグを修正（担当CからPL内訳UUID表示バグの申し送り。G列に冪等キー(noteTag)だけを書いていてsubAccountを一切保存していなかったため、補助科目の代わりにsourceKeyがそのまま表示されていた。列を増やすと他のPL自動連携が壊れるため増やさず、G列の値を「<subAccount>　<noteTag>」の複合形式にしてapp.js側で表示時に分離する方式に変更・2026-09-10）
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'dbPlDiag') return out(dbPlDiag(p)); // 2026-09-05一時追加: DB_PLシートの生データを店舗×月で確認（読み取り専用・原因特定でき次第削除）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
@@ -4752,6 +4752,17 @@ function writeAccountCostToPl_(p) {
   var vendorLabel = p.vendor_name ? String(p.vendor_name).trim().slice(0, 40) : '';
   var memo = '自動｜' + account;
   var noteTag = '外部連携:' + sourceKey;
+  // 2026-09-10修正（PL管理画面の内訳に補助科目の代わりにUUIDらしき文字列が表示される不具合。
+  // 担当Cからの申し送り対応）: 従来はG列（補助科目）にsubAccountを一切書き込まず、冪等キー
+  // （noteTag）だけを書き込んでいたため、subAccountが完全に失われ、代わりにnoteTag（sourceKeyの
+  // UUID等を含む）がそのまま補助科目として画面に表示されてしまっていた。DB_PLの列構成
+  // （年月/店舗名/勘定科目/区分/金額/メモ/補助科目の7列固定。gas/Code.gs 279行目付近のテンプレート
+  // 参照）は他の複数のPL自動連携関数（savePlEntries等）が「動的に読んだ列数と同じ7列固定」で
+  // 全行を読み直し・書き直しする前提になっており、ここで列を追加すると他の連携が壊れる（列数不一致
+  // でsetValuesが例外になる）ため、新しい列は増やさない。代わりに、補助科目セルの値そのものに
+  // 「<subAccount>　<noteTag>」という形で両方を持たせ、末尾のnoteTag部分だけを一致条件に使う
+  // （app.js側は表示時に「外部連携:」以降を切り落として補助科目だけ見せる＝plCleanSub_参照）。
+  var subCell = subAccount ? (subAccount + '　' + noteTag) : noteTag;
   var y = Number(ym.slice(0, 4)), mo = Number(ym.slice(5, 7));
   var ymSlash = ym.slice(0, 4) + '/' + ym.slice(5, 7);
 
@@ -4775,13 +4786,18 @@ function writeAccountCostToPl_(p) {
   for (var i = 0; i < allRows.length; i++) {
     var r = allRows[i];
     if (r[0] === '' && r[1] === '') continue;
-    if (bqPlYm_(r[0]) !== ymSlash || String(r[5]) !== memo || String(r[6]) !== noteTag) continue;
+    // 補助科目セル（r[6]）は「<subAccount>　<noteTag>」または（subAccount無し・旧バグ行含む）
+    // noteTagのみ、のいずれかの形。末尾が今回のnoteTagと完全一致するかで判定する
+    // （subAccountの内容自体は問わない＝後で新しいsubAccountに差し替えてよい）。
+    var cellStr = String(r[6] || '');
+    var hasTag = cellStr === noteTag || cellStr.slice(-(noteTag.length + 1)) === ('　' + noteTag);
+    if (bqPlYm_(r[0]) !== ymSlash || String(r[5]) !== memo || !hasTag) continue;
     byStoreIdx[String(r[1]).trim()] = i;
   }
   var cat = plSeisanGuessCat_(account);
   validAllocs.forEach(function (a) {
     var idx = byStoreIdx[a.store];
-    var row = [new Date(y, mo - 1, 1), a.store, account, cat, a.amount, memo, noteTag];
+    var row = [new Date(y, mo - 1, 1), a.store, account, cat, a.amount, memo, subCell];
     if (idx != null) { allRows[idx] = row; results.push({ store: a.store, ok: true, updated: true }); }
     else { allRows.push(row); results.push({ store: a.store, ok: true, updated: false }); }
   });
@@ -4800,13 +4816,15 @@ function writeAccountCostToPl_(p) {
       var byStoreIdxS = {};
       for (var iS = 0; iS < nRS; iS++) {
         if (String(AS[iS][0]) === '' && String(AS[iS][2]) === '') continue;
-        if (bqPlYm_(AS[iS][0]) !== ymSlash || String(ES[iS][1]) !== memo || String(GS[iS][0]) !== noteTag) continue;
+        var cellStrS = String(GS[iS][0] || '');
+        var hasTagS = cellStrS === noteTag || cellStrS.slice(-(noteTag.length + 1)) === ('　' + noteTag);
+        if (bqPlYm_(AS[iS][0]) !== ymSlash || String(ES[iS][1]) !== memo || !hasTagS) continue;
         byStoreIdxS[String(AS[iS][1]).trim()] = iS;
       }
       validAllocs.forEach(function (a) {
         var idxS = byStoreIdxS[a.store];
-        if (idxS != null) { AS[idxS] = [ymSlash, a.store, account]; ES[idxS] = [a.amount, memo]; GS[idxS] = [noteTag]; }
-        else { AS.push([ymSlash, a.store, account]); ES.push([a.amount, memo]); GS.push([noteTag]); }
+        if (idxS != null) { AS[idxS] = [ymSlash, a.store, account]; ES[idxS] = [a.amount, memo]; GS[idxS] = [subCell]; }
+        else { AS.push([ymSlash, a.store, account]); ES.push([a.amount, memo]); GS.push([subCell]); }
       });
       if (nRS > 0) { pshS.getRange(3, 1, nRS, 3).clearContent(); pshS.getRange(3, 5, nRS, 2).clearContent(); pshS.getRange(3, 7, nRS, 1).clearContent(); }
       if (AS.length) {
