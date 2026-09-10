@@ -53,7 +53,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-a6p16', time: new Date().toISOString() }); // a6p4=bqGetReservationNamesにUser-Agent追加(2026-09-04)+bqFetchReservationRows_のORDER BY削除(92000行超でstatement timeout・2026-09-05)。a6p5=syncSeisanCategoriesToPlが店舗×月の同期結果を精算書側(sd_apiMarkPlSynced)へ書き戻すように追加（2026-09-05・業務委託精算書自動連携）。a6p6=dbPlDiag追加（実機E2E不一致の一時調査用）。a6p7=syncSeisanCategoriesToPlの対象店舗判定をseisan_target→seisan_pl_categories_targetに変更（運営委託費と経費PL反映を別々にON/OFFできるように・黒霧屋 新横浜対応）。a6p8=diagDepositsPerf追加（PayPay銀行取込46分化の原因切り分け用一時診断・2026-09-07）。a6p9=apiSetAdExclude追加（媒体販促費を手入力で確定させたあとPL画面だけ自動連携分を除外できるように・DB_広告除外設定シート新設・2026-09-07）。a6p10=importDepositsにLockServiceを追加（並行実行による入金二重計上バグを修正・2026-09-08）。a6p11=diagDepositDupScan追加（入金DBの重複行を行番号付きで列挙する読み取り専用診断・2026-09-08）。a6p12=cleanupDepositDuplicates追加（特定済み重複11件をユーザー承認のうえ削除・2026-09-08）。a6p13=cleanupDepositDuplicatesの認証をトークン→セッションに変更（トークン認証で原因不明のunauthorized・実行して重複11件×2シートの削除完了確認済み・2026-09-08）。a6p14=bqFetchReservationRows_をOFFSET(Rangeヘッダー)ページングからid（主キー・索引あり）によるkeysetページングに変更（rsv_reservationsが93000行超に増えOFFSET方式でも再度statement timeoutが発生したため・2026-09-05のORDER BY削除とは別問題＝あの時は無索引3列複合ソートが原因、今回はidという主キー＝索引ありの列でORDER BYするので同じ罠には当たらない。実測でOFFSET方式の同条件比1039ms→keyset方式299msを確認済み・2026-09-09）。a6p15=writeAccountCostToPl_の補助科目消失バグを修正（担当CからPL内訳UUID表示バグの申し送り。G列に冪等キー(noteTag)だけを書いていてsubAccountを一切保存していなかったため、補助科目の代わりにsourceKeyがそのまま表示されていた。列を増やすと他のPL自動連携が壊れるため増やさず、G列の値を「<subAccount>　<noteTag>」の複合形式にしてapp.js側で表示時に分離する方式に変更・2026-09-10）。a6p16=担当Cからの申し送り（続き83）対応の一時action追加・詳細は関数コメント参照・2026-09-10
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-a6p17', time: new Date().toISOString() }); // a6p4=bqGetReservationNamesにUser-Agent追加(2026-09-04)+bqFetchReservationRows_のORDER BY削除(92000行超でstatement timeout・2026-09-05)。a6p5=syncSeisanCategoriesToPlが店舗×月の同期結果を精算書側(sd_apiMarkPlSynced)へ書き戻すように追加（2026-09-05・業務委託精算書自動連携）。a6p6=dbPlDiag追加（実機E2E不一致の一時調査用）。a6p7=syncSeisanCategoriesToPlの対象店舗判定をseisan_target→seisan_pl_categories_targetに変更（運営委託費と経費PL反映を別々にON/OFFできるように・黒霧屋 新横浜対応）。a6p8=diagDepositsPerf追加（PayPay銀行取込46分化の原因切り分け用一時診断・2026-09-07）。a6p9=apiSetAdExclude追加（媒体販促費を手入力で確定させたあとPL画面だけ自動連携分を除外できるように・DB_広告除外設定シート新設・2026-09-07）。a6p10=importDepositsにLockServiceを追加（並行実行による入金二重計上バグを修正・2026-09-08）。a6p11=diagDepositDupScan追加（入金DBの重複行を行番号付きで列挙する読み取り専用診断・2026-09-08）。a6p12=cleanupDepositDuplicates追加（特定済み重複11件をユーザー承認のうえ削除・2026-09-08）。a6p13=cleanupDepositDuplicatesの認証をトークン→セッションに変更（トークン認証で原因不明のunauthorized・実行して重複11件×2シートの削除完了確認済み・2026-09-08）。a6p14=bqFetchReservationRows_をOFFSET(Rangeヘッダー)ページングからid（主キー・索引あり）によるkeysetページングに変更（rsv_reservationsが93000行超に増えOFFSET方式でも再度statement timeoutが発生したため・2026-09-05のORDER BY削除とは別問題＝あの時は無索引3列複合ソートが原因、今回はidという主キー＝索引ありの列でORDER BYするので同じ罠には当たらない。実測でOFFSET方式の同条件比1039ms→keyset方式299msを確認済み・2026-09-09）。a6p15=writeAccountCostToPl_の補助科目消失バグを修正（担当CからPL内訳UUID表示バグの申し送り。G列に冪等キー(noteTag)だけを書いていてsubAccountを一切保存していなかったため、補助科目の代わりにsourceKeyがそのまま表示されていた。列を増やすと他のPL自動連携が壊れるため増やさず、G列の値を「<subAccount>　<noteTag>」の複合形式にしてapp.js側で表示時に分離する方式に変更・2026-09-10）。a6p16=担当Cからの申し送り（続き83）対応の一時action追加・詳細は関数コメント参照・2026-09-10。a6p17=cleanupPlLegacyCombined_の結果をalert()ではなくスプレッドシートの新タブへ書き出すよう変更（コピーしづらいとのユーザー指摘対応・行番号つき）・2026-09-10
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'dbPlDiag') return out(dbPlDiag(p)); // 2026-09-05一時追加: DB_PLシートの生データを店舗×月で確認（読み取り専用・原因特定でき次第削除）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
@@ -4416,7 +4416,7 @@ function cleanupPlLegacyCombined_(p, session) {
       if (r[0] === '' && r[1] === '') continue;
       if (!plLegacyTargetHit_(r[0], r[1], r[2])) continue;
       matchIdx.push(i);
-      matched.push({ ym: bqPlYm_(r[0]), store: String(r[1]), account: String(r[2]), amount: r[4], memo: String(r[5]) });
+      matched.push({ row: i + 2, ym: bqPlYm_(r[0]), store: String(r[1]), account: String(r[2]), amount: r[4], memo: String(r[5]) });
     }
     var deletedDbPl = 0;
     if (!dryRun && matchIdx.length) {
@@ -4443,7 +4443,7 @@ function cleanupPlLegacyCombined_(p, session) {
         if (String(AS[iS][0]) === '' && String(AS[iS][2]) === '') continue;
         if (!plLegacyTargetHit_(AS[iS][0], AS[iS][1], AS[iS][2])) continue;
         matchIdxS.push(iS);
-        matchedS.push({ ym: bqPlYm_(AS[iS][0]), store: String(AS[iS][1]), account: String(AS[iS][2]), amount: ES[iS][0], memo: String(ES[iS][1]) });
+        matchedS.push({ row: iS + 3, ym: bqPlYm_(AS[iS][0]), store: String(AS[iS][1]), account: String(AS[iS][2]), amount: ES[iS][0], memo: String(ES[iS][1]) });
       }
       var deletedPlsys = 0;
       if (!dryRun && matchIdxS.length) {
@@ -4468,7 +4468,24 @@ function cleanupPlLegacyCombined_(p, session) {
   if (!dryRun && dbPl.deleted) {
     try { bqRes = bqSyncPL({ token: PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN') }); } catch (eB) { bqRes = { ok: false, error: String(eB) }; }
   }
+  // 2026-09-10追加: alert()だと結果をコピーしづらいというユーザー指摘への対応。見つかった行を
+  // このスプレッドシートに新しいタブ「PL古い行チェック結果」として書き出す（毎回まるごと洗い替え）。
+  // 行番号も一緒に出すので、手動削除するときにその行番号へ直接ジャンプできる。
+  try { plLegacyReportSheet_(dbPl.rows || [], plsys.rows || []); } catch (eR) {}
   return { ok: true, dryRun: dryRun, dbPl: dbPl, plsys: plsys, bq: bqRes };
+}
+function plLegacyReportSheet_(dbRows, plsysRows) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sh = ss.getSheetByName('PL古い行チェック結果');
+  if (!sh) sh = ss.insertSheet('PL古い行チェック結果');
+  sh.clear();
+  sh.getRange(1, 1, 1, 6).setValues([['シート', '行番号', '年月', '店舗', '勘定科目', '金額']]).setFontWeight('bold').setBackground('#efe9dd');
+  var rows = [];
+  dbRows.forEach(function (r) { rows.push(['DB_PL', r.row, r.ym, r.store, r.account, r.amount]); });
+  plsysRows.forEach(function (r) { rows.push(['PL管理システム(✍販管費入力)', r.row, r.ym, r.store, r.account, r.amount]); });
+  if (rows.length) sh.getRange(2, 1, rows.length, 6).setValues(rows);
+  sh.setFrozenRows(1);
+  sh.setColumnWidths(1, 6, 150);
 }
 
 // ================== 手入力の反映（PL経費・広告費・予約CSV） ==================

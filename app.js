@@ -8643,11 +8643,7 @@ window.App = {
     if(!d.ok){ toast(d.error||'確認に失敗しました'); return; }
     const n=(d.dbPl.matched||0)+(d.plsys.matched||0);
     if(!n){ toast('対象の古い行は見つかりませんでした（すでに削除済みかもしれません）'); return; }
-    const yen2=(x)=>'¥'+Math.round(x||0).toLocaleString();
-    const lines=(d.dbPl.rows||[]).map(r=>'DB_PL: '+r.ym+' '+r.store+' '+r.account+' '+yen2(r.amount))
-      .concat((d.plsys.rows||[]).map(r=>'PL管理システム: '+r.ym+' '+r.store+' '+r.account+' '+yen2(r.amount)));
-    alert('見つかった古い行（'+n+'件・表示のみ・まだ削除していません）:\n\n'+lines.join('\n'));
-    toast(n+'件見つかりました（内容はアラートを参照。削除は別途ご相談ください）');
+    toast(n+'件見つかりました。スプレッドシートの「PL古い行チェック結果」タブに一覧（行番号つき）を書き出しました。まだ削除はしていません。');
   },
   // 簡易キャッシュフローの法人税率変更（A-5・2026-08-26追加。社長・本部のみ表示のリンクから呼ばれる）
   async editPlTaxRate(){
