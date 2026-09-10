@@ -153,6 +153,47 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 
 ## 5. 作業ログ
 
+### 2026-09-10（担当A実行スレッド）PL内訳の補助科目がUUIDらしき文字列で表示される不具合を修正（担当Cからの申し送り対応・コミット`a9ad085`・`app.js?v=182`・**GAS再デプロイ必要**）
+
+ns-portal側WORKLOG「④経営ダッシュボード（tori-dashboard）PL内訳のUUID表示バグを調査・原因候補を
+特定（未修正・担当Aへ申し送り）」への対応。担当C実行スレッドが「ns-portal側`pl-fee-reflect`が送る
+`sub_account`を、tori-dashboard側`gas/Code.gs`の`writeAccountCostToPl_`が受け取ってはいるが、DB_PL
+へ書き込む行配列に含めていない（`source_invoice_id`由来のnoteTagだけが書き込まれている）」ことまで
+特定済みで、実際のシート列構成を直接確認する手段が無いためコード修正は見送り・申し送りのみだった。
+
+**原因の詳細確認**: `writeAccountCostToPl_`は、DB_PL・PL管理システム「✍販管費入力」いずれも補助科目
+列（G列）に`sub_account`を一切書き込まず、代わりに冪等キー（`'外部連携:'+source_key`。同一請求書
+からの再呼び出しを検知して行を上書き更新するための内部タグ）だけを書き込んでいた。そのため
+`sub_account`が完全に失われ、代わりに`source_key`（UUID等）がそのまま補助科目として画面表示されて
+いた。
+
+**検討したが採用しなかった修正案**: DB_PLに8列目（外部連携キー専用列）を追加する案を最初に検討したが、
+`grep`で調査した結果、DB_PLへ書き込む他の関数（`savePlEntries`・`savePlBulk`・
+`syncSeisanCategoriesToPl`・`syncSpotLaborToPl_`・LOAN_INTEREST自動計上など**少なくとも7箇所**）が
+すべて「動的に読んだ列数（`Math.max(getLastColumn(),7)`）で全行を読み直し保持し、最後に**ハードコード
+した`7`列固定**で書き直す」という共通パターンになっていることが判明。列を1つでも増やすと、次に
+これらの関数のどれかが呼ばれた瞬間に「読み込んだ配列（8列）を7列固定のRangeへsetValuesしようとして
+列数不一致の例外で失敗する」という、全く無関係な既存の複数のPL自動連携を同時に壊すリスクがあると
+判断し、この案は採用しなかった（担当Cが警戒した「当てずっぽうで直すと他の共有データを壊すリスク」を
+実際に検証して具体化した形）。
+
+**採用した修正**: 列は増やさず、補助科目セルの値そのものを「`<sub_account>　外部連携:<source_key>`」
+という複合形式にする（`sub_account`が無ければタグのみ）。upsert時の一致判定は、セルの末尾が今回の
+タグと一致するかで行う（先頭のsub_account部分の内容は問わない）よう`byStoreIdx`/`byStoreIdxS`の判定
+ロジックを変更。`app.js`に新設した`plCleanSub_()`が、DB_PL読込時（シート直読み・BigQueryミラー経由
+の両方＝`ingestPL`共通の1箇所）に「外部連携:」以降を切り落として表示する。**既存の壊れた行
+（sub_accountが保存されずタグだけが入っている行）も、この表示側の修正だけで即座にUUID表示が消える
+（空欄表示になる）**——GASの再デプロイを待たずにapp.jsの反映だけで症状は解消する。GAS側の修正が
+反映されれば、今後の新規・更新行は正しい`sub_account`が保存されるようになる（既存の壊れた行の
+`sub_account`自体は当時記録されていなかったため復元はできないが、対象請求書が編集・再送されれば
+同じ`source_key`で上書き更新され自然に直る）。
+
+ping ver a6p14→a6p15（このセッション開始時点で既にa6p14まで進んでいたのは別セッション＝直前の
+2026-09-09エントリ参照）。構文チェック済み・GitHub Pages反映確認済み（`app.js?v=182`・
+console.errorなし）。**`gas/Code.gs`を変更したため、ユーザーによる手動デプロイが必要**。デプロイ後
+`ping`の`ver`が`a6p15`になっているか確認すること。実機での動作確認（実際にPL内訳を開いて補助科目が
+正しく表示される・新しい請求書のPL反映で正しい補助科目が保存される）はユーザー確認待ち。
+
 ### 2026-09-09（Mac miniセッション）bq-reservation-sync失敗（statement timeout再発）を修正・GAS未デプロイ（`ver`=`token-336h-v1-a6p14`・要ユーザー貼替）
 
 Larkに`bq-reservation-sync`失敗（`Supabase取得失敗[500]: canceling statement due to statement timeout`）が
