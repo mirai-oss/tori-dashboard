@@ -5732,6 +5732,7 @@ function viewPL(){
     ${canUse('plInput')?`<button class="icon-btn" onclick="App.openMfImport()">📥 MF取込</button>`:''}
     ${canUse('spot')?`<button class="icon-btn" onclick="App.openSpotInput()">＋ スポット人件費</button>`:''}
     ${canUse('spot')?`<button class="icon-btn" onclick="App.syncSpotPl()" title="スポット人件費の入力・削除をPLへ今すぐ反映します（普段は毎日AM5:00に自動実行）">🔄 スポット人件費をPLへ反映</button>`:''}
+    ${isAdminRole()?`<button class="icon-btn" onclick="App.plCleanupLegacyCombined()" title="勘定科目/補助科目の分離バグ修正前に結合形式のまま計上されていた古い行が残っていないか確認します（表示のみ・削除はしません。担当Cからの申し送り・一時的な機能）">🔎 古いPL行の残存チェック（一時）</button>`:''}
     <span class="period-label">損益（${mLabel} ／ ${esc(scopeLabel)}）</span></div>`
     +(multiActive
       ? `<div class="store-pick no-print"><span class="sp-lb">🏪 店舗（個別選択）</span><button class="icon-btn" onclick="App.openPlStorePick()">${multiStores.length}店舗を選択中・変更</button><button class="icon-btn" onclick="App.clearPlStorePick()">選択解除</button></div>`
@@ -7534,6 +7535,7 @@ function plRowHtml(item,cat,amt,memo,sub,idx){
       <datalist id="${dlId}">${plSubOptions(item).map(s=>`<option value="${esc(s)}">`).join('')}</datalist></td>
     <td><input type="number" class="pli-amt" value="${amt>0?Math.round(amt):''}" placeholder="金額" style="width:100px;text-align:right;padding:5px 7px"></td>
     <td><input class="pli-memo" value="${esc(memo||'')}" placeholder="メモ" style="width:120px;padding:5px 7px"></td>
+    <td><button type="button" class="icon-btn" title="この行を削除（保存を押すまで確定しません）" onclick="App.plDeleteRow(this)">🗑</button></td>
   </tr>`;
 }
 // PLタブ用: 複数店舗を自由に選んで合算するためのモーダル（業態・ブランドでの自動グルーピングではなく手動選択）。
@@ -7567,7 +7569,7 @@ function plInputModal(){
   const items=[...new Set(Object.keys(PL_ITEM_CAT).concat(D.pl.map(r=>r.item)))];
   return `<div class="modal-bg" onclick="if(event.target===this)App.closeModal()"><div class="modal" style="max-width:640px">
     <h3>経費の入力・修正（${y}年${mo}月）</h3>
-    <div class="sub">保存すると<b>この月×この店舗の手入力経費を丸ごと差し替え</b>ます（行を消す＝金額を空欄に）。PL管理システム（✍販管費入力）とダッシュボードのDB_PLの両方に反映されます。媒体販促費（自動）はここでは編集できません。<br>
+    <div class="sub">保存すると<b>この月×この店舗の手入力経費を丸ごと差し替え</b>ます（🗑ボタンで行ごと削除、または金額を空欄のままでも削除扱い）。PL管理システム（✍販管費入力）とダッシュボードのDB_PLの両方に反映されます。媒体販促費（自動）はここでは編集できません。<br>
       まとめて入力・修正したいときは <a href="${DASH_SHEET_URL}" target="_blank" rel="noopener">📄 スプレッドシート（DB_PL）を直接開く</a> こともできます（保存すると数分以内にこの画面にも反映されます）。</div>
     <div class="form-grid" style="margin-top:10px">
       <div><label>対象月</label><input type="month" id="pli-ym" value="${m.ym}" onchange="App.plSwitch()"></div>
@@ -7577,7 +7579,7 @@ function plInputModal(){
       </select></div>
     </div>
     <div class="scroll-x" style="max-height:300px;overflow-y:auto;border:1px solid var(--line2);border-radius:10px;margin-top:8px">
-      <table class="tbl"><thead><tr><th>勘定科目</th><th>区分</th><th>補助科目</th><th>金額(円)</th><th>メモ</th></tr></thead>
+      <table class="tbl"><thead><tr><th>勘定科目</th><th>区分</th><th>補助科目</th><th>金額(円)</th><th>メモ</th><th></th></tr></thead>
       <tbody id="pli-rows">${rows.map((r,idx)=>plRowHtml(r.item,r.cat,r.amount,r.memo,r.sub,idx)).join('')||plRowHtml('','O','','','',0)}</tbody></table>
     </div>
     <button class="icon-btn" style="margin-top:6px" onclick="App.plAddRow()">＋ 行を追加</button>
@@ -8556,6 +8558,16 @@ window.App = {
       if(dl) dl.innerHTML=plSubOptions(item).map(s=>`<option value="${esc(s)}">`).join(''); }
   },
   plAddRow(){ const tb=$('pli-rows'); if(tb) tb.insertAdjacentHTML('beforeend', plRowHtml('','O','','','',tb.children.length)); },
+  // 2026-09-10追加（ユーザー要望「経費の入力・修正で、金額を空欄にして保存する代わりに削除ボタンが
+  // 欲しい」）: 画面上の行をその場で消すだけ。savePlInput()は保存を押した時点でDOM上に残っている
+  // 行だけをentriesとして送るため、これだけで「保存を押すまでは確定しない削除」になる
+  // （既存の「金額を空欄にして保存＝削除」と全く同じ仕組みの上に、行ごと消す操作を足しただけ）。
+  // 最後の1行を消すと入力欄が無くなって分かりづらいので、その場合は新しい空行を1つ足しておく。
+  plDeleteRow(btn){
+    const tr=btn.closest('tr'); const tb=$('pli-rows');
+    if(tr) tr.remove();
+    if(tb && !tb.children.length) tb.insertAdjacentHTML('beforeend', plRowHtml('','O','','','',0));
+  },
   async savePlInput(){
     const msg=$('pli-msg'); const m=S.modal;
     if(!S.auth||!S.auth.token){ msg.textContent='スプレッドシート接続時のみ保存できます'; return; }
@@ -8620,6 +8632,22 @@ window.App = {
       await fetchData(true,{ only:['広告除外設定'], partial:true });
       render();
     }catch(e){ toast('通信エラー: '+e.message); }
+  },
+  // 2026-09-10追加（担当Cからの申し送り・続き83）: 勘定科目/補助科目の分離バグ修正前に結合形式の
+  // まま計上されていた古い行が残っていないかを確認するだけの読み取り専用チェック。実際の削除は
+  // 別途ご相談のうえ対応する（financial dataの自動削除は慎重に扱うため、この画面からは実行しない）。
+  async plCleanupLegacyCombined(){
+    if(!S.auth||!S.auth.token) return;
+    toast('古い行が残っていないか確認中…');
+    const d=await api({ action:'cleanupPlLegacyCombined', token:S.auth.token, dryRun:'true' }).catch(e=>({ok:false,error:String(e&&e.message||e)}));
+    if(!d.ok){ toast(d.error||'確認に失敗しました'); return; }
+    const n=(d.dbPl.matched||0)+(d.plsys.matched||0);
+    if(!n){ toast('対象の古い行は見つかりませんでした（すでに削除済みかもしれません）'); return; }
+    const yen2=(x)=>'¥'+Math.round(x||0).toLocaleString();
+    const lines=(d.dbPl.rows||[]).map(r=>'DB_PL: '+r.ym+' '+r.store+' '+r.account+' '+yen2(r.amount))
+      .concat((d.plsys.rows||[]).map(r=>'PL管理システム: '+r.ym+' '+r.store+' '+r.account+' '+yen2(r.amount)));
+    alert('見つかった古い行（'+n+'件・表示のみ・まだ削除していません）:\n\n'+lines.join('\n'));
+    toast(n+'件見つかりました（内容はアラートを参照。削除は別途ご相談ください）');
   },
   // 簡易キャッシュフローの法人税率変更（A-5・2026-08-26追加。社長・本部のみ表示のリンクから呼ばれる）
   async editPlTaxRate(){

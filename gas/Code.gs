@@ -53,7 +53,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-a6p15', time: new Date().toISOString() }); // a6p4=bqGetReservationNamesにUser-Agent追加(2026-09-04)+bqFetchReservationRows_のORDER BY削除(92000行超でstatement timeout・2026-09-05)。a6p5=syncSeisanCategoriesToPlが店舗×月の同期結果を精算書側(sd_apiMarkPlSynced)へ書き戻すように追加（2026-09-05・業務委託精算書自動連携）。a6p6=dbPlDiag追加（実機E2E不一致の一時調査用）。a6p7=syncSeisanCategoriesToPlの対象店舗判定をseisan_target→seisan_pl_categories_targetに変更（運営委託費と経費PL反映を別々にON/OFFできるように・黒霧屋 新横浜対応）。a6p8=diagDepositsPerf追加（PayPay銀行取込46分化の原因切り分け用一時診断・2026-09-07）。a6p9=apiSetAdExclude追加（媒体販促費を手入力で確定させたあとPL画面だけ自動連携分を除外できるように・DB_広告除外設定シート新設・2026-09-07）。a6p10=importDepositsにLockServiceを追加（並行実行による入金二重計上バグを修正・2026-09-08）。a6p11=diagDepositDupScan追加（入金DBの重複行を行番号付きで列挙する読み取り専用診断・2026-09-08）。a6p12=cleanupDepositDuplicates追加（特定済み重複11件をユーザー承認のうえ削除・2026-09-08）。a6p13=cleanupDepositDuplicatesの認証をトークン→セッションに変更（トークン認証で原因不明のunauthorized・実行して重複11件×2シートの削除完了確認済み・2026-09-08）。a6p14=bqFetchReservationRows_をOFFSET(Rangeヘッダー)ページングからid（主キー・索引あり）によるkeysetページングに変更（rsv_reservationsが93000行超に増えOFFSET方式でも再度statement timeoutが発生したため・2026-09-05のORDER BY削除とは別問題＝あの時は無索引3列複合ソートが原因、今回はidという主キー＝索引ありの列でORDER BYするので同じ罠には当たらない。実測でOFFSET方式の同条件比1039ms→keyset方式299msを確認済み・2026-09-09）。a6p15=writeAccountCostToPl_の補助科目消失バグを修正（担当CからPL内訳UUID表示バグの申し送り。G列に冪等キー(noteTag)だけを書いていてsubAccountを一切保存していなかったため、補助科目の代わりにsourceKeyがそのまま表示されていた。列を増やすと他のPL自動連携が壊れるため増やさず、G列の値を「<subAccount>　<noteTag>」の複合形式にしてapp.js側で表示時に分離する方式に変更・2026-09-10）
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-a6p16', time: new Date().toISOString() }); // a6p4=bqGetReservationNamesにUser-Agent追加(2026-09-04)+bqFetchReservationRows_のORDER BY削除(92000行超でstatement timeout・2026-09-05)。a6p5=syncSeisanCategoriesToPlが店舗×月の同期結果を精算書側(sd_apiMarkPlSynced)へ書き戻すように追加（2026-09-05・業務委託精算書自動連携）。a6p6=dbPlDiag追加（実機E2E不一致の一時調査用）。a6p7=syncSeisanCategoriesToPlの対象店舗判定をseisan_target→seisan_pl_categories_targetに変更（運営委託費と経費PL反映を別々にON/OFFできるように・黒霧屋 新横浜対応）。a6p8=diagDepositsPerf追加（PayPay銀行取込46分化の原因切り分け用一時診断・2026-09-07）。a6p9=apiSetAdExclude追加（媒体販促費を手入力で確定させたあとPL画面だけ自動連携分を除外できるように・DB_広告除外設定シート新設・2026-09-07）。a6p10=importDepositsにLockServiceを追加（並行実行による入金二重計上バグを修正・2026-09-08）。a6p11=diagDepositDupScan追加（入金DBの重複行を行番号付きで列挙する読み取り専用診断・2026-09-08）。a6p12=cleanupDepositDuplicates追加（特定済み重複11件をユーザー承認のうえ削除・2026-09-08）。a6p13=cleanupDepositDuplicatesの認証をトークン→セッションに変更（トークン認証で原因不明のunauthorized・実行して重複11件×2シートの削除完了確認済み・2026-09-08）。a6p14=bqFetchReservationRows_をOFFSET(Rangeヘッダー)ページングからid（主キー・索引あり）によるkeysetページングに変更（rsv_reservationsが93000行超に増えOFFSET方式でも再度statement timeoutが発生したため・2026-09-05のORDER BY削除とは別問題＝あの時は無索引3列複合ソートが原因、今回はidという主キー＝索引ありの列でORDER BYするので同じ罠には当たらない。実測でOFFSET方式の同条件比1039ms→keyset方式299msを確認済み・2026-09-09）。a6p15=writeAccountCostToPl_の補助科目消失バグを修正（担当CからPL内訳UUID表示バグの申し送り。G列に冪等キー(noteTag)だけを書いていてsubAccountを一切保存していなかったため、補助科目の代わりにsourceKeyがそのまま表示されていた。列を増やすと他のPL自動連携が壊れるため増やさず、G列の値を「<subAccount>　<noteTag>」の複合形式にしてapp.js側で表示時に分離する方式に変更・2026-09-10）。a6p16=担当Cからの申し送り（続き83）対応の一時action追加・詳細は関数コメント参照・2026-09-10
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'dbPlDiag') return out(dbPlDiag(p)); // 2026-09-05一時追加: DB_PLシートの生データを店舗×月で確認（読み取り専用・原因特定でき次第削除）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
@@ -124,6 +124,7 @@ function handle(p) {
     if (action === 'diagDepositsPerf') return out(diagDepositsPerf_(p, session)); // 一時診断: importDepositsの遅延切り分け（2026-09-07・書き込みなし）
     if (action === 'diagDepositDupScan') return out(diagDepositDupScan_(p, session)); // 一時診断: 入金DBの重複行を行番号付きで列挙（2026-09-08・読み取り専用）
     if (action === 'cleanupDepositDuplicates') return out(cleanupDepositDuplicates_(p, session)); // 2026-09-08一時対応: 特定済みの重複11件をユーザー承認のうえ削除（セッション認証・1回きりの想定。当初トークン認証で原因不明のunauthorizedが出たためセッション認証に変更）
+    if (action === 'cleanupPlLegacyCombined') return out(cleanupPlLegacyCombined_(p, session)); // 2026-09-10一時対応: 勘定科目/補助科目が分離される前の結合形式のまま計上されていた9件をユーザー承認のうえ削除（担当Cからの申し送り・続き83。dryRun既定true・読み取りのみ）
     if (action === 'savePlEntries') return out(savePlEntries(p, session)); // PL経費の手入力（PL管理システム＋DB_PL両反映）
     if (action === 'setAdExclude') return out(apiSetAdExclude(p, session)); // 広告費（自動連携）をPL表示だけから除外する設定（2026-09-07追加）
     if (action === 'savePlBulk') return out(savePlBulk(p, session)); // PL経費の期間一括計上（例: 家賃を12ヶ月分）
@@ -4372,6 +4373,102 @@ function cleanupDepositDuplicates_(p, session) {
   var dst = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('入金DB');
   results.push(cleanupSheet(dst, 'ダッシュボード'));
   return { ok: true, results: results };
+}
+
+// 2026-09-10一時対応（担当Cからの申し送り・ns-portal WORKLOG「続き83」）: 勘定科目/補助科目の分離
+// バグ修正前に、ns-portal側`pl-fee-reflect`が「勘定科目/補助科目」という結合文字列のまま
+// account_nameとして送ってしまっていた9件が、DB_PL・PL管理システム双方に結合形式の行として
+// 残っている。ns-portal側は既に正しい形（勘定科目・補助科目を分離）へ正規化し、同じ内容を
+// writePlFeeで再送・追加済みのため、この古い結合形式の行を消さないと同じ経費が二重計上される。
+// 対象はこの9件専用（使い捨て・固定リスト）。dryRun（既定true）のときは実際には削除せず、
+// 一致した行の内容だけを返す（安全確認用。ユーザーが内容を見て問題なければdryRun:falseで
+// 呼び直して削除する想定）。社長・本部のみ実行可能。
+var PL_LEGACY_CLEANUP_TARGETS_ = [
+  { ym: '2026-09', account: '支払手数料/Mostfun', stores: ['本部'] },
+  { ym: '2026-08', account: '広告宣伝費/TAGZ', stores: ['鳥一代 恵比寿'] },
+  { ym: '2026-08', account: '広告宣伝費/食べログ', stores: ['鳥一代 恵比寿', '鳥一代 新橋', '鳥一代 本店', '鳥一代 はなれ', '芝の鳥一代', '鶏武者 川崎店', '鶏武者 新横浜'] },
+  { ym: '2026-08', account: '販売促進費/合）310', stores: ['鳥一代 恵比寿'] },
+  { ym: '2026-08', account: '販売促進費/合）ReBORN', stores: ['黒霧屋 新横浜'] },
+  { ym: '2026-08', account: '採用教育費/ＧＳホールディングス', stores: ['鶏武者 新横浜', '鳥一代 恵比寿'] }
+];
+function plLegacyTargetHit_(ymSlash, store, account) {
+  var ymDash = bqPlYm_(ymSlash).replace('/', '-');
+  var storeN = normStoreName_(store);
+  return PL_LEGACY_CLEANUP_TARGETS_.some(function (t) {
+    if (t.ym !== ymDash || t.account !== String(account).trim()) return false;
+    return t.stores.some(function (s) { return normStoreName_(s) === storeN || s === String(store).trim(); });
+  });
+}
+function cleanupPlLegacyCombined_(p, session) {
+  if (!session || !isAdmin(session)) return { ok: false, error: '社長・本部のみ実行できます' };
+  var dryRun = !(p.dryRun === 'false' || p.dryRun === false);
+
+  // ① DB_PL
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_PL');
+  var dbPl = { error: 'DB_PLシートがありません' };
+  if (sh) {
+    var lastRow = sh.getLastRow();
+    var lastCol = Math.max(sh.getLastColumn(), 7);
+    var allRows = lastRow >= 2 ? sh.getRange(2, 1, lastRow - 1, lastCol).getValues() : [];
+    var matchIdx = [], matched = [];
+    for (var i = 0; i < allRows.length; i++) {
+      var r = allRows[i];
+      if (r[0] === '' && r[1] === '') continue;
+      if (!plLegacyTargetHit_(r[0], r[1], r[2])) continue;
+      matchIdx.push(i);
+      matched.push({ ym: bqPlYm_(r[0]), store: String(r[1]), account: String(r[2]), amount: r[4], memo: String(r[5]) });
+    }
+    var deletedDbPl = 0;
+    if (!dryRun && matchIdx.length) {
+      var keep = [];
+      for (var k = 0; k < allRows.length; k++) { if (matchIdx.indexOf(k) < 0) keep.push(allRows[k]); }
+      sh.getRange(2, 1, lastRow - 1, lastCol).clearContent();
+      if (keep.length) { sh.getRange(2, 1, keep.length, lastCol).setValues(keep); sh.getRange(2, 1, keep.length, 1).setNumberFormat('yyyy/m/d'); }
+      deletedDbPl = matchIdx.length;
+    }
+    dbPl = { matched: matched.length, deleted: deletedDbPl, rows: matched };
+  }
+
+  // ② PL管理システム（✍販管費入力）
+  var plsys = { error: 'PL管理システムを開けません' };
+  try {
+    var pshS = SpreadsheetApp.openById(PL_SYSTEM_ID).getSheetByName(PL_INPUT_SHEET);
+    if (pshS) {
+      var lastRS = pshS.getLastRow(), nRS = Math.max(lastRS - 2, 0);
+      var AS = nRS > 0 ? pshS.getRange(3, 1, nRS, 3).getValues() : [];
+      var ES = nRS > 0 ? pshS.getRange(3, 5, nRS, 2).getValues() : [];
+      var GS = nRS > 0 ? pshS.getRange(3, 7, nRS, 1).getValues() : [];
+      var matchIdxS = [], matchedS = [];
+      for (var iS = 0; iS < nRS; iS++) {
+        if (String(AS[iS][0]) === '' && String(AS[iS][2]) === '') continue;
+        if (!plLegacyTargetHit_(AS[iS][0], AS[iS][1], AS[iS][2])) continue;
+        matchIdxS.push(iS);
+        matchedS.push({ ym: bqPlYm_(AS[iS][0]), store: String(AS[iS][1]), account: String(AS[iS][2]), amount: ES[iS][0], memo: String(ES[iS][1]) });
+      }
+      var deletedPlsys = 0;
+      if (!dryRun && matchIdxS.length) {
+        var keepA = [], keepE = [], keepG = [];
+        for (var m = 0; m < nRS; m++) {
+          if (matchIdxS.indexOf(m) >= 0) continue;
+          keepA.push(AS[m]); keepE.push(ES[m]); keepG.push(GS[m]);
+        }
+        pshS.getRange(3, 1, nRS, 3).clearContent(); pshS.getRange(3, 5, nRS, 2).clearContent(); pshS.getRange(3, 7, nRS, 1).clearContent();
+        if (keepA.length) {
+          pshS.getRange(3, 1, keepA.length, 3).setValues(keepA);
+          pshS.getRange(3, 5, keepE.length, 2).setValues(keepE);
+          pshS.getRange(3, 7, keepG.length, 1).setValues(keepG);
+        }
+        deletedPlsys = matchIdxS.length;
+      }
+      plsys = { matched: matchedS.length, deleted: deletedPlsys, rows: matchedS };
+    }
+  } catch (eP) { plsys = { error: String(eP && eP.message || eP) }; }
+
+  var bqRes = null;
+  if (!dryRun && dbPl.deleted) {
+    try { bqRes = bqSyncPL({ token: PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN') }); } catch (eB) { bqRes = { ok: false, error: String(eB) }; }
+  }
+  return { ok: true, dryRun: dryRun, dbPl: dbPl, plsys: plsys, bq: bqRes };
 }
 
 // ================== 手入力の反映（PL経費・広告費・予約CSV） ==================
