@@ -3029,6 +3029,7 @@ function viewAnalysis(){
     ${RG==='custom'?`${ymdSelect('cStart',S.cStart,(D.refDate||new Date()).getFullYear()+'-'+String((D.refDate||new Date()).getMonth()+1).padStart(2,'0')+'-'+String((D.refDate||new Date()).getDate()).padStart(2,'0'))} 〜 ${ymdSelect('cEnd',S.cEnd,'')}`:''}
     ${B==='total'?`<button class="icon-btn" onclick="App.set('aYoY',${S.aYoY?'false':'true'})">${S.aYoY?'☑':'☐'} 前年重ね</button>`:''}
     ${isAdminRole()?`<button class="icon-btn" title="データ元をシート/BigQueryで切替（テスト中）" onclick="App.setDailySource('${S.useBqDaily?'sheet':'bq'}')">🧪 データ元: ${S.useBqDaily?'BigQuery':'シート'}</button>${D.dailyBqLoading?'<span class="mut" style="margin-left:6px">読込中…</span>':''}${D.dailyBqErr?`<span style="color:#b5502f;margin-left:6px">BQ取得エラー: ${esc(D.dailyBqErr)}</span>`:''}`:''}
+    ${isAdminRole()?`<button class="icon-btn" title="推移分析の元データが実際どこまで遡れるか確認（一時診断）" onclick="App.diagDailyRange()">🔍 データ範囲を確認</button>`:''}
   </div>`+storeSegHtml();
   h+=`<div class="panel"><div class="panel-head"><div><h3>${ml} の推移（${G==='day'?'日別':G==='week'?'週別':'月別'}・${B==='total'?'合計':B==='store'?'店舗別':'媒体別'}）</h3>
     <div class="sub">${(s.getMonth()+1)}/${s.getDate()}〜${(e.getMonth()+1)}/${e.getDate()} ／ ${buckets.length}区間</div></div><div class="legend">${legend}</div></div>
@@ -8130,6 +8131,17 @@ window.App = {
     try{ localStorage.setItem(LS.dailyBq, bq?'1':'0'); }catch(e){}
     if(bq){ fetchDailyBQ(); fetchPlBQ(); fetchDepositBQ(); } else fetchData(true, { only:['daily','PL','deposit'] });
     render();
+  },
+  // 2026-09-11一時診断: 推移分析「年初来でも3ヶ月分ぐらいしか出ない」の原因切り分け用。
+  // dailyシートに実際どこまで過去の日付が入っているかを件数・最古/最新日付だけで確認する（管理者限定）。
+  async diagDailyRange(){
+    if(!S.auth||!S.auth.token) return;
+    toast('確認中…');
+    try{
+      const d=await api({ action:'diagDailyRange', token:S.auth.token });
+      if(!d.ok){ alert('確認エラー: '+(d.error||'不明なエラー')); return; }
+      alert(`シート「${d.sheetName}」\n全${d.totalRows}行中${d.validDateRows}行に日付あり\n最古の日付: ${d.minDate||'—'}\n最新の日付: ${d.maxDate||'—'}`);
+    }catch(e){ toast('確認エラー: '+(e&&e.message||e)); }
   },
   setWeek(i){ S.pWeekIdx=i; render(); },
   aiRun(){ const el=$('ai-q'); S.aiQ=el?el.value:S.aiQ; S.aiResult=answerQuery(S.aiQ); render(); },
