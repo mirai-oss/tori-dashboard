@@ -2422,7 +2422,13 @@ function viewDashFast_(){
   const yoyCls=t.priorYearSameWeekdayRatio==null?'mut':t.priorYearSameWeekdayRatio>=1?'pos':'neg';
   const hasFl=t.mtdCost!=null;
   const pct1=(n2,d2)=>(d2>0?(n2/d2*100).toFixed(1)+'%':'—');
-  let h=`<div class="mut" style="font-size:11px;margin:2px 0 8px">⚡ 速報値を表示中${hasFl?'（kd_直読み・SWR）':'（詳細データを読み込んでいます…）'}</div>`;
+  // 2026-09-11修正（ユーザー指摘「店舗も月も選べない」）: この表示がviewDash()の常時表示に格上げ
+  // されたことで、下の詳細描画と同じ期間・店舗切替のコントロールバー（periodCtrlHtml/
+  // storeSegHtml）が出なくなっていた（当初はD.daily到着までの数秒だけ見える「つなぎ」だったため
+  // 元々このバーが無かった）。期間を月次以外・店舗を選ぶと、次のrender()でviewDash()側の
+  // homeDefaultScope_判定がfalseになり自動的に下の詳細描画へ切り替わる（既存の仕組みのまま）。
+  let h=periodCtrlHtml()+storeSegHtml();
+  h+=`<div class="mut" style="font-size:11px;margin:2px 0 8px">⚡ 速報値を表示中${hasFl?'（kd_直読み・SWR）':'（詳細データを読み込んでいます…）'}</div>`;
   h+=`<div class="kpi-grid">
     <div class="kpi"><div class="lb">当月累計売上</div><div class="vl">${yen(t.mtdSales)}</div><div class="yy mut">目標 ${yen(t.target)}（達成率 ${targetRateTxt}）</div></div>
     ${hasFl?`<div class="kpi"><div class="lb">原価率 (F)</div><div class="vl">${pct1(t.mtdCost,t.mtdSales)}</div><div class="yy mut">${yen(t.mtdCost)}</div></div>
