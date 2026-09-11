@@ -153,6 +153,45 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 
 ## 5. 作業ログ
 
+### 2026-09-11（担当A実行スレッド）判定_高速化検証と実装GO §2-1 対応（①③④完了・②未着手・⑤条件待ち・コミット`7749f28`+ns-portal側`61de0e8`・`app.js?v=185`・**GAS再デプロイ必要**）
+
+司令塔の判定doc（`ns-portal/docs/判定_高速化検証と実装GO_2026-09-11.md`）§2-1（担当A・最優先5項目）に対応。
+
+**①ダッシュボードトップKPIのkd_直読み＋SWR（TK-60②再開）**: まず`kd_dashboard_daily_summary`の
+cost/labor列を実データで検証（Supabase実クエリ・直近7日間9/4〜9/10すべて100%充足を確認・9/11以降は
+未来のテンプレート行で売上0件なので対象外）。GOと判断し実装。`keiei-api-home`（Supabase Edge
+Function・ns-portalリポジトリ）にMTD（当月累計）のcost/labor/粗利/FLを追加（同時にnpx supabase
+functions deployでデプロイ・生存確認済み）。tori-dashboard側は、既存の`viewDashFast_`（P-0c・
+当初はD.daily到着までのつなぎ表示）を「今月・全店」表示中は常時表示へ格上げし、原価率(F)/人件費率
+(L)/FL合計のKPIカード・店舗別列を追加。切替フラグ`DASH_HOME_KPI_LIVE_`必須（false/対象外スコープ
+では自動的に旧経路＝下の詳細描画にフォールバック）。D.dailyは引き続きバックグラウンドで取得され
+続ける（旧経路は無改修）。
+
+**③dataFreshness→kd_sync_runs読みへ置換（低リスク・即効・D提案）**: 従来はBigQuery全件スキャン
+（fact_daily_store）＋スプレッドシート末尾300行走査の2箇所を毎回読んでいたが、`kd_sync_runs`
+（レーンPの同期実行記録）の最新1件/jobを返す専用ビュー`kd_sync_status_v`（anon読み取り許可・
+Supabase Management APIで新設）を直読みするだけに変更。表示の意味が「データ最新日」→「kd_同期が
+いつ・成功したか」に変わる（app.js側`freshnessLine()`も改修）。
+
+**④bqGetAdCost追加（bqGetSpotと同型）**: `stg_ad_cost`の読み取り専用action。BQ_LOAD_TOKEN認証・
+サーバー間呼び出し専用（レーンPのkd_pl広告費・ROAS充填用・§2-3-3の前提）。
+
+**②予約タブのkeiei-api-reservation 3モード接続、⑤PL本番切替（DASH_SUMMARY_PL_LIVE_=true）は
+今回未着手**。②は規模が大きい（新旧突合・旧`bqGetReservation`経路停止まで含む）ため次回に持ち越し。
+⑤は判定doc §2-3の条件（kd_pl毎時化・業務委託精算4店舗の実データ確認）がレーンP側でまだ揃って
+いないため、条件成立まで着手しない。
+
+構文チェック済み・GitHub Pages反映確認済み（`app.js?v=185`・console.errorなし）。**`gas/Code.gs`を
+変更したため、ユーザーによる手動デプロイが必要**（ping ver a6p18→a6p19）。keiei-api-home
+（Edge Function）は本セッションから直接デプロイ・生存確認まで完了済み（ユーザー操作不要）。
+実機での動作確認（トップKPIにF/L/FLが表示されるか・データ同期表示の見た目）はユーザー確認待ち。
+
+**このセッションへの申し送り**: `npx supabase functions deploy`がmacOSキーチェーンの初回確認待ちで
+無応答のまま長時間ハングする事象が発生（30秒〜数分待っても出力ゼロ）。`SUPABASE_ACCESS_TOKEN`環境
+変数にPATを明示的に渡すと（`SUPABASE_ACCESS_TOKEN="$(cat ~/.config/ns-portal/supabase_pat)" npx ...`）
+インタラクティブなログイン確認を完全にスキップして即座にデプロイが通った。今後Edge Functionを
+デプロイするセッションは、最初からこの環境変数付きで呼ぶこと（ハング待ちの時間を節約できる）。
+
 ### 2026-09-11（Mac miniセッション）PayPay銀行取込が9/10全滅した件の真因を特定・修正（`ver`=`token-336h-v1-a6p18`・要ユーザー貼替）
 
 ユーザー報告「昨日銀行口座の取り込みがおそらく失敗してた」を調査。`logs/paypay-bank-20260910.log`
