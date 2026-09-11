@@ -51,10 +51,6 @@ const RSV_API_ENABLED_ = false;
 // 自然にフォールバックする。何も壊れない）。問題が起きた場合はこの値をfalseに戻すだけで即無効化できる。
 const HOME_API_URL = SSO_SUPA_URL + '/functions/v1/keiei-api-home';
 const HOME_API_ENABLED_ = true;
-// TK-60②（2026-09-11・判定_高速化検証と実装GO §2-1-1）: ダッシュボードのトップKPI（F率/L率/FL含む）を
-// kd_直読み（keiei-api-home）常時表示へ切替える機能フラグ。問題が起きた場合はfalseに戻すだけで、
-// 従来どおり「D.daily到着までのつなぎ」表示（F/L/FL無し）に即座にフォールバックできる。
-const DASH_HOME_KPI_LIVE_ = true;
 // W3②（2026-09-06・司令塔指示「PL・売上分析・入金画面の差し替え調査」）: kd_pl_monthly_summary/
 // kd_media_monthly_summary/kd_deposit_monthly_summaryをまとめて読む軽量API。媒体別・入金は
 // データ欠損が確認されていないため速報表示に使う。PLは4店舗(業務委託精算店舗)の原価/人件費が
@@ -2409,12 +2405,10 @@ function mediaTableRows(a,b,pa,pb,scopeSet,selName,mode){
   return { total, rows:Object.keys(agg).map(m=>({media:m,...agg[m],prev:prevAgg[m]||0})).sort((x,y)=>y.net-x.net) };
 }
 
-// P-0c（2026-09-06）で新設・TK-60②（2026-09-11・判定_高速化検証と実装GO §2-1-1）で格上げ。
-// keiei-api-homeの速報値で描くダッシュボード。当初はD.daily到着までの「つなぎ」専用だったが、
-// kd_dashboard_daily_summaryのcost/labor列が埋まり原価率(F)/人件費率(L)/FLも出せるようになったため、
-// 「今月・全店」を見ている間はこちらを常時の表示に格上げした（viewDash()の呼び分け参照）。
-// D.homeにmtdCost等が無い（旧デプロイのkeiei-api-home・未対応期間）ときは、従来どおりF/L/FL無しの
-// 簡易表示にフォールバックする（hasFlで分岐）。既存のkpi-grid/panel/tblクラスをそのまま流用。
+// P-0c（2026-09-06）で新設。keiei-api-homeの速報値で描く、D.daily到着までの「つなぎ」表示。
+// TK-60②（2026-09-11）で一時「今月・全店」時の常時表示に格上げしたが、見づらいとの指摘で撤回し
+// つなぎ専用に戻した（viewDash()参照）。D.homeにmtdCost等があれば原価率(F)/人件費率(L)/FLも
+// 出す（hasFlで分岐）。無ければ従来どおりF/L/FL無しの簡易表示。既存のkpi-grid/panel/tblを流用。
 function viewDashFast_(){
   const t=D.home.totals||{}, stores=D.home.stores||[];
   const targetRateTxt=t.targetRate!=null?(t.targetRate*100).toFixed(1)+'%':'—';
@@ -2422,11 +2416,9 @@ function viewDashFast_(){
   const yoyCls=t.priorYearSameWeekdayRatio==null?'mut':t.priorYearSameWeekdayRatio>=1?'pos':'neg';
   const hasFl=t.mtdCost!=null;
   const pct1=(n2,d2)=>(d2>0?(n2/d2*100).toFixed(1)+'%':'—');
-  // 2026-09-11修正（ユーザー指摘「店舗も月も選べない」）: この表示がviewDash()の常時表示に格上げ
-  // されたことで、下の詳細描画と同じ期間・店舗切替のコントロールバー（periodCtrlHtml/
-  // storeSegHtml）が出なくなっていた（当初はD.daily到着までの数秒だけ見える「つなぎ」だったため
-  // 元々このバーが無かった）。期間を月次以外・店舗を選ぶと、次のrender()でviewDash()側の
-  // homeDefaultScope_判定がfalseになり自動的に下の詳細描画へ切り替わる（既存の仕組みのまま）。
+  // 2026-09-11修正: 一時的に常時表示だった期間、期間・店舗切替のコントロールバー
+  // （periodCtrlHtml/storeSegHtml）が無く選べないとの指摘があったため追加。つなぎ専用に
+  // 戻した後もD.daily到着までの一瞬だけ表示されるので、そのまま残す（実害なし）。
   let h=periodCtrlHtml()+storeSegHtml();
   h+=`<div class="mut" style="font-size:11px;margin:2px 0 8px">⚡ 速報値を表示中${hasFl?'（kd_直読み・SWR）':'（詳細データを読み込んでいます…）'}</div>`;
   h+=`<div class="kpi-grid">
@@ -2450,18 +2442,9 @@ function viewDashFast_(){
   return h;
 }
 function viewDash(){
-  // TK-60②（2026-09-11・判定_高速化検証と実装GO §2-1-1）: 「今月・全店（店舗未選択）」を見ている
-  // 間は、D.homeにMTD原価・人件費（mtdCost等。kd_dashboard_daily_summaryのcost/labor列が9/6の
-  // P側修正で埋まったことで追加できた）が揃っていれば、D.dailyの到着を待たずkd_直読みの
-  // viewDashFast_を常時の表示にする（切替フラグDASH_HOME_KPI_LIVE_必須。9/3に見送った「D.daily
-  // 到着で表示が切り替わる分かりにくさ」問題を解消）。D.dailyは引き続きfetchDataFast()の既存の
-  // 並列取得のままバックグラウンドで届き続ける（旧経路＝下の詳細描画は無改修のままフォールバックに
-  // 使う。期間を月次以外にする・店舗を絞る等、D.homeの対応範囲外の見方をしたときは従来どおり
-  // 下の詳細描画に落ちる）。
-  const homeDefaultScope_=S.period==='month'&&!selStoreName();
-  if(DASH_HOME_KPI_LIVE_&&D.home&&D.home.totals&&D.home.totals.mtdCost!=null&&homeDefaultScope_) return viewDashFast_();
-  // P-0c（2026-09-06）: 上のkd_直読みが使えない間（D.homeにMTD原価・人件費が無い・期間や店舗を
-  // 絞っている等）は、D.dailyが届くまでのつなぎとして引き続き簡易表示する。
+  // P-0c（2026-09-06）: D.dailyが届くまでのつなぎとして、D.home（kd_直読み）があれば
+  // 簡易表示（F/L/FLが揃っていればそれも含む）を一瞬だけ表示する。9/11に「常時表示」化を
+  // 試したが見づらいとの指摘で撤回し、元のつなぎ限定の挙動に戻した（TK-60②は保留）。
   if(!D.daily.length && D.home) return viewDashFast_();
   const sc=scopeStores(); const scopeSet=new Set(sc); const selName=selStoreName();
   const r=periodRange(), p=prevRange(r);
