@@ -547,7 +547,13 @@ function sessionGet(token){
   return obj.sess;
 }
 function sessionDel(token){ sessionStore().deleteProperty('tok_' + token); }
-function sessionCleanup(){ // 期限切れの古いトークンを掃除
+// 期限切れの古いトークンを掃除。store.getProperties()はスクリプトプロパティ全件を毎回まるごと
+// 読み込む重い呼び出しで、従来はlogin()/supaLogin()のたびに毎回実行していたため「ログインが遅い」
+// 原因の一つになっていた（2026-09-11・ユーザー報告対応）。個別の期限切れは既にsessionGet()が
+// アクセス時に都度削除しているため、この全件掃除は「二度とアクセスされない放置トークン」を
+// 拾うだけの保険的な処理＝毎回やる必要はない。ログイン10回に1回程度の頻度で十分なため間引いた。
+function sessionCleanup(){
+  if (Math.random() >= 0.1) return;
   var store = sessionStore(), all = store.getProperties(), now = new Date().getTime();
   for (var k in all) {
     if (k.indexOf('tok_') === 0) {

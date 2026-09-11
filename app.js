@@ -1650,6 +1650,16 @@ async function fetchData(silent, opts, preD){
       if(opts.only) params.keys=opts.only.join(',');
       if(opts.exclude) params.exclude=opts.exclude.join(',');
       d=await api(params);
+      // 2026-09-11追加（ユーザー報告「頻繁にログアウトされる・ログインし直しても遅い」対応）:
+      // action:'data'はHANDOFF.md記載の実測失敗率38%と元々不安定なGASアクションで、その一時的な
+      // 失敗がunauthorized（本当はセッション切れではなくGAS側の一時エラー）として返ることがある。
+      // 従来は1回の失敗だけで即doLogout()＋localStorage破棄していたのが「勝手にログアウトされる」
+      // の主因と判断。unauthorizedのときはすぐに諦めず、少し待って同じ内容で1回だけ再試行してから
+      // 最終判断する（再試行してもunauthorizedのときだけ、本当にセッション切れとみなす）。
+      if(!d.ok && String(d.error||'').includes('unauthorized')){
+        await new Promise(r=>setTimeout(r,900));
+        d=await api(params);
+      }
     }
     if(!d.ok){
       if(String(d.error||'').includes('unauthorized')){ doLogout('セッションの有効期限が切れました。再度ログインしてください'); return; }
