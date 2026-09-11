@@ -53,7 +53,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-a6p18', time: new Date().toISOString() }); // a6p4=bqGetReservationNamesにUser-Agent追加(2026-09-04)+bqFetchReservationRows_のORDER BY削除(92000行超でstatement timeout・2026-09-05)。a6p5=syncSeisanCategoriesToPlが店舗×月の同期結果を精算書側(sd_apiMarkPlSynced)へ書き戻すように追加（2026-09-05・業務委託精算書自動連携）。a6p6=dbPlDiag追加（実機E2E不一致の一時調査用）。a6p7=syncSeisanCategoriesToPlの対象店舗判定をseisan_target→seisan_pl_categories_targetに変更（運営委託費と経費PL反映を別々にON/OFFできるように・黒霧屋 新横浜対応）。a6p8=diagDepositsPerf追加（PayPay銀行取込46分化の原因切り分け用一時診断・2026-09-07）。a6p9=apiSetAdExclude追加（媒体販促費を手入力で確定させたあとPL画面だけ自動連携分を除外できるように・DB_広告除外設定シート新設・2026-09-07）。a6p10=importDepositsにLockServiceを追加（並行実行による入金二重計上バグを修正・2026-09-08）。a6p11=diagDepositDupScan追加（入金DBの重複行を行番号付きで列挙する読み取り専用診断・2026-09-08）。a6p12=cleanupDepositDuplicates追加（特定済み重複11件をユーザー承認のうえ削除・2026-09-08）。a6p13=cleanupDepositDuplicatesの認証をトークン→セッションに変更（トークン認証で原因不明のunauthorized・実行して重複11件×2シートの削除完了確認済み・2026-09-08）。a6p14=bqFetchReservationRows_をOFFSET(Rangeヘッダー)ページングからid（主キー・索引あり）によるkeysetページングに変更（rsv_reservationsが93000行超に増えOFFSET方式でも再度statement timeoutが発生したため・2026-09-05のORDER BY削除とは別問題＝あの時は無索引3列複合ソートが原因、今回はidという主キー＝索引ありの列でORDER BYするので同じ罠には当たらない。実測でOFFSET方式の同条件比1039ms→keyset方式299msを確認済み・2026-09-09）。a6p15=writeAccountCostToPl_の補助科目消失バグを修正（担当CからPL内訳UUID表示バグの申し送り。G列に冪等キー(noteTag)だけを書いていてsubAccountを一切保存していなかったため、補助科目の代わりにsourceKeyがそのまま表示されていた。列を増やすと他のPL自動連携が壊れるため増やさず、G列の値を「<subAccount>　<noteTag>」の複合形式にしてapp.js側で表示時に分離する方式に変更・2026-09-10）。a6p16=担当Cからの申し送り（続き83）対応の一時action追加・詳細は関数コメント参照・2026-09-10。a6p17=cleanupPlLegacyCombined_の結果をalert()ではなくスプレッドシートの新タブへ書き出すよう変更（コピーしづらいとのユーザー指摘対応・行番号つき）・2026-09-10。a6p18=fetchStoreDirectory_を実行内メモ化（PayPay銀行取込が2026-09-10に全店舗連鎖失敗した件の真因修正。importDeposits_locked_が入金DB既存行ごとにnormStoreName_→fetchStoreDirectory_→CacheService往復を繰り返し、入金DBが4800行超に増えた結果1回の取込で実測345秒かかりNode側5分タイムアウトで連鎖失敗していた。実行スコープ変数で1回だけ取得するよう変更・2026-09-11）
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-a6p19', time: new Date().toISOString() }); // a6p4=bqGetReservationNamesにUser-Agent追加(2026-09-04)+bqFetchReservationRows_のORDER BY削除(92000行超でstatement timeout・2026-09-05)。a6p5=syncSeisanCategoriesToPlが店舗×月の同期結果を精算書側(sd_apiMarkPlSynced)へ書き戻すように追加（2026-09-05・業務委託精算書自動連携）。a6p6=dbPlDiag追加（実機E2E不一致の一時調査用）。a6p7=syncSeisanCategoriesToPlの対象店舗判定をseisan_target→seisan_pl_categories_targetに変更（運営委託費と経費PL反映を別々にON/OFFできるように・黒霧屋 新横浜対応）。a6p8=diagDepositsPerf追加（PayPay銀行取込46分化の原因切り分け用一時診断・2026-09-07）。a6p9=apiSetAdExclude追加（媒体販促費を手入力で確定させたあとPL画面だけ自動連携分を除外できるように・DB_広告除外設定シート新設・2026-09-07）。a6p10=importDepositsにLockServiceを追加（並行実行による入金二重計上バグを修正・2026-09-08）。a6p11=diagDepositDupScan追加（入金DBの重複行を行番号付きで列挙する読み取り専用診断・2026-09-08）。a6p12=cleanupDepositDuplicates追加（特定済み重複11件をユーザー承認のうえ削除・2026-09-08）。a6p13=cleanupDepositDuplicatesの認証をトークン→セッションに変更（トークン認証で原因不明のunauthorized・実行して重複11件×2シートの削除完了確認済み・2026-09-08）。a6p14=bqFetchReservationRows_をOFFSET(Rangeヘッダー)ページングからid（主キー・索引あり）によるkeysetページングに変更（rsv_reservationsが93000行超に増えOFFSET方式でも再度statement timeoutが発生したため・2026-09-05のORDER BY削除とは別問題＝あの時は無索引3列複合ソートが原因、今回はidという主キー＝索引ありの列でORDER BYするので同じ罠には当たらない。実測でOFFSET方式の同条件比1039ms→keyset方式299msを確認済み・2026-09-09）。a6p15=writeAccountCostToPl_の補助科目消失バグを修正（担当CからPL内訳UUID表示バグの申し送り。G列に冪等キー(noteTag)だけを書いていてsubAccountを一切保存していなかったため、補助科目の代わりにsourceKeyがそのまま表示されていた。列を増やすと他のPL自動連携が壊れるため増やさず、G列の値を「<subAccount>　<noteTag>」の複合形式にしてapp.js側で表示時に分離する方式に変更・2026-09-10）。a6p16=担当Cからの申し送り（続き83）対応の一時action追加・詳細は関数コメント参照・2026-09-10。a6p17=cleanupPlLegacyCombined_の結果をalert()ではなくスプレッドシートの新タブへ書き出すよう変更（コピーしづらいとのユーザー指摘対応・行番号つき）・2026-09-10。a6p18=fetchStoreDirectory_を実行内メモ化（PayPay銀行取込が2026-09-10に全店舗連鎖失敗した件の真因修正。importDeposits_locked_が入金DB既存行ごとにnormStoreName_→fetchStoreDirectory_→CacheService往復を繰り返し、入金DBが4800行超に増えた結果1回の取込で実測345秒かかりNode側5分タイムアウトで連鎖失敗していた。実行スコープ変数で1回だけ取得するよう変更・2026-09-11）。a6p19=判定_高速化検証と実装GO §2-1対応（担当A）: dataFreshness()をBigQuery全件スキャン＋スプレッドシート走査からkd_sync_status_v（新設ビュー）直読みへ置換（軽量化・D提案）。bqGetAdCost追加（stg_ad_cost読み取り・BQ_LOAD_TOKEN認証・レーンPのkd_pl広告費充填用）・2026-09-11
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'dbPlDiag') return out(dbPlDiag(p)); // 2026-09-05一時追加: DB_PLシートの生データを店舗×月で確認（読み取り専用・原因特定でき次第削除）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
@@ -78,6 +78,7 @@ function handle(p) {
     if (action === 'writeAdCost') return out(writeAdCost(p)); // A-8: 広告費書き込み（invoices側ad-cost-reflectから・AD_COST_WRITE_TOKEN認証・ログイン不要。2026-08-31追加）
     if (action === 'writePlFee') return out(writePlFee(p)); // A-8拡張: 勘定科目汎用のPL自動計上（invoices側pl-fee-reflectから・AD_COST_WRITE_TOKEN認証・ログイン不要。2026-09-01追加・設計書§5）
     if (action === 'bqSyncAdCost') return out(bqSyncAdCost(p)); // 💾広告費DBのBQミラー同期（専用トークン認証・ログイン不要。writeAdCostから毎回自動で呼ばれるほか単独でも可。2026-08-31追加・A-8）
+    if (action === 'bqGetAdCost') return out(bqGetAdCost(p)); // stg_ad_costの読み取り（専用トークン認証・ログイン不要・サーバー間呼び出し専用）。レーンPのkd_pl広告費充填用。2026-09-11追加
     if (action === 'bqSyncReservation') return out(bqSyncReservation(p)); // 予約(stg_reservation)のBQミラー同期（専用トークン認証・ログイン不要。2026-08-28追加・A-6）
     if (action === 'perf') return out(perfDiag(p)); // パフォーマンス計測（専用トークン認証・ログイン不要・数字は返さず時間だけ）
     setupIfNeeded();
@@ -2414,39 +2415,38 @@ function bqSyncAllSales(p) {
 // 画面に「データがいつまで揃っているか」を表示するための軽量アクション（2026-08-23追加・
 // 実装指示書_ダッシュボード高速化）。ログイン必須（他の軽量トークン系と違い、担当店舗の権限は
 // 問わない全社共通の情報のため、単にログイン済みかどうかだけ見る）。
+// 2026-09-11改修（判定_高速化検証と実装GO §2-1-3・D提案）: 従来はBigQuery全件スキャン
+// （fact_daily_store・実測で重い）＋スプレッドシート末尾300行スキャンの2箇所を毎回読んでいたが、
+// レーンP側のkd_同期の実行記録（kd_sync_runs）を直接読むだけで同じ目的（「データはいつ最後に
+// 同期されたか・成功したか」）を軽く果たせるようになったため置き換える。kd_sync_runsは
+// authenticatedロールのみRLSで読めるが、GASはユーザーのSupabase JWTを保持していないため、
+// 「ジョブごとの最新1件だけ」を返す専用ビュー（kd_sync_status_v・anon読み取り許可）を新設して
+// それを直読みする（fetchStoreDirectory_と同じanonキー直読みパターン）。
+// 返り値の意味が変わる点に注意: 旧bqMaxDate/sheetMaxDate（データ自体の最新日）ではなく、
+// syncedAt/syncedOk（kd_同期処理が最後にいつ・成功したか）になる（app.js側のfreshnessLine()も
+// 合わせて改修）。
 function dataFreshness(p, session) {
-  var out = { ok: true };
   try {
-    var maxRow = bqRows_('SELECT MAX(date) AS d FROM `' + BQ_PROJECT + '.' + BQ_SALES_DATASET + '.fact_daily_store` WHERE net_sales > 0 OR guests_total > 0');
-    out.bqMaxDate = (maxRow && maxRow[1] && maxRow[1][0]) ? String(maxRow[1][0]) : null;
-  } catch (eBq) { out.bqMaxDate = null; out.bqError = String(eBq && eBq.message || eBq); }
-  try {
-    var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('分析_日別店舗');
-    out.sheetMaxDate = null;
-    if (sh) {
-      var lr = sh.getLastRow();
-      if (lr >= 2) {
-        // 全件走査は重い（実測4秒超・7000行超）ため、末尾側だけ見る。ただし月末まで日付欄だけ
-        // 先に埋まっている実績0件のテンプレート行があるため（fix-v72で判明した問題と同根）、
-        // 単に最後の行の日付を見ると未来日を「最新」と誤判定する。A列(日付)に加えP列(客数合計)・
-        // R列(純売上)も読み、実績が入っている行に限定して最大日付を取る。店舗数×残り日数ぶんの
-        // テンプレート行を跨げるよう300行分見る（12店舗×20日超を想定した余裕）。
-        var scanFrom = Math.max(2, lr - 300);
-        var vals = sh.getRange(scanFrom, 1, lr - scanFrom + 1, 18).getValues(); // A:R（date〜net_sales）
-        var maxD = null;
-        for (var i = 0; i < vals.length; i++) {
-          var v = vals[i][0], guests = Number(vals[i][15] || 0), sales = Number(vals[i][17] || 0);
-          if (v instanceof Date && (guests > 0 || sales > 0) && (!maxD || v.getTime() > maxD.getTime())) maxD = v;
-        }
-        if (maxD) out.sheetMaxDate = Utilities.formatDate(maxD, 'Asia/Tokyo', 'yyyy-MM-dd');
-      }
-    }
-  } catch (eSheet) { out.sheetMaxDate = null; }
-  try {
-    var raw = PropertiesService.getScriptProperties().getProperty('BQ_SYNC_LAST_OK');
-    if (raw) { var j = JSON.parse(raw); out.bqSyncedAt = j.time || null; out.bqSyncedOk = !!j.ok; }
-  } catch (eProp2) {}
-  return out;
+    var res = UrlFetchApp.fetch(
+      'https://uuvsxzhpxtghojoubjcc.supabase.co/rest/v1/kd_sync_status_v?select=*',
+      { headers: { apikey: STORE_DIRECTORY_ANON_KEY_, Authorization: 'Bearer ' + STORE_DIRECTORY_ANON_KEY_ }, muteHttpExceptions: true }
+    );
+    if (res.getResponseCode() !== 200) throw new Error('kd_sync_status_v http ' + res.getResponseCode());
+    var rows = JSON.parse(res.getContentText());
+    var byJob = {};
+    rows.forEach(function (r) { byJob[r.job] = r; });
+    // ダッシュボードの体感に一番直結する「日次サマリ（トップKPI等）」の同期を代表値にする
+    var main = byJob['kd_dashboard_daily_summary'] || rows[0] || null;
+    return {
+      ok: true,
+      source: 'kd_sync_runs（Supabase・GAS内BigQuery/スプレッドシート走査は廃止）',
+      syncedAt: main ? main.finished_at : null,
+      syncedOk: main ? (main.status === 'success') : null,
+      jobs: rows.map(function (r) { return { job: r.job, finishedAt: r.finished_at, status: r.status, rows: r.rows, error: r.error || null }; })
+    };
+  } catch (e) {
+    return { ok: false, error: String(e && e.message || e) };
+  }
 }
 
 // W1: 初回表示のGAS往復集約（2026-09-02・実装指示書_表示集計層kdと高速化実行計画§10.1 W1）。
@@ -5045,6 +5045,33 @@ function bqSyncAdCost(p) {
     ].join(','));
   }
   return bqLoadSheetToTable_(lines.join('\n'), 'stg_ad_cost', BQ_STG_AD_COST_SCHEMA);
+}
+// 2026-09-11追加（判定_高速化検証と実装GO §2-1-4）: kd_pl_monthly_summaryの広告費・ROAS充填用に
+// stg_ad_cost（上のbqSyncAdCostが書き込んでいるBigQueryミラー）を読み出す専用action。
+// bqDailyStoreForSync/bqGetSpotと同型（BQ_LOAD_TOKEN認証・読み取り専用・サーバー間呼び出し専用。
+// ダッシュボードのブラウザからは呼ばない）。レーンPのkd_pl再集計リフレッシュから呼ばれる想定
+// （§2-3-3「bqGetAdCost（A実装後）をリフレッシュに接続」）。
+function bqGetAdCost(p) {
+  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+  if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
+  var months = Number(p.months) || 0; // 0=全期間
+  var where = '';
+  if (months > 0) {
+    var cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - months);
+    // stg_ad_costのyear_monthはymOf_()が作る'yyyy/MM'形式で保存されている（bqSyncAdCost参照）
+    var cutoffYm = Utilities.formatDate(cutoff, 'Asia/Tokyo', 'yyyy/MM');
+    where = "WHERE year_month >= '" + cutoffYm.replace(/'/g, '') + "'";
+  }
+  var sql = 'SELECT year_month, store_name, media, plan, amount, memo FROM `' +
+    BQ_PROJECT + '.' + BQ_SALES_DATASET + '.stg_ad_cost` ' + where + ' ORDER BY year_month';
+  var rows = bqRows_(sql);
+  if (!rows) return { ok: false, error: 'BigQueryクエリ失敗' };
+  var out = [['年月', '店舗名', '媒体', 'プラン', '広告費', 'メモ']];
+  for (var i = 1; i < rows.length; i++) {
+    var r = rows[i];
+    out.push([r[0], r[1], r[2], r[3], Number(r[4] || 0), r[5]]);
+  }
+  return { ok: true, sheets: { 広告費: out } };
 }
 
 // PL経費の期間一括計上：開始月〜終了月の各月に 店舗×科目×補助科目 の行を作成（既存の同科目・同補助科目行は差し替え）。

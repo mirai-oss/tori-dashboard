@@ -51,6 +51,10 @@ const RSV_API_ENABLED_ = false;
 // 自然にフォールバックする。何も壊れない）。問題が起きた場合はこの値をfalseに戻すだけで即無効化できる。
 const HOME_API_URL = SSO_SUPA_URL + '/functions/v1/keiei-api-home';
 const HOME_API_ENABLED_ = true;
+// TK-60②（2026-09-11・判定_高速化検証と実装GO §2-1-1）: ダッシュボードのトップKPI（F率/L率/FL含む）を
+// kd_直読み（keiei-api-home）常時表示へ切替える機能フラグ。問題が起きた場合はfalseに戻すだけで、
+// 従来どおり「D.daily到着までのつなぎ」表示（F/L/FL無し）に即座にフォールバックできる。
+const DASH_HOME_KPI_LIVE_ = true;
 // W3②（2026-09-06・司令塔指示「PL・売上分析・入金画面の差し替え調査」）: kd_pl_monthly_summary/
 // kd_media_monthly_summary/kd_deposit_monthly_summaryをまとめて読む軽量API。媒体別・入金は
 // データ欠損が確認されていないため速報表示に使う。PLは4店舗(業務委託精算店舗)の原価/人件費が
@@ -2186,18 +2190,18 @@ function ctxBarHtml(){
     <span class="cb-up">▲ 上へ</span></div>`;
 }
 
-// 「データ最新日／BQ同期時刻／状態」の1行（実装指示書_ダッシュボード高速化タスク1）
+// 「データ同期時刻／状態」の1行（実装指示書_ダッシュボード高速化タスク1）。
+// 2026-09-11改修: 従来は毎回BigQuery全件スキャン＋スプレッドシート走査で「データ自体の最新日」を
+// 求めていたが、kd_sync_runs（レーンPの同期実行記録）を直読みするだけの軽い経路に変更
+// （判定_高速化検証と実装GO §2-1-3）。表示の意味も「データ最新日」→「同期がいつ・成功したか」に
+// 変わる（GAS側dataFreshness()参照）。
 function freshnessLine(){
   const f=D.freshness;
   if(!f) return '';
   if(f.ok===false) return `<div class="mut" style="font-size:11px;margin-top:2px">⚠️ データ鮮度の取得に失敗</div>`;
-  const md=(s)=>{ if(!s) return '—'; const p=String(s).split('-'); return p.length===3?(+p[1])+'/'+(+p[2]):s; };
   const dt=(iso)=>{ if(!iso) return '—'; const d2=new Date(iso); if(isNaN(d2)) return '—';
     return (d2.getMonth()+1)+'/'+d2.getDate()+' '+String(d2.getHours()).padStart(2,'0')+':'+String(d2.getMinutes()).padStart(2,'0'); };
-  let status='—';
-  if(f.sheetMaxDate&&f.bqMaxDate) status=(f.bqMaxDate>=f.sheetMaxDate)?'✅ 最新':'⏳ 同期待ち';
-  else if(f.sheetMaxDate&&!f.bqMaxDate) status='—';
-  return `<div class="mut" style="font-size:11px;margin-top:2px">データ最新日: ${esc(md(f.sheetMaxDate))} ／ BigQuery同期: ${esc(dt(f.bqSyncedAt))}${f.bqSyncedOk===false?' ⚠️':(f.bqSyncedAt?' ✅':'')} ／ 状態: ${status}</div>`;
+  return `<div class="mut" style="font-size:11px;margin-top:2px">データ同期: ${esc(dt(f.syncedAt))}${f.syncedOk===false?' ⚠️':(f.syncedAt?' ✅':'')}</div>`;
 }
 function connBadge(){
   if(S.connState==='live') return `<span class="st-live">● スプレッドシート連携中</span>（自動更新）<br>最終同期 ${esc(S.lastSync)}`+freshnessLine();
@@ -2405,36 +2409,53 @@ function mediaTableRows(a,b,pa,pb,scopeSet,selName,mode){
   return { total, rows:Object.keys(agg).map(m=>({media:m,...agg[m],prev:prevAgg[m]||0})).sort((x,y)=>y.net-x.net) };
 }
 
-// P-0c（2026-09-06）: keiei-api-homeの速報値だけで描く簡易ダッシュボード（D.daily到着までのつなぎ）。
-// 既存のkpi-grid/panel/tblクラスをそのまま流用し、新しいUIパーツは作らない。D.dailyが届き次第、
-// viewDash()側の分岐で自動的に呼ばれなくなり従来の詳細描画に切り替わる（この関数は使い捨て）。
+// P-0c（2026-09-06）で新設・TK-60②（2026-09-11・判定_高速化検証と実装GO §2-1-1）で格上げ。
+// keiei-api-homeの速報値で描くダッシュボード。当初はD.daily到着までの「つなぎ」専用だったが、
+// kd_dashboard_daily_summaryのcost/labor列が埋まり原価率(F)/人件費率(L)/FLも出せるようになったため、
+// 「今月・全店」を見ている間はこちらを常時の表示に格上げした（viewDash()の呼び分け参照）。
+// D.homeにmtdCost等が無い（旧デプロイのkeiei-api-home・未対応期間）ときは、従来どおりF/L/FL無しの
+// 簡易表示にフォールバックする（hasFlで分岐）。既存のkpi-grid/panel/tblクラスをそのまま流用。
 function viewDashFast_(){
   const t=D.home.totals||{}, stores=D.home.stores||[];
   const targetRateTxt=t.targetRate!=null?(t.targetRate*100).toFixed(1)+'%':'—';
   const yoyTxt=t.priorYearSameWeekdayRatio!=null?(t.priorYearSameWeekdayRatio*100).toFixed(1)+'%':'—';
   const yoyCls=t.priorYearSameWeekdayRatio==null?'mut':t.priorYearSameWeekdayRatio>=1?'pos':'neg';
-  let h=`<div class="mut" style="font-size:11px;margin:2px 0 8px">⚡ 速報値を表示中（詳細データを読み込んでいます…）</div>`;
+  const hasFl=t.mtdCost!=null;
+  const pct1=(n2,d2)=>(d2>0?(n2/d2*100).toFixed(1)+'%':'—');
+  let h=`<div class="mut" style="font-size:11px;margin:2px 0 8px">⚡ 速報値を表示中${hasFl?'（kd_直読み・SWR）':'（詳細データを読み込んでいます…）'}</div>`;
   h+=`<div class="kpi-grid">
     <div class="kpi"><div class="lb">当月累計売上</div><div class="vl">${yen(t.mtdSales)}</div><div class="yy mut">目標 ${yen(t.target)}（達成率 ${targetRateTxt}）</div></div>
+    ${hasFl?`<div class="kpi"><div class="lb">原価率 (F)</div><div class="vl">${pct1(t.mtdCost,t.mtdSales)}</div><div class="yy mut">${yen(t.mtdCost)}</div></div>
+    <div class="kpi"><div class="lb">人件費率 (L)</div><div class="vl">${pct1(t.mtdLabor,t.mtdSales)}</div><div class="yy mut">${yen(t.mtdLabor)}</div></div>
+    <div class="kpi"><div class="lb">FL合計</div><div class="vl">${t.mtdFlRate!=null?(t.mtdFlRate*100).toFixed(1)+'%':'—'}</div><div class="yy mut">粗利率 ${t.mtdGrossRate!=null?(t.mtdGrossRate*100).toFixed(1)+'%':'—'}</div></div>`:''}
     <div class="kpi"><div class="lb">本日売上</div><div class="vl">${yen(t.todaySales)}</div><div class="yy ${yoyCls}">前年同曜日比 ${yoyTxt}</div></div>
     <div class="kpi"><div class="lb">本日客数</div><div class="vl">${cnt(t.todayGuests)}人</div><div class="yy mut">客単価 ${yen(t.todayAvgCheck||0)}</div></div>
     <div class="kpi"><div class="lb">本日組数</div><div class="vl">${cnt(t.todayParties)}組</div><div class="yy mut">${esc(D.home.asOf||'')} 時点</div></div>
   </div>`;
   if(stores.length){
-    h+=`<div class="panel"><div class="panel-head"><div><h3>店舗別サマリ（速報）</h3><div class="sub">原価率・人件費率等の詳細指標は読み込み完了後に表示されます</div></div></div>
-    <div class="scroll-x"><table class="tbl"><thead><tr><th>店舗</th><th>当月累計</th><th>達成率</th><th>本日売上</th><th>本日客数</th></tr></thead><tbody>`;
+    h+=`<div class="panel"><div class="panel-head"><div><h3>店舗別サマリ（速報）</h3>${hasFl?'':'<div class="sub">原価率・人件費率等の詳細指標は読み込み完了後に表示されます</div>'}</div></div>
+    <div class="scroll-x"><table class="tbl"><thead><tr><th>店舗</th><th>当月累計</th>${hasFl?'<th>F率</th><th>L率</th><th>FL</th>':''}<th>達成率</th><th>本日売上</th><th>本日客数</th></tr></thead><tbody>`;
     stores.forEach(s=>{
       const rt=s.targetRate!=null?(s.targetRate*100).toFixed(1)+'%':'—';
-      h+=`<tr><td>${shortStoreTd(s.storeName)}</td><td>${yen(s.mtdSales)}</td><td>${rt}</td><td>${yen(s.todaySales)}</td><td>${cnt(s.todayGuests)}人</td></tr>`;
+      h+=`<tr><td>${shortStoreTd(s.storeName)}</td><td>${yen(s.mtdSales)}</td>${hasFl?`<td>${pct1(s.mtdCost,s.mtdSales)}</td><td>${pct1(s.mtdLabor,s.mtdSales)}</td><td>${s.mtdFlRate!=null?(s.mtdFlRate*100).toFixed(1)+'%':'—'}</td>`:''}<td>${rt}</td><td>${yen(s.todaySales)}</td><td>${cnt(s.todayGuests)}人</td></tr>`;
     });
     h+=`</tbody></table></div></div>`;
   }
   return h;
 }
 function viewDash(){
-  // P-0c（2026-09-06）: D.daily（GAS action:data / BQ由来の日別実績）がまだ届いていない間は、
-  // 先に届いたkeiei-api-homeの速報値だけで簡易表示する。D.dailyが届き次第、次回のrender()で
-  // 自動的にこの分岐を通らなくなり、以下の従来どおりの詳細描画に戻る（この関数自体は無改修）。
+  // TK-60②（2026-09-11・判定_高速化検証と実装GO §2-1-1）: 「今月・全店（店舗未選択）」を見ている
+  // 間は、D.homeにMTD原価・人件費（mtdCost等。kd_dashboard_daily_summaryのcost/labor列が9/6の
+  // P側修正で埋まったことで追加できた）が揃っていれば、D.dailyの到着を待たずkd_直読みの
+  // viewDashFast_を常時の表示にする（切替フラグDASH_HOME_KPI_LIVE_必須。9/3に見送った「D.daily
+  // 到着で表示が切り替わる分かりにくさ」問題を解消）。D.dailyは引き続きfetchDataFast()の既存の
+  // 並列取得のままバックグラウンドで届き続ける（旧経路＝下の詳細描画は無改修のままフォールバックに
+  // 使う。期間を月次以外にする・店舗を絞る等、D.homeの対応範囲外の見方をしたときは従来どおり
+  // 下の詳細描画に落ちる）。
+  const homeDefaultScope_=S.period==='month'&&!selStoreName();
+  if(DASH_HOME_KPI_LIVE_&&D.home&&D.home.totals&&D.home.totals.mtdCost!=null&&homeDefaultScope_) return viewDashFast_();
+  // P-0c（2026-09-06）: 上のkd_直読みが使えない間（D.homeにMTD原価・人件費が無い・期間や店舗を
+  // 絞っている等）は、D.dailyが届くまでのつなぎとして引き続き簡易表示する。
   if(!D.daily.length && D.home) return viewDashFast_();
   const sc=scopeStores(); const scopeSet=new Set(sc); const selName=selStoreName();
   const r=periodRange(), p=prevRange(r);
