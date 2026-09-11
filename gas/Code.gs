@@ -53,7 +53,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-a6p19', time: new Date().toISOString() }); // a6p4=bqGetReservationNamesにUser-Agent追加(2026-09-04)+bqFetchReservationRows_のORDER BY削除(92000行超でstatement timeout・2026-09-05)。a6p5=syncSeisanCategoriesToPlが店舗×月の同期結果を精算書側(sd_apiMarkPlSynced)へ書き戻すように追加（2026-09-05・業務委託精算書自動連携）。a6p6=dbPlDiag追加（実機E2E不一致の一時調査用）。a6p7=syncSeisanCategoriesToPlの対象店舗判定をseisan_target→seisan_pl_categories_targetに変更（運営委託費と経費PL反映を別々にON/OFFできるように・黒霧屋 新横浜対応）。a6p8=diagDepositsPerf追加（PayPay銀行取込46分化の原因切り分け用一時診断・2026-09-07）。a6p9=apiSetAdExclude追加（媒体販促費を手入力で確定させたあとPL画面だけ自動連携分を除外できるように・DB_広告除外設定シート新設・2026-09-07）。a6p10=importDepositsにLockServiceを追加（並行実行による入金二重計上バグを修正・2026-09-08）。a6p11=diagDepositDupScan追加（入金DBの重複行を行番号付きで列挙する読み取り専用診断・2026-09-08）。a6p12=cleanupDepositDuplicates追加（特定済み重複11件をユーザー承認のうえ削除・2026-09-08）。a6p13=cleanupDepositDuplicatesの認証をトークン→セッションに変更（トークン認証で原因不明のunauthorized・実行して重複11件×2シートの削除完了確認済み・2026-09-08）。a6p14=bqFetchReservationRows_をOFFSET(Rangeヘッダー)ページングからid（主キー・索引あり）によるkeysetページングに変更（rsv_reservationsが93000行超に増えOFFSET方式でも再度statement timeoutが発生したため・2026-09-05のORDER BY削除とは別問題＝あの時は無索引3列複合ソートが原因、今回はidという主キー＝索引ありの列でORDER BYするので同じ罠には当たらない。実測でOFFSET方式の同条件比1039ms→keyset方式299msを確認済み・2026-09-09）。a6p15=writeAccountCostToPl_の補助科目消失バグを修正（担当CからPL内訳UUID表示バグの申し送り。G列に冪等キー(noteTag)だけを書いていてsubAccountを一切保存していなかったため、補助科目の代わりにsourceKeyがそのまま表示されていた。列を増やすと他のPL自動連携が壊れるため増やさず、G列の値を「<subAccount>　<noteTag>」の複合形式にしてapp.js側で表示時に分離する方式に変更・2026-09-10）。a6p16=担当Cからの申し送り（続き83）対応の一時action追加・詳細は関数コメント参照・2026-09-10。a6p17=cleanupPlLegacyCombined_の結果をalert()ではなくスプレッドシートの新タブへ書き出すよう変更（コピーしづらいとのユーザー指摘対応・行番号つき）・2026-09-10。a6p18=fetchStoreDirectory_を実行内メモ化（PayPay銀行取込が2026-09-10に全店舗連鎖失敗した件の真因修正。importDeposits_locked_が入金DB既存行ごとにnormStoreName_→fetchStoreDirectory_→CacheService往復を繰り返し、入金DBが4800行超に増えた結果1回の取込で実測345秒かかりNode側5分タイムアウトで連鎖失敗していた。実行スコープ変数で1回だけ取得するよう変更・2026-09-11）。a6p19=判定_高速化検証と実装GO §2-1対応（担当A）: dataFreshness()をBigQuery全件スキャン＋スプレッドシート走査からkd_sync_status_v（新設ビュー）直読みへ置換（軽量化・D提案）。bqGetAdCost追加（stg_ad_cost読み取り・BQ_LOAD_TOKEN認証・レーンPのkd_pl広告費充填用）・2026-09-11
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-a6p20', time: new Date().toISOString() }); // a6p4=bqGetReservationNamesにUser-Agent追加(2026-09-04)+bqFetchReservationRows_のORDER BY削除(92000行超でstatement timeout・2026-09-05)。a6p5=syncSeisanCategoriesToPlが店舗×月の同期結果を精算書側(sd_apiMarkPlSynced)へ書き戻すように追加（2026-09-05・業務委託精算書自動連携）。a6p6=dbPlDiag追加（実機E2E不一致の一時調査用）。a6p7=syncSeisanCategoriesToPlの対象店舗判定をseisan_target→seisan_pl_categories_targetに変更（運営委託費と経費PL反映を別々にON/OFFできるように・黒霧屋 新横浜対応）。a6p8=diagDepositsPerf追加（PayPay銀行取込46分化の原因切り分け用一時診断・2026-09-07）。a6p9=apiSetAdExclude追加（媒体販促費を手入力で確定させたあとPL画面だけ自動連携分を除外できるように・DB_広告除外設定シート新設・2026-09-07）。a6p10=importDepositsにLockServiceを追加（並行実行による入金二重計上バグを修正・2026-09-08）。a6p11=diagDepositDupScan追加（入金DBの重複行を行番号付きで列挙する読み取り専用診断・2026-09-08）。a6p12=cleanupDepositDuplicates追加（特定済み重複11件をユーザー承認のうえ削除・2026-09-08）。a6p13=cleanupDepositDuplicatesの認証をトークン→セッションに変更（トークン認証で原因不明のunauthorized・実行して重複11件×2シートの削除完了確認済み・2026-09-08）。a6p14=bqFetchReservationRows_をOFFSET(Rangeヘッダー)ページングからid（主キー・索引あり）によるkeysetページングに変更（rsv_reservationsが93000行超に増えOFFSET方式でも再度statement timeoutが発生したため・2026-09-05のORDER BY削除とは別問題＝あの時は無索引3列複合ソートが原因、今回はidという主キー＝索引ありの列でORDER BYするので同じ罠には当たらない。実測でOFFSET方式の同条件比1039ms→keyset方式299msを確認済み・2026-09-09）。a6p15=writeAccountCostToPl_の補助科目消失バグを修正（担当CからPL内訳UUID表示バグの申し送り。G列に冪等キー(noteTag)だけを書いていてsubAccountを一切保存していなかったため、補助科目の代わりにsourceKeyがそのまま表示されていた。列を増やすと他のPL自動連携が壊れるため増やさず、G列の値を「<subAccount>　<noteTag>」の複合形式にしてapp.js側で表示時に分離する方式に変更・2026-09-10）。a6p16=担当Cからの申し送り（続き83）対応の一時action追加・詳細は関数コメント参照・2026-09-10。a6p17=cleanupPlLegacyCombined_の結果をalert()ではなくスプレッドシートの新タブへ書き出すよう変更（コピーしづらいとのユーザー指摘対応・行番号つき）・2026-09-10。a6p18=fetchStoreDirectory_を実行内メモ化（PayPay銀行取込が2026-09-10に全店舗連鎖失敗した件の真因修正。importDeposits_locked_が入金DB既存行ごとにnormStoreName_→fetchStoreDirectory_→CacheService往復を繰り返し、入金DBが4800行超に増えた結果1回の取込で実測345秒かかりNode側5分タイムアウトで連鎖失敗していた。実行スコープ変数で1回だけ取得するよう変更・2026-09-11）。a6p19=判定_高速化検証と実装GO §2-1対応（担当A）: dataFreshness()をBigQuery全件スキャン＋スプレッドシート走査からkd_sync_status_v（新設ビュー）直読みへ置換（軽量化・D提案）。bqGetAdCost追加（stg_ad_cost読み取り・BQ_LOAD_TOKEN認証・レーンPのkd_pl広告費充填用）・2026-09-11。a6p20=bqLoadDeliveryOrders追加（デリバリー売上=ロケットナウ等の明細をBQ sales.stg_delivery_orderへMERGE投入。担当D・設計書_デリバリー売上取込_ロケットナウ_2026-09-11.md §3-1・実データ2本で検証済みのns-daily-import/tasks/delivery-sales.jsから呼ばれる想定）・2026-09-11
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'dbPlDiag') return out(dbPlDiag(p)); // 2026-09-05一時追加: DB_PLシートの生データを店舗×月で確認（読み取り専用・原因特定でき次第削除）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
@@ -69,6 +69,7 @@ function handle(p) {
     if (action === 'syncSpotLaborToPl') return out(syncSpotLaborToPl(p)); // スポット人件費の月次PL自動連携（専用トークン認証・ログイン不要。2026-08-23追加）
     if (action === 'syncBankLoanToPl') return out(syncBankLoanToPl(p)); // 銀行借入 利息・元金のPL自動連携（専用トークン認証・ログイン不要。2026-08-26追加・A-5）
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
+    if (action === 'bqLoadDeliveryOrders') return out(bqLoadDeliveryOrders(p)); // デリバリー売上(ロケットナウ等)のBQ投入（専用トークン認証・ログイン不要。2026-09-11・担当D）
     if (action === 'bqSetupSalesDataset') return out(bqSetupSalesDataset(p)); // salesデータセット作成（初回のみ・専用トークン認証）
     if (action === 'bqSyncSales') return out(bqSyncAllSales(p)); // 分析_日別店舗ほかのBQミラー（専用トークン認証・ログイン不要）
     if (action === 'bqDailyStoreForSync') return out(bqDailyStoreForSync(p)); // dash-sync用の軽量BQ問い合わせ（専用トークン認証・ログイン不要・スプレッドシート不使用）
@@ -124,6 +125,7 @@ function handle(p) {
     if (action === 'importDeposits') return out(importDeposits(p, session)); // 口座CSVの入金取込（入金管理タブ）
     if (action === 'diagDepositsPerf') return out(diagDepositsPerf_(p, session)); // 一時診断: importDepositsの遅延切り分け（2026-09-07・書き込みなし）
     if (action === 'diagDepositDupScan') return out(diagDepositDupScan_(p, session)); // 一時診断: 入金DBの重複行を行番号付きで列挙（2026-09-08・読み取り専用）
+    if (action === 'diagDailyRange') return out(diagDailyRange_(p, session)); // 一時診断: 推移分析「年初来でも3ヶ月分しか出ない」の原因切り分け。dailyシートの最古/最新日付・件数のみ返す（2026-09-11・読み取り専用）
     if (action === 'cleanupDepositDuplicates') return out(cleanupDepositDuplicates_(p, session)); // 2026-09-08一時対応: 特定済みの重複11件をユーザー承認のうえ削除（セッション認証・1回きりの想定。当初トークン認証で原因不明のunauthorizedが出たためセッション認証に変更）
     if (action === 'cleanupPlLegacyCombined') return out(cleanupPlLegacyCombined_(p, session)); // 2026-09-10一時対応: 勘定科目/補助科目が分離される前の結合形式のまま計上されていた9件をユーザー承認のうえ削除（担当Cからの申し送り・続き83。dryRun既定true・読み取りのみ）
     if (action === 'savePlEntries') return out(savePlEntries(p, session)); // PL経費の手入力（PL管理システム＋DB_PL両反映）
@@ -1631,6 +1633,77 @@ function bqLoadOrders(p) {
     var loaded = (st && st.statistics && st.statistics.load) ? st.statistics.load.outputRows : null;
     try { CacheService.getScriptCache().removeAll(['bq_明細時間帯', 'bq_明細商品', 'bq_明細店舗']); } catch (e) {}
     return { ok: true, rows: Number(loaded || 0), date: p.date || null };
+  } catch (e) {
+    return { ok: false, error: String(e && e.message || e) };
+  }
+}
+
+// ===== デリバリー売上（ロケットナウ・将来Uber Eats）のBQ投入 =====
+// 2026-09-11 設計書_デリバリー売上取込_ロケットナウ_2026-09-11.md §3-1（担当D・入り口）。
+// bqLoadOrders（明細=営業日ごとにDELETE→APPENDで冪等）と違い、こちらは日次(速報)と月次精算(確定)の
+// 2種類のファイルが同じ注文を跨って重複してやってくるため、営業日単位のDELETEでは正しく扱えない。
+// (channel, order_no, txn_type, txn_at) をキーに MERGE する（ステージングテーブルへ一旦WRITE_TRUNCATE
+// ロード→本体テーブルへMERGE）。is_settled は一度trueになったら下げない（月次精算確定後に日次の
+// 速報値の再取込で誤って巻き戻さないため）。呼び出し側(ns-daily-import/tasks/delivery-sales.js)で
+// xlsx解析・店舗ID→当社store_id解決（delivery_store_map）まで済ませたCSVを渡す想定。
+var BQ_DELIVERY_ORDER_SCHEMA = [
+  { name: 'channel', type: 'STRING' }, { name: 'store_id', type: 'STRING' },
+  { name: 'channel_store_id', type: 'STRING' }, { name: 'txn_date', type: 'DATE' },
+  { name: 'txn_at', type: 'DATETIME' }, { name: 'txn_type', type: 'STRING' },
+  { name: 'order_no', type: 'STRING' }, { name: 'items_text', type: 'STRING' },
+  { name: 'sales', type: 'NUMERIC' }, { name: 'coupon_store', type: 'NUMERIC' },
+  { name: 'fee_total', type: 'NUMERIC' }, { name: 'tax', type: 'NUMERIC' },
+  { name: 'fee_discount', type: 'NUMERIC' }, { name: 'payout_expected', type: 'NUMERIC' },
+  { name: 'is_settled', type: 'BOOL' }, { name: 'source_file', type: 'STRING' },
+  { name: 'imported_at', type: 'DATETIME' },
+];
+function bqLoadDeliveryOrders(p) {
+  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+  if (!tk || String(p.token) !== tk) return { ok: false, error: 'unauthorized' };
+  var csv = p.csv || ''; if (!csv) return { ok: false, error: 'csv empty' };
+  try {
+    var mainTable = 'stg_delivery_order', stageTable = 'stg_delivery_order_stage';
+    // 本体テーブルが無ければ作る（初回のみ実質的に効く。以降は無害な空振り）
+    bqRows_(
+      'CREATE TABLE IF NOT EXISTS `' + BQ_PROJECT + '.' + BQ_SALES_DATASET + '.' + mainTable + '` (' +
+      'channel STRING, store_id STRING, channel_store_id STRING, txn_date DATE, txn_at DATETIME, ' +
+      'txn_type STRING, order_no STRING, items_text STRING, sales NUMERIC, coupon_store NUMERIC, ' +
+      'fee_total NUMERIC, tax NUMERIC, fee_discount NUMERIC, payout_expected NUMERIC, ' +
+      'is_settled BOOL, source_file STRING, imported_at DATETIME)'
+    );
+    // ステージング側は毎回WRITE_TRUNCATEで全置換（今回分のCSVだけを一時的に置く場所）
+    var job = { configuration: { load: {
+      destinationTable: { projectId: BQ_PROJECT, datasetId: BQ_SALES_DATASET, tableId: stageTable },
+      sourceFormat: 'CSV', skipLeadingRows: 1, allowQuotedNewlines: true,
+      writeDisposition: 'WRITE_TRUNCATE',
+      maxBadRecords: 0, schema: { fields: BQ_DELIVERY_ORDER_SCHEMA }
+    }}};
+    var blob = Utilities.newBlob(csv, 'application/octet-stream', 'delivery.csv');
+    var ins = BigQuery.Jobs.insert(job, BQ_PROJECT, blob);
+    var jobId = ins.jobReference.jobId;
+    var loc = (ins.jobReference && ins.jobReference.location) || 'asia-northeast1';
+    var st = null;
+    for (var i = 0; i < 90; i++) { st = BigQuery.Jobs.get(BQ_PROJECT, jobId, { location: loc }); if (st.status && st.status.state === 'DONE') break; Utilities.sleep(2000); }
+    if (st && st.status && st.status.errorResult) return { ok: false, error: st.status.errorResult.message };
+    var staged = (st && st.statistics && st.statistics.load) ? st.statistics.load.outputRows : null;
+    if (Number(staged || 0) === 0) return { ok: true, rows: 0, note: '対象行なし' };
+
+    var merge =
+      'MERGE `' + BQ_PROJECT + '.' + BQ_SALES_DATASET + '.' + mainTable + '` T ' +
+      'USING `' + BQ_PROJECT + '.' + BQ_SALES_DATASET + '.' + stageTable + '` S ' +
+      'ON T.channel = S.channel AND T.order_no = S.order_no AND T.txn_type = S.txn_type AND T.txn_at = S.txn_at ' +
+      'WHEN MATCHED THEN UPDATE SET ' +
+      'store_id = S.store_id, channel_store_id = S.channel_store_id, txn_date = S.txn_date, ' +
+      'items_text = S.items_text, sales = S.sales, coupon_store = S.coupon_store, fee_total = S.fee_total, ' +
+      'tax = S.tax, fee_discount = S.fee_discount, payout_expected = S.payout_expected, ' +
+      'is_settled = (T.is_settled OR S.is_settled), source_file = S.source_file, imported_at = S.imported_at ' +
+      'WHEN NOT MATCHED THEN INSERT (channel, store_id, channel_store_id, txn_date, txn_at, txn_type, order_no, ' +
+      'items_text, sales, coupon_store, fee_total, tax, fee_discount, payout_expected, is_settled, source_file, imported_at) ' +
+      'VALUES (S.channel, S.store_id, S.channel_store_id, S.txn_date, S.txn_at, S.txn_type, S.order_no, ' +
+      'S.items_text, S.sales, S.coupon_store, S.fee_total, S.tax, S.fee_discount, S.payout_expected, S.is_settled, S.source_file, S.imported_at)';
+    var mergeRes = bqRows_(merge);
+    if (mergeRes === null) return { ok: false, error: 'MERGE未完了（タイムアウトの可能性）。BigQuery側を直接ご確認ください（staged=' + staged + '件はステージングに投入済み）' };
+    return { ok: true, rows: Number(staged || 0) };
   } catch (e) {
     return { ok: false, error: String(e && e.message || e) };
   }
@@ -4387,6 +4460,52 @@ function cleanupDepositDuplicates_(p, session) {
   var dst = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('入金DB');
   results.push(cleanupSheet(dst, 'ダッシュボード'));
   return { ok: true, results: results };
+}
+
+// 2026-09-11一時診断（読み取り専用）: ユーザー報告「推移分析タブで『年初来』を選んでも
+// 3ヶ月分ぐらいしか出ない」の原因切り分け。推移分析・ダッシュボード・目標管理が共有する
+// D.dailyの元＝'daily'キーのシートに、実際どこまで過去の日付が入っているかを、件数と
+// 最古/最新日付だけ返す（金額・店舗名等の中身は一切返さない）。原因が判明したら削除してよい。
+function diagDailyRange_(p, session) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var list = configuredSheets(ss);
+    var target = null;
+    for (var i = 0; i < list.length; i++) { if (list[i].key === 'daily') { target = list[i]; break; } }
+    if (!target) return { ok: false, error: "'daily'キーに対応するシートが見つかりません（接続設定 または DB_*）" };
+    var sh = ss.getSheetByName(target.name);
+    if (!sh) return { ok: false, error: 'シート「' + target.name + '」が見つかりません' };
+    var lr = sh.getLastRow(), lc = sh.getLastColumn();
+    if (lr < 2) return { ok: true, sheetName: target.name, totalRows: 0 };
+    var vals = sh.getRange(1, 1, lr, lc).getValues();
+    var h0 = 0;
+    while (h0 < Math.min(5, vals.length) && String(vals[h0].join('')).trim() === '') h0++;
+    if (h0 > 0) vals = vals.slice(h0);
+    var header = vals[0];
+    var di = -1, dkeys = ['日付', '営業日', '取得日', '勤務日', '入金日', '年月日', '来店日', 'タイムスタンプ'];
+    for (var c = 0; c < lc && di < 0; c++) {
+      for (var k = 0; k < dkeys.length; k++) { if (String(header[c]).indexOf(dkeys[k]) >= 0) { di = c; break; } }
+    }
+    if (di < 0) return { ok: false, error: '日付列が見つかりません（ヘッダー: ' + header.join(',') + '）' };
+    var minT = null, maxT = null, n = 0;
+    for (var r = 1; r < vals.length; r++) {
+      var dv = vals[r][di], t;
+      if (dv instanceof Date) t = new Date(dv.getFullYear(), dv.getMonth(), dv.getDate()).getTime();
+      else { var mm2 = String(dv).match(/(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/); t = mm2 ? new Date(+mm2[1], +mm2[2] - 1, +mm2[3]).getTime() : NaN; }
+      if (isNaN(t)) continue;
+      n++;
+      if (minT === null || t < minT) minT = t;
+      if (maxT === null || t > maxT) maxT = t;
+    }
+    var tz = Session.getScriptTimeZone() || 'Asia/Tokyo';
+    return {
+      ok: true, sheetName: target.name, totalRows: vals.length - 1, validDateRows: n,
+      minDate: minT !== null ? Utilities.formatDate(new Date(minT), tz, 'yyyy-MM-dd') : null,
+      maxDate: maxT !== null ? Utilities.formatDate(new Date(maxT), tz, 'yyyy-MM-dd') : null
+    };
+  } catch (e) {
+    return { ok: false, error: String(e && e.message || e) };
+  }
 }
 
 // 2026-09-10一時対応（担当Cからの申し送り・ns-portal WORKLOG「続き83」）: 勘定科目/補助科目の分離
