@@ -53,7 +53,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-a6p17', time: new Date().toISOString() }); // a6p4=bqGetReservationNamesにUser-Agent追加(2026-09-04)+bqFetchReservationRows_のORDER BY削除(92000行超でstatement timeout・2026-09-05)。a6p5=syncSeisanCategoriesToPlが店舗×月の同期結果を精算書側(sd_apiMarkPlSynced)へ書き戻すように追加（2026-09-05・業務委託精算書自動連携）。a6p6=dbPlDiag追加（実機E2E不一致の一時調査用）。a6p7=syncSeisanCategoriesToPlの対象店舗判定をseisan_target→seisan_pl_categories_targetに変更（運営委託費と経費PL反映を別々にON/OFFできるように・黒霧屋 新横浜対応）。a6p8=diagDepositsPerf追加（PayPay銀行取込46分化の原因切り分け用一時診断・2026-09-07）。a6p9=apiSetAdExclude追加（媒体販促費を手入力で確定させたあとPL画面だけ自動連携分を除外できるように・DB_広告除外設定シート新設・2026-09-07）。a6p10=importDepositsにLockServiceを追加（並行実行による入金二重計上バグを修正・2026-09-08）。a6p11=diagDepositDupScan追加（入金DBの重複行を行番号付きで列挙する読み取り専用診断・2026-09-08）。a6p12=cleanupDepositDuplicates追加（特定済み重複11件をユーザー承認のうえ削除・2026-09-08）。a6p13=cleanupDepositDuplicatesの認証をトークン→セッションに変更（トークン認証で原因不明のunauthorized・実行して重複11件×2シートの削除完了確認済み・2026-09-08）。a6p14=bqFetchReservationRows_をOFFSET(Rangeヘッダー)ページングからid（主キー・索引あり）によるkeysetページングに変更（rsv_reservationsが93000行超に増えOFFSET方式でも再度statement timeoutが発生したため・2026-09-05のORDER BY削除とは別問題＝あの時は無索引3列複合ソートが原因、今回はidという主キー＝索引ありの列でORDER BYするので同じ罠には当たらない。実測でOFFSET方式の同条件比1039ms→keyset方式299msを確認済み・2026-09-09）。a6p15=writeAccountCostToPl_の補助科目消失バグを修正（担当CからPL内訳UUID表示バグの申し送り。G列に冪等キー(noteTag)だけを書いていてsubAccountを一切保存していなかったため、補助科目の代わりにsourceKeyがそのまま表示されていた。列を増やすと他のPL自動連携が壊れるため増やさず、G列の値を「<subAccount>　<noteTag>」の複合形式にしてapp.js側で表示時に分離する方式に変更・2026-09-10）。a6p16=担当Cからの申し送り（続き83）対応の一時action追加・詳細は関数コメント参照・2026-09-10。a6p17=cleanupPlLegacyCombined_の結果をalert()ではなくスプレッドシートの新タブへ書き出すよう変更（コピーしづらいとのユーザー指摘対応・行番号つき）・2026-09-10
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-a6p18', time: new Date().toISOString() }); // a6p4=bqGetReservationNamesにUser-Agent追加(2026-09-04)+bqFetchReservationRows_のORDER BY削除(92000行超でstatement timeout・2026-09-05)。a6p5=syncSeisanCategoriesToPlが店舗×月の同期結果を精算書側(sd_apiMarkPlSynced)へ書き戻すように追加（2026-09-05・業務委託精算書自動連携）。a6p6=dbPlDiag追加（実機E2E不一致の一時調査用）。a6p7=syncSeisanCategoriesToPlの対象店舗判定をseisan_target→seisan_pl_categories_targetに変更（運営委託費と経費PL反映を別々にON/OFFできるように・黒霧屋 新横浜対応）。a6p8=diagDepositsPerf追加（PayPay銀行取込46分化の原因切り分け用一時診断・2026-09-07）。a6p9=apiSetAdExclude追加（媒体販促費を手入力で確定させたあとPL画面だけ自動連携分を除外できるように・DB_広告除外設定シート新設・2026-09-07）。a6p10=importDepositsにLockServiceを追加（並行実行による入金二重計上バグを修正・2026-09-08）。a6p11=diagDepositDupScan追加（入金DBの重複行を行番号付きで列挙する読み取り専用診断・2026-09-08）。a6p12=cleanupDepositDuplicates追加（特定済み重複11件をユーザー承認のうえ削除・2026-09-08）。a6p13=cleanupDepositDuplicatesの認証をトークン→セッションに変更（トークン認証で原因不明のunauthorized・実行して重複11件×2シートの削除完了確認済み・2026-09-08）。a6p14=bqFetchReservationRows_をOFFSET(Rangeヘッダー)ページングからid（主キー・索引あり）によるkeysetページングに変更（rsv_reservationsが93000行超に増えOFFSET方式でも再度statement timeoutが発生したため・2026-09-05のORDER BY削除とは別問題＝あの時は無索引3列複合ソートが原因、今回はidという主キー＝索引ありの列でORDER BYするので同じ罠には当たらない。実測でOFFSET方式の同条件比1039ms→keyset方式299msを確認済み・2026-09-09）。a6p15=writeAccountCostToPl_の補助科目消失バグを修正（担当CからPL内訳UUID表示バグの申し送り。G列に冪等キー(noteTag)だけを書いていてsubAccountを一切保存していなかったため、補助科目の代わりにsourceKeyがそのまま表示されていた。列を増やすと他のPL自動連携が壊れるため増やさず、G列の値を「<subAccount>　<noteTag>」の複合形式にしてapp.js側で表示時に分離する方式に変更・2026-09-10）。a6p16=担当Cからの申し送り（続き83）対応の一時action追加・詳細は関数コメント参照・2026-09-10。a6p17=cleanupPlLegacyCombined_の結果をalert()ではなくスプレッドシートの新タブへ書き出すよう変更（コピーしづらいとのユーザー指摘対応・行番号つき）・2026-09-10。a6p18=fetchStoreDirectory_を実行内メモ化（PayPay銀行取込が2026-09-10に全店舗連鎖失敗した件の真因修正。importDeposits_locked_が入金DB既存行ごとにnormStoreName_→fetchStoreDirectory_→CacheService往復を繰り返し、入金DBが4800行超に増えた結果1回の取込で実測345秒かかりNode側5分タイムアウトで連鎖失敗していた。実行スコープ変数で1回だけ取得するよう変更・2026-09-11）
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'dbPlDiag') return out(dbPlDiag(p)); // 2026-09-05一時追加: DB_PLシートの生データを店舗×月で確認（読み取り専用・原因特定でき次第削除）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
@@ -916,11 +916,24 @@ function getData(p, session) {
 // フォールバックして処理を止めない（決定1: docs/実装指示書_Day6_店舗マスタ1箇所化②③.md）。
 var STORE_DIRECTORY_URL_ = 'https://uuvsxzhpxtghojoubjcc.supabase.co/rest/v1/store_directory_v?select=*';
 var STORE_DIRECTORY_ANON_KEY_ = 'sb_publishable_MrwPJAx_Ws_fdRutprKCiQ_dg3wCiTr';
+// 2026-09-11修正（PayPay銀行取込の全店舗連鎖失敗・原因調査）: 実行ごとの実行内メモ化が無く、
+// normStoreName_を呼ぶたびに（＝importDeposits_locked_が入金DBの既存行1件ごとに）
+// CacheService.getScriptCache().get()を毎回叩いていた。入金DBが約4,800行超に増えた現在、
+// 1回のimportDeposits呼び出しで（対象2シート分）合計1万回近いCacheService往復が発生し、
+// 実測345秒/回（本来の本店1店舗ぶんの取込で発生・実行数ログで確認）というGAS実行時間に達し、
+// Node側fetch()の約5分タイムアウトで「fetch failed」→リトライの繰り返しに陥り、結果として
+// PayPay銀行側のセッションタイムアウトを招いて後続の6店舗が全滅する連鎖障害の真因だった
+// （bqFetchReservationRows_のOFFSETページング劣化＝2026-09-09修正と同型の
+// 「成長し続けるデータに対するO(n)コストが積み重なって突然閾値を超える」パターン）。
+// 同一実行内では店舗マスタは変化しないため、実行スコープの変数（_storeDirMemo_）に1回だけ
+// キャッシュし、以後の同一実行内の呼び出しはCacheServiceにすら触らず即座に返す。
+var _storeDirMemo_ = null;
 function fetchStoreDirectory_() {
+  if (_storeDirMemo_) return _storeDirMemo_;
   var cache = CacheService.getScriptCache();
   var ck = 'store_directory_v1';
   var cached = cache.get(ck);
-  if (cached) { try { return JSON.parse(cached); } catch (e) {} }
+  if (cached) { try { _storeDirMemo_ = JSON.parse(cached); return _storeDirMemo_; } catch (e) {} }
   try {
     var res = UrlFetchApp.fetch(STORE_DIRECTORY_URL_, {
       headers: { apikey: STORE_DIRECTORY_ANON_KEY_, Authorization: 'Bearer ' + STORE_DIRECTORY_ANON_KEY_ },
@@ -935,6 +948,7 @@ function fetchStoreDirectory_() {
     }
     if (missingWx.length) Logger.log('天気地点 未設定店舗（地域デフォルトにフォールバック）: ' + missingWx.join(', '));
     cache.put(ck, JSON.stringify(rows), 600);
+    _storeDirMemo_ = rows;
     return rows;
   } catch (e) {
     Logger.log('fetchStoreDirectory_ フォールバック: ' + e);

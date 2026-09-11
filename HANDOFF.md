@@ -153,6 +153,38 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 
 ## 5. 作業ログ
 
+### 2026-09-11（Mac miniセッション）PayPay銀行取込が9/10全滅した件の真因を特定・修正（`ver`=`token-336h-v1-a6p18`・要ユーザー貼替）
+
+ユーザー報告「昨日銀行口座の取り込みがおそらく失敗してた」を調査。`logs/paypay-bank-20260910.log`
+（ns-daily-import）を確認したところ、9/10 14:00 JSTの定時実行が**3回とも全滅**していた
+（14:00→14:26→15:29 JSTと自動リトライされたが毎回同じ失敗）。
+
+**症状**: 毎回、1店舗目（鳥一代 本店）の`importDeposits`呼び出しがNode側で`fetch failed`
+（≒5分タイムアウト）を3〜5回繰り返し、合計15〜31分かかった末にようやく成功（または最終的に失敗）。
+その間にPayPay銀行側のブラウザセッションがタイムアウト（「セッションエラー タイムアウト または
+上書きログインが行われ」）し、2店舗目以降が**全店連鎖的に失敗**していた。
+
+**真因（GAS実行数ログで実測確認）**: 該当実行を直接確認したところ、1店舗ぶんの`doPost`
+（`importDeposits`）が**345.469秒**（約5分45秒）かかっていた。`importDeposits_locked_`は
+入金DBの既存行1件ごとに重複判定キーを作るため`normStoreName_()`を呼んでおり、これが毎回
+`fetchStoreDirectory_()`→`CacheService.getScriptCache().get()`という往復を発生させていた
+（`fetchStoreDirectory_`自体はCacheServiceで10分キャッシュしているが、**同一実行内でも
+毎回CacheServiceへ律儀に問い合わせに行く**実装だった＝実行内メモ化が無かった）。入金DB
+（ダッシュボード側）が実測4,811行まで増えており、対象2シート分で1回の取込あたり約1万回近い
+CacheService往復が発生、これが345秒の正体だったと判断（[bq-reservation-sync failed statement timeout再発](#)
+の09-09修正と同型の「成長し続けるデータに対するO(n)コストが積み重なって突然閾値を超える」パターン）。
+
+**対応**: `fetchStoreDirectory_()`に実行スコープの変数`_storeDirMemo_`を追加し、同一実行内では
+CacheServiceにすら触らず1回だけ取得した結果を使い回すよう変更（`normStoreName_`・`resolveAdStore_`
+双方の呼び出し元すべてに効く）。`入金DB`の行数が今後さらに増えても影響を受けない恒久対応
+（真因はO(n)の繰り返しCacheService呼び出しそのものであり、行数を減らす対応ではないため）。
+
+**⚠️GASデプロイは未実施（CLAUDE.mdのルールどおりユーザーの手作業が必要）**: `gas/Code.gs`を
+更新してcommit・push済み（`ping` `ver`=`a6p18`）。**貼り替え・デプロイ後、
+`node run.js paypay-bank`（ns-daily-import）で9/10分の再取込を実施する。**
+`鳥一代 本店`は9/10分が既に(重複スキップで)入っているはずなので、残り6店舗の9/10分を
+中心に回収される見込み。
+
 ### 2026-09-10（担当A実行スレッド・続き）PL経費入力に削除ボタン追加＋古いPL重複行の残存チェック機能追加（担当Cからの申し送り2件・コミット`19f4f98`・`app.js?v=183`・**GAS再デプロイ必要**）
 
 ns-portal WORKLOG本日付の2件の申し送りに対応:
