@@ -2906,12 +2906,9 @@ function mediaPanel(a,b,pa2,pb2,scopeSet,selName){
     <option value="seg" ${mode==='seg'?'selected':''}>営業区分別</option>
   </select>`;
   const { total, rows }=mediaTableRows(a,b,pa2,pb2,scopeSet,selName,mode);
-  // W3②（2026-09-06）: D.media（GAS/BQ）がまだ届いていない・今月表示中・媒体別モードのときだけ、
-  // 先に届いたkd_media_monthly_summary（低リスク＝欠損が確認されていないため優先切替対象）の速報値で
-  // 埋める。前年比・入店用途/営業区分別（DB_媒体分類のロジックが必要）はv1未対応のため出さない。
-  if(!rows.length && D.mediaPending && mode==='media' && S.period==='month' && D.mediaSummaryFast && D.mediaSummaryFast.length){
-    return mediaPanelFast_(M,picker,scopeSet,selName);
-  }
+  // W3②（2026-09-06）で新設した速報表示は2026-09-11、ユーザーの「速報値は不要」との指摘を受け撤回。
+  // 今月表示中・媒体別モードでD.mediaがまだ届いていない間も、下の「読み込み中…」プレースホルダーに
+  // 統一する（mediaPanelFast_は未使用のまま残置。今後また必要になれば呼び出しを戻すだけで復活可）。
   if(!rows.length && D.mediaPending) return `<div class="panel"><div class="panel-head"><div><h3>${M.t}</h3><div class="sub">読み込み中…</div></div>${picker}</div><div class="empty">媒体別データを読み込んでいます…</div></div>`;
   if(!rows.length) return `<div class="panel"><div class="panel-head"><div><h3>${M.t}</h3></div>${picker}</div><div class="empty">媒体別データがありません</div></div>`;
   let h=bqFallbackNote_('media')+`<div class="panel"><div class="panel-head"><div><h3>${M.t}</h3><div class="sub">${M.sub}</div></div>${picker}</div>
