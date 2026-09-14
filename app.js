@@ -481,6 +481,27 @@ function ingestMedia(rows){
   if(!recs.length){ D.diag.media='0件'; return false; }
   D.media=recs; D.diag.media='OK '+recs.length+'件'; return true;
 }
+// 2026-09-14追加（指示書_デリバリー売上取込_担当別）: bqGetDelivery（GAS新設）の結果をD.mediaへ
+// 追加合流させる。ingestMedia()と違い「上書き」ではなく「追記」（デリバリー売上は既存の媒体別DB/
+// stg_mediaとは別経路で管理されるBQテーブル由来のため、両方を消さずに合わせて表示する必要がある）。
+// 呼ぶたびに前回分のデリバリー行だけを除いてから追加し直す（媒体名'ロケットナウ'で識別・重複防止）。
+function ingestDeliveryMedia(rows){
+  if(!Array.isArray(rows)||rows.length<2) return false;
+  const hi=findHeader(rows,['店舗','媒体']);
+  const H=rows[hi].map(h=>String(h).trim());
+  const iS=colAny(H,['店舗名','店舗']), iD=colAny(H,['営業日','日付']), iM=colAny(H,['媒体名','媒体']), iG=colAny(H,['客数','人数']);
+  const iN=colAny(H,['純売上','総売上','売上']), iGrp=colAny(H,['客組数','組数']);
+  if(iD<0||iM<0||iN<0) return false;
+  const recs=[];
+  for(let i=hi+1;i<rows.length;i++){
+    const c=rows[i]; const st=String(c[iS]||'').trim(); const t=parseDateStr(c[iD]);
+    if(!st||!t) continue;
+    recs.push({ store:st, t, media:String(c[iM]||'').trim(), guests:num(c[iG]), groups:num(c[iGrp]), net:num(c[iN]) });
+  }
+  D.media=D.media.filter(r=>r.media!=='ロケットナウ').concat(recs);
+  D.diag['delivery']='OK '+recs.length+'件';
+  return true;
+}
 function ingestDeposit(rows){
   const hi=findHeader(rows,['店舗','入金']);
   const H=rows[hi].map(h=>String(h).trim());
@@ -1159,7 +1180,10 @@ function mediaClassOf(media){
     else out.use='予約';   // その他はすべて予約
   }
   if(!out.seg){
-    out.seg=/ランチ|昼/i.test(s)?'ランチ':'ディナー';   // ランチ以外はすべてディナー
+    // 2026-09-14追加: デリバリー（ロケットナウ等）は独自の営業区分「デリバリー」として扱う
+    // （指示書_デリバリー売上取込_担当別。明細分析のランチ/ディナー判定＝POS時刻ベースの
+    // 別ロジックには一切影響しない・こちらは媒体名ベースの判定のみ）。
+    out.seg=/デリバリ|ロケットナウ|出前/i.test(s)?'デリバリー':(/ランチ|昼/i.test(s)?'ランチ':'ディナー');
   }
   return out;
 }
@@ -1215,12 +1239,17 @@ function eventsFor(t, storeNames){
 function eventLineText(evs){
   return evs.map(e=>(e.venue?e.venue+'：':'')+e.name).join('／');
 }
-// 媒体別売上(分析_媒体別日次)を営業区分（ランチ/ディナー）で集計。営業区分別売上パネルと同じロジック。
+// 媒体別売上(分析_媒体別日次)を営業区分（ランチ/ディナー/デリバリー）で集計。営業区分別売上パネルと同じロジック。
+// 2026-09-14: デリバリー(vn/vg)を追加。ランチ・ディナーの2値集計だった頃と同じ計算式のまま、
+// デリバリーだけ独立の別バケットへ振り分ける（ディナー側へ混ざらないようにする）。
 function segSplit(scopeSet, a, b, selName){
-  let ln=0,dn=0,lg=0,dg=0;
+  let ln=0,dn=0,lg=0,dg=0,vn=0,vg=0;
   for(const r of D.media){ const inScope=selName?(r.store===selName):scopeSet.has(r.store); if(!inScope)continue; if(r.t<a||r.t>b)continue;
-    if(mediaClassOf(r.media).seg==='ランチ'){ ln+=r.net; lg+=r.guests; } else { dn+=r.net; dg+=r.guests; } }
-  return { ln, dn, lg, dg, hasNet:(ln+dn)>0, hasG:(lg+dg)>0 };
+    const sg=mediaClassOf(r.media).seg;
+    if(sg==='デリバリー'){ vn+=r.net; vg+=r.guests; }
+    else if(sg==='ランチ'){ ln+=r.net; lg+=r.guests; }
+    else { dn+=r.net; dg+=r.guests; } }
+  return { ln, dn, lg, dg, vn, vg, hasNet:(ln+dn+vn)>0, hasG:(lg+dg+vg)>0, hasV:(vn+vg)>0 };
 }
 const isHolidayKey=(k)=>/祝日|祝祭日|holiday/i.test(String(k));
 function ingestHoliday(rows){
@@ -1786,7 +1815,7 @@ async function fetchDataFast(){
     for(const g of groups){
       if(myRun!==prefetchRun) return;                    // 新しい読込が始まったら中断（多重先読み防止）
       try{ await fetchData(true, { only:g, partial:true }); }catch(e){}
-      if(g.indexOf('media')>=0){ D.mediaPending=false; if(!targetModalOpen_()) render(); }
+      if(g.indexOf('media')>=0){ D.mediaPending=false; if(!targetModalOpen_()) render(); fetchDeliveryMedia_(); }
     }
     if(!S.useBqDaily){ D.mediaPending=false; if(!targetModalOpen_()) render(); }  // BQモードはfetchMediaBQ側でクリアする
   })();
@@ -1877,6 +1906,20 @@ async function fetchMediaBQ(preD){
     else{ await bqFallbackToSheet_('media'); }
   }catch(e){ await bqFallbackToSheet_('media'); }
   D.mediaPending=false; if(!targetModalOpen_()) render();
+  fetchDeliveryMedia_();
+}
+// 2026-09-14追加（指示書_デリバリー売上取込_担当別・担当Aやること①②）: デリバリー売上
+// （ロケットナウ等・GAS新設bqGetDelivery→stg_delivery_order）をD.mediaへ合流させる。
+// 必ず媒体本体のingestion（シート経由／BQ経由いずれか）が完了した"後"に呼ぶこと（先に呼ぶと
+// ingestMedia()側の丸ごと上書きで消えてしまうため。呼び出し箇所はfetchDataFast()のフェーズ2
+// ループ最後・fetchMediaBQ()末尾の2箇所）。ingestDeliveryMedia自体は「ロケットナウ」行だけを
+// 毎回洗い替えるため、この関数を何度呼んでも安全（冪等）。
+async function fetchDeliveryMedia_(){
+  if(!S.auth||!S.auth.token) return;
+  try{
+    const d=await api({ action:'bqGetDelivery', token:S.auth.token, months:monthsWindow() });
+    if(d&&d.ok&&d.sheets&&d.sheets.delivery){ ingestDeliveryMedia(d.sheets.delivery); if(!targetModalOpen_()) render(); }
+  }catch(e){ /* 失敗しても既存の媒体別表示は壊さない（デリバリー分が出ないだけ） */ }
 }
 // BQ取得が失敗した時、自動でシート経路へ切替えて再取得する（実装指示書_ダッシュボード高速化タスク3・
 // フォールバック実装。fetchStoreDirectory_のフォールバックと同じ思想）。呼び出し元(fetchXxxBQ)が
@@ -2488,9 +2531,13 @@ function viewDash(){
   // （按分しない）。店舗別内訳は出さない＝全体のみ。組数は媒体に無いので客数比で按分。
   const seg=segSplit(scopeSet,a,b,selName);
   const grpR=seg.hasG?seg.lg/(seg.lg+seg.dg):null;
-  const segSales=seg.hasNet?('🌤ランチ '+yen(seg.ln)+' ／ 🌙ディナー '+yen(seg.dn)):'';
-  const segGuests=seg.hasG?('🌤ランチ '+cnt(seg.lg)+'人 ／ 🌙ディナー '+cnt(seg.dg)+'人'):'';
-  const segSpend=seg.hasG?('🌤ランチ '+yen(seg.lg>0?seg.ln/seg.lg:0)+' ／ 🌙ディナー '+yen(seg.dg>0?seg.dn/seg.dg:0)):'';
+  // 2026-09-14: デリバリー（ロケットナウ等）が有れば末尾に追加表示（無ければ従来どおりランチ/ディナーのみ）
+  const segDv=seg.hasV?' ／ 🛵デリバリー ':'';
+  const segSales=seg.hasNet?('🌤ランチ '+yen(seg.ln)+' ／ 🌙ディナー '+yen(seg.dn)+(seg.hasV?segDv+yen(seg.vn):'')):'';
+  const segGuests=seg.hasG?('🌤ランチ '+cnt(seg.lg)+'人 ／ 🌙ディナー '+cnt(seg.dg)+'人'+(seg.hasV?segDv+cnt(seg.vg)+'件':'')):'';
+  const segSpend=seg.hasG?('🌤ランチ '+yen(seg.lg>0?seg.ln/seg.lg:0)+' ／ 🌙ディナー '+yen(seg.dg>0?seg.dn/seg.dg:0)+(seg.hasV?segDv+yen(seg.vg>0?seg.vn/seg.vg:0):'')):'';
+  // 組数（会計組数）はレジ(POS)実績のみでデリバリー分を含まないため、従来どおりランチ/ディナーの
+  // 2区分按分のまま（デリバリーの注文数は上のsegGuestsに別枠で出す）
   const segGroups=(gr)=> grpR==null?'':('🌤ランチ '+cnt(gr*grpR)+'組 ／ 🌙ディナー '+cnt(gr*(1-grpR))+'組');
   // 組数（会計組数）＝日別売上シート「分析_日別店舗」の組数列（レジ準拠・キャンセル除外済み）。
   let checksKpi=null;
@@ -6607,8 +6654,8 @@ function reportData(kind, dateStr, storeFilter, group){
   let seg=null, trend=null, cumRate=null, review=null, media=null;
   if(singleStore){
     const s1=segSplit(null,a,b,singleStore), s0=segSplit(null,pa,pb,singleStore);
-    seg={ ln:s1.ln, dn:s1.dn, lg:s1.lg, dg:s1.dg, hasNet:s1.hasNet, hasG:s1.hasG,
-      prevLn:s0.ln, prevDn:s0.dn, prevLg:s0.lg, prevDg:s0.dg };
+    seg={ ln:s1.ln, dn:s1.dn, lg:s1.lg, dg:s1.dg, vn:s1.vn, vg:s1.vg, hasNet:s1.hasNet, hasG:s1.hasG, hasV:s1.hasV,
+      prevLn:s0.ln, prevDn:s0.dn, prevLg:s0.lg, prevDg:s0.dg, prevVn:s0.vn, prevVg:s0.vg };
     trend=reportTrend(singleStore, kind==='daily'?addD(e,-6):s, e);
     // 累計F率・L率（月間累計＝月初〜期間末日、月報のときは期間そのものと同じなので出さない）
     const cumStat=stat(null,dayMs(mcS),b,singleStore);
@@ -6691,11 +6738,11 @@ function viewReport(kind, dateStr, storeFilter, group){
     <div style="padding:14px 32px 0">${chart?`<div style="background:#fff;border:1px solid #efe9dd;border-radius:12px;padding:14px 16px 6px">
       <div style="font-size:12.5px;color:#8c8375;margin-bottom:6px">${esc(chartLabel)}</div>${chart}</div>`:''}</div>`;
   if(d.singleStore){
-    const sg=d.seg||{ln:0,dn:0,lg:0,dg:0,hasNet:false,hasG:false,prevLn:0,prevDn:0,prevLg:0,prevDg:0};
-    const segRows=(sg.hasNet||sg.hasG)?[['🌤 ランチ',sg.ln,sg.prevLn,sg.lg],['🌙 ディナー',sg.dn,sg.prevDn,sg.dg]]:[];
+    const sg=d.seg||{ln:0,dn:0,lg:0,dg:0,vn:0,vg:0,hasNet:false,hasG:false,hasV:false,prevLn:0,prevDn:0,prevLg:0,prevDg:0,prevVn:0,prevVg:0};
+    const segRows=(sg.hasNet||sg.hasG)?[['🌤 ランチ',sg.ln,sg.prevLn,sg.lg],['🌙 ディナー',sg.dn,sg.prevDn,sg.dg]].concat(sg.hasV?[['🛵 デリバリー',sg.vn,sg.prevVn,sg.vg]]:[]):[];
     h+=`<div style="padding:14px 32px 20px">`;
     if(segRows.length){
-      h+=`<div style="font-size:12.5px;color:#8c8375;margin-bottom:6px">ランチ/ディナー内訳</div>
+      h+=`<div style="font-size:12.5px;color:#8c8375;margin-bottom:6px">ランチ/ディナー${sg.hasV?'/デリバリー':''}内訳</div>
       <table style="width:100%;border-collapse:collapse;background:#fff;border:1px solid #efe9dd;border-radius:12px;overflow:hidden">
         <thead><tr style="background:#efe9dd">
           <th style="text-align:left;padding:9px 12px;font-size:11.5px;color:#5c5348">区分</th>

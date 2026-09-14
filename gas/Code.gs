@@ -110,6 +110,7 @@ function handle(p) {
     if (action === 'refreshSpotPl') return out(refreshSpotPl(p, session)); // スポット人件費→月次PLへ今すぐ反映（画面の更新ボタン用）
     if (action === 'bqGetDeposit') return out(bqGetDeposit(p, session)); // 入金管理タブ：入金DBのBQミラーを読む（データソース切替フラグ用）
     if (action === 'bqGetMedia') return out(bqGetMedia(p, session)); // 媒体別日次：媒体別DBのBQミラーを読む（ログイン直後の同期エラー対策・2026-08-23追加）
+    if (action === 'bqGetDelivery') return out(bqGetDelivery(p, session)); // デリバリー売上(ロケットナウ等)をstg_delivery_orderから店舗×日で集計・媒体名'ロケットナウ'として返す（2026-09-14追加・指示書_デリバリー売上取込_担当別）
     if (action === 'bqGetReservation') return out(bqGetReservation(p, session)); // 予約タブ：stg_reservationのBQミラーを読む（2026-08-28追加・A-6）
     if (action === 'bqGetReservationNames') return out(bqGetReservationNames(p, session)); // 予約詳細：お客様名を都度Supabaseから取得（ログイン必須・店舗スコープ制限。2026-08-31追加・A-6 Phase2）
     if (action === 'bqGetSeatMaster') return out(bqGetSeatMaster(p, session)); // 予約タブ：店舗ごとの卓一覧（DB_席マスタ）を読む（2026-08-28追加・A-6）
@@ -3504,6 +3505,65 @@ function bqGetMedia(p, session) {
     var res = { ok: true, sheets: { media: out } };
     bqCachePut_(ck, res);
     return res;
+  } catch (e) {
+    return { ok: false, error: String(e && e.message || e) };
+  }
+}
+
+// ================== デリバリー売上（ロケットナウ等）を媒体別売上へ合流 ==================
+// 2026-09-14 指示書_デリバリー売上取込_担当別_2026-09-11.md「担当Aへ」①②③対応。
+// stg_delivery_order（担当D新設・BQ_LOAD_TOKEN認証のbqLoadDeliveryOrdersで投入済み）を店舗×日で
+// 集計し、bqGetMediaと同じ「シート形式」（ingestMedia()がそのまま読める見出し）で返す。
+// media_name列は固定で'ロケットナウ'（tpl_media_alias側にも自己参照で登録済み）。
+// store_idはUUID（delivery_store_map経由で解決済み）のため、店舗マスタ(fetchStoreDirectory_)の
+// id→name索引で当社の店舗名文字列へ変換してから返す（既存のstore_name文字列ベースの仕組みに
+// 合流させるため）。未登録の店舗ID（店舗マスタに無いid）は誤爆より安全側でスキップする。
+// ⚠️レジ二重計上について: 2026-09-11にユーザー確認済み「ロケットナウ注文はレジに打っていない」
+// →単純合算でよい（設計書§7 Q2）。ただし実データでの新旧突合（レジ＋ロケットナウ＝実態と一致するか）は
+// 未実施のため、実機確認まではこの内訳を参考値として扱うこと。
+function bqGetDelivery(p, session) {
+  try {
+    var months = Number(p.months) || 0;
+    var where = '';
+    if (months > 0) {
+      var cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - months);
+      var cutoffStr = Utilities.formatDate(cutoff, 'Asia/Tokyo', 'yyyy-MM-dd');
+      where = "WHERE txn_date >= DATE('" + cutoffStr + "')";
+    }
+    where += (where ? ' AND ' : 'WHERE ') + 'store_id IS NOT NULL';
+    // 全店ぶんを1つのキャッシュ（店舗数が少なく軽いため）に持ち、店舗権限スコープの絞り込みは
+    // 他のbqGet系と同じくキャッシュ取得後・応答直前に毎回適用する（bqGetMedia等と同じ安全側の設計）。
+    var ck = bqCacheKey_('delivery', [months]);
+    var cached = bqCacheGet_(ck);
+    if (!cached) {
+      var sql = 'SELECT txn_date, store_id, COUNT(DISTINCT order_no) AS orders, SUM(sales) AS net_sales FROM `' +
+        BQ_PROJECT + '.' + BQ_SALES_DATASET + '.stg_delivery_order` ' + where + ' GROUP BY txn_date, store_id ORDER BY txn_date';
+      var rows = bqRows_(sql);
+      if (!rows) return { ok: false, error: 'BigQueryクエリ失敗' };
+      var dir = fetchStoreDirectory_();
+      var idToName = {};
+      if (dir) for (var i = 0; i < dir.length; i++) idToName[dir[i].id] = dir[i].name;
+      var out = [['店舗名', '営業日', '媒体名', '客数', '客組数', '純売上']];
+      for (var r = 1; r < rows.length; r++) {
+        var row = rows[r];
+        var storeName = idToName[row[1]];
+        if (!storeName) continue; // 店舗マスタに無いid（未登録の店舗）は誤爆より安全側でスキップ
+        var orders = Number(row[2] || 0);
+        // 客数の概念が無いため、客単価等の既存計算式(net/guests)がそのまま意味を持つよう注文数を代用
+        out.push([storeName, String(row[0]).replace(/-/g, '/'), 'ロケットナウ', orders, orders, Number(row[3] || 0)]);
+      }
+      cached = { ok: true, sheets: { delivery: out } };
+      bqCachePut_(ck, cached);
+    }
+    var sessStores = String(session && session.stores || '').trim();
+    var restricted = sessStores && sessStores !== '全店';
+    if (!restricted) return cached;
+    var allowSet = {};
+    sessStores.split(/[,、]/).forEach(function (s) { var t = s.trim(); if (t) allowSet[t] = true; });
+    var rowsAll = (cached.sheets && cached.sheets.delivery) || [];
+    var filtered = [rowsAll[0]];
+    for (var j = 1; j < rowsAll.length; j++) { if (allowSet[rowsAll[j][0]]) filtered.push(rowsAll[j]); }
+    return { ok: true, sheets: { delivery: filtered } };
   } catch (e) {
     return { ok: false, error: String(e && e.message || e) };
   }
