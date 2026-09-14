@@ -1833,7 +1833,10 @@ async function fetchDailyBQ(preD){
   if(!S.auth||!S.auth.token) return;
   D.dailyBqLoading=true; if(!targetModalOpen_()) render();
   try{
-    const d=preD||await api({ action:'bqDailyStore', token:S.auth.token, months:monthsWindow() });
+    // 2026-09-14: 既定のAPI_TIMEOUT_MS(3分)のままだと、詰まったときに画面が3分間ずっと
+    // 「読み込み中」に見えてしまう（ユーザー報告「遅すぎて全然開けない」）。45秒で見切りを付けて
+    // シート経路へ自動フォールバックするほうが実用的なため、このBQ経路だけ短いタイムアウトにする。
+    const d=preD||await api({ action:'bqDailyStore', token:S.auth.token, months:monthsWindow() }, 45000);
     if(d&&d.ok&&d.sheets){ ingestSheets(d.sheets, true); D.dailyBqErr=''; D.bqFallback.daily=false; }
     else{ D.dailyBqErr=(d&&d.error)||'取得に失敗しました'; await bqFallbackToSheet_('daily'); }
   }catch(e){ D.dailyBqErr=String(e&&e.message||e); await bqFallbackToSheet_('daily'); }
@@ -2185,10 +2188,16 @@ function render(){
   // 前回の古い/部分的なdailyデータのまま壊れた暫定数字（例: 人件費率116%）が出ないよう、
   // D.daily依存の3タブ（ダッシュボード・推移分析・目標管理）はこの間プレースホルダにする。
   const bqGateTabs=(S.tab==='dash'||S.tab==='analysis'||S.tab==='target');
+  // 2026-09-14追加: 読み込み中/失敗時のプレースホルダは3タブとも「🧪データ元」トグル自体を
+  // 覆ってしまい、BQ側がAPI_TIMEOUT_MS(3分)ぶん詰まった場合トグルへ辿り着けず身動きが取れなく
+  // なる不具合があった（ユーザー報告「遅すぎて全然開けない」）。管理者だけに見える「シートに戻す」
+  // 脱出ボタンをこのプレースホルダ自体にも出す（クリック後は即座にシート経路へ切替・タイムアウトを
+  // 待たなくてよい）。
+  const bqEscapeBtn=isAdminRole()?`<div style="margin-top:14px"><button class="icon-btn" onclick="App.setDailySource('sheet')">🧪 データ元をシートに戻す</button></div>`:'';
   if(bqGateTabs && S.useBqDaily && D.dailyBqLoading){
-    body=`<div class="panel" style="text-align:center;padding:60px 20px;color:#8c8375">⏳ BigQueryから読み込み中…</div>`;
+    body=`<div class="panel" style="text-align:center;padding:60px 20px;color:#8c8375">⏳ BigQueryから読み込み中…${bqEscapeBtn}</div>`;
   } else if(bqGateTabs && S.useBqDaily && D.dailyBqErr && !D.daily.length){
-    body=`<div class="panel" style="text-align:center;padding:60px 20px;color:#b5502f">⚠️ データ取得に失敗しました。再読み込みしてください</div>`;
+    body=`<div class="panel" style="text-align:center;padding:60px 20px;color:#b5502f">⚠️ データ取得に失敗しました。再読み込みしてください${bqEscapeBtn}</div>`;
   }
   else if(S.tab==='partner') body=viewPartner();
   else if(S.tab==='dash') body=viewDash();
