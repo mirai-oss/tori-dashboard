@@ -229,7 +229,10 @@ const D = { daily:[], media:[], deposit:[], review:[], ad:[], adfx:[], tanka:{},
   rsvBq:[], rsvBqLoading:false, rsvBqErr:'',    // 予約タブ（2026-08-28追加・A-6。stg_reservationのBQミラー。D.rsv（旧・管理シート💾予約DB手動貼付け）とは別物として並行保持
   rsvSeats:[], rsvSeatsLoaded:false, rsvHours:{},  // 予約タブ：店舗ごとの卓一覧（DB_席マスタ）・営業時間（DB_営業時間、店舗名→[{spec,open,close}]の配列。resolveStoreHours_で日付ごとに1件選ぶ）
   home:null, homeLoading:false, homeErr:'',  // P-0c(2026-09-06): keiei-api-homeの速報値。D.dailyが届くまでの間だけviewDashFast_で使う
-  mediaSummaryFast:null, depositSummaryFast:null, depositSummaryFastYm:'', plSummaryFast:null, plSummaryFastYm:'' };  // W3②(2026-09-06): keiei-api-dashboard-summaryの速報値（媒体別・入金は先読み表示、PLは裏突合のみ）
+  mediaSummaryFast:null, depositSummaryFast:null, depositSummaryFastYm:'', plSummaryFast:null, plSummaryFastYm:'',
+  dailyKd:null };  // 2026-09-14: kd_dashboard_daily_summaryをSupabase直読み（GAS非経由・脱GAS移行）。
+                    // 推移分析(viewAnalysis)専用の高速経路。D.dailyの他の用途（PL・目標管理等、原価/人件費の
+                    // 内訳が必要）には使わない＝D.dailyはこれまでどおりGAS/シート経由のまま並行して残す。
 let EXPORT = [];      // 現在タブのCSVエクスポート対象 [{title,headers,rows}]
 let pollTimer = null;
 
@@ -1772,6 +1775,44 @@ async function fetchDashboardSummaryApi_(kind, ym){
     return null;
   }catch(e){ return null; }
 }
+// 2026-09-14追加（脱GAS移行・推移分析専用）: ユーザー報告「推移分析が遅い・BQエラーが出る」の
+// 根本原因調査で、GAS経由の経路（action:'data'・bqDailyStore）は実測で1回あたり10〜30秒かかり
+// 12〜30%の確率で失敗する（HANDOFF.md参照）と判明。一方、既にSupabase直読みへ移行済みの経路
+// （keiei-api-home等）は失敗ほぼ0%・1秒未満で安定している。推移分析はkd_dashboard_daily_summary
+// （レーンPが毎時リフレッシュ）を直読みすればGAS完全非経由で速く・安定させられるが、同テーブルは
+// 元々「直近数ヶ月分」しか無く、推移分析が必要とする過去3年分を満たしていなかったため、この対応の
+// 一環でkd_dashboard_daily_summaryを2023-11-01まで全期間バックフィル済み（既存の
+// keiei-kd-refresh/dashboard_dailyジョブをmonths=36で1回実行・7691行・スプレッドシート側の
+// 実件数と完全一致を確認済み）。RLSが認証ユーザー本人の店舗権限で行レベル絞り込みを行うため、
+// GAS側のsession.stores絞り込みロジックを移植する必要はない（DB側が自動的に正しい店舗だけ返す）。
+// PostgRESTの1リクエストあたりの上限に備え、Rangeヘッダーでページングして全件取得する。
+// D.daily（GAS/シート経由・PL/目標管理等が使う原価・人件費の内訳を含む）はそのまま残し、
+// D.dailyKdは推移分析（viewAnalysis）だけが優先して使う並行データ源という設計（既存の他機能への
+// 影響ゼロ）。統合アカウント未連携・取得失敗時はD.dailyKdがnullのままなので、viewAnalysis側は
+// 自動的に従来のD.daily（GAS/シート）へフォールバックする。
+async function fetchAnalysisKd_(){
+  if(!S.auth||!S.auth.token) return;
+  try{
+    const jwt=await portalAccessToken().catch(()=>null);
+    if(!jwt) return;   // 統合アカウント未連携。従来経路(D.daily)のみで表示させる
+    const base=SSO_SUPA_URL+'/rest/v1/kd_dashboard_daily_summary?select=store_id,period_date,net_sales,guests&order=period_date.asc';
+    const PAGE=2000;
+    let offset=0, rowsAll=[], guard=0;
+    const t0=nowMs_();
+    while(guard++<30){   // 30ページ(=最大6万行)で安全弁。通常は数ページで終わる想定
+      const res=await fetch(base,{ headers:{ apikey:SSO_SUPA_KEY, Authorization:'Bearer '+jwt, Range:offset+'-'+(offset+PAGE-1) } });
+      if(!res.ok){ logApiPerf_('kd_dashboard_daily_summary:analysis', nowMs_()-t0, false, 'http_'+res.status); return; }
+      const page=await res.json().catch(()=>null);
+      if(!Array.isArray(page)) break;
+      rowsAll=rowsAll.concat(page);
+      if(page.length<PAGE) break;
+      offset+=PAGE;
+    }
+    logApiPerf_('kd_dashboard_daily_summary:analysis', nowMs_()-t0, true, '');
+    D.dailyKd=rowsAll.map(r=>({ store:storeNameById_(r.store_id)||'', t:parseDateStr(r.period_date), sales:Number(r.net_sales||0), guests:Number(r.guests||0) })).filter(r=>r.store&&r.t);
+    if(!targetModalOpen_()) render();
+  }catch(e){ /* 失敗してもD.dailyKdはnullのまま＝viewAnalysis側が既存のD.daily経路へ自動フォールバック */ }
+}
 // 初回・更新で「本当に重い」データだけ（実測：media=12s/dinii=6.3s/deposit=5.4s/予約=3.3s）。
 // 広告・広告効果・単価設定は実測200〜250msと軽いためフェーズ1に含める（除外すると広告管理タブが
 // 裏読み完了前に開かれた場合「未接続」と誤診断されてしまうため）。
@@ -1798,6 +1839,7 @@ async function fetchDataFast(){
   fetchDashboardSummaryApi_('media', curYm_).then(d=>{ if(d){ D.mediaSummaryFast=d.rows; if(!targetModalOpen_()) render(); } });
   fetchDashboardSummaryApi_('deposit', curYm_).then(d=>{ if(d){ D.depositSummaryFast=d.rows; D.depositSummaryFastYm=curYm_; if(!targetModalOpen_()) render(); } });
   fetchDashboardSummaryApi_('pl', curYm_).then(d=>{ if(d){ D.plSummaryFast=d.rows; D.plSummaryFastYm=curYm_; if(!targetModalOpen_()) render(); } });
+  fetchAnalysisKd_();   // 2026-09-14: 推移分析専用の高速経路（脱GAS）。失敗時は自動でD.dailyへフォールバック
   if(S.useBqDaily){ fetchDailyBQ(); fetchPlBQ(); fetchDepositBQ(); fetchMediaBQ(); fetchSpotBQ(); fetchLoanBQ(); }
   fetchFreshness();                                       // データ鮮度表示（5分キャッシュ・下のfetchFreshness参照）
   // 2026-09-02追加: 更新(⌘R)ボタンは目標管理モーダルを開いたまま押せてしまうため、ここもガードする
@@ -3073,7 +3115,11 @@ function viewAnalysis(){
   else { for(let d=new Date(s); dayMs(d)<=dayMs(e); d=addD(d,1)) buckets.push({label:mdw(d),dt:new Date(d),a:dayMs(d),b:dayMs(d)}); }
 
   const nameSet=new Set(names);
-  const dailyIn=D.daily.filter(x=>nameSet.has(x.store));
+  // 2026-09-14: kd_dashboard_daily_summary直読み（脱GAS・高速経路）が取得できていればそちらを
+  // 優先する（GAS経由のD.dailyより速く・安定。fetchAnalysisKd_参照）。未取得・失敗時はこれまで
+  // どおりD.daily（GAS/シート経由）にフォールバックする＝表示が壊れることはない。
+  const dailySrc=(D.dailyKd&&D.dailyKd.length)?D.dailyKd:D.daily;
+  const dailyIn=dailySrc.filter(x=>nameSet.has(x.store));
   const mediaIn=D.media.filter(x=>nameSet.has(x.store));
   const val=(recs,a2,b2)=>{ let sl=0,g=0; for(const x of recs){ if(x.t>=a2&&x.t<=b2){ sl+=(x.sales!=null?x.sales:x.net); g+=x.guests; } } return M==='sales'?sl:(M==='guests'?g:(g>0?sl/g:0)); };
   let groups;
@@ -3102,6 +3148,7 @@ function viewAnalysis(){
     ${B==='total'?`<button class="icon-btn" onclick="App.set('aYoY',${S.aYoY?'false':'true'})">${S.aYoY?'☑':'☐'} 前年重ね</button>`:''}
     ${isAdminRole()?`<button class="icon-btn" title="データ元をシート/BigQueryで切替（テスト中）" onclick="App.setDailySource('${S.useBqDaily?'sheet':'bq'}')">🧪 データ元: ${S.useBqDaily?'BigQuery':'シート'}</button>${D.dailyBqLoading?'<span class="mut" style="margin-left:6px">読込中…</span>':''}${D.dailyBqErr?`<span style="color:#b5502f;margin-left:6px">BQ取得エラー: ${esc(D.dailyBqErr)}</span>`:''}`:''}
     ${isAdminRole()?`<button class="icon-btn" title="推移分析の元データが実際どこまで遡れるか確認（一時診断）" onclick="App.diagDailyRange()">🔍 データ範囲を確認</button>`:''}
+    ${isAdminRole()?(D.dailyKd&&D.dailyKd.length?`<span class="mut" style="font-size:11px" title="kd_dashboard_daily_summaryをSupabase直読み中（GAS非経由・高速）">⚡ kd直読み中（${D.dailyKd.length}件）</span>`:`<span class="mut" style="font-size:11px">従来経路（シート/BQ）を使用中</span>`):''}
   </div>`+storeSegHtml();
   h+=`<div class="panel"><div class="panel-head"><div><h3>${ml} の推移（${G==='day'?'日別':G==='week'?'週別':'月別'}・${B==='total'?'合計':B==='store'?'店舗別':'媒体別'}）</h3>
     <div class="sub">${(s.getMonth()+1)}/${s.getDate()}〜${(e.getMonth()+1)}/${e.getDate()} ／ ${buckets.length}区間</div></div><div class="legend">${legend}</div></div>
