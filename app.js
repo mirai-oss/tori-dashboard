@@ -2107,9 +2107,15 @@ async function trySilentPortalLogin(){
 // 2026-08-24〜26の2営業日、社長・本部限定で様子見したが問題報告なし。全役職へ展開する
 // （第1段階は`role==='社長'||role==='本部'`の条件を課していたが、既定を反転する最終形として
 // 撤去。既に🧪トグルでON/OFFを選んだユーザーの選択は引き続き上書きしない）。
+// 2026-09-14巻き戻し（ユーザー報告「推移分析が遅い/BQエラーが出る」対応）: bqDailyStoreが
+// HTTP 404を返し続けている（原因未調査）ことが判明。この既定ON化以降、一度もトグル操作して
+// いない全ユーザーが気付かないままこの壊れた経路を毎回踏んでいた可能性が高く、「推移分析が
+// 数ヶ月分しか出ない」「開くのが遅い」の実質的な原因だったとみられる。BQ側が復旧するまで、
+// 既定を再びOFF（シート）へ戻す（🧪トグルで既に明示的にON/OFFを選んだユーザーの選択は
+// これまでどおり上書きしない＝影響なし）。
 function applyBqDailyRoleDefault_(){
   if(localStorage.getItem(LS.dailyBq)!=null) return;
-  S.useBqDaily=true;
+  S.useBqDaily=false;
 }
 function afterLogin(){
   const tabs=myTabs();
