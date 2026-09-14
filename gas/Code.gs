@@ -111,6 +111,7 @@ function handle(p) {
     if (action === 'bqGetDeposit') return out(bqGetDeposit(p, session)); // 入金管理タブ：入金DBのBQミラーを読む（データソース切替フラグ用）
     if (action === 'bqGetMedia') return out(bqGetMedia(p, session)); // 媒体別日次：媒体別DBのBQミラーを読む（ログイン直後の同期エラー対策・2026-08-23追加）
     if (action === 'bqGetDelivery') return out(bqGetDelivery(p, session)); // デリバリー売上(ロケットナウ等)をstg_delivery_orderから店舗×日で集計・媒体名'ロケットナウ'として返す（2026-09-14追加・指示書_デリバリー売上取込_担当別）
+    if (action === 'diagDeliverySettlementBreakdown') return out(diagDeliverySettlementBreakdown(p, session)); // 一時診断: 精算内訳(クーポン/消費税/手数料割引込み)の差異調査（2026-09-15・読み取り専用）
     if (action === 'bqGetReservation') return out(bqGetReservation(p, session)); // 予約タブ：stg_reservationのBQミラーを読む（2026-08-28追加・A-6）
     if (action === 'bqGetReservationNames') return out(bqGetReservationNames(p, session)); // 予約詳細：お客様名を都度Supabaseから取得（ログイン必須・店舗スコープ制限。2026-08-31追加・A-6 Phase2）
     if (action === 'bqGetSeatMaster') return out(bqGetSeatMaster(p, session)); // 予約タブ：店舗ごとの卓一覧（DB_席マスタ）を読む（2026-08-28追加・A-6）
@@ -3564,6 +3565,35 @@ function bqGetDelivery(p, session) {
     var filtered = [rowsAll[0]];
     for (var j = 1; j < rowsAll.length; j++) { if (allowSet[rowsAll[j][0]]) filtered.push(rowsAll[j]); }
     return { ok: true, sheets: { delivery: filtered } };
+  } catch (e) {
+    return { ok: false, error: String(e && e.message || e) };
+  }
+}
+
+// 2026-09-15一時診断（読み取り専用・書き込み一切なし）: 「売上決済額－手数料≠入金予定額」の
+// 差異調査用。stg_delivery_orderの店舗負担クーポン(coupon_store)・消費税(tax)・手数料割引
+// (fee_discount)も含めた内訳をそのまま返すだけ（原因が分かり次第削除してよい）。
+function diagDeliverySettlementBreakdown(p, session) {
+  if (!isAdmin(session)) return { ok: false, error: '権限がありません（社長・本部のみ）' };
+  try {
+    var sourceFile = String((p || {}).sourceFile || '').trim();
+    var where = "WHERE is_settled = true AND source_file IS NOT NULL";
+    if (sourceFile) where += " AND source_file = '" + sourceFile.replace(/'/g, "''") + "'";
+    var sql = 'SELECT store_id, source_file, SUM(sales) AS sales, SUM(coupon_store) AS coupon_store, ' +
+      'SUM(fee_total) AS fee_total, SUM(tax) AS tax, SUM(fee_discount) AS fee_discount, SUM(payout_expected) AS payout_expected, COUNT(*) AS n ' +
+      'FROM `' + BQ_PROJECT + '.' + BQ_SALES_DATASET + '.stg_delivery_order` ' + where + ' GROUP BY store_id, source_file';
+    var rows = bqRows_(sql);
+    if (!rows) return { ok: false, error: 'BigQueryクエリ失敗' };
+    var out = [];
+    for (var i = 1; i < rows.length; i++) {
+      var r = rows[i];
+      out.push({
+        store_id: r[0], source_file: r[1], sales: Number(r[2] || 0), coupon_store: Number(r[3] || 0),
+        fee_total: Number(r[4] || 0), tax: Number(r[5] || 0), fee_discount: Number(r[6] || 0),
+        payout_expected: Number(r[7] || 0), rowCount: Number(r[8] || 0)
+      });
+    }
+    return { ok: true, rows: out };
   } catch (e) {
     return { ok: false, error: String(e && e.message || e) };
   }
