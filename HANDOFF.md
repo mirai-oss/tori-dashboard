@@ -153,6 +153,20 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 
 ## 5. 作業ログ
 
+### 2026-09-15（担当A実行スレッド・コンテキスト上限につき新スレッドへ引き継ぎ）ロケットナウ精算¥4,560差異（TK-179）の調査を開始・引継ぎ書を作成
+
+下記エントリで実投入した`ar_receivables`の本店8月分（売上¥132,511・手数料¥45,538・精算予定額
+¥82,413）について、担当C/ユーザーから「¥132,511－(¥45,538+¥82,413)=¥4,560の差異がある」と
+指摘（ai-cockpit TK-179）。`bqSyncDeliverySettlement`の`fee_amount`が`stg_delivery_order.
+fee_total`（手数料）しか見ておらず、店舗負担クーポン(`coupon_store`)・消費税(`tax`)等の他の
+控除項目を見落としている可能性が高いという仮説を立て、読み取り専用の診断関数
+`diagDeliverySettlementBreakdown`をGAS新設（コミット`44d4ddf`）・ユーザーに手貼りを依頼した
+ところで、貼り付け後もデプロイに反映されない（`unknown action`のまま）事象に遭遇。原因切り分け
+（GASの一時的な不安定化か、別セッションの同時編集による上書きか）の途中でコンテキスト上限に
+達したため、**続きは
+[ns-portal/docs/引継ぎ書_2026-09-15_ロケットナウ精算内訳の差異調査.md](https://github.com/mirai-oss/ns-portal/blob/main/docs/引継ぎ書_2026-09-15_ロケットナウ精算内訳の差異調査.md)
+（新スレッド向け・アクセス情報・GAS編集時の落とし穴・具体的な進め方を網羅）を参照**。
+
 ### 2026-09-14〜15（担当A実行スレッド）ロケットナウPL反映: `bqSyncDeliverySettlement`をGASへ追加・本店8月分を`ar_receivables`へ実投入（**gas/Code.gs変更・ユーザー手貼り済み・デプロイ済み**）
 
 `ns-portal/docs/指示書_デリバリー売上取込_担当別_2026-09-11.md`「担当Cへ」の中で判明した障壁
