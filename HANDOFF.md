@@ -153,6 +153,19 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 
 ## 5. 作業ログ
 
+### 2026-09-16（担当A実行スレッド）ロケットナウ精算¥4,560差異（TK-179）を修正・解決（**gas/Code.gs変更・ユーザー手貼り済み・デプロイ済み**）
+
+下記2026-09-15エントリの[引継ぎ書](https://github.com/mirai-oss/ns-portal/blob/main/docs/引継ぎ書_2026-09-15_ロケットナウ精算内訳の差異調査.md)を引き継いで着手。
+
+**まず発覚した貼り付け事故**: 前スレッドが追加した`diagDeliverySettlementBreakdown`のディスパッチ登録行が、`handle()`関数のアクション一覧ではなく、全く別の`bqGetDelivery`関数の`if (months > 0) {...}`ブロックの中に、`bqSyncDeliverySettlement`関数まるごとのコピーと一緒に迷い込んでいた（貼り付け位置を誤った事故。構文エラーにはならず死んだコードとして残っていたため気づきにくかった）。これが`unknown action`が解消しなかった真因。ユーザーにApps Scriptエディタ上でこのブロックを特定・削除してもらい解消。
+
+**原因確定**: 削除後に`diagDeliverySettlementBreakdown`を実行し、本店8月分の内訳を確認したところ
+`sales(132,511) − fee_total(45,538) − tax(4,560) = payout_expected(82,413)`が厳密に一致（`coupon_store`は0円・`fee_discount`(846円)はこの行の収支には関与しないことも実データで確認）。**`bqSyncDeliverySettlement`の`fee_amount`計算が`fee_total`のみで`tax`（消費税）を見落としていたのが原因**と確定。
+
+**修正内容**: `bqSyncDeliverySettlement`のSQLに`SUM(tax)`・`SUM(coupon_store)`を追加し、`fee_amount = fee_total + tax + coupon_store`（`gross_amount`・`expected_amount`は変更なし）に修正。ユーザーに手貼り・デプロイしてもらった後、`bqSyncDeliverySettlement`を再実行し、既存の`ar_receivables`（id=`db9c804c-859e-47d3-86b2-42b2b9906a00`・本店8月分）を`fee_amount=50,098`へ更新。Supabaseで直接`gross_amount(132,511) − fee_amount(50,098) = expected_amount(82,413)`の一致を確認済み。ai-cockpit TK-179をdone。
+
+**申し送り**: 今回のような「ディスパッチ行が意図しない場所に迷い込む」貼り付け事故は、構文エラーにならず動作もするコードなので**追加後は必ずその場で実機確認する**こと（引継ぎ書②の落とし穴と同じ教訓）。今回はSQL文が2箇所（正・誤）に重複していたため後続の金額修正もCmd+Fの検索結果が2件になり手順が複雑化した。次に同種の追加をする際は、貼り付け直後に`Cmd+F`のヒット数が想定どおりかをまず確認する運用を徹底すること。他店舗（芝店・はなれ）の月次精算データはまだ無いため、`ar_receivables`は本店1件のまま。
+
 ### 2026-09-15（担当A実行スレッド・コンテキスト上限につき新スレッドへ引き継ぎ）ロケットナウ精算¥4,560差異（TK-179）の調査を開始・引継ぎ書を作成
 
 下記エントリで実投入した`ar_receivables`の本店8月分（売上¥132,511・手数料¥45,538・精算予定額
