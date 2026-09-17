@@ -1622,7 +1622,14 @@ async function apiOnce_(params, timeoutMs){
     const r=await fetch(url,opt);
     if(!r.ok){
       logApiPerf_(actionName, nowMs_()-t0, false, 'http_'+r.status);
-      const err=new Error('HTTP '+r.status); err._retriable=(r.status>=500); throw err;
+      // 2026-09-17追加（ユーザー報告「同期エラーで不安定・頻繁にログアウトされる」の根本原因調査）:
+      // GAS Webアプリは、Google側の一時的な不調（ボット判定・リダイレクト処理異常等。tori-dashboard/
+      // seisan-dashboard双方で以前から散発）のとき、5xxではなく404や405を返すことが実機・curl検証で
+      // 確認できた。従来はstatus>=500だけをリトライ対象にしていたため、この404/405は「恒久的なエラー」
+      // と誤判定され即座に諦めていた（PL経費保存の「通信エラー: HTTP 404」はこれが直接原因）。
+      // 401/403等（本当の認証拒否）は引き続きリトライしない。
+      const retriableStatus = r.status>=500 || r.status===404 || r.status===405;
+      const err=new Error('HTTP '+r.status); err._retriable=retriableStatus; throw err;
     }
     const d=await r.json();
     logApiPerf_(actionName, nowMs_()-t0, !(d&&d.ok===false), (d&&d.ok===false)?'api_error':'');
@@ -1637,13 +1644,18 @@ async function apiOnce_(params, timeoutMs){
   }finally{ if(tm) clearTimeout(tm); }
 }
 // A-p1c 自動リトライ（2026-09-02追加・実装指示書_脱GAS移行_Phase0-1 §2）: ネットワーク瞬断・
-// タイムアウト・GAS側5xxなど「もう一度呼べば直るかもしれない」失敗だけ、指数バックオフ
-// （0.5秒→1.5秒）で最大2回まで自動的に再試行する。HTTP 4xxやアプリ側{ok:false}応答（ログイン
-// 失敗・権限エラー等＝再試行しても結果が変わらない）はリトライしない。
+// タイムアウト・GAS側5xx/404/405など「もう一度呼べば直るかもしれない」失敗だけ、指数バックオフで
+// 自動的に再試行する。HTTP 401/403やアプリ側{ok:false}応答（ログイン失敗・権限エラー等＝再試行
+// しても結果が変わらない）はリトライしない。
+// 2026-09-17拡大（ユーザー報告「同期エラーで不安定・ログイン時もエラーが出る」対応）: 実機・curlで
+// 確認したGoogle側の一時的な不調（ボット判定等）は15〜30秒ほどで自然に解消することが多いと判明した
+// ため、従来の最大2回・合計2秒の待ちでは不足していた。最大4回・合計約15秒（1→2→4→8秒）まで
+// 粘るよう拡大（それでも3分のAPI_TIMEOUT_MSより十分短い）。
+const API_RETRY_BACKOFF_MS_=[1000,2000,4000,8000];
 async function api(params, timeoutMs){
   let lastErr;
-  for(let attempt=0; attempt<=2; attempt++){
-    if(attempt>0) await new Promise(res=>setTimeout(res, attempt===1?500:1500));
+  for(let attempt=0; attempt<=API_RETRY_BACKOFF_MS_.length; attempt++){
+    if(attempt>0) await new Promise(res=>setTimeout(res, API_RETRY_BACKOFF_MS_[attempt-1]));
     try{ return await apiOnce_(params, timeoutMs); }
     catch(e){ lastErr=e; if(!e._retriable) throw e; }
   }
@@ -1686,11 +1698,16 @@ async function fetchData(silent, opts, preD){
       // action:'data'はHANDOFF.md記載の実測失敗率38%と元々不安定なGASアクションで、その一時的な
       // 失敗がunauthorized（本当はセッション切れではなくGAS側の一時エラー）として返ることがある。
       // 従来は1回の失敗だけで即doLogout()＋localStorage破棄していたのが「勝手にログアウトされる」
-      // の主因と判断。unauthorizedのときはすぐに諦めず、少し待って同じ内容で1回だけ再試行してから
+      // の主因と判断。unauthorizedのときはすぐに諦めず、少し待って同じ内容で再試行してから
       // 最終判断する（再試行してもunauthorizedのときだけ、本当にセッション切れとみなす）。
-      if(!d.ok && String(d.error||'').includes('unauthorized')){
-        await new Promise(r=>setTimeout(r,900));
+      // 2026-09-17拡大（ユーザー報告「今も定期的に勝手にログアウトされる」）: 1回・0.9秒だけの
+      // 再試行では、Google側の一時的な不調（15〜30秒ほど続くことがあると実機確認済み）を
+      // 十分にやり過ごせていなかったと判断し、最大2回・合計約4.5秒（1.5秒→3秒）まで拡大。
+      let unauthRetries=0;
+      while(!d.ok && String(d.error||'').includes('unauthorized') && unauthRetries<2){
+        await new Promise(r=>setTimeout(r, unauthRetries===0?1500:3000));
         d=await api(params);
+        unauthRetries++;
       }
     }
     if(!d.ok){
