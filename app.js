@@ -2577,9 +2577,15 @@ function viewDash(){
   const r=periodRange(), p=prevRange(r);
   const a=dayMs(r.s), b=dayMs(r.e), pa2=dayMs(p.s), pb2=dayMs(p.e);
   const cur=stat(scopeSet,a,b,selName), prev=stat(scopeSet,pa2,pb2,selName);
-  const Ssl=cur.sales;
+  // 2026-09-17（ユーザー指示）: 経営ダッシュボードの「月次売上」等KPIは、デリバリー
+  // （ロケットナウ等・レジに打っていないため二重計上の心配は無いと確認済み）を売上へ合算する。
+  // segSplit()はこのすぐ下でも使うため、先に呼んで（当期・前期間の両方）Sslの算出に使う。
+  // 原価率(F)・人件費率(L)・客単価もSsl由来のため、合算後の正しい売上を分母にした比率になる
+  // （仕入原価は元々レジ経由でないため、デリバリー分の売上を含めた方が実態に近い比率になる）。
+  const segCur_=segSplit(scopeSet,a,b,selName), segPrev_=segSplit(scopeSet,pa2,pb2,selName);
+  const Ssl=cur.sales+(segCur_.hasV?segCur_.vn:0);
   const foodR=Ssl>0?cur.cost/Ssl:0, laborR=Ssl>0?cur.labor/Ssl:0, flR=foodR+laborR;
-  const pS=prev.sales, pFood=pS>0?prev.cost/pS:0, pLabor=pS>0?prev.labor/pS:0;
+  const pS=prev.sales+(segPrev_.hasV?segPrev_.vn:0), pFood=pS>0?prev.cost/pS:0, pLabor=pS>0?prev.labor/pS:0;
   const spend=cur.guests>0?Ssl/cur.guests:0, pSpend=prev.guests>0?pS/prev.guests:0;
 
   // 口コミ（対象店舗のスナップショット加重平均）— 期間末時点と前期間末時点を比較
@@ -2603,7 +2609,7 @@ function viewDash(){
   const yF=ptStr(foodR,pFood,true), yL=ptStr(laborR,pLabor,true), yFL=ptStr(flR,pFood+pLabor,true);
   // 営業区分（ランチ/ディナー）の内訳。営業区分別売上パネルと同じ＝媒体別売上の営業区分でそのまま集計
   // （按分しない）。店舗別内訳は出さない＝全体のみ。組数は媒体に無いので客数比で按分。
-  const seg=segSplit(scopeSet,a,b,selName);
+  const seg=segCur_;   // 上でSsl算出のために計算済みのものを再利用（同じ期間・重複計算を避ける）
   const grpR=seg.hasG?seg.lg/(seg.lg+seg.dg):null;
   // 2026-09-14: デリバリー（ロケットナウ等）が有れば末尾に追加表示（無ければ従来どおりランチ/ディナーのみ）
   const segDv=seg.hasV?' ／ 🛵デリバリー ':'';
@@ -2654,7 +2660,7 @@ function viewDash(){
 
   if(S.period==='month') h+=landingPanel(r,scopeSet,selName,sc);
   h+=dashChartPanel(r,scopeSet,selName);
-  h+=`<div class="grid2">${flPanel(cur,prev)}${mediaPanel(a,b,pa2,pb2,scopeSet,selName)}</div>`;
+  h+=`<div class="grid2">${flPanel(cur,prev,Ssl,pS)}${mediaPanel(a,b,pa2,pb2,scopeSet,selName)}</div>`;
   // 店舗を選んでいるときは「日別明細」、全店/合算のときは「店舗比較」
   h+= selName ? dailyStorePanel(r,selName) : comparePanel(r,p,sc,selName);
   return h;
@@ -2973,18 +2979,21 @@ function dashChartPanel(r,scopeSet,selName){
     ${barChart(cat,series,{twoLine:cat.some(c=>String(c).includes('\n'))})}</div>`;
 }
 
-function flPanel(cur,prev){
-  const Ssl=cur.sales;
+// SslIn/pSIn（2026-09-17追加・省略可）: 呼び出し側で既にデリバリー込みの売上（viewDash()の
+// Ssl/pS）を計算済みならそれを渡す。省略時はcur.sales/prev.sales（デリバリー抜き）のまま
+// （このpanelを他の場所から呼ぶ既存の使い方を壊さないためのフォールバック）。
+function flPanel(cur,prev,SslIn,pSIn){
+  const Ssl=SslIn!=null?SslIn:cur.sales, pS=pSIn!=null?pSIn:prev.sales;
   if(!(Ssl>0)) return `<div class="panel"><h3>FL（原価・人件費）内訳</h3><div class="empty">対象期間のデータがありません</div></div>`;
   const rows=[
-    { nm:'仕入（原価 F）', c:'#b5502f', amt:cur.cost, r:cur.cost/Ssl, pr:prev.sales>0?prev.cost/prev.sales:0 },
-    { nm:'PA 人件費', c:'#5f7052', amt:cur.pa, r:cur.pa/Ssl, pr:prev.sales>0?prev.pa/prev.sales:0 },
-    { nm:'社員 人件費', c:'#7d8b6f', amt:cur.emp, r:cur.emp/Ssl, pr:prev.sales>0?prev.emp/prev.sales:0 },
+    { nm:'仕入（原価 F）', c:'#b5502f', amt:cur.cost, r:cur.cost/Ssl, pr:pS>0?prev.cost/pS:0 },
+    { nm:'PA 人件費', c:'#5f7052', amt:cur.pa, r:cur.pa/Ssl, pr:pS>0?prev.pa/pS:0 },
+    { nm:'社員 人件費', c:'#7d8b6f', amt:cur.emp, r:cur.emp/Ssl, pr:pS>0?prev.emp/pS:0 },
   ];
   if(cur.spot||prev.spot){   // スポット人件費（タイミー等）はデータがある期間だけ内訳に出す（2026-08-23追加）
-    rows.push({ nm:'スポット人件費（タイミー等）', c:'#a98b5f', amt:cur.spot, r:cur.spot/Ssl, pr:prev.sales>0?prev.spot/prev.sales:0 });
+    rows.push({ nm:'スポット人件費（タイミー等）', c:'#a98b5f', amt:cur.spot, r:cur.spot/Ssl, pr:pS>0?prev.spot/pS:0 });
   }
-  const fl=cur.cost+cur.labor, flR=fl/Ssl, pFlR=prev.sales>0?(prev.cost+prev.labor)/prev.sales:0;
+  const fl=cur.cost+cur.labor, flR=fl/Ssl, pFlR=pS>0?(prev.cost+prev.labor)/pS:0;
   const profit=Ssl-fl;
   let h=`<div class="panel"><div class="panel-head"><div><h3>FL（原価・人件費）内訳</h3><div class="sub">集約シート実績（人件費＝PA＋社員＋スポット）</div></div>${canUse('spot')?`<button class="icon-btn no-print" onclick="App.openSpotInput()">＋ スポット人件費</button>`:''}</div><div class="scroll-x"><table class="tbl"><thead><tr><th>項目</th><th>金額</th><th>比率</th><th>前年</th></tr></thead><tbody>`;
   rows.forEach(x=>{ const pt=ptStr(x.r,x.pr,true);
@@ -5870,17 +5879,24 @@ function viewPL(){
   const adCur=adAgg(scopeSet,mS,mE,D.adPlExclude).ad, adPrv=adAgg(scopeSet,pS,pE,D.adPlExclude).ad, adLyr=adAgg(scopeSet,yS,yE,D.adPlExclude).ad;
   // 手入力経費（DB_PL・月次）※期間指定のときは「月初日が期間内の月」の分を計上
   const exCur=plAgg(scopeSet,plAggFlag,mS,mE,D.adPlExclude), exPrv=plAgg(scopeSet,plAggFlag,pS,pE,D.adPlExclude), exLyr=plAgg(scopeSet,plAggFlag,yS,yE,D.adPlExclude);
+  // 2026-09-17（ユーザー指示）: PLの「売上高」にもデリバリー（ロケットナウ等）を合算する
+  // （経営ダッシュボードのSslと同じ理由・レジに打っていないため二重計上の心配は無い）。
+  // ただし「売上の中でデリバリーを別で分けて反映してほしい」との指示どおり、合算した値を
+  // 使いつつ、売上高行の内訳としてデリバリー分を別行で見えるようにする（dvCur等）。
+  const dvCur=(scopeSet,a,b)=>{ const s=segSplit(scopeSet,a,b,null); return s.hasV?s.vn:0; };
+  const dvC=dvCur(scopeSet,mS,mE), dvP=dvCur(scopeSet,pS,pE), dvL=dvCur(scopeSet,yS,yE);
+  const salesC=cur.sales+dvC, salesP=prv.sales+dvP, salesL=lyr.sales+dvL;
 
   // 区分の合成：F=自動仕入＋DB_PLのF行 ／ L=自動人件費＋L行 ／ A=DB_広告＋A行 ／ R=家賃 ／ O=他
   const costT=cur.cost+exCur.catTotal.F,  costP=prv.cost+exPrv.catTotal.F,  costL=lyr.cost+exLyr.catTotal.F;
   const laborT=cur.labor+exCur.catTotal.L, laborP=prv.labor+exPrv.catTotal.L, laborL=lyr.labor+exLyr.catTotal.L;
   const adT=adCur+exCur.catTotal.A,        adP=adPrv+exPrv.catTotal.A,        adL=adLyr+exLyr.catTotal.A;
-  const gross=cur.sales-costT;
+  const gross=salesC-costT;
   const sga=laborT+adT+exCur.catTotal.R+exCur.catTotal.O;                   // 販管費計（人件費＋広告＋家賃＋他）
-  const op=cur.sales-costT-sga;                                             // 営業利益
-  const opPrv=prv.sales-costP-(laborP+adP+exPrv.catTotal.R+exPrv.catTotal.O);
-  const opLyr=lyr.sales-costL-(laborL+adL+exLyr.catTotal.R+exLyr.catTotal.O);
-  const pct=(n)=>cur.sales>0?(n/cur.sales*100).toFixed(1)+'%':'—';
+  const op=salesC-costT-sga;                                                // 営業利益
+  const opPrv=salesP-costP-(laborP+adP+exPrv.catTotal.R+exPrv.catTotal.O);
+  const opLyr=salesL-costL-(laborL+adL+exLyr.catTotal.R+exLyr.catTotal.O);
+  const pct=(n)=>salesC>0?(n/salesC*100).toFixed(1)+'%':'—';
   const mom=(c,p)=>{ if(!(Math.abs(p)>0)) return {t:prevName+' —',cls:'mut'}; const d2=(c-p)/Math.abs(p)*100; return { t:prevName+'比 '+(d2>=0?'+':'▲')+Math.abs(d2).toFixed(1)+'%', cls:d2>=0?'up':'dn' }; };
   // 入力漏れアラート（2026-09-07追加）: 月次表示のときだけ、前々月・前月とも計上があった費目が
   // 今月¥0なら検出する（前月＝exPrvをそのまま流用し、前々月分だけ追加で取得）。
@@ -5906,7 +5922,7 @@ function viewPL(){
 
   // KPIカード
   h+=`<div class="kpi-grid">
-    <div class="kpi"><div class="lb">売上高</div><div class="vl">${yen(cur.sales)}</div><div class="yy ${mom(cur.sales,prv.sales).cls}">${mom(cur.sales,prv.sales).t}</div></div>
+    <div class="kpi"><div class="lb">売上高</div><div class="vl">${yen(salesC)}</div><div class="yy ${mom(salesC,salesP).cls}">${mom(salesC,salesP).t}${dvC?'／うちデリバリー '+yen(dvC):''}</div></div>
     <div class="kpi"><div class="lb">売上総利益（粗利）</div><div class="vl">${yen(gross)}</div><div class="yy">${pct(gross)}</div></div>
     <div class="kpi"><div class="lb">販管費計（人件費＋広告＋家賃＋他）</div><div class="vl">${yen(sga)}</div><div class="yy">${pct(sga)}</div></div>
     <div class="kpi"><div class="lb">営業利益</div><div class="vl" style="color:${op>=0?'#4c7d5c':'#b5502f'}">${yen(op)}</div><div class="yy ${mom(op,opPrv).cls}">${pct(op)} ／ ${mom(op,opPrv).t}</div></div>
@@ -5963,10 +5979,11 @@ function viewPL(){
       const c2=stat(scopeSet,a2,b2,null);
       const p2=plAgg(scopeSet,plAggFlag,a2,b2,D.adPlExclude);
       const ad2=adAgg(scopeSet,a2,b2,D.adPlExclude).ad+p2.catTotal.A;
+      const s2seg=segSplit(scopeSet,a2,b2,null), sales2=c2.sales+(s2seg.hasV?s2seg.vn:0);  // 2026-09-17: デリバリー合算
       const cost2=c2.cost+p2.catTotal.F, labor2=c2.labor+p2.catTotal.L;
-      const g2=c2.sales-cost2, rent2=p2.catTotal.R, oth2=p2.catTotal.O;
+      const g2=sales2-cost2, rent2=p2.catTotal.R, oth2=p2.catTotal.O;
       mrows.push({ label:(multiYear?String(mCur.getFullYear()).slice(2)+'/':'')+(mCur.getMonth()+1)+'月',
-        sales:c2.sales, cost:cost2, gross:g2, labor:labor2, ad:ad2, rent:rent2, oth:oth2, op:g2-labor2-ad2-rent2-oth2 });
+        sales:sales2, cost:cost2, gross:g2, labor:labor2, ad:ad2, rent:rent2, oth:oth2, op:g2-labor2-ad2-rent2-oth2 });
       mCur=new Date(mCur.getFullYear(),mCur.getMonth()+1,1);
     }
     h+=`<div class="panel"><div class="panel-head"><div><h3>月別損益（${mLabel} ／ ${esc(scopeLabel)}）</h3>
@@ -6028,14 +6045,22 @@ function viewPL(){
   // 常にトグル可能、R/Oは手入力（DB_PL）がある場合だけトグルを出す。
   const catHasManual=(cat)=>Object.keys(exCur.byCat[cat]).length>0||Object.keys(exPrv.byCat[cat]).length>0||Object.keys(exLyr.byCat[cat]).length>0;
 
-  rows.push({name:'売上高', c:cur.sales, p:prv.sales, l:lyr.sales, bold:true});
+  { // ---- 売上高（2026-09-17追加: デリバリー=ロケットナウ等を合算しつつ内訳を別行で表示） ----
+    const key='CAT:SALES', hasDv=!!(dvC||dvP||dvL), open=hasDv&&(plExpAll||plExpSet.has(key));
+    if(hasDv) plAnyHasSub=true;
+    rows.push({name:'売上高', c:salesC, p:salesP, l:salesL, bold:true, hasSub:hasDv, subKey:key, isOpen:open});
+    if(open){
+      rows.push({name:'店舗売上（レジ実績）', c:cur.sales, p:prv.sales, l:lyr.sales, indent:true});
+      rows.push({name:'デリバリー（ロケットナウ等・自動連携）', c:dvC, p:dvP, l:dvL, indent:true});
+    }
+  }
 
   { // ---- F: 売上原価 ----
     const key='CAT:F', open=plExpAll||plExpSet.has(key); plAnyHasSub=true;
     rows.push({name:'売上原価計（F）', c:-costT, p:-costP, l:-costL, bold:true, hasSub:true, subKey:key, isOpen:open});
     if(open){ rows.push({name:'仕入（自動連携）', c:-cur.cost, p:-prv.cost, l:-lyr.cost, indent:true}); pushCatItems('F'); }
   }
-  rows.push({name:'売上総利益（粗利）', c:gross, p:prv.sales-costP, l:lyr.sales-costL, bold:true, line:true});
+  rows.push({name:'売上総利益（粗利）', c:gross, p:salesP-costP, l:salesL-costL, bold:true, line:true});
 
   { // ---- L: 人件費 ----
     const key='CAT:L', open=plExpAll||plExpSet.has(key); plAnyHasSub=true;
@@ -6103,8 +6128,8 @@ function viewPL(){
       <td style="${color}">${v(r2.c)}</td><td class="mut">${pct(Math.abs(r2.c))}</td>
       <td class="mut">${v(r2.p)}</td>${showYoY?`<td class="mut">${v(r2.l)}</td>`:''}
       <td class="${yc.cls==='up'?'pos':yc.cls==='dn'?'neg':'mut'}">${yc.t}</td></tr>`;
-    expP.push(showYoY?[r2.name,Math.round(r2.c),cur.sales>0?(Math.abs(r2.c)/cur.sales*100).toFixed(1)+'%':'',Math.round(r2.p),Math.round(r2.l)]
-                     :[r2.name,Math.round(r2.c),cur.sales>0?(Math.abs(r2.c)/cur.sales*100).toFixed(1)+'%':'',Math.round(r2.p)]);
+    expP.push(showYoY?[r2.name,Math.round(r2.c),pct(Math.abs(r2.c)),Math.round(r2.p),Math.round(r2.l)]
+                     :[r2.name,Math.round(r2.c),pct(Math.abs(r2.c)),Math.round(r2.p)]);
   });
   h+=`</tbody></table></div></div>`;
   EXPORT.push({ title:plTitle+'（'+mLabel+'／'+scopeLabel+'）', headers:showYoY?['項目','当期','売上比',prevName,'前年同期']:['項目','当期','売上比',prevName], rows:expP });
@@ -6120,16 +6145,17 @@ function viewPL(){
       const s1=new Set([nm]);
       const c1=stat(s1,mS,mE,null);
       const p1=plAgg(s1,nm,mS,mE,D.adPlExclude);
+      const dv1seg=segSplit(s1,mS,mE,null), sales1=c1.sales+(dv1seg.hasV?dv1seg.vn:0);  // 2026-09-17: デリバリー合算
       const a1=adAgg(s1,mS,mE,D.adPlExclude).ad + p1.catTotal.A;           // 広告費 = DB_広告 + DB_PLのA区分
       const l1=c1.labor + p1.catTotal.L;                     // 人件費 = 自動 + L区分
-      const g1=c1.sales - (c1.cost + p1.catTotal.F);         // 粗利 = 売上 - (自動仕入 + F区分)
+      const g1=sales1 - (c1.cost + p1.catTotal.F);           // 粗利 = 売上 - (自動仕入 + F区分)
       const e1=p1.catTotal.R + p1.catTotal.O;                // 経費 = 家賃 + 他
       const o1=g1-l1-a1-e1;
-      tS+=c1.sales;tG+=g1;tL+=l1;tA+=a1;tE+=e1;tO+=o1;
-      const orate=c1.sales>0?(o1/c1.sales*100).toFixed(1)+'%':'—';
-      h+=`<tr class="click" onclick="App.plDrillStore(this.dataset.n)" data-n="${esc(nm)}"><td>${shortStoreTd(nm)}</td><td>${yen(c1.sales)}</td><td>${yen(g1)}</td><td>${yen(l1)}</td><td>${yen(a1)}</td><td>${yen(e1)}</td>
+      tS+=sales1;tG+=g1;tL+=l1;tA+=a1;tE+=e1;tO+=o1;
+      const orate=sales1>0?(o1/sales1*100).toFixed(1)+'%':'—';
+      h+=`<tr class="click" onclick="App.plDrillStore(this.dataset.n)" data-n="${esc(nm)}"><td>${shortStoreTd(nm)}</td><td>${yen(sales1)}</td><td>${yen(g1)}</td><td>${yen(l1)}</td><td>${yen(a1)}</td><td>${yen(e1)}</td>
         <td class="${o1>=0?'pos':'neg'}" style="font-weight:700">${o1<0?'▲'+yen(-o1).slice(1):yen(o1)}</td><td class="${o1>=0?'pos':'neg'}">${orate}</td></tr>`;
-      expC.push([nm,Math.round(c1.sales),Math.round(g1),Math.round(l1),Math.round(a1),Math.round(e1),Math.round(o1),orate]);
+      expC.push([nm,Math.round(sales1),Math.round(g1),Math.round(l1),Math.round(a1),Math.round(e1),Math.round(o1),orate]);
     });
     h+=`<tr class="total"><td>合計</td><td>${yen(tS)}</td><td>${yen(tG)}</td><td>${yen(tL)}</td><td>${yen(tA)}</td><td>${yen(tE)}</td>
       <td class="${tO>=0?'pos':'neg'}">${tO<0?'▲'+yen(-tO).slice(1):yen(tO)}</td><td>${tS>0?(tO/tS*100).toFixed(1)+'%':'—'}</td></tr>`;
