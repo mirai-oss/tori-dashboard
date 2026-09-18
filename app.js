@@ -1656,10 +1656,18 @@ async function apiOnce_(params, timeoutMs){
 // ため、従来の最大2回・合計2秒の待ちでは不足していた。最大4回・合計約15秒（1→2→4→8秒）まで
 // 粘るよう拡大（それでも3分のAPI_TIMEOUT_MSより十分短い）。
 const API_RETRY_BACKOFF_MS_=[1000,2000,4000,8000];
-async function api(params, timeoutMs){
+// 2026-09-18（ラウンド6 A-11拡張・ユーザー実機フィードバック「そもそもログインして開けないことが
+// ある」対応）: 第4引数onRetryは省略可のコールバック。リトライ発生のたびattempt番号
+// （1始まり・API_RETRY_BACKOFF_MS_.lengthが最大）で呼ばれる。ログイン系（login/supalogin）だけ
+// 「接続が混み合っています。自動で再試行中…」を表示するために使う（無言のまま固まって見える
+// 状態を無くす。既存の呼び出し元はonRetryを渡さなければ従来と完全に同じ動作）。
+async function api(params, timeoutMs, onRetry){
   let lastErr;
   for(let attempt=0; attempt<=API_RETRY_BACKOFF_MS_.length; attempt++){
-    if(attempt>0) await new Promise(res=>setTimeout(res, API_RETRY_BACKOFF_MS_[attempt-1]));
+    if(attempt>0){
+      try{ if(onRetry) onRetry(attempt); }catch(e){}
+      await new Promise(res=>setTimeout(res, API_RETRY_BACKOFF_MS_[attempt-1]));
+    }
     try{ return await apiOnce_(params, timeoutMs); }
     catch(e){ lastErr=e; if(!e._retriable) throw e; }
   }
@@ -2098,7 +2106,8 @@ async function doLogin(){
   if(apiUrl()){
     try{
       $('li-btn').textContent='認証中…';
-      const d=await api({ action:'login', id, pw });
+      const d=await api({ action:'login', id, pw }, null, ()=>{ S.loginRetrying=true; render(); });
+      S.loginRetrying=false;
       if(!d.ok){ S.loginErr=d.error||'ログインに失敗しました'; render(); return; }
       S.auth={ token:d.token, account:d.account };
       try{ localStorage.setItem(LS.sess, JSON.stringify(S.auth)); }catch(e){}
@@ -2108,7 +2117,14 @@ async function doLogin(){
       render();
       fetchDataFast().then(()=>startPolling());
       return;
-    }catch(e){ S.loginErr='API接続エラー: '+e.message+'（接続設定を確認してください）'; render(); return; }
+    }catch(e){
+      S.loginRetrying=false;
+      // 2026-09-18: 自動リトライ（最大15秒）を使い切ってもなお失敗した場合の案内文。入力値は
+      // DOM（$('li-id')/$('li-pw')）にそのまま残っているため消えない＝そのまま再度「ログイン」
+      // ボタンを押せば再試行になる（ボタンのラベルもrender()で「ログイン」に戻る）。
+      S.loginErr='接続が混み合っていて、しばらく待っても応答がありませんでした（自動で複数回再試行しました）。もう一度「ログイン」を押すか、時間をおいてお試しください';
+      render(); return;
+    }
   }
   // デモモード（API未設定）
   const acc=demoAccounts().find(a=>a.id===id&&a.pw===pw);
@@ -2136,7 +2152,8 @@ async function doSsoLogin(){
       S.loginErr=(j&&j.error_code==='invalid_credentials')?'メールアドレスまたはパスワードが違います':'統合アカウントの認証に失敗しました（'+(j.msg||r.status)+'）';
       S.ssoOpen=true; render(); return;
     }
-    const d=await api({ action:'supalogin', stoken:j.access_token });
+    const d=await api({ action:'supalogin', stoken:j.access_token }, null, ()=>{ S.loginRetrying=true; render(); });
+    S.loginRetrying=false;
     if(!d.ok){
       // 旧GAS（supalogin未対応）は 'unknown action' か 'unauthorized' を返す → 再デプロイ待ちと案内
       const eo=String(d.error||'');
@@ -2154,7 +2171,12 @@ async function doSsoLogin(){
     S.connState='connecting';
     render();
     fetchDataFast().then(()=>startPolling());
-  }catch(e){ S.loginErr='通信エラー: '+e.message; S.ssoOpen=true; render(); }
+  }catch(e){
+    S.loginRetrying=false;
+    // 2026-09-18: doLoginと同じ理由。メール/パスワードの入力値はDOMに残るため再試行しやすい。
+    S.loginErr='接続が混み合っていて、しばらく待っても応答がありませんでした（自動で複数回再試行しました）。もう一度お試しいただくか、時間をおいてお試しください';
+    S.ssoOpen=true; render();
+  }
 }
 // ポータル（https://mirai-oss.github.io/ns-portal/）は同一オリジンなのでlocalStorageを共有できる。
 // ポータルでログイン済みなら、その統合アカウントのトークンで黙ってログインする（失敗時は通常のログイン画面のまま）。
@@ -2191,8 +2213,11 @@ async function trySilentPortalLogin(){
     const at=await portalAccessToken();
     if(!at) return;
     S.ssoAuto='trying'; render();
-    const d=await api({ action:'supalogin', stoken:at });
-    if(!d.ok){ S.ssoAuto=''; render(); return; }   // メール未登録などは黙って通常ログイン画面のまま
+    // 2026-09-18（ラウンド6 A-11拡張・ユーザー実機フィードバック「そもそもログインして開けない
+    // ことがある」対応）: 初回ロードの自動ログインでも接続混雑時はonRetryで状態を切り替え、
+    // 「認証中…」のまま無言で固まって見えないようにする。
+    const d=await api({ action:'supalogin', stoken:at }, null, ()=>{ S.ssoAuto='retrying'; render(); });
+    if(!d.ok){ S.ssoAuto=''; render(); return; }   // メール未登録などは黙って通常ログイン画面のまま（app_error応答は従来どおりサイレント）
     S.auth={ token:d.token, account:d.account };
     try{ localStorage.setItem(LS.sess, JSON.stringify(S.auth)); }catch(e){}
     S.ssoAuto='';
@@ -2200,7 +2225,15 @@ async function trySilentPortalLogin(){
     S.connState='connecting';
     render();
     fetchDataFast().then(()=>startPolling());
-  }catch(e){ S.ssoAuto=''; render(); }
+  }catch(e){
+    // 自動リトライ（最大15秒）を使い切っても失敗＝接続混雑の可能性が高いケースだけ、
+    // 通常ログイン画面に一言添えて着地する（原因不明のまま固まって見えるのを防ぐ。
+    // 「メール未登録」等のクリーンな{ok:false}はここを通らず上のif(!d.ok)経路で完全に無言のまま＝
+    // 従来どおり仕様を変えない）。
+    S.ssoAuto='';
+    S.loginErr='ポータルの自動ログインが混雑のため完了しませんでした。下のフォームからログインしてください';
+    render();
+  }
 }
 // 実装指示書_ダッシュボード高速化タスク3(A-3・2026-08-24): BQモードの段階展開。
 // 一度もトグル操作していない(localStorage未設定)ユーザーに限り、役職ベースで既定値を決める。
@@ -2449,6 +2482,7 @@ function viewLogin(){
     </div>
     <div class="login-body">
       ${S.ssoAuto==='trying'?`<div class="login-note" style="margin-bottom:12px">🐔 ポータルのアカウントでログイン中…</div>`:''}
+      ${S.ssoAuto==='retrying'||S.loginRetrying?`<div class="login-note" style="margin-bottom:12px">⏳ 接続が混み合っています。自動で再試行中…</div>`:''}
       ${S.loginErr?`<div class="login-err">${esc(S.loginErr)}</div>`:''}
       <label>ログインID</label>
       <input id="li-id" type="text" autocomplete="username" placeholder="ID を入力" onkeydown="if(event.key==='Enter')$('li-pw').focus()">
