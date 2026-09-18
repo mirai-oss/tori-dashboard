@@ -230,9 +230,13 @@ const D = { daily:[], media:[], deposit:[], review:[], ad:[], adfx:[], tanka:{},
   rsvSeats:[], rsvSeatsLoaded:false, rsvHours:{},  // 予約タブ：店舗ごとの卓一覧（DB_席マスタ）・営業時間（DB_営業時間、店舗名→[{spec,open,close}]の配列。resolveStoreHours_で日付ごとに1件選ぶ）
   home:null, homeLoading:false, homeErr:'',  // P-0c(2026-09-06): keiei-api-homeの速報値。D.dailyが届くまでの間だけviewDashFast_で使う
   mediaSummaryFast:null, depositSummaryFast:null, depositSummaryFastYm:'', plSummaryFast:null, plSummaryFastYm:'',
-  dailyKd:null };  // 2026-09-14: kd_dashboard_daily_summaryをSupabase直読み（GAS非経由・脱GAS移行）。
+  dailyKd:null,   // 2026-09-14: kd_dashboard_daily_summaryをSupabase直読み（GAS非経由・脱GAS移行）。
                     // 推移分析(viewAnalysis)専用の高速経路。D.dailyの他の用途（PL・目標管理等、原価/人件費の
                     // 内訳が必要）には使わない＝D.dailyはこれまでどおりGAS/シート経由のまま並行して残す。
+  plKd:null, plKdAt:0 };  // 2026-09-18（ラウンド6 A-12）: kd_pl_monthly_summaryをSupabase直読み（全期間・
+                    // 店舗×年月の1行ずつ）。現時点では検証パネル(plShadowCompareNote_)の一般化にのみ使う
+                    // （本番のKPIカード・PL表はまだ従来経路のまま＝全社共通経費がkd_側に無い既知の
+                    // ギャップをレーンPに確認中のため、確認が取れるまで主表示は切り替えない）。
 let EXPORT = [];      // 現在タブのCSVエクスポート対象 [{title,headers,rows}]
 let pollTimer = null;
 
@@ -1830,6 +1834,45 @@ async function fetchAnalysisKd_(){
     if(!targetModalOpen_()) render();
   }catch(e){ /* 失敗してもD.dailyKdはnullのまま＝viewAnalysis側が既存のD.daily経路へ自動フォールバック */ }
 }
+// 2026-09-18（ラウンド6 A-12・fetchAnalysisKd_と同じ考え方）: kd_pl_monthly_summaryを
+// Supabase直読み（店舗×年月で1行・全期間ぶん。実測190行程度なので通常1ページで終わる）。
+// SWR: 直近フェッチから5分未満ならスキップ（force=trueで強制再取得。sync_run_idはP側の
+// リフレッシュ単位で変わる値だが、リフレッシュが1日1回のため時間ベースの間引きで十分）。
+// 現状は検証パネル（plShadowCompareNote_）の一般化にのみ使い、本番のKPI/PL表はまだ触らない
+// （全社共通経費がkd_側に無い既知のギャップをP確認待ちのため。D.plKdはいつでも安全にnullの
+// まま扱えるよう、参照側は必ずnullチェック・見つからない行はフォールバックする設計にすること）。
+async function fetchPlKd_(force){
+  if(!S.auth||!S.auth.token) return;
+  if(!force && D.plKd && (nowMs_()-D.plKdAt)<300000) return;   // 5分以内の再取得はスキップ（SWR）
+  try{
+    const jwt=await portalAccessToken().catch(()=>null);
+    if(!jwt) return;   // 統合アカウント未連携。検証パネルは非表示のまま（isAdminRoleチェックと同様に無害）
+    const cols='store_id,year_month,sales,cost_total,labor_total,ad_manual,rent,other,gross_profit,sga,operating_profit,seisan_pending_total,computed_at,sync_run_id';
+    const base=SSO_SUPA_URL+'/rest/v1/kd_pl_monthly_summary?select='+cols+'&order=year_month.asc';
+    const PAGE=2000;
+    let offset=0, rowsAll=[], guard=0;
+    const t0=nowMs_();
+    while(guard++<10){   // 10ページ(=最大2万行)で安全弁。実データは190行程度のため通常1回で終わる
+      const res=await fetch(base,{ headers:{ apikey:SSO_SUPA_KEY, Authorization:'Bearer '+jwt, Range:offset+'-'+(offset+PAGE-1) } });
+      if(!res.ok){ logApiPerf_('kd_pl_monthly_summary:shadow', nowMs_()-t0, false, 'http_'+res.status); return; }
+      const page=await res.json().catch(()=>null);
+      if(!Array.isArray(page)) break;
+      rowsAll=rowsAll.concat(page);
+      if(page.length<PAGE) break;
+      offset+=PAGE;
+    }
+    logApiPerf_('kd_pl_monthly_summary:shadow', nowMs_()-t0, true, '');
+    D.plKd=rowsAll.map(r=>({
+      store:storeNameById_(r.store_id)||'', ym:r.year_month,
+      sales:Number(r.sales||0), costTotal:Number(r.cost_total||0), laborTotal:Number(r.labor_total||0),
+      adManual:Number(r.ad_manual||0), rent:Number(r.rent||0), other:Number(r.other||0),
+      gross:Number(r.gross_profit||0), sga:Number(r.sga||0), op:Number(r.operating_profit||0),
+      pending:Number(r.seisan_pending_total||0), computedAt:r.computed_at||'', syncRunId:r.sync_run_id||''
+    })).filter(r=>r.store&&r.ym);
+    D.plKdAt=nowMs_();
+    if(!targetModalOpen_()) render();
+  }catch(e){ /* 失敗してもD.plKdはnullのまま＝参照側は必ずフォールバックする設計 */ }
+}
 // 初回・更新で「本当に重い」データだけ（実測：media=12s/dinii=6.3s/deposit=5.4s/予約=3.3s）。
 // 広告・広告効果・単価設定は実測200〜250msと軽いためフェーズ1に含める（除外すると広告管理タブが
 // 裏読み完了前に開かれた場合「未接続」と誤診断されてしまうため）。
@@ -1857,6 +1900,7 @@ async function fetchDataFast(){
   fetchDashboardSummaryApi_('deposit', curYm_).then(d=>{ if(d){ D.depositSummaryFast=d.rows; D.depositSummaryFastYm=curYm_; if(!targetModalOpen_()) render(); } });
   fetchDashboardSummaryApi_('pl', curYm_).then(d=>{ if(d){ D.plSummaryFast=d.rows; D.plSummaryFastYm=curYm_; if(!targetModalOpen_()) render(); } });
   fetchAnalysisKd_();   // 2026-09-14: 推移分析専用の高速経路（脱GAS）。失敗時は自動でD.dailyへフォールバック
+  fetchPlKd_();   // 2026-09-18（ラウンド6 A-12）: PL新旧突合パネルの一般化用（現状は検証専用・本番表示は未使用）
   if(S.useBqDaily){ fetchDailyBQ(); fetchPlBQ(); fetchDepositBQ(); fetchMediaBQ(); fetchSpotBQ(); fetchLoanBQ(); }
   fetchFreshness();                                       // データ鮮度表示（5分キャッシュ・下のfetchFreshness参照）
   // 2026-09-02追加: 更新(⌘R)ボタンは目標管理モーダルを開いたまま押せてしまうため、ここもガードする
@@ -5589,11 +5633,13 @@ function rsvAnalysisHtml_(){
 
 // W3②（2026-09-06・司令塔指示「PL・売上分析・入金画面の差し替え調査」）: kd_pl_monthly_summary（新）
 // と旧GAS/BQ集計（旧）の突合パネル。本番表示（KPI・PLテーブル等）には一切使わず、マスター/本部にだけ
-// 見せる検証専用（DASH_SUMMARY_PL_LIVE_=false固定）。じんべぇ川崎・じんべぇ新横浜・エース本厚木・
-// 秋葉原肉寿司の4店舗（業務委託精算店舗）は、原価・人件費が業務委託精算書側で計算されており通常PL集計
-// にまだ現れない既知の状態（異常ではない・司令塔確認済み）なので「業務委託精算書反映前」と明記し、
-// 差異として扱わない（Pがkd_pl_monthly_summaryへ精算書反映分を取り込めるようにする設計は別途進行中）。
-const SEISAN_STORES_ = ['じんべぇ 川崎','じんべぇ 新横浜','エース 本厚木','秋葉原 肉寿司'];
+// 見せる検証専用（DASH_SUMMARY_PL_LIVE_=false固定）。
+// 2026-09-18（ラウンド6 A-12）修正: 業務委託精算店舗の「原価・人件費が精算書側で計算されており
+// 通常PL集計にまだ現れない」既知の差異を、店舗名の固定リスト（SEISAN_STORES_）ではなく
+// kd_pl_monthly_summary.seisan_pending_total（D.plKd経由）で動的に判定するよう変更。対象店舗が
+// 増減してもコード修正不要になる（旧SEISAN_STORES_の考え方は維持・置き換えただけ＝ロジック自体は
+// 従来どおり「精算書反映待ちの差異は異常として扱わない」）。D.plKdが未取得の間はseisan判定なし
+// （＝安全側で「⚠️要確認」寄りにフォールバック。表示自体は従来どおりD.plSummaryFast＝当月のみ）。
 function plShadowCompareNote_(sc, mS, mE, ym){
   if(!isAdminRole() || !ym || !D.plSummaryFast || D.plSummaryFastYm!==ym) return '';
   const rows=sc.map(nm=>{
@@ -5603,7 +5649,8 @@ function plShadowCompareNote_(sc, mS, mE, ym){
     const costOld=c1.cost+p1.catTotal.F, laborOld=c1.labor+p1.catTotal.L, salesOld=c1.sales;
     const hit=D.plSummaryFast.find(r=>storeNameById_(r.store_id)===nm);
     if(!hit) return null;
-    return { nm, salesOld, salesNew:Number(hit.sales||0), costOld, costNew:Number(hit.cost_total||0), laborOld, laborNew:Number(hit.labor_total||0), seisan:SEISAN_STORES_.includes(nm), computedAt:hit.computed_at||'' };
+    const kdHit=D.plKd&&D.plKd.find(r=>r.store===nm&&r.ym===ym);
+    return { nm, salesOld, salesNew:Number(hit.sales||0), costOld, costNew:Number(hit.cost_total||0), laborOld, laborNew:Number(hit.labor_total||0), seisan:!!(kdHit&&kdHit.pending>0), pendingAmt:kdHit?kdHit.pending:0, computedAt:hit.computed_at||'' };
   }).filter(Boolean);
   if(!rows.length) return '';
   // 2026-09-07修正（ユーザー報告「差異あり」の原因調査で判明）: kd_pl_monthly_summaryはkeiei-kd-refresh
@@ -5621,7 +5668,7 @@ function plShadowCompareNote_(sc, mS, mE, ym){
   rows.forEach(r=>{
     const diffSales=r.salesNew-r.salesOld, diffCost=r.costNew-r.costOld, diffLabor=r.laborNew-r.laborOld;
     let note,cls;
-    if(r.seisan){ note='業務委託精算書反映前'; cls='mut'; }
+    if(r.seisan){ note='⚠️確定処理中（精算書反映待ち・'+yen(r.pendingAmt)+'）'; cls='mut'; }
     else if(diffSales<=0 && diffCost<=0 && diffLabor<=0){
       note=(diffSales===0&&diffCost===0&&diffLabor===0)?'一致':'更新待ち（バッチ未反映分・正常）';
       cls=note==='一致'?'pos':'mut';
