@@ -532,13 +532,70 @@ function accountRows() {
   return rows;
 }
 
-// === セッション保存（消えない場所=ScriptProperties に保存）===
+// === セッション保存（A-11・2026-09-18: ds_sessions（Supabase・レーンPが用意）を正本へ移行中。
+// 新旧併用フラグ SESSION_BACKEND（スクリプトプロパティ）で段階切替する:
+//   'supabase' = 読み取りはds_sessions優先（無ければPropertiesへフォールバック）
+//   未設定/それ以外 = 従来どおりPropertiesServiceのみで読み取り（既定・安全側）
+// 書き込みは常に両方へ行う（ベストエフォート。Supabase書き込み失敗でもログイン自体は失敗させない）。
+// これにより、フラグを'supabase'へ切り替えた時点で既にPropertiesにしかない古いセッションは、
+// 一度でもsessionGet()を通れば自動的にSupabaseへも複製されるため、既存ログイン中ユーザーを
+// 切断せずに移行できる（切替直後だけ稀にフォールバック経由になるが、ログアウトはしない）。
+// 背景: PropertiesService（GASプロジェクトごとに独立した単一共有ストア）は利用者増で競合・
+// 容量が不安定要因になっていた（2026-09-17担当D特定・WORKLOG参照）。===
+function sessionBackend_(){ return PropertiesService.getScriptProperties().getProperty('SESSION_BACKEND') || 'properties'; }
 function sessionStore(){ return PropertiesService.getScriptProperties(); }
+// ds_sessions用のURL/ヘッダー。SUPABASE_URL/SUPABASE_SERVICE_KEY未設定なら null
+// （他の箇所=bqFetchReservationRows_等と同じ既存のスクリプトプロパティを流用・新規登録不要）。
+function sessionSupaHeaders_(){
+  var url = PropertiesService.getScriptProperties().getProperty('SUPABASE_URL');
+  var key = PropertiesService.getScriptProperties().getProperty('SUPABASE_SERVICE_KEY');
+  if (!url || !key) return null;
+  return { url: url, headers: { apikey: key, Authorization: 'Bearer ' + key, 'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates' } };
+}
+// upsert（Prefer: resolution=merge-duplicatesでtoken主キーの重複時は上書き）。失敗しても例外を
+// 投げない＝Supabase側の一時不調でログイン・APIアクセス自体を失敗させないための設計。
+function sessionSupaPut_(token, sess, exp){
+  var h = sessionSupaHeaders_(); if (!h) return false;
+  try {
+    UrlFetchApp.fetch(h.url + '/rest/v1/ds_sessions', {
+      method: 'post', headers: h.headers, muteHttpExceptions: true,
+      payload: JSON.stringify({ token: token, sess: sess, expires_at: new Date(exp).toISOString(), last_seen_at: new Date().toISOString() })
+    });
+    return true;
+  } catch (e) { return false; }
+}
+function sessionSupaGet_(token){
+  var h = sessionSupaHeaders_(); if (!h) return null;
+  try {
+    var res = UrlFetchApp.fetch(h.url + '/rest/v1/ds_sessions?token=eq.' + encodeURIComponent(token) + '&select=sess,expires_at', { headers: h.headers, muteHttpExceptions: true });
+    if (res.getResponseCode() !== 200) return null;
+    var rows = JSON.parse(res.getContentText() || '[]');
+    if (!rows.length) return null;
+    var exp = new Date(rows[0].expires_at).getTime();
+    if (!exp || new Date().getTime() > exp) { sessionSupaDel_(token); return null; }
+    return { sess: rows[0].sess, exp: exp };
+  } catch (e) { return null; }
+}
+function sessionSupaDel_(token){
+  var h = sessionSupaHeaders_(); if (!h) return;
+  try { UrlFetchApp.fetch(h.url + '/rest/v1/ds_sessions?token=eq.' + encodeURIComponent(token), { method: 'delete', headers: h.headers, muteHttpExceptions: true }); } catch (e) {}
+}
 function sessionPut(token, sess){
   var exp = new Date().getTime() + TOKEN_HOURS * 3600 * 1000;
-  sessionStore().setProperty('tok_' + token, JSON.stringify({ sess: sess, exp: exp }));
+  sessionStore().setProperty('tok_' + token, JSON.stringify({ sess: sess, exp: exp }));  // 常に書く（フォールバック・安全網として維持）
+  sessionSupaPut_(token, sess, exp);   // ベストエフォートで複製
 }
 function sessionGet(token){
+  if (sessionBackend_() === 'supabase') {
+    var hit = sessionSupaGet_(token);
+    if (hit) {
+      var expS = new Date().getTime() + TOKEN_HOURS * 3600 * 1000;   // 使うたびに期限を延長（Propertiesと同じsliding TTL）
+      sessionSupaPut_(token, hit.sess, expS);
+      sessionStore().setProperty('tok_' + token, JSON.stringify({ sess: hit.sess, exp: expS }));   // Propertiesにも同期（バックエンドを戻しても困らないように）
+      return hit.sess;
+    }
+    // ds_sessionsに無い＝移行前の古いセッション、またはSupabase側の一時不調。Propertiesへフォールバック（下続行）
+  }
   var store = sessionStore();
   var raw = store.getProperty('tok_' + token);
   if (!raw) return null;
@@ -546,9 +603,10 @@ function sessionGet(token){
   if (!obj.exp || new Date().getTime() > obj.exp) { store.deleteProperty('tok_' + token); return null; }
   obj.exp = new Date().getTime() + TOKEN_HOURS * 3600 * 1000; // 使うたびに期限を延長
   store.setProperty('tok_' + token, JSON.stringify(obj));
+  sessionSupaPut_(token, obj.sess, obj.exp);   // Propertiesにしかなかった旧セッションもここでSupabaseへ複製（次回からsupabase経路で見つかる）
   return obj.sess;
 }
-function sessionDel(token){ sessionStore().deleteProperty('tok_' + token); }
+function sessionDel(token){ sessionStore().deleteProperty('tok_' + token); sessionSupaDel_(token); }
 // 期限切れの古いトークンを掃除。store.getProperties()はスクリプトプロパティ全件を毎回まるごと
 // 読み込む重い呼び出しで、従来はlogin()/supaLogin()のたびに毎回実行していたため「ログインが遅い」
 // 原因の一つになっていた（2026-09-11・ユーザー報告対応）。個別の期限切れは既にsessionGet()が
