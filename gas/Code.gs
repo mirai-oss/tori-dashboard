@@ -3087,8 +3087,18 @@ function syncSeisanFeeToPl(p) {
   stores.forEach(function (s) {
     var store = s.name;
     try {
+      // 2026-09-19修正: この関数を含む精算ダッシュボードへの4箇所のUrlFetchApp.fetch呼び出しは
+      // 全てcontentType:'application/json'で送っていたが、じんべぇ川崎・黒霧屋新横浜宛の呼び出しで
+      // 断続的に「このエンドポイントはJSON APIです」（doGetのフォールバック文言）が返る不具合が
+      // 発生していた（週次連携ジョブの実行ログで確認・ユーザー報告「運営委託費が反映されない」の
+      // 一因）。GASのexec URLは内部でリダイレクトを挟むことがあり、application/json指定だと
+      // その際にPOSTがGETへ化ける事例が他所（tori-dashboard app.js・ns-portal pl-fee-reflect）でも
+      // 確認済み。既にtext/plain;charset=utf-8への統一でこの問題を回避している他の呼び出しに合わせ、
+      // 精算ダッシュボード宛の4箇所（sd_apiTransferEx/sd_apiCategorizedLines/sd_apiMarkPlSynced/
+      // sd_apiAddExternalLine）も同じcontentTypeへ統一した（doPostはe.postData.contentsを
+      // そのままJSON.parseするだけなのでcontentType自体の変更による解析への影響は無い）。
       var res = UrlFetchApp.fetch(seisanUrl, {
-        method: 'post', contentType: 'application/json', muteHttpExceptions: true,
+        method: 'post', contentType: 'text/plain;charset=utf-8', muteHttpExceptions: true,
         payload: JSON.stringify({ fn: 'sd_apiTransferEx', args: [plSyncToken, s.seisanName, ym] })
       });
       var j = JSON.parse(res.getContentText());
@@ -3283,7 +3293,7 @@ function syncSeisanCategoriesToPl(p) {
     stores.forEach(function (s) {
       try {
         var res = UrlFetchApp.fetch(seisanUrl, {
-          method: 'post', contentType: 'application/json', muteHttpExceptions: true,
+          method: 'post', contentType: 'text/plain;charset=utf-8', muteHttpExceptions: true,
           payload: JSON.stringify({ fn: 'sd_apiCategorizedLines', args: [plSyncToken, s.seisanName, ym] })
         });
         var j = JSON.parse(res.getContentText());
@@ -3357,7 +3367,7 @@ function syncSeisanCategoriesToPl(p) {
       Object.keys(syncReport).forEach(function (seisanName) {
         try {
           UrlFetchApp.fetch(seisanUrl, {
-            method: 'post', contentType: 'application/json', muteHttpExceptions: true,
+            method: 'post', contentType: 'text/plain;charset=utf-8', muteHttpExceptions: true,
             payload: JSON.stringify({
               fn: 'sd_apiMarkPlSynced',
               args: [plSyncToken, seisanName, ym, { ok: syncReport[seisanName].ok, error: syncReport[seisanName].error || '', syncedAt: syncedAtIso }]
@@ -5314,7 +5324,7 @@ function writeAccountCostToPl_(p) {
           if (!seisanName) return; // 精算対象外の店舗はスキップ
           try {
             var res = UrlFetchApp.fetch(seisanUrl, {
-              method: 'post', contentType: 'application/json', muteHttpExceptions: true,
+              method: 'post', contentType: 'text/plain;charset=utf-8', muteHttpExceptions: true,
               payload: JSON.stringify({
                 fn: 'sd_apiAddExternalLine',
                 args: [plSyncToken, seisanName, ym, {
