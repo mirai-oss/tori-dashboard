@@ -1677,6 +1677,19 @@ function stampNow(){ const n=new Date(); return (n.getMonth()+1)+'/'+n.getDate()
 // タイムスタンプ(ms)を「M/D HH:mm」に整形（週報の提出・編集日時表示用）
 function fmtDT(t){ if(!t) return ''; const d=new Date(t); return (d.getMonth()+1)+'/'+d.getDate()+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); }
 function monthsWindow(){ const v=localStorage.getItem(LS.months); return v==null?13:Number(v); } // 0=全期間, 既定13ヶ月(前年比の最小)
+// 2026-09-19追加（ユーザー報告「推移分析の年初来×月別で前年比較がすべて0になる」対応）:
+// monthsWindow()の既定13ヶ月は「直近13ヶ月分の日別データ」しか要求しないため、「年初来」表示
+// （1月〜現在）の前年比較（前年の1月〜現在月）は最大で21ヶ月前（例: 9月に見ると前年1月は
+// 20ヶ月前）までのデータが必要になり、13ヶ月では全く足りていなかった。年初来を見るのに十分な
+// 幅（今年の経過月数＋12ヶ月＝前年の同じ月まで）を計算し、monthsWindow()（ユーザーが24/36/全期間
+// を選んでいればそちらが優先）とのどちらか大きい方を使う。0（全期間）はそのまま優先する。
+function bqMonthsForDaily_(){
+  const mw=monthsWindow();
+  if(mw===0) return 0;   // 全期間選択時はそのまま（絞り込み不要）
+  const now=D.refDate||new Date();
+  const neededForYtdPriorYear=(now.getMonth()+1)+12;   // 今年の経過月数＋前年12ヶ月分
+  return Math.max(mw, neededForYtdPriorYear);
+}
 // 入金の繰越（開始残高）を「サーバー側で全期間から」計算して取り込む。
 // 取得期間を13/24ヶ月に絞っても累計残が正しくなるよう、指定月より前の店舗別合計だけ軽く受け取る。
 async function fetchDepCarry(beforeStr){
@@ -1697,7 +1710,7 @@ async function fetchDepCarry(beforeStr){
 async function fetchData(silent, opts, preD){
   if(!S.auth||!S.auth.token) return;
   opts=opts||{};
-  if(!silent){ S.connState='connecting'; renderHeaderOnly(); }
+  if(!silent){ setConnecting_(); renderHeaderOnly(); }
   try{
     let d;
     if(preD){ d=preD; }
@@ -1947,7 +1960,7 @@ async function fetchDailyBQ(preD){
     // 2026-09-14: 既定のAPI_TIMEOUT_MS(3分)のままだと、詰まったときに画面が3分間ずっと
     // 「読み込み中」に見えてしまう（ユーザー報告「遅すぎて全然開けない」）。45秒で見切りを付けて
     // シート経路へ自動フォールバックするほうが実用的なため、このBQ経路だけ短いタイムアウトにする。
-    const d=preD||await api({ action:'bqDailyStore', token:S.auth.token, months:monthsWindow() }, 45000);
+    const d=preD||await api({ action:'bqDailyStore', token:S.auth.token, months:bqMonthsForDaily_() }, 45000);
     if(d&&d.ok&&d.sheets){ ingestSheets(d.sheets, true); D.dailyBqErr=''; D.bqFallback.daily=false; }
     else{ D.dailyBqErr=(d&&d.error)||'取得に失敗しました'; await bqFallbackToSheet_('daily'); }
   }catch(e){ D.dailyBqErr=String(e&&e.message||e); await bqFallbackToSheet_('daily'); }
@@ -2113,7 +2126,7 @@ async function doLogin(){
       try{ localStorage.setItem(LS.sess, JSON.stringify(S.auth)); }catch(e){}
       afterLogin();
       // 認証はここで完了 → 先にダッシュボードを表示し、重いデータ取得は裏で行う
-      S.connState='connecting';
+      setConnecting_();
       render();
       fetchDataFast().then(()=>startPolling());
       return;
@@ -2168,7 +2181,7 @@ async function doSsoLogin(){
     // ns-portal側に一度もログインしていない」ケースでは予約タブが毎回旧GAS経路のままになる。
     try{ localStorage.setItem(PORTAL_LS_KEY, JSON.stringify({ at:j.access_token, rt:j.refresh_token, uid:j.user&&j.user.id })); }catch(e){}
     afterLogin();
-    S.connState='connecting';
+    setConnecting_();
     render();
     fetchDataFast().then(()=>startPolling());
   }catch(e){
@@ -2222,7 +2235,7 @@ async function trySilentPortalLogin(){
     try{ localStorage.setItem(LS.sess, JSON.stringify(S.auth)); }catch(e){}
     S.ssoAuto='';
     afterLogin();
-    S.connState='connecting';
+    setConnecting_();
     render();
     fetchDataFast().then(()=>startPolling());
   }catch(e){
@@ -2406,9 +2419,31 @@ function freshnessLine(){
 function connBadge(){
   if(S.connState==='live') return `<span class="st-live">● スプレッドシート連携中</span>（自動更新）<br>最終同期 ${esc(S.lastSync)}`+freshnessLine();
   if(S.connState==='livewarn') return `<span style="color:#b5502f">● 連携中（データ未取込）</span><br>最終同期 ${esc(S.lastSync)}`+freshnessLine();
-  if(S.connState==='connecting') return `<span style="color:#a2803f">● 同期中…</span>`;
+  if(S.connState==='connecting'){
+    // 2026-09-19追加（ユーザー報告「ログイン時に同期中でずっと止まっている」対応）: GAS側が
+    // 混雑時に実測100〜260秒かかることがあり（HANDOFF.md記載）、従来は「● 同期中…」のまま
+    // 無言で長時間変化が無く、フリーズしたように見えていた。10秒経過で「時間がかかっています」、
+    // 30秒経過で手動更新を促す文言に段階的に切り替える（connectingTicker_が定期的にrender()を
+    // 呼ぶので、待っている間もこの文言は自動で更新される）。
+    const elapsed=S.connectingSince?(Date.now()-S.connectingSince):0;
+    if(elapsed>30000) return `<span style="color:#a2803f">● 同期中…（時間がかかっています。しばらくして直らない場合は「更新」を押してください）</span>`;
+    if(elapsed>10000) return `<span style="color:#a2803f">● 同期中…（応答に時間がかかっています）</span>`;
+    return `<span style="color:#a2803f">● 同期中…</span>`;
+  }
   if(S.connState==='error') return `<span style="color:#b5502f">● 同期エラー</span><br>最終同期 ${esc(S.lastSync||'—')}`;
   return `<span class="st-demo">● サンプルデータ表示中</span><br>接続設定からAPIを登録してください`;
+}
+// connState='connecting'の間だけ、上のconnBadge()の経過時間表示を更新するために定期render()する
+// （実際のデータ取得・リトライ自体は従来どおりapi()側の責務。このタイマーは表示の鮮度だけを保つ）。
+let connectingTicker_=null;
+function setConnecting_(){
+  S.connState='connecting';
+  S.connectingSince=Date.now();
+  if(connectingTicker_) clearInterval(connectingTicker_);
+  connectingTicker_=setInterval(()=>{
+    if(S.connState!=='connecting'){ clearInterval(connectingTicker_); connectingTicker_=null; return; }
+    if(!targetModalOpen_()) render();
+  }, 5000);
 }
 // 取込診断バナー（実データが入らなかった時に何が原因か表示）
 function diagBanner(){
@@ -9385,7 +9420,7 @@ window.App = {
         // ?tab=（S.pendingTab）が2回目以降のアクセス（=ログイン情報復元）で適用されず無視されていた
         // （新規ログイン時のみ効いていた）。afterLogin()を呼んで解消（tab反映・store初期化・
         // applyBqDailyRoleDefault_()も内包）。
-        if(sess.token&&apiUrl()){ S.auth=sess; afterLogin(); S.connState='connecting'; fetchDataFast(); startPolling(); restored=true; }
+        if(sess.token&&apiUrl()){ S.auth=sess; afterLogin(); setConnecting_(); fetchDataFast(); startPolling(); restored=true; }
         else if(!sess.token&&!apiUrl()){ S.auth=sess; afterLogin(); restored=true; }
       }
     }
