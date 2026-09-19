@@ -1841,14 +1841,20 @@ async function fetchAnalysisKd_(){
     const PAGE=2000;
     let offset=0, rowsAll=[], guard=0;
     const t0=nowMs_();
-    while(guard++<30){   // 30ページ(=最大6万行)で安全弁。通常は数ページで終わる想定
+    // 2026-09-19修正（重大バグ・ユーザー報告「推移分析が全月0になる」）: PostgREST側にRangeで
+    // 要求した件数より少ない件数しか返さない上限設定（db-max-rowsが既定1000等）があると、
+    // 従来の「返ってきた件数がPAGE未満なら最後のページ」という判定は誤り（上限で切られただけで
+    // まだ後続がある）。実機で1ページ目=1000件返った時点でこの誤判定によりページングが止まり、
+    // period_date.asc（古い順）の並びのため最も古いデータしか読めておらず、直近（当年）の日付が
+    // 一切取得できていなかった。offsetは実際に受け取った件数ぶんだけ進め、空配列が返るまで
+    // ページングを続けるよう修正（サーバー側の上限設定に依存しない・正しい終了判定）。
+    while(guard++<60){   // 60ページ(=1ページ最低でも数百件は返る想定なので十分な安全弁)
       const res=await fetch(base,{ headers:{ apikey:SSO_SUPA_KEY, Authorization:'Bearer '+jwt, Range:offset+'-'+(offset+PAGE-1) } });
       if(!res.ok){ logApiPerf_('kd_dashboard_daily_summary:analysis', nowMs_()-t0, false, 'http_'+res.status); return; }
       const page=await res.json().catch(()=>null);
-      if(!Array.isArray(page)) break;
+      if(!Array.isArray(page) || page.length===0) break;
       rowsAll=rowsAll.concat(page);
-      if(page.length<PAGE) break;
-      offset+=PAGE;
+      offset+=page.length;
     }
     logApiPerf_('kd_dashboard_daily_summary:analysis', nowMs_()-t0, true, '');
     D.dailyKd=rowsAll.map(r=>({ store:storeNameById_(r.store_id)||'', t:parseDateStr(r.period_date), sales:Number(r.net_sales||0), guests:Number(r.guests||0) })).filter(r=>r.store&&r.t);
@@ -1873,14 +1879,16 @@ async function fetchPlKd_(force){
     const PAGE=2000;
     let offset=0, rowsAll=[], guard=0;
     const t0=nowMs_();
-    while(guard++<10){   // 10ページ(=最大2万行)で安全弁。実データは190行程度のため通常1回で終わる
+    // 2026-09-19修正（fetchAnalysisKd_と同じ重大バグ対策）: PostgREST側の1回あたり件数上限
+    // （db-max-rows既定1000等）でRange要求より少なく返ってくる場合、「PAGE未満だから最終ページ」
+    // という判定は誤り。offsetは実際の受信件数ぶんだけ進め、空配列が返るまで続ける。
+    while(guard++<20){   // 20ページ(1ページ最低でも数百件は返る想定なので十分な安全弁)
       const res=await fetch(base,{ headers:{ apikey:SSO_SUPA_KEY, Authorization:'Bearer '+jwt, Range:offset+'-'+(offset+PAGE-1) } });
       if(!res.ok){ logApiPerf_('kd_pl_monthly_summary:shadow', nowMs_()-t0, false, 'http_'+res.status); return; }
       const page=await res.json().catch(()=>null);
-      if(!Array.isArray(page)) break;
+      if(!Array.isArray(page) || page.length===0) break;
       rowsAll=rowsAll.concat(page);
-      if(page.length<PAGE) break;
-      offset+=PAGE;
+      offset+=page.length;
     }
     logApiPerf_('kd_pl_monthly_summary:shadow', nowMs_()-t0, true, '');
     D.plKd=rowsAll.map(r=>({
@@ -2019,16 +2027,33 @@ async function fetchDepositBQ(preD){
 // 媒体別日次用: 媒体別DBのBQミラーを読む（2026-08-23追加。fetchDepositBQと同じ考え方）。
 // D.mediaPendingはここでクリアする（ログイン処理のDATA_WAITがこのフラグを見ているため、
 // 成功・失敗どちらでも必ずfalseにして固まらないようにする＝他のfetchXxxBQ()と同じ設計）。
+// 2026-09-19追加（ユーザー報告「推移分析の年初来×月別ですべての月が0になる」の媒体別版）:
+// 既定の3ヶ月固定では、推移分析タブで「年初来」「期間指定」を選んだときに3ヶ月より前の月が
+// 一切取得されておらず、画面側は0として表示していた（bqMonthsForDaily_と同じ原因のクラス）。
+// 媒体別日次は件数が非常に多い（実測21,000件超／5ヶ月）ため、既定の3ヶ月は維持しつつ、
+// 「年初来」「期間指定」を選んでいるときだけ、その表示に必要な分だけ広げる。
+function bqMonthsForMedia_(){
+  if(S.aRange!=='year' && S.aRange!=='custom') return 3;   // 既定（直近30/90日）は軽量な3ヶ月のまま
+  const now=D.refDate||new Date();
+  if(S.aRange==='year') return (now.getMonth()+1)+12;   // 年初来の経過月数＋前年比較の12ヶ月
+  const start=S.cStart?parseDateStr(S.cStart):null;
+  if(!start) return 3;
+  const monthsBack=(now.getFullYear()-start.getFullYear())*12+(now.getMonth()-start.getMonth())+1;
+  return Math.max(monthsBack+12, 3);   // 期間指定の幅＋前年比較の12ヶ月
+}
 async function fetchMediaBQ(preD){
   if(!S.auth||!S.auth.token) return;
   try{
-    // 媒体別日次は「店舗×媒体×日」の粒度で分析_日別店舗より遥かに件数が多いため
-    // （実測21,000件超／5ヶ月）、他のBQ取得と同じmonthsWindow()=13ヶ月ではほぼ絞れない。
-    // ログイン直後の表示に必要な直近3ヶ月だけに絞って高速化する（2026-08-23）。
     // alsoPriorYear=1（2026-08-26追加）: 「媒体別 売上」パネルの前年比（mediaTableRows()）が
     // 直近3ヶ月しか無いD.mediaでは常に「前年 ―」になっていた不具合の修正。ちょうど1年前の
-    // 同じ3ヶ月分もあわせて取得する（全期間を取るより遥かに軽い）。
-    const d=preD||await api({ action:'bqGetMedia', token:S.auth.token, months:3, alsoPriorYear:1 });
+    // 同じ3ヶ月分もあわせて取得する（全期間を取るより遥かに軽い）。widenMonths_で既に前年分まで
+    // 含めて取得する場合は、二重取得を避けるためalsoPriorYearは付けない。
+    const monthsParam=bqMonthsForMedia_();
+    const widened=monthsParam>3;
+    // 2026-09-19追加: 年初来・期間指定で広い範囲を取得する場合は件数が大きく増えうるため
+    // （既定3ヶ月の実測21,000件超から比例すると年初来で数万件規模）、fetchDailyBQと同じく
+    // 短いタイムアウトで見切りを付けてシート経路へフォールバックする（画面が長時間固まるのを防ぐ）。
+    const d=preD||await api({ action:'bqGetMedia', token:S.auth.token, months:monthsParam, alsoPriorYear:widened?0:1 }, widened?60000:undefined);
     if(d&&d.ok&&d.sheets){ ingestSheets(d.sheets, true); D.bqFallback.media=false; }
     else{ await bqFallbackToSheet_('media'); }
   }catch(e){ await bqFallbackToSheet_('media'); }
