@@ -40,10 +40,32 @@ jobs:
         env:
           BQ_LOAD_TOKEN: ${{ secrets.BQ_LOAD_TOKEN }}
         run: |
+          # 2026-09-19追加: GAS Webアプリの一時的な不調（Googleボット判定でHTMLページが返り、
+          # JSON.parseがそのまま例外でジョブ全体を落とす）に対応。seisan-category-pl-sync.ymlの
+          # 2026-09-14実害（この不調で1ヶ月失敗→ループごと打ち切り→残りの月が1週間未同期のまま
+          # 放置）と同じ構造の脆弱性がこちらにもあったため、同じリトライ＋継続方式を適用する。
+          call_gas() {
+            local url="$1" attempt body
+            for attempt in 1 2 3 4 5; do
+              body=$(curl -sL "$url") || body=""
+              if echo "$body" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{JSON.parse(d);process.exit(0)}catch(e){process.exit(1)}});" 2>/dev/null; then
+                echo "$body" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.stringify(JSON.parse(d),null,2)));"
+                return 0
+              fi
+              echo "::warning::${ym}: 有効なJSONが返りませんでした(試行${attempt}/5)。$([ $attempt -lt 5 ] && echo 'リトライします' || echo '諦めます')"
+              [ $attempt -lt 5 ] && sleep $((attempt * 5))
+            done
+            echo "::error::${ym}: 5回リトライしても失敗しました"
+            return 1
+          }
           IFS=',' read -ra YMS <<< "${{ steps.months.outputs.list }}"
+          failed=0
           for ym in "${YMS[@]}"; do
             echo "::group::$ym"
-            curl -sL "https://script.google.com/macros/s/AKfycbwW0qhyEr0-uQWTaLg7MkQhurHq6wMoaOKL7uCCnI_bgnAsGB5-auqG_dm_Q9uJc3Kc/exec?action=syncSeisanFeeToPl&token=$BQ_LOAD_TOKEN&ym=$ym" \
-              | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.stringify(JSON.parse(d),null,2)));"
+            call_gas "https://script.google.com/macros/s/AKfycbwW0qhyEr0-uQWTaLg7MkQhurHq6wMoaOKL7uCCnI_bgnAsGB5-auqG_dm_Q9uJc3Kc/exec?action=syncSeisanFeeToPl&token=$BQ_LOAD_TOKEN&ym=$ym" || failed=1
             echo "::endgroup::"
           done
+          if [ "$failed" = "1" ]; then
+            echo "::error::一部の月が同期できませんでした。ワークフローの実行ログを確認してください"
+            exit 1
+          fi

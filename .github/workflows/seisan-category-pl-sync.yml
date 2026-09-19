@@ -47,8 +47,26 @@ jobs:
         env:
           BQ_LOAD_TOKEN: ${{ secrets.BQ_LOAD_TOKEN }}
         run: |
-          curl -sL "https://script.google.com/macros/s/AKfycbwW0qhyEr0-uQWTaLg7MkQhurHq6wMoaOKL7uCCnI_bgnAsGB5-auqG_dm_Q9uJc3Kc/exec?action=syncSeisanCategoriesToPl&token=$BQ_LOAD_TOKEN&ymFrom=${{ github.event.inputs.ymFrom }}&ymTo=${{ github.event.inputs.ymTo }}" \
-            | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.stringify(JSON.parse(d),null,2)));"
+          # 2026-09-19追加: GAS Webアプリの一時的な不調（Googleボット判定でHTMLページが返り、
+          # JSON.parseがそのまま例外でジョブ全体を落としていた＝2026-09-14の週次実行がこれで
+          # 2026-08分から先まるごと未同期になり、「振込確定した運営委託費がPLに出ない」実害が
+          # 発生した）に対応。最大5回・指数バックオフでリトライし、有効なJSONが返るまで粘る
+          # （app.js側のapi()と同じ考え方）。
+          call_gas() {
+            local url="$1" attempt body
+            for attempt in 1 2 3 4 5; do
+              body=$(curl -sL "$url") || body=""
+              if echo "$body" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{JSON.parse(d);process.exit(0)}catch(e){process.exit(1)}});" 2>/dev/null; then
+                echo "$body" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.stringify(JSON.parse(d),null,2)));"
+                return 0
+              fi
+              echo "::warning::有効なJSONが返りませんでした(試行${attempt}/5)。$([ $attempt -lt 5 ] && echo 'リトライします' || echo '諦めます')"
+              [ $attempt -lt 5 ] && sleep $((attempt * 5))
+            done
+            echo "::error::5回リトライしても失敗しました: $url"
+            return 1
+          }
+          call_gas "https://script.google.com/macros/s/AKfycbwW0qhyEr0-uQWTaLg7MkQhurHq6wMoaOKL7uCCnI_bgnAsGB5-auqG_dm_Q9uJc3Kc/exec?action=syncSeisanCategoriesToPl&token=$BQ_LOAD_TOKEN&ymFrom=${{ github.event.inputs.ymFrom }}&ymTo=${{ github.event.inputs.ymTo }}"
 
       - name: 対象月を決める（単月／直近3ヶ月）
         if: steps.mode.outputs.kind != 'range'
@@ -68,10 +86,32 @@ jobs:
         env:
           BQ_LOAD_TOKEN: ${{ secrets.BQ_LOAD_TOKEN }}
         run: |
+          # 2026-09-19追加: 上の「さかのぼり一括反映」と同じ理由でリトライを追加。さらに、
+          # 従来は1ヶ月分の呼び出しが失敗すると（JSON.parse例外→exit 1）ループごと打ち切られ、
+          # 残りの月が一切実行されないまま次回（1週間後）まで放置されていた。1ヶ月ずつ
+          # set +e で失敗を許容し、最後にまとめて失敗有無を報告する（1ヶ月失敗しても他の月は続行）。
+          call_gas() {
+            local url="$1" attempt body
+            for attempt in 1 2 3 4 5; do
+              body=$(curl -sL "$url") || body=""
+              if echo "$body" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{JSON.parse(d);process.exit(0)}catch(e){process.exit(1)}});" 2>/dev/null; then
+                echo "$body" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.stringify(JSON.parse(d),null,2)));"
+                return 0
+              fi
+              echo "::warning::${ym}: 有効なJSONが返りませんでした(試行${attempt}/5)。$([ $attempt -lt 5 ] && echo 'リトライします' || echo '諦めます')"
+              [ $attempt -lt 5 ] && sleep $((attempt * 5))
+            done
+            echo "::error::${ym}: 5回リトライしても失敗しました"
+            return 1
+          }
           IFS=',' read -ra YMS <<< "${{ steps.months.outputs.list }}"
+          failed=0
           for ym in "${YMS[@]}"; do
             echo "::group::$ym"
-            curl -sL "https://script.google.com/macros/s/AKfycbwW0qhyEr0-uQWTaLg7MkQhurHq6wMoaOKL7uCCnI_bgnAsGB5-auqG_dm_Q9uJc3Kc/exec?action=syncSeisanCategoriesToPl&token=$BQ_LOAD_TOKEN&ym=$ym" \
-              | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.stringify(JSON.parse(d),null,2)));"
+            call_gas "https://script.google.com/macros/s/AKfycbwW0qhyEr0-uQWTaLg7MkQhurHq6wMoaOKL7uCCnI_bgnAsGB5-auqG_dm_Q9uJc3Kc/exec?action=syncSeisanCategoriesToPl&token=$BQ_LOAD_TOKEN&ym=$ym" || failed=1
             echo "::endgroup::"
           done
+          if [ "$failed" = "1" ]; then
+            echo "::error::一部の月が同期できませんでした。ワークフローの実行ログを確認してください"
+            exit 1
+          fi
