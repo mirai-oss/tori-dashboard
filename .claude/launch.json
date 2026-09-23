@@ -4,7 +4,7 @@
     {
       "name": "dashboard",
       "runtimeExecutable": "python3",
-      "runtimeArgs": ["-m", "http.server", "8765", "--directory", "/Users/mirai/Claude/tori-dashboard"],
+      "runtimeArgs": ["-m", "http.server", "8765", "--directory", "/Users/shunjjnakayama/tori-dashboard"],
       "port": 8765
     }
   ]

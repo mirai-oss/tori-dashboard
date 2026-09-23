@@ -5962,6 +5962,87 @@ function plMonthlyMatrixHtml_(scopeSet, plAggFlag, sc, selN, multiActive, multiS
   EXPORT.push({ title:'年間PL（'+yy+'年・月次推移／'+scopeLabel+'）', headers:['項目',...monthly.map((_,i)=>(i+1)+'月'),'合計'], rows:expP });
   return h;
 }
+/* ---------------- 選択店舗ごとのPL（複数店舗の個別選択時。2026-09-23追加） ----------------
+ * 既存の「店舗別損益比較」（1店舗1行の比較表）とは別物。合算PLの下に、選んだ店舗それぞれの
+ * PL（売上高〜営業CFの主要行を当期／前期／前年同期で）を1店舗ずつ縦に並べて表示する
+ * （ユーザー要望「合算PLの下に、選んだ店舗のPLが1店舗ずつ出てくる感じにしたい」への対応）。
+ * 勘定科目・補助科目の内訳（▶展開）までは持たない（内訳が必要な店舗は上部の単一店舗選択に
+ * 切り替えて確認する）。既定は全店展開表示・パネル見出しクリックで個別に折りたためる。 */
+function plStorePanelsHtml_(stores, mS,mE,pS,pE,yS,yE, prevName, showYoY, mLabel){
+  const collapsed=new Set(S.plStorePanelsCollapsed||[]);
+  const yoyBase=(r2)=>showYoY?r2.l:r2.p;
+  const cmp=(c,base)=>{ if(!(Math.abs(base)>0)) return {t:'—',cls:'mut'}; const d2=(c-base)/Math.abs(base)*100; return {t:(d2>=0?'+':'▲')+Math.abs(d2).toFixed(1)+'%', cls:d2>=0?'up':'dn'}; };
+  const v=(n)=>n===0?'—':(n<0?'▲'+yen(-n).slice(1):yen(n));
+  let h=`<div class="panel-head no-print" style="margin:14px 0 4px">
+    <h3 style="font-size:13px;color:var(--mut)">🏪 店舗ごとのPL（選択中の${stores.length}店舗）</h3>
+    <button class="icon-btn" style="font-size:11px" onclick="App.plStorePanelsAll(true)">▼ すべて開く</button>
+    <button class="icon-btn" style="font-size:11px" onclick="App.plStorePanelsAll(false)">▶ すべて折りたたむ</button></div>`;
+  stores.forEach(nm=>{
+    const s1=new Set([nm]);
+    const cur=stat(s1,mS,mE,null), prv=stat(s1,pS,pE,null), lyr=stat(s1,yS,yE,null);
+    const adCur=adAgg(s1,mS,mE,D.adPlExclude).ad, adPrv=adAgg(s1,pS,pE,D.adPlExclude).ad, adLyr=adAgg(s1,yS,yE,D.adPlExclude).ad;
+    const exCur=plAgg(s1,true,mS,mE,D.adPlExclude), exPrv=plAgg(s1,true,pS,pE,D.adPlExclude), exLyr=plAgg(s1,true,yS,yE,D.adPlExclude);
+    const dv=(a,b)=>{ const s2=segSplit(s1,a,b,null); return s2.hasV?s2.vn:0; };
+    const dvC=dv(mS,mE), dvP=dv(pS,pE), dvL=dv(yS,yE);
+    const salesC=cur.sales+dvC, salesP=prv.sales+dvP, salesL=lyr.sales+dvL;
+    const costT=cur.cost+exCur.catTotal.F, costP=prv.cost+exPrv.catTotal.F, costL=lyr.cost+exLyr.catTotal.F;
+    const laborT=cur.labor+exCur.catTotal.L, laborP=prv.labor+exPrv.catTotal.L, laborL=lyr.labor+exLyr.catTotal.L;
+    const adT=adCur+exCur.catTotal.A, adP=adPrv+exPrv.catTotal.A, adL=adLyr+exLyr.catTotal.A;
+    const rentC=exCur.catTotal.R, rentP=exPrv.catTotal.R, rentL=exLyr.catTotal.R;
+    const othC=exCur.catTotal.O, othP=exPrv.catTotal.O, othL=exLyr.catTotal.O;
+    const gross=salesC-costT, grossP=salesP-costP, grossL=salesL-costL;
+    const sga=laborT+adT+rentC+othC, sgaP=laborP+adP+rentP+othP, sgaL=laborL+adL+rentL+othL;
+    const op=salesC-costT-sga, opPrv=salesP-costP-sgaP, opLyr=salesL-costL-sgaL;
+    const pct=(n)=>salesC>0?(n/salesC*100).toFixed(1)+'%':'—';
+    const depCur=exCur.byCat.O['減価償却費']||0, depPrv=exPrv.byCat.O['減価償却費']||0, depLyr=exLyr.byCat.O['減価償却費']||0;
+    const principalCur=loanPrincipalAgg(s1,true,mS,mE).total, principalPrv=loanPrincipalAgg(s1,true,pS,pE).total, principalLyr=loanPrincipalAgg(s1,true,yS,yE).total;
+    const taxCur=op>0?op*D.taxRate:0, taxPrv=opPrv>0?opPrv*D.taxRate:0, taxLyr=opLyr>0?opLyr*D.taxRate:0;
+    const netCur=op-taxCur, netPrv=opPrv-taxPrv, netLyr=opLyr-taxLyr;
+    const afterTaxCur=netCur+depCur, afterTaxPrv=netPrv+depPrv, afterTaxLyr=netLyr+depLyr;
+    const opCfCur=afterTaxCur-principalCur, opCfPrv=afterTaxPrv-principalPrv, opCfLyr=afterTaxLyr-principalLyr;
+
+    const rows=[
+      { name:'売上高', bold:true, c:salesC, p:salesP, l:salesL },
+      { name:'売上原価計（F）', bold:true, c:costT, p:costP, l:costL },
+      { name:'売上総利益（粗利）', bold:true, line:true, c:gross, p:grossP, l:grossL },
+      { name:'人件費計（L）', bold:true, c:laborT, p:laborP, l:laborL },
+      { name:'広告宣伝費計（A）', bold:true, c:adT, p:adP, l:adL }
+    ];
+    if(rentC||rentP||rentL) rows.push({ name:'家賃計（R）', bold:true, c:rentC, p:rentP, l:rentL });
+    if(othC||othP||othL) rows.push({ name:'その他経費計（O）', bold:true, c:othC, p:othP, l:othL });
+    rows.push({ name:'販管費計（L＋A＋R＋O）', bold:true, line:true, c:sga, p:sgaP, l:sgaL });
+    rows.push({ name:'営業利益', bold:true, line:true, profit:true, c:op, p:opPrv, l:opLyr });
+    rows.push({ name:'－ 法人税等（'+(D.taxRate*100).toFixed(1)+'%）', c:taxCur, p:taxPrv, l:taxLyr });
+    rows.push({ name:'当期純利益', bold:true, line:true, profit:true, c:netCur, p:netPrv, l:netLyr });
+    rows.push({ name:'＋ 減価償却費', c:depCur, p:depPrv, l:depLyr });
+    rows.push({ name:'税引後CF', bold:true, line:true, profit:true, c:afterTaxCur, p:afterTaxPrv, l:afterTaxLyr });
+    rows.push({ name:'－ 銀行返済元金', c:principalCur, p:principalPrv, l:principalLyr });
+    rows.push({ name:'営業CF', bold:true, line:true, profit:true, c:opCfCur, p:opCfPrv, l:opCfLyr });
+
+    const isOpen=!collapsed.has(nm);
+    const expRows=[];
+    let body=`<div class="scroll-x"><table class="tbl"><thead><tr><th>項目</th><th>当期</th><th>売上比</th><th>${esc(prevName)}</th>${showYoY?'<th>前年同期</th>':''}<th>前年比</th></tr></thead><tbody>`;
+    rows.forEach(r2=>{
+      const yc=cmp(r2.c,yoyBase(r2));
+      const color=r2.profit?(r2.c>=0?'color:#4c7d5c;font-weight:700':'color:#b5502f;font-weight:700'):'';
+      body+=`<tr class="${r2.line?'total':''}"><td style="${r2.bold?'font-weight:700':''}">${esc(r2.name)}</td>
+        <td style="${color}">${v(r2.c)}</td><td class="mut">${pct(Math.abs(r2.c))}</td>
+        <td class="mut">${v(r2.p)}</td>${showYoY?`<td class="mut">${v(r2.l)}</td>`:''}
+        <td class="${yc.cls==='up'?'pos':yc.cls==='dn'?'neg':'mut'}">${yc.t}</td></tr>`;
+      expRows.push(showYoY?[r2.name,Math.round(r2.c),pct(Math.abs(r2.c)),Math.round(r2.p),Math.round(r2.l)]
+                          :[r2.name,Math.round(r2.c),pct(Math.abs(r2.c)),Math.round(r2.p)]);
+    });
+    body+=`</tbody></table></div>`;
+    const orate=salesC>0?(op/salesC*100).toFixed(1)+'%':'—';
+    h+=`<div class="panel"><div class="panel-head" onclick="App.togglePlStorePanel('${esc(nm)}')" style="cursor:pointer">
+      <div><h3>${shortStoreTd(nm)}のPL（${esc(mLabel)}）</h3><div class="sub">営業利益 ${v(op)}（${orate}）</div></div>
+      <span class="no-print" style="font-size:14px">${isOpen?'▼':'▶'}</span></div>
+      ${isOpen?body:''}
+    </div>`;
+    EXPORT.push({ title:'PL_'+nm+'（'+mLabel+'）', headers:showYoY?['項目','当期','売上比',prevName,'前年同期']:['項目','当期','売上比',prevName], rows:expRows });
+  });
+  return h;
+}
 function viewPL(){
   const sc=scopeStores(); const selN=selStoreName();
   // 複数店舗の自由選択（2026-08-23追加）。業態・ブランドでの自動グルーピングではなく、
@@ -6305,6 +6386,9 @@ function viewPL(){
     h+=`</tbody></table></div></div>`;
     EXPORT.push({ title:'店舗別損益比較（'+mLabel+'）', headers:['店舗','売上高','粗利','人件費','広告費','経費','営業利益','利益率'], rows:expC });
   }
+
+  // ---- 選択店舗ごとのPL（複数店舗を個別選択している・2店舗以上のときのみ。2026-09-23追加） ----
+  if(multiActive&&multiStores.length>1) h+=plStorePanelsHtml_(multiStores, mS,mE,pS,pE,yS,yE, prevName, showYoY, mLabel);
 
   h+=plShadowCompareNote_(sc, mS, mE, curMonthYm_);
 
@@ -8857,6 +8941,13 @@ window.App = {
   },
   plExpandAllSub(){ S.plExpandAll=true; S.plExpandedItems=[]; render(); },
   plCollapseAllSub(){ S.plExpandAll=false; S.plExpandedItems=[]; render(); },
+  // 店舗ごとのPLパネルの開閉（2026-09-23追加）。集計には一切影響しない表示上の操作。
+  togglePlStorePanel(nm){
+    const s=new Set(S.plStorePanelsCollapsed||[]);
+    if(s.has(nm)) s.delete(nm); else s.add(nm);
+    S.plStorePanelsCollapsed=[...s]; render();
+  },
+  plStorePanelsAll(open){ S.plStorePanelsCollapsed=open?[]:(S.plStores||[]).slice(); render(); },
   // PL表の科目行の「編集」→ その科目が入っている店舗（or 全社共通）の月次編集モーダルを開く
   openPlItemEdit(item){
     const m0=plMonthDate();
