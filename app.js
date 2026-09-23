@@ -3283,8 +3283,17 @@ function viewAnalysis(){
   // 優先する（GAS経由のD.dailyより速く・安定。fetchAnalysisKd_参照）。未取得・失敗時はこれまで
   // どおりD.daily（GAS/シート経由）にフォールバックする＝表示が壊れることはない。
   const dailySrc=(D.dailyKd&&D.dailyKd.length)?D.dailyKd:D.daily;
-  const dailyIn=dailySrc.filter(x=>nameSet.has(x.store));
-  const mediaIn=D.media.filter(x=>nameSet.has(x.store));
+  // 2026-09-23追加（ユーザー要望「推移分析で営業区分（店内売上/ランチ/ディナー/デリバリー）の
+  // 絞り込みをしたい」）: レジ実績(D.daily)には営業区分の内訳が無いため、絞り込み中だけ媒体別
+  // 実データ(D.media・mediaClassOf()による媒体名ベースの実区分。PL管理のデリバリー合算や
+  // 媒体別売上パネルの営業区分別モードで既に使われている実績のある仕組みで、明細分析タブの
+  // POS時刻からの推定按分とは別物）に切り替える。全体（絞り込み無し）のときは従来どおり
+  // レジ実績のまま＝挙動もパフォーマンスも変わらない。
+  const aSeg=S.aSeg||'';
+  const aSegMatch=(seg)=>!aSeg||(aSeg==='instore'?seg!=='デリバリー':(aSeg==='lunch'?seg==='ランチ':(aSeg==='dinner'?seg==='ディナー':seg==='デリバリー')));
+  let mediaIn=D.media.filter(x=>nameSet.has(x.store));
+  if(aSeg) mediaIn=mediaIn.filter(x=>aSegMatch(mediaClassOf(x.media).seg));
+  const dailyIn=aSeg?mediaIn:dailySrc.filter(x=>nameSet.has(x.store));
   const val=(recs,a2,b2)=>{ let sl=0,g=0; for(const x of recs){ if(x.t>=a2&&x.t<=b2){ sl+=(x.sales!=null?x.sales:x.net); g+=x.guests; } } return M==='sales'?sl:(M==='guests'?g:(g>0?sl/g:0)); };
   let groups;
   if(B==='store') groups=names.map((nm,i)=>({name:nm,color:PALETTE[i%PALETTE.length],recs:dailyIn.filter(x=>x.store===nm)}));
@@ -3309,12 +3318,21 @@ function viewAnalysis(){
     <div class="seg">${[['total','合計'],['store','店舗別'],['media','媒体別']].map(([k,l])=>`<button class="${B===k?'on':''}" onclick="App.set('aBreak','${k}')">${l}</button>`).join('')}</div>
     <div class="seg">${[['30','直近30日'],['90','直近90日'],['year','年初来'],['custom','期間指定']].map(([k,l])=>`<button class="${RG===k?'on':''}" onclick="App.set('aRange','${k}')">${l}</button>`).join('')}</div>
     ${RG==='custom'?`${ymdSelect('cStart',S.cStart,(D.refDate||new Date()).getFullYear()+'-'+String((D.refDate||new Date()).getMonth()+1).padStart(2,'0')+'-'+String((D.refDate||new Date()).getDate()).padStart(2,'0'))} 〜 ${ymdSelect('cEnd',S.cEnd,'')}`:''}
+    <select onchange="App.set('aSeg',this.value)">
+      <option value="" ${!aSeg?'selected':''}>営業区分：全体</option>
+      <option value="instore" ${aSeg==='instore'?'selected':''}>営業区分：店内売上</option>
+      <option value="lunch" ${aSeg==='lunch'?'selected':''}>営業区分：ランチ</option>
+      <option value="dinner" ${aSeg==='dinner'?'selected':''}>営業区分：ディナー</option>
+      <option value="delivery" ${aSeg==='delivery'?'selected':''}>営業区分：デリバリー</option>
+    </select>
     ${B==='total'?`<button class="icon-btn" onclick="App.set('aYoY',${S.aYoY?'false':'true'})">${S.aYoY?'☑':'☐'} 前年重ね</button>`:''}
     ${isAdminRole()?`<button class="icon-btn" title="データ元をシート/BigQueryで切替（テスト中）" onclick="App.setDailySource('${S.useBqDaily?'sheet':'bq'}')">🧪 データ元: ${S.useBqDaily?'BigQuery':'シート'}</button>${D.dailyBqLoading?'<span class="mut" style="margin-left:6px">読込中…</span>':''}${D.dailyBqErr?`<span style="color:#b5502f;margin-left:6px">BQ取得エラー: ${esc(D.dailyBqErr)}</span>`:''}`:''}
     ${isAdminRole()?`<button class="icon-btn" title="推移分析の元データが実際どこまで遡れるか確認（一時診断）" onclick="App.diagDailyRange()">🔍 データ範囲を確認</button>`:''}
     ${isAdminRole()?(D.dailyKd&&D.dailyKd.length?`<span class="mut" style="font-size:11px" title="kd_dashboard_daily_summaryをSupabase直読み中（GAS非経由・高速）">⚡ kd直読み中（${D.dailyKd.length}件）</span>`:`<span class="mut" style="font-size:11px">従来経路（シート/BQ）を使用中</span>`):''}
   </div>`+storeSegHtml();
-  h+=`<div class="panel"><div class="panel-head"><div><h3>${ml} の推移（${G==='day'?'日別':G==='week'?'週別':'月別'}・${B==='total'?'合計':B==='store'?'店舗別':'媒体別'}）</h3>
+  const aSegLabel={instore:'店内売上',lunch:'ランチ',dinner:'ディナー',delivery:'デリバリー'}[aSeg]||'';
+  if(aSeg) h+=`<div class="note-box no-print" style="margin:4px 0 2px;padding:9px 13px;font-size:11.5px">ℹ️ 営業区分（${aSegLabel}）で絞り込み中は、レジ実績ではなく媒体別実データ（予約・POS媒体の名称から判定した区分）を集計しています。媒体が記録されていない売上は含まれないため、「全体」表示の合計とは一致しない場合があります。</div>`;
+  h+=`<div class="panel"><div class="panel-head"><div><h3>${ml} の推移（${G==='day'?'日別':G==='week'?'週別':'月別'}・${B==='total'?'合計':B==='store'?'店舗別':'媒体別'}${aSegLabel?'・'+aSegLabel:''}）</h3>
     <div class="sub">${(s.getMonth()+1)}/${s.getDate()}〜${(e.getMonth()+1)}/${e.getDate()} ／ ${buckets.length}区間</div></div><div class="legend">${legend}</div></div>
     ${lineChart(buckets.map(b2=>b2.label),series,M)}</div>`;
   // 明細：前年重ね時は差異列＋最下段に合計差異
