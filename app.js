@@ -221,7 +221,7 @@ const S = {
   useBqDaily:(localStorage.getItem(LS.dailyBq)==='1'),   // 推移分析のデータソース切替（既定=false=シート。2026-08-22追加）
   embed:false, pendingTab:'',   // F-3(ns-portal統合ポータルシェル・2026-08-24追加): ?embed=1でヘッダー/ナビ非表示、?tab=でタブ直接指定
 };
-const D = { daily:[], media:[], deposit:[], review:[], ad:[], adfx:[], tanka:{}, tankaRows:[], tankaAvg:{}, tankaCv:{}, pl:[], dinii:[], diniiCols:[], targets:[], targetsM:[], events:[], extra:{}, storeAlias:{}, storeParent:{}, mediaClass:{}, adMediaMaster:[], adPlanMaster:{}, adStoreMaster:[], subItemMaster:{}, mfCategoryMap:{}, holidays:null, detailData:null, detailKey:'', detailLoading:'', refDate:null, maxDate:null,
+const D = { daily:[], media:[], mediaMonthsLoaded:0, deposit:[], review:[], ad:[], adfx:[], tanka:{}, tankaRows:[], tankaAvg:{}, tankaCv:{}, pl:[], dinii:[], diniiCols:[], targets:[], targetsM:[], events:[], extra:{}, storeAlias:{}, storeParent:{}, mediaClass:{}, adMediaMaster:[], adPlanMaster:{}, adStoreMaster:[], subItemMaster:{}, mfCategoryMap:{}, holidays:null, detailData:null, detailKey:'', detailLoading:'', refDate:null, maxDate:null,
   spot:[], spotBqLoading:false, spotBqErr:'',
   loanPrincipal:[], loanBqLoading:false, loanBqErr:'', taxRate:0.34,   // A-5(2026-08-26追加): 簡易キャッシュフロー用
   wkTpl:{}, wkRep:[], wkAns:{}, wkFb:{}, roleDef:{}, depNote:{}, dailyBqLoading:false, dailyBqErr:'', plBqLoading:false, plBqErr:'', storeDirectory:null,
@@ -1910,7 +1910,7 @@ const HEAVY_KEYS=['media','deposit','dinii','予約'];
 let prefetchRun=0;
 // 初回・更新時：まずダッシュボードに必要な軽いデータだけ出し、重い/他タブ用は裏で先読み
 async function fetchDataFast(){
-  D.mediaPending=true; D.media=[];                       // サンプル媒体データを一旦クリア
+  D.mediaPending=true; D.media=[]; D.mediaMonthsLoaded=0; // サンプル媒体データを一旦クリア
   // BigQueryモード中は、シート側のdaily/PL/depositを毎回上書きしないよう除外し、
   // 代わりにfetchDailyBQ()/fetchPlBQ()/fetchDepositBQ()で取得する（2026-08-22追加）
   const excl = S.useBqDaily ? HEAVY_KEYS.concat(['daily','PL','スポット人件費','借入返済元金']) : HEAVY_KEYS;
@@ -2038,8 +2038,9 @@ function bqMonthsForMedia_(){
   if(S.aRange!=='year' && S.aRange!=='custom') return 3;   // 既定（直近30/90日）は軽量な3ヶ月のまま
   const now=D.refDate||new Date();
   if(S.aRange==='year') return (now.getMonth()+1)+12;   // 年初来の経過月数＋前年比較の12ヶ月
-  const start=S.cStart?parseDateStr(S.cStart):null;
-  if(!start) return 3;
+  const startMs=S.cStart?parseDateStr(S.cStart):0;   // parseDateStr()はDateではなくepoch msを返す点に注意
+  if(!startMs) return 3;
+  const start=new Date(startMs);
   const monthsBack=(now.getFullYear()-start.getFullYear())*12+(now.getMonth()-start.getMonth())+1;
   return Math.max(monthsBack+12, 3);   // 期間指定の幅＋前年比較の12ヶ月
 }
@@ -2056,11 +2057,24 @@ async function fetchMediaBQ(preD){
     // （既定3ヶ月の実測21,000件超から比例すると年初来で数万件規模）、fetchDailyBQと同じく
     // 短いタイムアウトで見切りを付けてシート経路へフォールバックする（画面が長時間固まるのを防ぐ）。
     const d=preD||await api({ action:'bqGetMedia', token:S.auth.token, months:monthsParam, alsoPriorYear:widened?0:1 }, widened?60000:undefined);
-    if(d&&d.ok&&d.sheets){ ingestSheets(d.sheets, true); D.bqFallback.media=false; }
-    else{ await bqFallbackToSheet_('media'); }
-  }catch(e){ await bqFallbackToSheet_('media'); }
+    if(d&&d.ok&&d.sheets){ ingestSheets(d.sheets, true); D.bqFallback.media=false; D.mediaMonthsLoaded=monthsParam; }
+    else{ await bqFallbackToSheet_('media'); D.mediaMonthsLoaded=Infinity; }   // シート経路は月数で絞らず全件読むため
+  }catch(e){ await bqFallbackToSheet_('media'); D.mediaMonthsLoaded=Infinity; }
   D.mediaPending=false; if(!targetModalOpen_()) render();
   fetchDeliveryMedia_();
+}
+// 2026-09-23追加（ユーザー報告バグ修正: 推移分析で「年初来」＋「営業区分絞込」を選ぶと6月より前が
+// ¥0になる）。原因はfetchMediaBQ()がページ読み込み時（既定=直近30日＝3ヶ月分）にしか呼ばれず、
+// その後ユーザーが「年初来」や期間指定・営業区分絞込に切り替えてもApp.set()は状態を書き換えて
+// 再描画するだけでD.mediaを再取得していなかったこと（絞込無し＝「全体」はfetchAnalysisKd_が
+// 常に全期間を読む別経路のため無関係・影響を受けていなかった）。表示に必要な月数
+// （bqMonthsForMedia_()）が既に読み込み済みの月数（D.mediaMonthsLoaded）を超えたときだけ
+// 追加取得する。App.set()からaRange/aSeg/cStart/cEnd変更時に呼ぶ。
+function ensureMediaMonths_(){
+  if(!S.useBqDaily||!S.auth||!S.auth.token) return;   // シートモードは元々全件読み・BQモードのみの問題
+  if(bqMonthsForMedia_()<=(D.mediaMonthsLoaded||0)) return;
+  D.mediaPending=true; render();
+  fetchMediaBQ();
 }
 // 2026-09-14追加（指示書_デリバリー売上取込_担当別・担当Aやること①②）: デリバリー売上
 // （ロケットナウ等・GAS新設bqGetDelivery→stg_delivery_order）をD.mediaへ合流させる。
@@ -8600,7 +8614,7 @@ window.App = {
   tab(t){ S.tab=t; render(); },
   period(p){ S.period=p; S.pWeekIdx=null; render(); },
   store(n){ S.store=n; render(); },
-  set(k,v){ S[k]=v; render(); },
+  set(k,v){ S[k]=v; render(); if(k==='aRange'||k==='aSeg'||k==='cStart'||k==='cEnd') ensureMediaMonths_(); },
   // データソース切替（2026-08-22追加。既定はシート＝false。daily/PL/depositの3つに効く）
   setDailySource(src){
     const bq=(src==='bq');
