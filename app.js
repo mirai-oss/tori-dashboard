@@ -1957,7 +1957,9 @@ async function fetchDataFast(){
 // その完了と「✎目標を入力」モーダルでの入力開始が重なると、無条件のrender()でモーダルのDOMごと
 // 作り直され入力中の値が消えていた。広告管理のadInputモーダル（App.saveAdFee等）が使っている
 // 「該当モーダル表示中はrenderを抑制」パターンを、目標管理の2種類のモーダル(target/targetDay)にも適用する。
-function targetModalOpen_(){ return !!(S.modal && (S.modal.type==='target' || S.modal.type==='targetDay')); }
+// 2026-09-23追加: 「仕入れ移動」モーダルもフォーム入力中に裏で定期ポーリング(startPolling)の
+// render()が走ると入力が消えてしまう（ユーザー報告）ため、目標モーダルと同じガード対象に加えた。
+function targetModalOpen_(){ return !!(S.modal && (S.modal.type==='target' || S.modal.type==='targetDay' || S.modal.type==='costTransfer')); }
 // 推移分析のデータ元をBigQuery(fact_daily_store)に切り替えているときに呼ぶ。
 // GAS側のbqDailyStoreは既存action:'data'と同じ形({sheets:{daily:[...]}})で返すので、
 // 既存のingestSheets()/ingestDaily()をそのまま使い回せる（2026-08-22追加）。
@@ -8050,18 +8052,21 @@ function costTransferModal(){
   const m=S.modal;
   const stores=scopeStores();
   const todayStr=(()=>{ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); })();
+  const dateV=m.date||todayStr;
   const fromSt=m.fromStore&&stores.includes(m.fromStore)?m.fromStore:stores[0];
   const toSt=m.toStore&&stores.includes(m.toStore)&&m.toStore!==fromSt?m.toStore:(stores.find(s=>s!==fromSt)||stores[0]);
   const rows=m.rows||[];
+  // 2026-09-23追加: 裏で定期ポーリングのrender()が走っても入力中の内容が消えないよう、
+  // 各欄の値をS.modalに逐一持たせ、value="${...}"の初期値として使う（他の入力系モーダルと同じ方式）。
   return `<div class="modal-bg" onclick="if(event.target===this)App.closeModal()"><div class="modal" style="max-width:660px">
     <h3>🔀 店舗間の仕入れ移動</h3>
     <div class="sub">ある店舗で仕入れた商品を実際に別の店舗へ融通したときに使います。移動元は原価（F）からマイナス、移動先はプラスとして計上され、両店の原価率にそのまま反映されます（月次PLへの計上のため、日付は対象月の判定にのみ使います）。</div>
     <div class="form-grid" style="margin-top:10px">
-      <div><label>移動日</label><input type="date" id="ct-date" value="${todayStr}"></div>
-      <div><label>移動元店舗</label><select id="ct-from">${stores.map(s=>`<option value="${esc(s)}" ${fromSt===s?'selected':''}>${esc(s)}</option>`).join('')}</select></div>
-      <div><label>移動先店舗</label><select id="ct-to">${stores.map(s=>`<option value="${esc(s)}" ${toSt===s?'selected':''}>${esc(s)}</option>`).join('')}</select></div>
-      <div><label>品名</label><input id="ct-item" placeholder="例: サムゲタン"></div>
-      <div><label>金額（円・税別）</label><input type="number" id="ct-amount" placeholder="例 10000" style="text-align:right"></div>
+      <div><label>移動日</label><input type="date" id="ct-date" value="${esc(dateV)}" onchange="App.ctFieldChanged('date',this.value)"></div>
+      <div><label>移動元店舗</label><select id="ct-from" onchange="App.ctFieldChanged('fromStore',this.value)">${stores.map(s=>`<option value="${esc(s)}" ${fromSt===s?'selected':''}>${esc(s)}</option>`).join('')}</select></div>
+      <div><label>移動先店舗</label><select id="ct-to" onchange="App.ctFieldChanged('toStore',this.value)">${stores.map(s=>`<option value="${esc(s)}" ${toSt===s?'selected':''}>${esc(s)}</option>`).join('')}</select></div>
+      <div><label>品名</label><input id="ct-item" value="${esc(m.item||'')}" placeholder="例: サムゲタン" oninput="App.ctFieldChanged('item',this.value)"></div>
+      <div><label>金額（円・税別）</label><input type="number" id="ct-amount" value="${m.amount||''}" placeholder="例 10000" style="text-align:right" oninput="App.ctFieldChanged('amount',this.value)"></div>
     </div>
     <div id="ct-msg" style="font-size:12px;color:#b5502f;margin:8px 0"></div>
     <div class="modal-btns"><button class="icon-btn primary" onclick="App.saveCostTransfer()">登録</button></div>
@@ -9081,7 +9086,9 @@ window.App = {
   /* ---- 店舗間の仕入れ移動（2026-09-23追加） ---- */
   async openCostTransfer(){
     if(!isAdminRole()) return;
-    S.modal={type:'costTransfer', rows:[], loading:true}; render();
+    // 既に開いている（＝登録直後の再読み込み等）ときは入力中の値を保ったまま履歴だけ更新する
+    const keep=(S.modal&&S.modal.type==='costTransfer')?S.modal:{};
+    S.modal=Object.assign({}, keep, {type:'costTransfer', loading:true}); render();
     try{
       const d=await api({action:'costTransferList', token:S.auth.token});
       if(!S.modal||S.modal.type!=='costTransfer') return; // 取得中にモーダルが閉じられていたら何もしない
@@ -9092,6 +9099,8 @@ window.App = {
     }
     render();
   },
+  // フォーム欄の入力をS.modalへ逐一保存（裏の定期ポーリングでrender()が走っても消えないように）
+  ctFieldChanged(field, value){ S.modal=Object.assign({}, S.modal, {[field]:value}); },
   async saveCostTransfer(){
     const msg=$('ct-msg'); msg.style.color='#b5502f'; msg.textContent='';
     const date=$('ct-date').value, fromStore=$('ct-from').value, toStore=$('ct-to').value,
@@ -9105,10 +9114,11 @@ window.App = {
       const d=await api({action:'costTransferAdd', token:S.auth.token, date, fromStore, toStore, item, amount});
       if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'登録に失敗しました'; return; }
       toast('登録しました（'+fromStore+'→'+toStore+'／'+yen(amount)+'）');
-      S.modal=Object.assign({}, S.modal, {fromStore, toStore});
+      // 品名・金額だけクリアし、日付・店舗は残す（続けて同じ組み合わせで複数登録しやすいように）
+      S.modal=Object.assign({}, S.modal, {date, fromStore, toStore, item:'', amount:''});
       await fetchData(true,{ only:['pl','PL'], partial:true });
-      if(S.useBqDaily) fetchPlBQ();
-      App.openCostTransfer();
+      if(S.useBqDaily) await fetchPlBQ();
+      await App.openCostTransfer();
     }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
   },
   async cancelCostTransfer(id){
@@ -9119,8 +9129,8 @@ window.App = {
       if(!d.ok){ toast(d.error||'取り消しに失敗しました'); return; }
       toast('取り消しました');
       await fetchData(true,{ only:['pl','PL'], partial:true });
-      if(S.useBqDaily) fetchPlBQ();
-      App.openCostTransfer();
+      if(S.useBqDaily) await fetchPlBQ();
+      await App.openCostTransfer();
     }catch(e){ toast('通信エラー: '+e.message); }
   },
   /* ---- スポット人件費入力（2026-08-23追加） ---- */
