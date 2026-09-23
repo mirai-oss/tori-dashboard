@@ -2724,8 +2724,16 @@ function viewDash(){
   // （仕入原価は元々レジ経由でないため、デリバリー分の売上を含めた方が実態に近い比率になる）。
   const segCur_=segSplit(scopeSet,a,b,selName), segPrev_=segSplit(scopeSet,pa2,pb2,selName);
   const Ssl=cur.sales+(segCur_.hasV?segCur_.vn:0);
-  const foodR=Ssl>0?cur.cost/Ssl:0, laborR=Ssl>0?cur.labor/Ssl:0, flR=foodR+laborR;
-  const pS=prev.sales+(segPrev_.hasV?segPrev_.vn:0), pFood=pS>0?prev.cost/pS:0, pLabor=pS>0?prev.labor/pS:0;
+  // 2026-09-23追加（ユーザー報告: PL管理タブでは反映されている「仕入れ移動」等の手入力DB_PL経費(F区分)が
+  // 経営ダッシュボードの原価率には反映されていない）: 従来はcur.cost（レジ・自動連携分のみ）だけで
+  // 原価率を出しており、PL管理タブ(viewPL)が使っているplAgg()のDB_PL手入力F区分を一切含んでいなかった。
+  // viewPLと同じ考え方（plAggFlag=単一店舗選択時のみtrue=全社共通経費を含めない）でcostTに合算する。
+  const plScopeSet=selName?new Set([selName]):scopeSet, plAggFlagDash=selName?true:null;
+  const exCurF=plAgg(plScopeSet,plAggFlagDash,a,b,D.adPlExclude).catTotal.F;
+  const exPrevF=plAgg(plScopeSet,plAggFlagDash,pa2,pb2,D.adPlExclude).catTotal.F;
+  const costT=cur.cost+exCurF, costPrevT=prev.cost+exPrevF;
+  const foodR=Ssl>0?costT/Ssl:0, laborR=Ssl>0?cur.labor/Ssl:0, flR=foodR+laborR;
+  const pS=prev.sales+(segPrev_.hasV?segPrev_.vn:0), pFood=pS>0?costPrevT/pS:0, pLabor=pS>0?prev.labor/pS:0;
   const spend=cur.guests>0?Ssl/cur.guests:0, pSpend=prev.guests>0?pS/prev.guests:0;
 
   // 口コミ（対象店舗のスナップショット加重平均）— 期間末時点と前期間末時点を比較
@@ -2768,7 +2776,7 @@ function viewDash(){
   }
   const kpis=[
     { lb:(S.period==='day'?'日次':S.period==='week'?'週次':S.period==='month'?'月次':S.period==='year'?'累計':'期間')+'売上', vl:yen(Ssl), segsub:segSales, yy:y1 },
-    { lb:'原価率 (F)', vl:Ssl>0?(foodR*100).toFixed(1)+'%':'—', sub:Ssl>0?yen(cur.cost):'', yy:yF },
+    { lb:'原価率 (F)', vl:Ssl>0?(foodR*100).toFixed(1)+'%':'—', sub:Ssl>0?yen(costT):'', yy:yF },
     { lb:'人件費率 (L)', vl:Ssl>0?(laborR*100).toFixed(1)+'%':'—', sub:Ssl>0?('PA '+yen(cur.pa)+' ／ 社員 '+yen(cur.emp)+(cur.spot?' ／ スポット '+yen(cur.spot):'')):'', yy:yL },
     { lb:'FL合計', vl:Ssl>0?(flR*100).toFixed(1)+'%':'—', yy:yFL },
     { lb:'客数', vl:cnt(cur.guests)+'人', segsub:segGuests, yy:yG },
