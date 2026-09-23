@@ -133,6 +133,9 @@ function handle(p) {
     if (action === 'savePlEntries') return out(savePlEntries(p, session)); // PL経費の手入力（PL管理システム＋DB_PL両反映）
     if (action === 'setAdExclude') return out(apiSetAdExclude(p, session)); // 広告費（自動連携）をPL表示だけから除外する設定（2026-09-07追加）
     if (action === 'savePlBulk') return out(savePlBulk(p, session)); // PL経費の期間一括計上（例: 家賃を12ヶ月分）
+    if (action === 'costTransferList') return out(costTransferList(p, session)); // 店舗間仕入れ移動：一覧取得（2026-09-23追加）
+    if (action === 'costTransferAdd') return out(costTransferAdd(p, session)); // 店舗間仕入れ移動：登録
+    if (action === 'costTransferCancel') return out(costTransferCancel(p, session)); // 店舗間仕入れ移動：取り消し
     if (action === 'mfConfirmImport') return out(mfConfirmImport(p, session)); // MF取込：プレビューで確定した行をDB_PLへ反映
     if (action === 'saveAdFee') return out(saveAdFee(p, session)); // 広告費の手入力（管理シート💾広告費DBへupsert）
     if (action === 'saveAdSales') return out(saveAdSales(p, session)); // 売上・反響の手入力（管理シート💾売上DBへupsert）
@@ -5490,6 +5493,92 @@ function savePlBulk(p, session) {
     if (tkPl2) bqSyncPL({ token: tkPl2 });
   } catch (eSync2) { /* BQ同期に失敗してもシート保存自体は成功として扱う（次回同期で追いつく） */ }
   return { ok: true, months: n, deleted: amount <= 0, plsys: plsys };
+}
+
+/* ================== 店舗間の仕入れ移動（2026-09-23追加・ユーザー要望） ==================
+ * 「本店で仕入れた食材を実際に他店へ融通したら、両店の仕入・原価率にそれぞれ反映してほしい」に対応。
+ * 新しいテーブル・Edge Functionは作らず、savePlEntries等と同じくDB_PLシートへ直接2行追加する
+ * 方式にした（PLタブは現状D.pl＝DB_PLシート由来のデータだけを見て計算しており、kd_pl_monthly_summary
+ * 〈Supabase側の新しい直読み経路〉はまだ検証パネル止まりでPL表自体には使われていない＝そちらに
+ * 書いても画面には反映されないため）。移動元は原価(F)からマイナス、移動先はプラスとして1行ずつ
+ * 追加し、原価率（F%）は既存のcost_total集計にそのまま乗るので自動的に反映後の金額になる。
+ * 2行は同じメモ「店舗間移動:<id>:<日付>」で紐付け、取り消しはこのメモを持つ2行を削除するだけ
+ * （savePlEntries同様、DB_PL編集に別途の取り消し履歴シートは無いため、こちらも同じ扱いにした）。
+ * 財務データの店舗間付け替えのため社長・本部のみ操作可。 */
+function costTransferAdd(p, session) {
+  if (!isAdmin(session)) return { ok: false, error: '店舗間の仕入れ移動は社長・本部のみ登録できます' };
+  var date = String(p.date || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { ok: false, error: '移動日が不正です' };
+  var fromStore = String(p.fromStore || '').trim(), toStore = String(p.toStore || '').trim();
+  if (!fromStore || !toStore) return { ok: false, error: '移動元・移動先の店舗を選んでください' };
+  if (fromStore === toStore) return { ok: false, error: '移動元と移動先は別の店舗にしてください' };
+  var item = String(p.item || '').trim().slice(0, 60);
+  if (!item) return { ok: false, error: '品名を入力してください' };
+  var amount = Number(p.amount);
+  if (!isFinite(amount) || amount <= 0) return { ok: false, error: '金額を正しく入力してください' };
+  var dp = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_PL');
+  if (!dp) return { ok: false, error: 'DB_PLシートがありません' };
+  var y = Number(date.slice(0, 4)), mo = Number(date.slice(5, 7));
+  var ymDate = new Date(y, mo - 1, 1); // DB_PLは月次粒度のため日付は月初に丸める（元の日付はメモに残す）
+  var id = Utilities.getUuid().split('-')[0];
+  var tag = '店舗間移動:' + id + ':' + date;
+  dp.appendRow([ymDate, fromStore, item + '（店舗間移動→' + toStore + '）', 'F', -amount, tag, '']);
+  dp.appendRow([ymDate, toStore, item + '（店舗間移動←' + fromStore + '）', 'F', amount, tag, '']);
+  try {
+    var tkPlT = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+    if (tkPlT) bqSyncPL({ token: tkPlT });
+  } catch (eSyncT) { /* BQ同期に失敗してもシート保存自体は成功として扱う（次回同期で追いつく） */ }
+  return { ok: true, id: id, item: item, fromStore: fromStore, toStore: toStore, amount: amount, date: date };
+}
+function costTransferCancel(p, session) {
+  if (!isAdmin(session)) return { ok: false, error: '店舗間の仕入れ移動の取り消しは社長・本部のみ行えます' };
+  var id = String(p.id || '').trim();
+  if (!id) return { ok: false, error: 'idが指定されていません' };
+  var dp = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_PL');
+  if (!dp) return { ok: false, error: 'DB_PLシートがありません' };
+  var lastRow = dp.getLastRow();
+  if (lastRow < 2) return { ok: false, error: '対象の移動が見つかりません' };
+  var lastCol = Math.max(dp.getLastColumn(), 7);
+  var vals = dp.getRange(2, 1, lastRow - 1, lastCol).getValues();
+  var prefix = '店舗間移動:' + id + ':';
+  var toDelete = [];
+  for (var i = 0; i < vals.length; i++) {
+    if (String(vals[i][5] || '').indexOf(prefix) === 0) toDelete.push(2 + i);
+  }
+  if (!toDelete.length) return { ok: false, error: '対象の移動が見つかりません（既に取り消し済みの可能性があります）' };
+  // 行番号の大きい順に消す（先に消すと後ろの行番号がずれるため）
+  toDelete.sort(function (a, b) { return b - a; }).forEach(function (r) { dp.deleteRow(r); });
+  try {
+    var tkPlC = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+    if (tkPlC) bqSyncPL({ token: tkPlC });
+  } catch (eSyncC) { /* 無視 */ }
+  return { ok: true, deleted: toDelete.length };
+}
+function costTransferList(p, session) {
+  if (!isAdmin(session)) return { ok: false, error: '店舗間の仕入れ移動は社長・本部のみ閲覧できます' };
+  var dp = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_PL');
+  if (!dp) return { ok: true, rows: [] };
+  var lastRow = dp.getLastRow();
+  if (lastRow < 2) return { ok: true, rows: [] };
+  var lastCol = Math.max(dp.getLastColumn(), 7);
+  var vals = dp.getRange(2, 1, lastRow - 1, lastCol).getValues();
+  var byId = {};
+  for (var i = 0; i < vals.length; i++) {
+    var memo = String(vals[i][5] || '');
+    var m = memo.match(/^店舗間移動:([^:]+):(\d{4}-\d{2}-\d{2})$/);
+    if (!m) continue;
+    var tid = m[1], tdate = m[2];
+    var store = String(vals[i][1] || '').trim();
+    var amount = Number(vals[i][4]) || 0;
+    var item = String(vals[i][2] || '').replace(/（店舗間移動[→←][^）]*）$/, '');
+    var rec = byId[tid] || { id: tid, date: tdate, item: item, amount: 0 };
+    if (amount < 0) { rec.fromStore = store; rec.amount = Math.abs(amount); } else { rec.toStore = store; }
+    byId[tid] = rec;
+  }
+  var rows = Object.keys(byId).map(function (k) { return byId[k]; })
+    .filter(function (r) { return r.fromStore && r.toStore; }); // 片方しか無い＝データ異常。UIには出さない
+  rows.sort(function (a, b) { return a.date < b.date ? 1 : (a.date > b.date ? -1 : 0); });
+  return { ok: true, rows: rows.slice(0, 200) };
 }
 
 // MF取込マスタの新規マッピングをDB_科目対応へ反映（キー=MF勘定科目×MF補助科目。既存キーは上書き・無ければ追加）。

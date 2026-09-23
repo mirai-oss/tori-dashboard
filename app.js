@@ -6151,6 +6151,7 @@ function viewPL(){
     ${canUse('plInput')?`<button class="icon-btn" onclick="App.openMfImport()">📥 MF取込</button>`:''}
     ${canUse('spot')?`<button class="icon-btn" onclick="App.openSpotInput()">＋ スポット人件費</button>`:''}
     ${canUse('spot')?`<button class="icon-btn" onclick="App.syncSpotPl()" title="スポット人件費の入力・削除をPLへ今すぐ反映します（普段は毎日AM5:00に自動実行）">🔄 スポット人件費をPLへ反映</button>`:''}
+    ${isAdminRole()?`<button class="icon-btn" onclick="App.openCostTransfer()" title="店舗間で仕入れ（原価）を移動し、両店の原価率に反映します">🔀 仕入れ移動</button>`:''}
     ${isAdminRole()?`<button class="icon-btn" onclick="App.plCleanupLegacyCombined()" title="勘定科目/補助科目の分離バグ修正前に結合形式のまま計上されていた古い行が残っていないか確認します（表示のみ・削除はしません。担当Cからの申し送り・一時的な機能）">🔎 古いPL行の残存チェック（一時）</button>`:''}
     <span class="period-label">損益（${mLabel} ／ ${esc(scopeLabel)}）</span></div>`
     +(multiActive
@@ -7412,6 +7413,7 @@ function viewModal(){
   if(S.modal&&S.modal.type==='rsvDetail') return rsvDetailModal();
   if(S.modal&&S.modal.type==='plStorePick') return plStorePickModal();
   if(S.modal&&S.modal.type==='spotInput') return spotInputModal();
+  if(S.modal&&S.modal.type==='costTransfer') return costTransferModal();
   if(S.modal&&S.modal.type==='tanka') return tankaModal();
   if(S.modal&&S.modal.type==='mediaFee') return mediaFeeModal();
   return '';
@@ -8037,6 +8039,44 @@ function plInputModal(){
       <div id="plb-msg" style="font-size:12px;color:#b5502f;margin:6px 0"></div>
       <button class="icon-btn primary" style="margin-top:4px" onclick="App.savePlBulk()">📅 期間一括で計上</button>
     </div>
+  </div></div>`;
+}
+/* ---- 店舗間の仕入れ移動モーダル（2026-09-23追加） ----
+ * ある店舗で仕入れた商品を実際に別の店舗へ融通したときに使う。DB_PLへ移動元(マイナス)・
+ * 移動先(プラス)の2行が追加され、両店の原価(F)・原価率へ即座に反映される（costTransferAdd参照）。
+ * 履歴一覧はD.xxxのグローバルキャッシュではなくモーダルを開くたびにcostTransferListで取得する
+ * （S.modal.rowsに保持）。 */
+function costTransferModal(){
+  const m=S.modal;
+  const stores=scopeStores();
+  const todayStr=(()=>{ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); })();
+  const fromSt=m.fromStore&&stores.includes(m.fromStore)?m.fromStore:stores[0];
+  const toSt=m.toStore&&stores.includes(m.toStore)&&m.toStore!==fromSt?m.toStore:(stores.find(s=>s!==fromSt)||stores[0]);
+  const rows=m.rows||[];
+  return `<div class="modal-bg" onclick="if(event.target===this)App.closeModal()"><div class="modal" style="max-width:660px">
+    <h3>🔀 店舗間の仕入れ移動</h3>
+    <div class="sub">ある店舗で仕入れた商品を実際に別の店舗へ融通したときに使います。移動元は原価（F）からマイナス、移動先はプラスとして計上され、両店の原価率にそのまま反映されます（月次PLへの計上のため、日付は対象月の判定にのみ使います）。</div>
+    <div class="form-grid" style="margin-top:10px">
+      <div><label>移動日</label><input type="date" id="ct-date" value="${todayStr}"></div>
+      <div><label>移動元店舗</label><select id="ct-from">${stores.map(s=>`<option value="${esc(s)}" ${fromSt===s?'selected':''}>${esc(s)}</option>`).join('')}</select></div>
+      <div><label>移動先店舗</label><select id="ct-to">${stores.map(s=>`<option value="${esc(s)}" ${toSt===s?'selected':''}>${esc(s)}</option>`).join('')}</select></div>
+      <div><label>品名</label><input id="ct-item" placeholder="例: サムゲタン"></div>
+      <div><label>金額（円・税別）</label><input type="number" id="ct-amount" placeholder="例 10000" style="text-align:right"></div>
+    </div>
+    <div id="ct-msg" style="font-size:12px;color:#b5502f;margin:8px 0"></div>
+    <div class="modal-btns"><button class="icon-btn primary" onclick="App.saveCostTransfer()">登録</button></div>
+    <div style="margin-top:14px;border-top:1px dashed var(--line2);padding-top:10px">
+      <div style="font-weight:700;font-size:13px">直近の移動履歴</div>
+      <div class="scroll-x" style="max-height:260px;overflow-y:auto;border:1px solid var(--line2);border-radius:10px;margin-top:6px">
+        <table class="tbl"><thead><tr><th>日付</th><th>移動元</th><th></th><th>移動先</th><th>品名</th><th style="text-align:right">金額</th><th></th></tr></thead>
+        <tbody>${m.loading?`<tr><td colspan="7" class="empty">読み込み中…</td></tr>`
+          :(m.err?`<tr><td colspan="7" class="empty" style="color:#b5502f">${esc(m.err)}</td></tr>`
+          :(rows.length?rows.map(r=>`<tr><td>${esc(r.date)}</td><td>${shortStoreTd(r.fromStore)}</td><td>→</td><td>${shortStoreTd(r.toStore)}</td><td>${esc(r.item)}</td><td style="text-align:right">${yen(r.amount)}</td>
+              <td class="no-print"><button class="icon-btn" style="padding:1px 7px;font-size:10px" data-id="${esc(r.id)}" onclick="App.cancelCostTransfer(this.dataset.id)">取り消し</button></td></tr>`).join('')
+            :`<tr><td colspan="7" class="empty">まだ移動履歴はありません</td></tr>`))}</tbody></table>
+      </div>
+    </div>
+    <div class="modal-btns"><button class="icon-btn" onclick="App.closeModal()">閉じる</button></div>
   </div></div>`;
 }
 /* ---- スポット人件費入力モーダル（2026-08-23追加） ----
@@ -9037,6 +9077,51 @@ window.App = {
       S.modal=null; render(); toast('経費を保存しました（'+d.saved+'件）'+(d.plsys?'／'+d.plsys:''));
       fetchData(true,{ only:['pl','PL'], partial:true });
     }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
+  },
+  /* ---- 店舗間の仕入れ移動（2026-09-23追加） ---- */
+  async openCostTransfer(){
+    if(!isAdminRole()) return;
+    S.modal={type:'costTransfer', rows:[], loading:true}; render();
+    try{
+      const d=await api({action:'costTransferList', token:S.auth.token});
+      if(!S.modal||S.modal.type!=='costTransfer') return; // 取得中にモーダルが閉じられていたら何もしない
+      S.modal=Object.assign({}, S.modal, {rows:d.ok?d.rows:[], loading:false, err:d.ok?'':(d.error||'取得に失敗しました')});
+    }catch(e){
+      if(!S.modal||S.modal.type!=='costTransfer') return;
+      S.modal=Object.assign({}, S.modal, {rows:[], loading:false, err:'通信エラー: '+(e&&e.message||e)});
+    }
+    render();
+  },
+  async saveCostTransfer(){
+    const msg=$('ct-msg'); msg.style.color='#b5502f'; msg.textContent='';
+    const date=$('ct-date').value, fromStore=$('ct-from').value, toStore=$('ct-to').value,
+          item=$('ct-item').value.trim(), amount=Number($('ct-amount').value);
+    if(!date){ msg.textContent='移動日を入力してください'; return; }
+    if(fromStore===toStore){ msg.textContent='移動元と移動先は別の店舗にしてください'; return; }
+    if(!item){ msg.textContent='品名を入力してください'; return; }
+    if(!(amount>0)){ msg.textContent='金額を正しく入力してください'; return; }
+    msg.style.color='#8c8375'; msg.textContent='登録中…';
+    try{
+      const d=await api({action:'costTransferAdd', token:S.auth.token, date, fromStore, toStore, item, amount});
+      if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'登録に失敗しました'; return; }
+      toast('登録しました（'+fromStore+'→'+toStore+'／'+yen(amount)+'）');
+      S.modal=Object.assign({}, S.modal, {fromStore, toStore});
+      await fetchData(true,{ only:['pl','PL'], partial:true });
+      if(S.useBqDaily) fetchPlBQ();
+      App.openCostTransfer();
+    }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
+  },
+  async cancelCostTransfer(id){
+    if(!confirm('この移動を取り消しますか？（DB_PLの該当2行を削除します）')) return;
+    toast('取り消し中…');
+    try{
+      const d=await api({action:'costTransferCancel', token:S.auth.token, id});
+      if(!d.ok){ toast(d.error||'取り消しに失敗しました'); return; }
+      toast('取り消しました');
+      await fetchData(true,{ only:['pl','PL'], partial:true });
+      if(S.useBqDaily) fetchPlBQ();
+      App.openCostTransfer();
+    }catch(e){ toast('通信エラー: '+e.message); }
   },
   /* ---- スポット人件費入力（2026-08-23追加） ---- */
   openSpotInput(){
