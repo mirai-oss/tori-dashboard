@@ -153,6 +153,13 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 
 ## 5. 作業ログ
 
+### 2026-09-26（Mac miniセッション）現金売上の月次照合用のGASアクション2つを追加（**gas/Code.gs変更・ユーザーの貼替＋再デプロイ待ち**・`ping` ver=`token-336h-v1-a6p24`）
+ユーザー要望「毎月3日に前月の現金売上をレジで取り直して管理システムと照合し、合っていればMF仕訳へ／ずれていればレジに合わせて管理システムを修正」の受け口。
+- `cashReconRead`（読み取り専用）: 売上DB「支払いDB」の指定月(`month:'YYYY-MM'`)の店舗×日の行（数値16列）を返す。`BQ_LOAD_TOKEN`認証・ログイン不要。
+- `paymentDailyReplace`: レジの正しい値（数値16列）で店舗×日の1行を書き換え（無ければ追加）。`rows`=JSON文字列（最大200件）、`dryRun`対応、`LockService`、変更は新設の「支払い修正ログ」シートに修正前後付きで記録。既存行は3〜18列だけ更新（店舗名・営業日セルは触らない）。同じ店舗×日が重複していれば最初の1行だけ更新し`duplicates`で報告（削除しない）。
+- 呼び出し元は ns-daily-import（`lib/gas.js`の`cashReconRead`/`paymentDailyReplace`・`tasks/cash-sales-monthly-check.js`・`lib/cash-fix.js`）。書き換え後は呼び出し側が`rebuildAnalysis`（GAS_URL）と`bqSyncSales`を続けて呼ぶ。
+- **デプロイ手順**: ①`gas/Code.gs`全文を貼替 ②デプロイを管理→鉛筆→新バージョン ③`curl -sL '<GAS_URL>?action=ping'`で`ver`が`a6p24`になっていること。動作確認は読み取り→`paymentDailyReplace`を`dryRun:true`で。
+
 ### 2026-09-19（担当A実行スレッド・続き）kd_直読みページング修正をユーザーSSO実機確認で確定＋推移分析「明細」に前年比（％）列を追加
 
 前スレッドで修正・デプロイ済みだった`fetchAnalysisKd_`/`fetchPlKd_`のページングバグ（コミット`be64cf6`）を、ユーザーが統合アカウント（SSO）で推移分析タブ×年初来×月別を実機確認し「なおってた」と確定（1月〜9月まで連続して数値・前年重ねが表示されることをスクリーンショットで確認）。続けてユーザーから「明細テーブルの一番右に前年比（％）も入れてほしい」と依頼があり対応：既存の`yoyStr()`（前年比のaccounting表示ヘルパー）を再利用し、`viewAnalysis()`の「明細」テーブルで差異（対前年、金額）の右に「前年比（％）」列を追加（行ごと・合計行・CSVエクスポートすべてに反映）。`app.js`・`index.html`（`app.js?v=201→202`）。コミット[58467ff](https://github.com/mirai-oss/tori-dashboard/commit/58467ff)・push済み（GitHub Pages）。
