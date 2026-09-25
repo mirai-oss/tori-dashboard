@@ -157,6 +157,7 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 ユーザー要望「毎月3日に前月の現金売上をレジで取り直して管理システムと照合し、合っていればMF仕訳へ／ずれていればレジに合わせて管理システムを修正」の受け口。
 - `cashReconRead`（読み取り専用）: 売上DB「支払いDB」の指定月(`month:'YYYY-MM'`)の店舗×日の行（数値16列）を返す。`BQ_LOAD_TOKEN`認証・ログイン不要。
 - `paymentDailyReplace`: レジの正しい値（数値16列）で店舗×日の1行を書き換え（無ければ追加）。`rows`=JSON文字列（最大200件）、`dryRun`対応、`LockService`、変更は新設の「支払い修正ログ」シートに修正前後付きで記録。既存行は3〜18列だけ更新（店舗名・営業日セルは触らない）。同じ店舗×日が重複していれば最初の1行だけ更新し`duplicates`で報告（削除しない）。
+- `seisanCashSync`（中継）: 修正した店舗の精算書「N月現金売上」行を更新するため、精算ダッシュボードGASの`sd_apiCashSync`（v5.22-cash-sync・別プロジェクト。`seisan-dashboard/gas/SeisanDashboard_コピー用.txt`を貼替）を`SEISAN_WEBAPP_URL`+`PL_SYNC_TOKEN`で呼ぶ。**精算GAS側の貼替・再デプロイも必要**。
 - 呼び出し元は ns-daily-import（`lib/gas.js`の`cashReconRead`/`paymentDailyReplace`・`tasks/cash-sales-monthly-check.js`・`lib/cash-fix.js`）。書き換え後は呼び出し側が`rebuildAnalysis`（GAS_URL）と`bqSyncSales`を続けて呼ぶ。
 - **デプロイ手順**: ①`gas/Code.gs`全文を貼替 ②デプロイを管理→鉛筆→新バージョン ③`curl -sL '<GAS_URL>?action=ping'`で`ver`が`a6p24`になっていること。動作確認は読み取り→`paymentDailyReplace`を`dryRun:true`で。
 
