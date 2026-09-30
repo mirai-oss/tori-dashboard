@@ -2034,15 +2034,38 @@ async function fetchDepositBQ(preD){
 // 一切取得されておらず、画面側は0として表示していた（bqMonthsForDaily_と同じ原因のクラス）。
 // 媒体別日次は件数が非常に多い（実測21,000件超／5ヶ月）ため、既定の3ヶ月は維持しつつ、
 // 「年初来」「期間指定」を選んでいるときだけ、その表示に必要な分だけ広げる。
+// 経営ダッシュボード（ホーム）の年月ピッカーが指す月が、今から何ヶ月遡った月かを返す
+// （period===dayはpDay、week/monthはpMonth、yearはpYearの年始を見る。periodRange()の
+// 対象日算出ロジックと揃えている）。今月・期間指定なし等で遡っていなければ0を返す。
+function homeMonthsBack_(){
+  const ref=D.refDate||new Date(); const st=S;
+  const pI=(s)=>{ const p=String(s).split('-'); return new Date(+p[0],+p[1]-1,(p[2]?+p[2]:1)); };
+  let aref=null;
+  if(st.period==='day'&&st.pDay) aref=pI(st.pDay);
+  else if((st.period==='week'||st.period==='month')&&st.pMonth) aref=pI(st.pMonth+'-01');
+  else if(st.period==='year'&&st.pYear) aref=new Date(+st.pYear,0,1);
+  if(!aref) return 0;
+  return Math.max(0,(ref.getFullYear()-aref.getFullYear())*12+(ref.getMonth()-aref.getMonth()));
+}
+// 2026-09-30追加（ユーザー報告「経営ダッシュボードの営業区分別売上が3ヶ月より前を選ぶと
+// 出ない」）: 従来は推移分析タブ（S.aRange/S.cStart）だけを見ており、ホームダッシュボードの
+// 年月ピッカー（S.period/S.pMonth/S.pYear）を一切考慮していなかった。両方を見て、必要な
+// 月数の大きい方を返す（D.mediaは両画面で共有しているため）。
 function bqMonthsForMedia_(){
-  if(S.aRange!=='year' && S.aRange!=='custom') return 3;   // 既定（直近30/90日）は軽量な3ヶ月のまま
   const now=D.refDate||new Date();
-  if(S.aRange==='year') return (now.getMonth()+1)+12;   // 年初来の経過月数＋前年比較の12ヶ月
-  const startMs=S.cStart?parseDateStr(S.cStart):0;   // parseDateStr()はDateではなくepoch msを返す点に注意
-  if(!startMs) return 3;
-  const start=new Date(startMs);
-  const monthsBack=(now.getFullYear()-start.getFullYear())*12+(now.getMonth()-start.getMonth())+1;
-  return Math.max(monthsBack+12, 3);   // 期間指定の幅＋前年比較の12ヶ月
+  let need=3;   // 既定（直近30/90日・ホームの当月表示）は軽量な3ヶ月のまま
+  if(S.aRange==='year') need=Math.max(need,(now.getMonth()+1)+12);   // 年初来の経過月数＋前年比較の12ヶ月
+  else if(S.aRange==='custom'){
+    const startMs=S.cStart?parseDateStr(S.cStart):0;   // parseDateStr()はDateではなくepoch msを返す点に注意
+    if(startMs){
+      const start=new Date(startMs);
+      const monthsBack=(now.getFullYear()-start.getFullYear())*12+(now.getMonth()-start.getMonth())+1;
+      need=Math.max(need,monthsBack+12);   // 期間指定の幅＋前年比較の12ヶ月
+    }
+  }
+  const homeBack=homeMonthsBack_();
+  if(homeBack>0) need=Math.max(need,homeBack+1+12);   // 選択月を含む幅＋前年比較の12ヶ月
+  return need;
 }
 async function fetchMediaBQ(preD){
   if(!S.auth||!S.auth.token) return;
@@ -8612,9 +8635,9 @@ window.App = {
   ssoToggle(){ S.ssoOpen=!S.ssoOpen; S.loginErr=''; render(); },
   logout(){ if(confirm('ログアウトしますか？')) doLogout(); },
   tab(t){ S.tab=t; render(); },
-  period(p){ S.period=p; S.pWeekIdx=null; render(); },
+  period(p){ S.period=p; S.pWeekIdx=null; render(); ensureMediaMonths_(); },
   store(n){ S.store=n; render(); },
-  set(k,v){ S[k]=v; render(); if(k==='aRange'||k==='aSeg'||k==='cStart'||k==='cEnd') ensureMediaMonths_(); },
+  set(k,v){ S[k]=v; render(); if(k==='aRange'||k==='aSeg'||k==='cStart'||k==='cEnd'||k==='pYear'||k==='pDay') ensureMediaMonths_(); },
   // データソース切替（2026-08-22追加。既定はシート＝false。daily/PL/depositの3つに効く）
   setDailySource(src){
     const bq=(src==='bq');
@@ -8655,6 +8678,7 @@ window.App = {
     S[key]=y+'-'+String(m).padStart(2,'0');
     if(key==='revMonth') S.revWeekIdx=null;
     render();
+    if(key==='pMonth') ensureMediaMonths_();
   },
   ymToday(key){ S[key]=''; if(key==='revMonth') S.revWeekIdx=null; render(); },
   setYmd(key,which,val,baseISO){  // 年/月/日プルダウン（期間指定）の変更を反映
