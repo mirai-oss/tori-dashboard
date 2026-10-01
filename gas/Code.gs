@@ -53,7 +53,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-a6p24', time: new Date().toISOString() }); // a6p4=bqGetReservationNamesにUser-Agent追加(2026-09-04)+bqFetchReservationRows_のORDER BY削除(92000行超でstatement timeout・2026-09-05)。a6p5=syncSeisanCategoriesToPlが店舗×月の同期結果を精算書側(sd_apiMarkPlSynced)へ書き戻すように追加（2026-09-05・業務委託精算書自動連携）。a6p6=dbPlDiag追加（実機E2E不一致の一時調査用）。a6p7=syncSeisanCategoriesToPlの対象店舗判定をseisan_target→seisan_pl_categories_targetに変更（運営委託費と経費PL反映を別々にON/OFFできるように・黒霧屋 新横浜対応）。a6p8=diagDepositsPerf追加（PayPay銀行取込46分化の原因切り分け用一時診断・2026-09-07）。a6p9=apiSetAdExclude追加（媒体販促費を手入力で確定させたあとPL画面だけ自動連携分を除外できるように・DB_広告除外設定シート新設・2026-09-07）。a6p10=importDepositsにLockServiceを追加（並行実行による入金二重計上バグを修正・2026-09-08）。a6p11=diagDepositDupScan追加（入金DBの重複行を行番号付きで列挙する読み取り専用診断・2026-09-08）。a6p12=cleanupDepositDuplicates追加（特定済み重複11件をユーザー承認のうえ削除・2026-09-08）。a6p13=cleanupDepositDuplicatesの認証をトークン→セッションに変更（トークン認証で原因不明のunauthorized・実行して重複11件×2シートの削除完了確認済み・2026-09-08）。a6p14=bqFetchReservationRows_をOFFSET(Rangeヘッダー)ページングからid（主キー・索引あり）によるkeysetページングに変更（rsv_reservationsが93000行超に増えOFFSET方式でも再度statement timeoutが発生したため・2026-09-05のORDER BY削除とは別問題＝あの時は無索引3列複合ソートが原因、今回はidという主キー＝索引ありの列でORDER BYするので同じ罠には当たらない。実測でOFFSET方式の同条件比1039ms→keyset方式299msを確認済み・2026-09-09）。a6p15=writeAccountCostToPl_の補助科目消失バグを修正（担当CからPL内訳UUID表示バグの申し送り。G列に冪等キー(noteTag)だけを書いていてsubAccountを一切保存していなかったため、補助科目の代わりにsourceKeyがそのまま表示されていた。列を増やすと他のPL自動連携が壊れるため増やさず、G列の値を「<subAccount>　<noteTag>」の複合形式にしてapp.js側で表示時に分離する方式に変更・2026-09-10）。a6p16=担当Cからの申し送り（続き83）対応の一時action追加・詳細は関数コメント参照・2026-09-10。a6p17=cleanupPlLegacyCombined_の結果をalert()ではなくスプレッドシートの新タブへ書き出すよう変更（コピーしづらいとのユーザー指摘対応・行番号つき）・2026-09-10。a6p18=fetchStoreDirectory_を実行内メモ化（PayPay銀行取込が2026-09-10に全店舗連鎖失敗した件の真因修正。importDeposits_locked_が入金DB既存行ごとにnormStoreName_→fetchStoreDirectory_→CacheService往復を繰り返し、入金DBが4800行超に増えた結果1回の取込で実測345秒かかりNode側5分タイムアウトで連鎖失敗していた。実行スコープ変数で1回だけ取得するよう変更・2026-09-11）。a6p19=判定_高速化検証と実装GO §2-1対応（担当A）: dataFreshness()をBigQuery全件スキャン＋スプレッドシート走査からkd_sync_status_v（新設ビュー）直読みへ置換（軽量化・D提案）。bqGetAdCost追加（stg_ad_cost読み取り・BQ_LOAD_TOKEN認証・レーンPのkd_pl広告費充填用）・2026-09-11。a6p20=bqLoadDeliveryOrders追加（デリバリー売上=ロケットナウ等の明細をBQ sales.stg_delivery_orderへMERGE投入。担当D・設計書_デリバリー売上取込_ロケットナウ_2026-09-11.md §3-1・実データ2本で検証済みのns-daily-import/tasks/delivery-sales.jsから呼ばれる想定）・2026-09-11。a6p21=a6p20で追加したbqLoadDeliveryOrders一式が、その後の別セッション経由のユーザー手動貼替（診断ボタン追加のための全文貼替）で編集画面から消失していたのをMac miniセッションが検知・再挿入（本番デプロイのアクティブバージョンには残っていたため実害は限定的だったが、次に貼替が起きると再度失われる状態だった）・2026-09-11。詳細はHANDOFF.md参照。a6p23=supaLoginを拡張（担当D・ユーザー要望「ポータルでアカウント発行したら役職ごとにダッシュボードにも自動で入れるようにしたい」）: アカウント管理シートに個別登録が無い統合アカウントは、ポータル側Supabase（users.role・user_stores→stores.name。SUPABASE_SERVICE_KEY使用）を正本にrole/storesを自動組み立てするportalAutoAccount_を追加。役職対応=CEO→社長・HQ→本部（全店固定）・TEAM→マネージャー・TENCHO/SHAIN→店舗（いずれもuser_stores基準の担当店舗のみ。0件なら非対応）・AL→非対応（従来どおり個別登録が必要）。シート個別登録がある場合はそちらを最優先（無変更）。PL等の機密タブは既存のROLE_TABS/ROLE_FEATURESが役職別に絞るため、この変換だけで店舗ロールはPL非表示のまま・2026-09-17 a6p24=cashReconRead/paymentDailyReplace/seisanCashSync追加（現金売上の月次照合＝レジ再取得との突合用の読み取りと、レジの正しい値へ店舗×日の売上（支払いDB1行）を書き換える修正用。専用トークン認証・書き換えは修正ログ付き・LockService・2026-09-26）。
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-a6p27', time: new Date().toISOString() }); // a6p4=bqGetReservationNamesにUser-Agent追加(2026-09-04)+bqFetchReservationRows_のORDER BY削除(92000行超でstatement timeout・2026-09-05)。a6p5=syncSeisanCategoriesToPlが店舗×月の同期結果を精算書側(sd_apiMarkPlSynced)へ書き戻すように追加（2026-09-05・業務委託精算書自動連携）。a6p6=dbPlDiag追加（実機E2E不一致の一時調査用）。a6p7=syncSeisanCategoriesToPlの対象店舗判定をseisan_target→seisan_pl_categories_targetに変更（運営委託費と経費PL反映を別々にON/OFFできるように・黒霧屋 新横浜対応）。a6p8=diagDepositsPerf追加（PayPay銀行取込46分化の原因切り分け用一時診断・2026-09-07）。a6p9=apiSetAdExclude追加（媒体販促費を手入力で確定させたあとPL画面だけ自動連携分を除外できるように・DB_広告除外設定シート新設・2026-09-07）。a6p10=importDepositsにLockServiceを追加（並行実行による入金二重計上バグを修正・2026-09-08）。a6p11=diagDepositDupScan追加（入金DBの重複行を行番号付きで列挙する読み取り専用診断・2026-09-08）。a6p12=cleanupDepositDuplicates追加（特定済み重複11件をユーザー承認のうえ削除・2026-09-08）。a6p13=cleanupDepositDuplicatesの認証をトークン→セッションに変更（トークン認証で原因不明のunauthorized・実行して重複11件×2シートの削除完了確認済み・2026-09-08）。a6p14=bqFetchReservationRows_をOFFSET(Rangeヘッダー)ページングからid（主キー・索引あり）によるkeysetページングに変更（rsv_reservationsが93000行超に増えOFFSET方式でも再度statement timeoutが発生したため・2026-09-05のORDER BY削除とは別問題＝あの時は無索引3列複合ソートが原因、今回はidという主キー＝索引ありの列でORDER BYするので同じ罠には当たらない。実測でOFFSET方式の同条件比1039ms→keyset方式299msを確認済み・2026-09-09）。a6p15=writeAccountCostToPl_の補助科目消失バグを修正（担当CからPL内訳UUID表示バグの申し送り。G列に冪等キー(noteTag)だけを書いていてsubAccountを一切保存していなかったため、補助科目の代わりにsourceKeyがそのまま表示されていた。列を増やすと他のPL自動連携が壊れるため増やさず、G列の値を「<subAccount>　<noteTag>」の複合形式にしてapp.js側で表示時に分離する方式に変更・2026-09-10）。a6p16=担当Cからの申し送り（続き83）対応の一時action追加・詳細は関数コメント参照・2026-09-10。a6p17=cleanupPlLegacyCombined_の結果をalert()ではなくスプレッドシートの新タブへ書き出すよう変更（コピーしづらいとのユーザー指摘対応・行番号つき）・2026-09-10。a6p18=fetchStoreDirectory_を実行内メモ化（PayPay銀行取込が2026-09-10に全店舗連鎖失敗した件の真因修正。importDeposits_locked_が入金DB既存行ごとにnormStoreName_→fetchStoreDirectory_→CacheService往復を繰り返し、入金DBが4800行超に増えた結果1回の取込で実測345秒かかりNode側5分タイムアウトで連鎖失敗していた。実行スコープ変数で1回だけ取得するよう変更・2026-09-11）。a6p19=判定_高速化検証と実装GO §2-1対応（担当A）: dataFreshness()をBigQuery全件スキャン＋スプレッドシート走査からkd_sync_status_v（新設ビュー）直読みへ置換（軽量化・D提案）。bqGetAdCost追加（stg_ad_cost読み取り・BQ_LOAD_TOKEN認証・レーンPのkd_pl広告費充填用）・2026-09-11。a6p20=bqLoadDeliveryOrders追加（デリバリー売上=ロケットナウ等の明細をBQ sales.stg_delivery_orderへMERGE投入。担当D・設計書_デリバリー売上取込_ロケットナウ_2026-09-11.md §3-1・実データ2本で検証済みのns-daily-import/tasks/delivery-sales.jsから呼ばれる想定）・2026-09-11。a6p21=a6p20で追加したbqLoadDeliveryOrders一式が、その後の別セッション経由のユーザー手動貼替（診断ボタン追加のための全文貼替）で編集画面から消失していたのをMac miniセッションが検知・再挿入（本番デプロイのアクティブバージョンには残っていたため実害は限定的だったが、次に貼替が起きると再度失われる状態だった）・2026-09-11。詳細はHANDOFF.md参照。a6p23=supaLoginを拡張（担当D・ユーザー要望「ポータルでアカウント発行したら役職ごとにダッシュボードにも自動で入れるようにしたい」）: アカウント管理シートに個別登録が無い統合アカウントは、ポータル側Supabase（users.role・user_stores→stores.name。SUPABASE_SERVICE_KEY使用）を正本にrole/storesを自動組み立てするportalAutoAccount_を追加。役職対応=CEO→社長・HQ→本部（全店固定）・TEAM→マネージャー・TENCHO/SHAIN→店舗（いずれもuser_stores基準の担当店舗のみ。0件なら非対応）・AL→非対応（従来どおり個別登録が必要）。シート個別登録がある場合はそちらを最優先（無変更）。PL等の機密タブは既存のROLE_TABS/ROLE_FEATURESが役職別に絞るため、この変換だけで店舗ロールはPL非表示のまま・2026-09-17 a6p24=cashReconRead/paymentDailyReplace/seisanCashSync追加（現金売上の月次照合＝レジ再取得との突合用の読み取りと、レジの正しい値へ店舗×日の売上（支払いDB1行）を書き換える修正用。専用トークン認証・書き換えは修正ログ付き・LockService・2026-09-26）。a6p25=smbcCardSeisanSync追加（SMBC GMO PAYMENT・N-Style分のカード売上/手数料を精算対象店舗の精算書へ明細追加。専用トークン認証・精算GAS sd_apiAddExternalLineへ中継・DB_PLへは書かない。振込明細書が月2回（前半1-15日・後半16日-末）発行されるためlines[].halfLabelで区別しsourceKey衝突を回避・2026-09-30）。a6p26=smbcCardSeisanSyncの対象店舗判定をseisan_target→seisan_pl_categories_targetに変更（ユーザー指摘「黒霧屋 新横浜もこれは対象」・a6p7と同じ理由で黒霧屋 新横浜を含める・2026-09-30）。a6p27=smbcCardSeisanSyncが精算GASへ渡すsd_apiAddExternalLineの引数にkubunを追加（ユーザー指摘「カード売上が変動費で入っている」。精算GAS側(v5.23)がkubun未指定時に常に'変動費'固定だったバグとセットで修正。カード売上='売上'・カード手数料='変動費'・2026-09-30）。
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'dbPlDiag') return out(dbPlDiag(p)); // 2026-09-05一時追加: DB_PLシートの生データを店舗×月で確認（読み取り専用・原因特定でき次第削除）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
@@ -78,6 +78,7 @@ function handle(p) {
     if (action === 'cashReconRead') return out(cashReconRead(p)); // 現金売上照合用: 支払いDBの指定月の店舗×日の行を返す（専用トークン認証・読み取り専用）
     if (action === 'paymentDailyReplace') return out(paymentDailyReplace(p)); // レジの正しい値で支払いDBの店舗×日の1行を書き換え/追加（専用トークン認証・修正ログ付き・dryRun対応）
     if (action === 'seisanCashSync') return out(seisanCashSync(p)); // レジ照合で現金売上が修正された店舗の精算書「N月現金売上」行を更新（専用トークン認証。精算GAS sd_apiCashSyncへ中継）
+    if (action === 'smbcCardSeisanSync') return out(smbcCardSeisanSync(p)); // SMBC GMO PAYMENTのカード売上・手数料を精算対象店舗の精算書へ追加（専用トークン認証・精算GAS sd_apiAddExternalLineへ中継。2026-09-30）
     if (action === 'bqSyncPL') return out(bqSyncPL(p)); // PL経費(DB_PL)のBQミラー同期（専用トークン認証・ログイン不要）
     if (action === 'writeAdCost') return out(writeAdCost(p)); // A-8: 広告費書き込み（invoices側ad-cost-reflectから・AD_COST_WRITE_TOKEN認証・ログイン不要。2026-08-31追加）
     if (action === 'writePlFee') return out(writePlFee(p)); // A-8拡張: 勘定科目汎用のPL自動計上（invoices側pl-fee-reflectから・AD_COST_WRITE_TOKEN認証・ログイン不要。2026-09-01追加・設計書§5）
@@ -6488,4 +6489,75 @@ function seisanCashSync(p) {
   try { j = JSON.parse(res.getContentText()); } catch (e) { return { ok: false, error: '精算ダッシュボードの応答を解釈できません（HTTP ' + res.getResponseCode() + '）' }; }
   if (!j.ok) return { ok: false, error: j.error || 'unknown' };
   return { ok: true, results: (j.result && j.result.results) || [] };
+}
+
+// SMBC GMO PAYMENT（カード決済代行・N-Style分）の月次カード売上取込から、精算対象店舗の精算書へ
+// 「カード売上」（売上・S区分）「カード手数料」（経費・O区分）を明細として追加する中継（2026-09-30）。
+// ns-daily-import（tasks/smbc-card-deposit.js）がBQ_LOAD_TOKEN認証で呼ぶ（人の確認を待たず自動反映。
+// writeAccountCostToPl_はinvoices側の人手確認済み仕訳から呼ばれる設計のためAD_COST_WRITE_TOKEN認証・
+// ここはns-daily-importの月次自動取込からの呼び出しのため、cashReconRead等と同じBQ_LOAD_TOKENに揃える）。
+// 精算対象外の店舗（store_directory_v.seisan_target=false。例: 黒霧屋 新横浜）は何もしない
+// （syncSeisanFeeToPl等、既存のseisan_target判定と同じ扱い）。DB_PL（経営ダッシュボードのPLタブ）へは
+// 書かない（ユーザー要望は「業務委託精算書に入るように」のみのため。書く場合は別途writeAccountCostToPl_
+// 経由に変更すること）。sd_apiAddExternalLineは既存のwriteAccountCostToPl_と同じ関数を流用（精算側の
+// 変更は不要）。p.ym='YYYY-MM'、p.lines=JSON配列 [{storeName（stores.name）, salesAmount, feeAmount}]。
+function smbcCardSeisanSync(p) {
+  if (!cashReconAuth_(p)) return { ok: false, error: 'unauthorized' };
+  var ym = String((p || {}).ym || '');
+  if (!/^\d{4}-\d{2}$/.test(ym)) return { ok: false, error: 'ym は YYYY-MM 形式' };
+  var lines;
+  try { lines = JSON.parse(p.lines || '[]'); } catch (e) { return { ok: false, error: 'lines がJSONとして読めません' }; }
+  if (!Array.isArray(lines) || !lines.length) return { ok: true, results: ['対象がありません'] };
+  var props = PropertiesService.getScriptProperties();
+  var seisanUrl = props.getProperty('SEISAN_WEBAPP_URL'), plSyncToken = props.getProperty('PL_SYNC_TOKEN');
+  if (!seisanUrl || !plSyncToken) return { ok: false, error: 'SEISAN_WEBAPP_URL または PL_SYNC_TOKEN が未設定です（スクリプトプロパティ）' };
+
+  var storeRes = UrlFetchApp.fetch(
+    'https://uuvsxzhpxtghojoubjcc.supabase.co/rest/v1/store_directory_v?select=name,seisan_pl_categories_target,seisan_store_name',
+    { headers: { apikey: STORE_DIRECTORY_ANON_KEY_, Authorization: 'Bearer ' + STORE_DIRECTORY_ANON_KEY_ }, muteHttpExceptions: true }
+  );
+  if (storeRes.getResponseCode() !== 200) return { ok: false, error: '店舗一覧の取得に失敗しました' };
+  var seisanNameOf = {};
+  // 2026-09-30修正（ユーザー指摘）: 判定をseisan_target→seisan_pl_categories_targetに変更。
+  // カード売上は運営委託費とは別の「個別科目のPL反映」枠にあたるため、syncSeisanCategoriesToPl
+  // （a6p7）と同じ判定にする。これにより黒霧屋 新横浜（seisan_target=false・pl_categories_target=true）
+  // も対象に含まれる。
+  JSON.parse(storeRes.getContentText()).forEach(function (s) { if (s.seisan_pl_categories_target) seisanNameOf[s.name] = s.seisan_store_name || s.name; });
+
+  var results = [];
+  lines.forEach(function (ln) {
+    var storeName = String((ln && ln.storeName) || '').trim();
+    var seisanName = seisanNameOf[storeName];
+    if (!seisanName) { results.push(storeName + ': 精算対象外のためスキップ'); return; }
+    // 2026-09-30追加: 振込明細書は月2回（前半1-15日・後半16日-末）に分けて発行されるため、
+    // 同じ年月でも前半分・後半分は別々の明細行として区別する（halfLabelが無い呼び出しは従来どおり
+    // 無印のitem・sourceKeyのまま＝後方互換）。区別しないとsourceKeyが衝突し、後半分の登録で
+    // 前半分の明細が上書きされてしまう。
+    var half = String(ln.halfLabel || '').trim(); // '前半' / '後半' / ''
+    var halfTag = half ? ':' + half : '';
+    var halfText = half ? ym + half + '分' : '';
+    [
+      { key: 'sales', account: 'カード売上', kubun: '売上', amount: Number(ln.salesAmount) || 0 },
+      { key: 'fee', account: 'カード手数料', kubun: '変動費', amount: Number(ln.feeAmount) || 0 },
+    ].forEach(function (line) {
+      if (!(line.amount > 0)) return; // 0円は登録しない（未取扱の月等）
+      try {
+        var res = UrlFetchApp.fetch(seisanUrl, {
+          method: 'post', contentType: 'text/plain;charset=utf-8', muteHttpExceptions: true,
+          payload: JSON.stringify({
+            fn: 'sd_apiAddExternalLine',
+            args: [plSyncToken, seisanName, ym, {
+              item: (halfText ? halfText + ' ' : '') + line.account + '（SMBC GMO PAYMENT）', amount: line.amount, tax: '10%',
+              account: line.account, subAccount: '', kubun: line.kubun, sourceKey: 'smbc-card:' + storeName + ':' + ym + halfTag + ':' + line.key,
+            }]
+          })
+        });
+        var j = JSON.parse(res.getContentText());
+        results.push(storeName + halfTag + '（' + line.account + '）: ¥' + line.amount.toLocaleString('ja-JP') + (j.ok && j.result && j.result.ok ? ' 登録OK' : ' 失敗: ' + JSON.stringify(j).slice(0, 150)));
+      } catch (e) {
+        results.push(storeName + halfTag + '（' + line.account + '）: 失敗 ' + String(e && e.message || e));
+      }
+    });
+  });
+  return { ok: true, results: results };
 }
