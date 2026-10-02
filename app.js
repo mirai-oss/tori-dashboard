@@ -1646,7 +1646,7 @@ function bootMark_(){
   if(S.bootLogged||!S.auth) return;
   const has=!!(D.home||(D.daily&&D.daily.length)||(D.dailyKd&&D.dailyKd.length));
   if(!has) return;
-  S.bootLogged=true;
+  S.bootLogged=true; S.bootMs=Math.round(nowMs_()-(S.bootT0||0));
   logPerf_('keiei','boot_first_paint', nowMs_()-(S.bootT0||0), true, (D.homeFromCache?'cache':'nocache')+'|'+(BOOT_GASLESS_?'gasless':'legacy'));
 }
 // 統合アカウント（ポータルと同じログイン）の人か。旧ID/パスワードだけの人は従来動作のまま扱う。
@@ -1686,6 +1686,37 @@ function scheduleGasRelogin_(){
     if(await regainGasSession_()){ if(S.connState==='gaspending') setConnecting_(); fetchDataFast().then(()=>startPolling()); }
     else scheduleGasRelogin_();
   }, 30000);
+}
+// ⏱計測（管理者のみ・起動が遅い時の原因調査用）: ブラウザが記録している通信の時間(Resource Timing)を一覧にして、
+// コピーできる文章で表示する。何が・いつ始まり・何秒かかったかがそのまま分かる（読み取り専用・画面や数字には影響しない）。
+function perfReportText_(){
+  const out=[];
+  const nav=(performance.getEntriesByType&&performance.getEntriesByType('navigation')[0])||null;
+  out.push('【起動計測】'+new Date().toLocaleString('ja-JP')+'  app.js '+((document.querySelector('script[src*="app.js"]')||{}).src||'').replace(/^.*\//,''));
+  out.push('フラグ: BOOT_GASLESS_='+BOOT_GASLESS_+' / LOGIN_2STAGE_='+LOGIN_2STAGE_+' / データ元='+(S.useBqDaily?'BigQuery':'シート'));
+  out.push('最初の数字が出るまで(boot_first_paint): '+(S.bootMs!=null?(S.bootMs/1000).toFixed(1)+'秒（'+(D.homeFromCache?'前回値キャッシュ':'キャッシュなし')+'）':'まだ出ていない')+' / 仮ログイン='+(S.auth&&S.auth.provisional||'なし')+' / 接続状態='+S.connState);
+  if(nav) out.push('ページ読み込み: HTML到着 '+Math.round(nav.responseEnd)+'ms / DOM完成 '+Math.round(nav.domContentLoadedEventEnd)+'ms / 読み込み完了 '+Math.round(nav.loadEventEnd||0)+'ms');
+  out.push('現在 '+(nowMs_()/1000).toFixed(1)+'秒経過。以下は 開始時刻 / 所要 / 通信先（0.3秒以上かかったもの＋ログイン・データ系を表示）');
+  const rs=(performance.getEntriesByType('resource')||[]).filter(r=>{
+    const n=r.name; const gas=n.indexOf('script.google.com')>=0||n.indexOf('googleusercontent.com')>=0;
+    const sb=n.indexOf('supabase.co')>=0; const own=/app\.js|sample-data\.js|index\.html/.test(n);
+    return (gas||sb||own)&&(r.duration>=300||gas||own);
+  }).sort((a,b)=>a.startTime-b.startTime);
+  rs.forEach(r=>{
+    const n=r.name.replace(/^https?:\/\//,'').replace(/\?.*$/,'').replace('script.google.com/macros/s/','GAS ').replace(/\/exec$/,'/exec').replace('uuvsxzhpxtghojoubjcc.supabase.co','supabase');
+    out.push('+'+(r.startTime/1000).toFixed(1).padStart(5)+'s  '+(r.duration/1000).toFixed(1).padStart(5)+'秒  '+n.slice(0,70));
+  });
+  out.push('（GASの行は同じURLなので、何のaction名かは表に出ません。件数と所要時間で見ます）');
+  return out.join('\n');
+}
+function showPerfReport_(){
+  const old=document.getElementById('perfRep'); if(old) old.remove();
+  const d=document.createElement('div'); d.id='perfRep';
+  d.style.cssText='position:fixed;inset:5% 5%;z-index:99999;background:#fff;border:2px solid #b5502f;border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:8px;box-shadow:0 8px 40px rgba(0,0,0,.35)';
+  d.innerHTML='<div style="font-weight:700">⏱ 起動計測（スクショか、全文コピーして共有してください）</div><textarea readonly style="flex:1;font:12px/1.5 monospace;width:100%"></textarea><div><button class="icon-btn" id="perfRepClose">閉じる</button></div>';
+  document.body.appendChild(d);
+  d.querySelector('textarea').value=perfReportText_();
+  d.querySelector('#perfRepClose').onclick=()=>d.remove();
 }
 // ===== F1-a ログイン二段化（R2・2026-10-03）=====
 // LOGIN_2STAGE_=true（既定）: 統合アカウントはSupabase認証が通った時点で画面に入り（keiei-api-home等のkd_直読みで描画）、
@@ -2844,7 +2875,7 @@ function headerActionsHtml_(){
   return `<div class="sync-info">${connBadge()}</div>
     <button class="icon-btn" onclick="App.refresh()" title="手動更新">↻ 更新</button>
     <button class="icon-btn" onclick="App.csv()">⬇ CSV</button>
-    <button class="icon-btn" onclick="App.pdf()">🖨 PDF</button>`;
+    <button class="icon-btn" onclick="App.pdf()">🖨 PDF</button>${isAdminRole()?`<button class="icon-btn" onclick="App.perfReport()" title="起動が遅い時の原因調査用（管理者のみ）">⏱ 計測</button>`:''}`;
 }
 function viewHeader(){
   const acc=S.auth.account;
@@ -9149,6 +9180,7 @@ window.App = {
   ssoLogin: doSsoLogin,
   ssoToggle(){ S.ssoOpen=!S.ssoOpen; S.loginErr=''; render(); },
   logout(){ if(confirm('ログアウトしますか？')) doLogout(); },
+  perfReport(){ showPerfReport_(); },
   tab(t){ S.tab=t; render(); if(BOOT_GASLESS_&&S.auth&&S.auth.token) ensureTabData_(t,false,null); },
   period(p){ S.period=p; S.pWeekIdx=null; render(); ensureMediaMonths_(); },
   store(n){ S.store=n; render(); },
