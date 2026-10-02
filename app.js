@@ -8169,6 +8169,16 @@ async function ctfPost_(url, payload, timeoutMs, onRetry){
   }
   throw lastErr;
 }
+// 公開フォームの「実効」日付・移動元・移動先（未選択はstores先頭から補う）。viewTransferFormとctfSubmitで共有。
+function ctfEff_(m){
+  const stores=m.stores||[];
+  const todayStr=(()=>{ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); })();
+  const from=m.fromStore&&stores.includes(m.fromStore)?m.fromStore:stores[0];
+  const to=m.toStore&&stores.includes(m.toStore)&&m.toStore!==from?m.toStore:(stores.find(x=>x!==from)||stores[0]);
+  return {date:m.date||todayStr, from, to};
+}
+// 入力が始まっているか（始まっていれば裏の再取得で画面を作り直さない）
+function ctfDirty_(m){ return !!(m.fromStore||m.toStore||m.date||m.note||(m.rows||[]).some(r=>r.name||r.qty)); }
 function ctfPriceOf_(name){ const it=(S.transferForm.items||[]).find(x=>x.name===name); return it?it.unitPrice:0; }
 function ctfRowAmount_(r){ return ctfPriceOf_(r.name)*(Number(r.qty)||0); }
 function ctfTotal_(){ return (S.transferForm.rows||[]).reduce((s,r)=>s+ctfRowAmount_(r),0); }
@@ -8188,10 +8198,7 @@ function viewTransferForm(){
     <button class="icon-btn primary" style="margin-top:14px" onclick="App.ctfReset()">続けてもう1件入力する</button>
   </div>`);
   const stores=m.stores||[], items=m.items||[];
-  const todayStr=(()=>{ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); })();
-  const dateV=m.date||todayStr;
-  const fromSt=m.fromStore&&stores.includes(m.fromStore)?m.fromStore:stores[0];
-  const toSt=m.toStore&&stores.includes(m.toStore)&&m.toStore!==fromSt?m.toStore:(stores.find(s=>s!==fromSt)||stores[0]);
+  const eff=ctfEff_(m), dateV=eff.date, fromSt=eff.from, toSt=eff.to;
   const rows=m.rows&&m.rows.length?m.rows:[{name:'',qty:''}];
   const rowHtml=(r,i)=>`<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
     <select style="flex:1" onchange="App.ctfRowChanged(${i},'name',this.value)">
@@ -8208,8 +8215,8 @@ function viewTransferForm(){
       !stores.length?`<div class="empty" style="color:#b5502f;margin-top:10px">店舗一覧を取得できませんでした。時間をおいて開き直してください。</div>`:`
     <div class="form-grid" style="margin-top:10px">
       <div><label>移動日</label><input type="date" value="${esc(dateV)}" onchange="App.ctfFieldChanged('date',this.value)"></div>
-      <div><label>移動元店舗</label><select onchange="App.ctfFieldChanged('fromStore',this.value)">${stores.map(s=>`<option value="${esc(s)}" ${fromSt===s?'selected':''}>${esc(s)}</option>`).join('')}</select></div>
-      <div><label>移動先店舗</label><select onchange="App.ctfFieldChanged('toStore',this.value)">${stores.map(s=>`<option value="${esc(s)}" ${toSt===s?'selected':''}>${esc(s)}</option>`).join('')}</select></div>
+      <div><label>移動元店舗</label><select id="ctf-from" onchange="App.ctfFieldChanged('fromStore',this.value)">${stores.map(s=>`<option value="${esc(s)}" ${fromSt===s?'selected':''}>${esc(s)}</option>`).join('')}</select></div>
+      <div><label>移動先店舗</label><select id="ctf-to" onchange="App.ctfFieldChanged('toStore',this.value)">${stores.map(s=>`<option value="${esc(s)}" ${toSt===s?'selected':''}>${esc(s)}</option>`).join('')}</select></div>
     </div>
     <div style="margin-top:14px">
       <label style="font-size:12px;color:#8c8375">商品</label>
@@ -9359,7 +9366,21 @@ window.App = {
     render();
   },
   // フォーム欄の入力をS.modalへ逐一保存（裏の定期ポーリングでrender()が走っても消えないように）
-  ctFieldChanged(field, value){ S.modal=Object.assign({}, S.modal, {[field]:value}); },
+  ctFieldChanged(field, value){
+    let m=Object.assign({}, S.modal, {[field]:value});
+    // 移動元＝移動先になる場合は、もう一方を別の店舗に明示的に切り替えて画面にも反映する
+    // （再描画時に黙って別の店舗へ戻って見えるのを防ぐ）
+    if(field==='fromStore'||field==='toStore'){
+      const stores=scopeStores();
+      const from=m.fromStore&&stores.includes(m.fromStore)?m.fromStore:stores[0];
+      const to=m.toStore&&stores.includes(m.toStore)&&m.toStore!==from?m.toStore:(stores.find(x=>x!==from)||stores[0]);
+      m.fromStore=from; m.toStore=to;
+      const f=$('ct-from'), t=$('ct-to');
+      if(f&&f.value!==from) f.value=from;
+      if(t&&t.value!==to) t.value=to;
+    }
+    S.modal=m;
+  },
   async saveCostTransfer(){
     const msg=$('ct-msg'); msg.style.color='#b5502f'; msg.textContent='';
     const date=$('ct-date').value, fromStore=$('ct-from').value, toStore=$('ct-to').value,
@@ -9398,11 +9419,25 @@ window.App = {
    * フォーカスが外れるため、costTransferModalのctFieldChangedと同じく状態だけ更新してrender()
    * は呼ばない。ただし合計金額は入力のたびに見えてほしいので、数量変更時だけDOMを直接書き換える
    * （ctfPatchTotals_）。 */
-  ctfFieldChanged(field,value){ S.transferForm=Object.assign({},S.transferForm,{[field]:value}); if(field==='date'||field==='fromStore'||field==='toStore') render(); },
+  // 2026-10-05: 選択のたびにrender()で画面全体を作り直すと、開いていた選択リストが閉じたり他の欄が
+  // 巻き戻って見えてストレス、というユーザー報告に対応。状態だけ更新し、画面は必要な箇所だけ書き換える
+  // （選んだ値は既に画面に出ているため再描画は不要）。移動元＝移動先になる場合だけ、もう一方を別の店舗に
+  // 明示的に切り替えて画面にも反映する。
+  ctfFieldChanged(field,value){
+    let m=Object.assign({},S.transferForm,{[field]:value});
+    if(field==='fromStore'||field==='toStore'){
+      const eff=ctfEff_(m);
+      m.fromStore=eff.from; m.toStore=eff.to;
+      const f=$('ctf-from'), t=$('ctf-to');
+      if(f&&f.value!==eff.from) f.value=eff.from;
+      if(t&&t.value!==eff.to) t.value=eff.to;
+    }
+    S.transferForm=m;
+  },
   ctfRowChanged(i,field,value){
     const rows=(S.transferForm.rows||[]).map((r,idx)=>idx===i?Object.assign({},r,{[field]:value}):r);
     S.transferForm=Object.assign({},S.transferForm,{rows});
-    if(field==='name') render(); else App.ctfPatchTotals_();
+    App.ctfPatchTotals_();
   },
   ctfPatchTotals_(){
     (S.transferForm.rows||[]).forEach((r,i)=>{ const el=$('ctf-sub-'+i); if(el) el.textContent=r.name?yen(ctfRowAmount_(r)):''; });
@@ -9417,11 +9452,7 @@ window.App = {
   async ctfSubmit(){
     const m=S.transferForm;
     const msg=$('ctf-msg'); if(msg){ msg.style.color='#b5502f'; msg.textContent=''; }
-    const todayStr=(()=>{ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); })();
-    const date=m.date||todayStr;
-    const stores=m.stores||[];
-    const fromStore=m.fromStore&&stores.includes(m.fromStore)?m.fromStore:stores[0];
-    const toStore=m.toStore&&stores.includes(m.toStore)&&m.toStore!==fromStore?m.toStore:stores.find(s=>s!==fromStore);
+    const eff=ctfEff_(m), date=eff.date, fromStore=eff.from, toStore=eff.to;
     if(!fromStore||!toStore||fromStore===toStore){ if(msg) msg.textContent='移動元と移動先は別の店舗を選んでください'; return; }
     const itemsRaw=(m.rows||[]).filter(r=>r.name&&Number(r.qty)>0).map(r=>({name:r.name,qty:Number(r.qty)}));
     if(!itemsRaw.length){ if(msg) msg.textContent='商品と数量を1つ以上入力してください'; return; }
@@ -10073,7 +10104,7 @@ window.App = {
         try{ localStorage.setItem(cacheKey, JSON.stringify({stores,items})); }catch(e){}
         const changed=!cached || JSON.stringify(stores)!==JSON.stringify(cached.stores) || JSON.stringify(items)!==JSON.stringify(cached.items);
         S.transferForm=Object.assign({}, S.transferForm, { loading:false, loadingSlow:false, stores, items });
-        if(changed) render(); // キャッシュと同一内容なら再描画しない（入力中のフォーカスを不要に失わせない）
+        if(changed&&!ctfDirty_(S.transferForm)) render(); // キャッシュと同一内容・入力が始まっている場合は再描画しない（入力途中を勝手にリセットさせない）
       }).catch(e=>{
         clearTimeout(slowTimer);
         if(!S.transferForm) return;
