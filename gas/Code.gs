@@ -5824,7 +5824,29 @@ function costTransferPublicSubmit(p) {
   if (!sh) return { ok: false, error: 'DB_仕入れ移動申請シートがありません' };
   var id = Utilities.getUuid().split('-')[0];
   sh.appendRow([id, new Date(), date, fromStore, toStore, JSON.stringify(items), total, note, 'pending', '', '']);
+  notifyOrderLine_(date, fromStore, toStore, items, note);   // 2026-10-03追加: 失敗しても申請自体は成功のまま返す（ベストエフォート）
   return { ok: true, id: id, total: total };
+}
+
+// 発注（店舗間の仕入れ移動）を「発注グループ」LINEへ通知（2026-10-03追加）。
+// ns-portalのline-webhook Edge Function（push_order_groupアクション）へ中継するだけで、
+// LINE側の認証・送信先グループIDの管理は全てそちら側（app_secrets）に持たせている。
+// LINE通知に失敗しても仕入れ移動の申請自体（DB_仕入れ移動申請への記録）は成功のまま進める
+// （通知はあくまで付加価値。PL反映は別途社長・本部の承認フローで担保されているため）。
+function notifyOrderLine_(date, fromStore, toStore, items, note) {
+  try {
+    var secretProp = PropertiesService.getScriptProperties().getProperty('LINE_ORDER_PUSH_SECRET');
+    if (!secretProp) { Logger.log('notifyOrderLine_: LINE_ORDER_PUSH_SECRET未設定のためスキップ'); return; }
+    UrlFetchApp.fetch(STORE_DIRECTORY_URL_.replace(/\/rest\/v1\/.*$/, '') + '/functions/v1/line-webhook', {
+      method: 'post',
+      contentType: 'application/json',
+      headers: { apikey: STORE_DIRECTORY_ANON_KEY_, Authorization: 'Bearer ' + STORE_DIRECTORY_ANON_KEY_ },
+      payload: JSON.stringify({ action: 'push_order_group', secret: secretProp, date: date, fromStore: fromStore, toStore: toStore, items: items, note: note }),
+      muteHttpExceptions: true
+    });
+  } catch (e) {
+    Logger.log('notifyOrderLine_失敗（申請自体には影響なし）: ' + e);
+  }
 }
 
 // MF取込マスタの新規マッピングをDB_科目対応へ反映（キー=MF勘定科目×MF補助科目。既存キーは上書き・無ければ追加）。
