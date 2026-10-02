@@ -3135,6 +3135,9 @@ function mediaTableRows(a,b,pa,pb,scopeSet,selName,mode){
 // つなぎ専用に戻した（viewDash()参照）。D.homeにmtdCost等があれば原価率(F)/人件費率(L)/FLも
 // 出す（hasFlで分岐）。無ければ従来どおりF/L/FL無しの簡易表示。既存のkpi-grid/panel/tblを流用。
 function viewDashFast_(){
+  // レーンP(2026-10-03): keiei-api-homeのdataDate＝売上のある最新営業日（通常は前日）。todaySales等は「dataDateまでの実績」。
+  const dd=D.home&&D.home.dataDate; const ddl=(()=>{ if(!dd) return ''; const d=new Date(String(dd).slice(0,10)+'T00:00:00+09:00'); if(isNaN(d)) return ''; return (d.getMonth()+1)+'/'+d.getDate()+'('+'日月火水木金土'[d.getDay()]+')'; })();
+  const dl=ddl?ddl+'の':'直近営業日の';
   const t=D.home.totals||{}, stores=D.home.stores||[];
   const targetRateTxt=t.targetRate!=null?(t.targetRate*100).toFixed(1)+'%':'—';
   const yoyTxt=t.priorYearSameWeekdayRatio!=null?(t.priorYearSameWeekdayRatio*100).toFixed(1)+'%':'—';
@@ -3151,13 +3154,13 @@ function viewDashFast_(){
     ${hasFl?`<div class="kpi"><div class="lb">原価率 (F)</div><div class="vl">${pct1(t.mtdCost,t.mtdSales)}</div><div class="yy mut">${yen(t.mtdCost)}</div></div>
     <div class="kpi"><div class="lb">人件費率 (L)</div><div class="vl">${pct1(t.mtdLabor,t.mtdSales)}</div><div class="yy mut">${yen(t.mtdLabor)}</div></div>
     <div class="kpi"><div class="lb">FL合計</div><div class="vl">${t.mtdFlRate!=null?(t.mtdFlRate*100).toFixed(1)+'%':'—'}</div><div class="yy mut">粗利率 ${t.mtdGrossRate!=null?(t.mtdGrossRate*100).toFixed(1)+'%':'—'}</div></div>`:''}
-    <div class="kpi"><div class="lb">本日売上</div><div class="vl">${yen(t.todaySales)}</div><div class="yy ${yoyCls}">前年同曜日比 ${yoyTxt}</div></div>
-    <div class="kpi"><div class="lb">本日客数</div><div class="vl">${cnt(t.todayGuests)}人</div><div class="yy mut">客単価 ${yen(t.todayAvgCheck||0)}</div></div>
-    <div class="kpi"><div class="lb">本日組数</div><div class="vl">${cnt(t.todayParties)}組</div><div class="yy mut">${esc(D.home.asOf||'')} 時点</div></div>
+    <div class="kpi"><div class="lb">${dl}売上</div><div class="vl">${yen(t.todaySales)}</div><div class="yy ${yoyCls}">前年同曜日比 ${yoyTxt}</div></div>
+    <div class="kpi"><div class="lb">${dl}客数</div><div class="vl">${cnt(t.todayGuests)}人</div><div class="yy mut">客単価 ${yen(t.todayAvgCheck||0)}</div></div>
+    <div class="kpi"><div class="lb">${dl}組数</div><div class="vl">${cnt(t.todayParties)}組</div><div class="yy mut">${ddl?esc(ddl)+'までの実績':esc(D.home.asOf||'')+' 時点'}</div></div>
   </div>`;
   if(stores.length){
     h+=`<div class="panel"><div class="panel-head"><div><h3>店舗別サマリ（速報）</h3>${hasFl?'':'<div class="sub">原価率・人件費率等の詳細指標は読み込み完了後に表示されます</div>'}</div></div>
-    <div class="scroll-x"><table class="tbl"><thead><tr><th>店舗</th><th>当月累計</th>${hasFl?'<th>F率</th><th>L率</th><th>FL</th>':''}<th>達成率</th><th>本日売上</th><th>本日客数</th></tr></thead><tbody>`;
+    <div class="scroll-x"><table class="tbl"><thead><tr><th>店舗</th><th>当月累計</th>${hasFl?'<th>F率</th><th>L率</th><th>FL</th>':''}<th>達成率</th><th>${esc(ddl||'直近営業日')}売上</th><th>${esc(ddl||'直近営業日')}客数</th></tr></thead><tbody>`;
     stores.forEach(s=>{
       const rt=s.targetRate!=null?(s.targetRate*100).toFixed(1)+'%':'—';
       h+=`<tr><td>${shortStoreTd(s.storeName)}</td><td>${yen(s.mtdSales)}</td>${hasFl?`<td>${pct1(s.mtdCost,s.mtdSales)}</td><td>${pct1(s.mtdLabor,s.mtdSales)}</td><td>${s.mtdFlRate!=null?(s.mtdFlRate*100).toFixed(1)+'%':'—'}</td>`:''}<td>${rt}</td><td>${yen(s.todaySales)}</td><td>${cnt(s.todayGuests)}人</td></tr>`;
