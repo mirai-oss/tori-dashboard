@@ -806,6 +806,24 @@ function bqSpeedCheck4() {
   step('K. dataVersion（更新検知）', function () { dataVersion(); });
   Logger.log(out.join('\n'));
 }
+// F1-d（Q1・旧ID/パスワードログイン廃止の準備）: アカウント管理シートの「有効なアカウント」のうち、
+// メール未登録（＝統合アカウントでログインできず、旧ID/パスワードでしか入れない人）を役職別の人数だけで報告する。
+// 個人情報（名前・ID・メール）は一切出さない。読み取り専用・エディタから手動実行。
+function legacyLoginAudit() {
+  var rows = accountRows(), active = 0, withMail = 0, noMail = {}, noMailTotal = 0;
+  for (var i = 0; i < rows.length; i++) {
+    var a = rows[i];
+    if (!a.active) continue;
+    active++;
+    if (a.email) { withMail++; continue; }
+    var key = (a.role || '(権限なし)') + (a.position ? '／' + a.position : '');
+    noMail[key] = (noMail[key] || 0) + 1; noMailTotal++;
+  }
+  var lines = ['有効アカウント: ' + active + '人 / メール登録済み（統合ログイン可）: ' + withMail + '人 / メール未登録（旧ID・パスワードのみ）: ' + noMailTotal + '人'];
+  Object.keys(noMail).sort().forEach(function (k) { lines.push('  ・' + k + ': ' + noMail[k] + '人'); });
+  lines.push('※アカウント管理シートの行のみが対象。ポータル側で発行された統合アカウント（シートに行が無い人）は旧ログインを持たないため対象外。');
+  Logger.log(lines.join('\n'));
+}
 
 // ================== パスワードの保護 ==================
 // スプレッドシートに平文で置かないため、SHA-256＋アカウントごとのランダムsaltで保存する。
