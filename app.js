@@ -1963,7 +1963,9 @@ async function fetchData(silent, opts, preD){
     if(d.taxRate!=null) D.taxRate=Number(d.taxRate)||0.34;   // A-5(2026-08-26): 簡易キャッシュフロー用の法人税率
     if(d.version) S.dataVersion=d.version;
     // daily を含む読込のときだけ接続状態を判定（媒体別だけの追い読みでは変えない）
-    if(!opts.only || opts.only.indexOf('daily')>=0){
+    // BQモードでdailyを除外した読み込みは判定しない（日次はfetchDailyBQが判定。ここで判定すると、日次が先に届いていても『実データ未取込』の誤警告で上書きされる）
+    const skipConn=S.useBqDaily&&Array.isArray(opts.exclude)&&opts.exclude.indexOf('daily')>=0;
+    if(!skipConn&&(!opts.only || opts.only.indexOf('daily')>=0)){
       S.connState=(D.diag.daily&&D.diag.daily.indexOf('OK')===0)?'live':'livewarn';
     }
     S.lastSync=stampNow();
@@ -2188,7 +2190,8 @@ async function fetchDataFastLegacy_(){   // F0以前の動作（BOOT_GASLESS_=fa
 function gasKeysForTab_(tab){
   const bq=S.useBqDaily;
   switch(tab){
-    case 'dash': case 'analysis': case 'target': case 'detail': return (bq?['daily','spot']:[]).concat(['media','dinii']);
+    case 'dash': case 'analysis': case 'target': return (bq?['daily','spot']:[]).concat(['media','dinii']);
+    case 'detail': return (bq?['daily','spot']:[]).concat(['media','dinii','cov']);
     case 'pl': return bq?['daily','pl','spot','loan']:[];
     case 'deposit': return bq?['daily','deposit']:['deposit'];
     case 'ad': return (bq?['daily']:[]).concat(['media']);
@@ -2204,14 +2207,14 @@ function gasLoaderForKey_(key){
     daily:()=>fetchDailyBQ(), pl:()=>fetchPlBQ(), spot:()=>fetchSpotBQ(), loan:()=>fetchLoanBQ(),
     deposit: bq?()=>fetchDepositBQ():part(['deposit']),
     media: bq?()=>fetchMediaBQ():(async()=>{ await fetchData(true,{ only:['media'], partial:true }); D.mediaPending=false; if(!targetModalOpen_()) render(); await fetchDeliveryMedia_(); }),
-    dinii: part(['dinii']), rsv: part(['予約'])
+    dinii: part(['dinii']), rsv: part(['予約']), cov: part(['明細カバレッジ'])
   };
   return m[key]||null;
 }
 // タブに必要なデータのうち、まだ読んでいないものだけを1本ずつ直列で読む。force=trueなら読み込み済みも読み直す。
-async function ensureTabData_(tab, force, myRun){
+async function ensureTabData_(tab, force, myRun, filter){
   const loaded=D.gasLoaded_||(D.gasLoaded_={});
-  const keys=gasKeysForTab_(tab);
+  const keys=gasKeysForTab_(tab).filter(k=>!filter||filter(k));
   for(const k of keys){
     if(!force&&loaded[k]) continue;
     const fn=gasLoaderForKey_(k); if(!fn) continue;
@@ -2222,7 +2225,7 @@ async function ensureTabData_(tab, force, myRun){
       try{ await fn(); loaded[k]=true; }catch(e){}
     });
   }
-  if(!keys.includes('media')) D.mediaPending=false;
+  if(!filter&&!keys.includes('media')) D.mediaPending=false;
 }
 // Supabase(kd_sync_status_v)を直読みして「データ鮮度」を作る（GAS dataFreshnessと同じ形）。失敗時はnull。
 async function freshnessFromSupabase_(){
@@ -2257,10 +2260,17 @@ async function fetchDataFast(opts){
   let freshOk=gasOnly&&!!D.freshness;
   if(!gasOnly) freshnessFromSupabase_().then(f=>{ if(f){ D.freshness=f; D.freshnessAt=Date.now(); freshOk=true; const el=document.querySelector('.sync-info'); if(el) el.innerHTML=connBadge(); } });
   // 3) GASは1本ずつ直列：action:data → 開いているタブに必要な分 → 鮮度(必要時のみ)→版チェック
-  const excl = S.useBqDaily ? HEAVY_KEYS.concat(['daily','PL','スポット人件費','借入返済元金']) : HEAVY_KEYS;
+  // 実測(2026-10-03 ⏱計測): action:dataの中の「明細時間帯/商品/店舗/カバレッジ」（dinii.ordersの全件集計4本）が
+  // 約30秒かかり、後ろに並んだ日次データまで待たされていた。画面で使うのは明細カバレッジ(明細分析タブの参考表)だけなので、
+  // 起動時は取らない（明細分析タブを開いた時にensureTabData_('detail')が読む）。
+  const bqAgg=['明細時間帯','明細商品','明細店舗','明細カバレッジ'];
+  const excl=(S.useBqDaily ? HEAVY_KEYS.concat(['daily','PL','スポット人件費','借入返済元金']) : HEAVY_KEYS).concat(bqAgg);
   await new Promise(r=>setTimeout(r,0));   // 初回描画を先に画面へ出す
+  // ①開いているタブの「数字に必須」なデータ（日次・スポット・PL・入金・借入）を最優先 ②その他のシート(action:data) ③残り(媒体・口コミ等)
+  const must=k=>(k==='daily'||k==='spot'||k==='pl'||k==='deposit'||k==='loan');
+  await ensureTabData_(S.tab, false, myRun, must);
   await gasRun_(async()=>{ if(myRun!==prefetchRun||!S.auth||!S.auth.token) return; await fetchData(true,{ exclude:excl }); });
-  await ensureTabData_(S.tab, false, myRun);
+  await ensureTabData_(S.tab, false, myRun, k=>!must(k));
   if(myRun!==prefetchRun) return;
   if(!freshOk) await gasRun_(async()=>{ if(!S.gasSessionLost&&myRun===prefetchRun) await fetchFreshness(); });
   await gasRun_(async()=>{ if(S.gasSessionLost||myRun!==prefetchRun||!S.auth||!S.auth.token) return; await fetchCtPendingCount_(); });   // 承認待ちバッジ（管理者のみ・初回描画後の直列の最後）
@@ -2438,7 +2448,8 @@ async function bqFallbackToSheet_(key){
 // 上のフォールバックが効いている間、タブの見出し付近に出す小さな注意書き（管理者以外にも見える）。
 function bqFallbackNote_(key){
   if(!S.useBqDaily||!D.bqFallback[key]) return '';
-  return `<div class="mut" style="font-size:11px;margin:2px 0 8px;color:#a2803f">⚠️ BigQueryの取得に失敗したため、予備経路（スプレッドシート）で表示中です</div>`;
+  const why={ daily:D.dailyBqErr, PL:D.plBqErr, deposit:D.depositBqErr, media:'', 'スポット人件費':D.spotBqErr, '借入返済元金':D.loanBqErr }[key]||'';
+  return `<div class="mut" style="font-size:11px;margin:2px 0 8px;color:#a2803f">⚠️ BigQueryの取得に失敗したため、予備経路（スプレッドシート）で表示中です（社員人件費など一部の数字が不完全になります）${(isAdminRole()&&why)?'<br>理由: '+esc(String(why)).slice(0,160):''}</div>`;
 }
 // データ鮮度表示（実装指示書_ダッシュボード高速化タスク1・2026-08-23追加）。
 // 「数字が古い/処理中/失敗」を画面で判別できるようにする。5分キャッシュ（毎render時には叩かない）。
