@@ -784,6 +784,28 @@ function bqSpeedCheck3() {
   } catch (e) { out.push('E. 失敗: ' + e); }
   Logger.log(out.join('\n'));
 }
+// 速度の診断その4（エディタから手動実行・読み取り専用）。ログイン直後にダッシュボードが
+// 呼ぶ処理と、毎回の共通下準備を1つずつ測る。「キャッシュあり」は2回目以降の速さ。
+function bqSpeedCheck4() {
+  var now = function () { return new Date().getTime(); }, out = [], sess = { stores: '全店' };
+  function step(label, fn) {
+    var t = now();
+    try { var r = fn(); out.push(label + ': ' + (now() - t) + 'ms' + (r && r.cached ? '（キャッシュあり）' : '') + (r && r.ok === false ? ' ★失敗: ' + r.error : '')); }
+    catch (e) { out.push(label + ': ' + (now() - t) + 'ms ★例外: ' + e); }
+  }
+  step('A. 毎回の共通下準備 setupIfNeeded', function () { setupIfNeeded(); });
+  step('B. セッション確認 sessionGet', function () { sessionGet('dummy-token'); });
+  step('C. data（シート読み込み・BQ除外）', function () { return getData({ months: 25, exclude: 'media,deposit,dinii,予約,daily,PL' }, sess); });
+  step('D. bqDailyStore（日次）', function () { return bqDailyStore({ months: 25 }, sess); });
+  step('E. bqGetPL（PL）', function () { return bqGetPL({}, sess); });
+  step('F. bqGetDeposit（入金）', function () { return bqGetDeposit({}, sess); });
+  step('G. bqGetMedia（媒体別）', function () { return bqGetMedia({ months: 3, alsoPriorYear: 1 }, sess); });
+  step('H. bqGetSpot（スポット）', function () { return bqGetSpot({}, sess); });
+  step('I. bqGetLoanPrincipal（借入）', function () { return bqGetLoanPrincipal({}, sess); });
+  step('J. dataFreshness（最新日）', function () { return dataFreshness({}, sess); });
+  step('K. dataVersion（更新検知）', function () { dataVersion(); });
+  Logger.log(out.join('\n'));
+}
 
 // ================== パスワードの保護 ==================
 // スプレッドシートに平文で置かないため、SHA-256＋アカウントごとのランダムsaltで保存する。
