@@ -1610,7 +1610,9 @@ const API_TIMEOUT_MS=180000;
 // ないための代替）はレーンPのP-0a実装時に確定・必要なら合わせて直してもらう想定の暫定値。
 const PERF_LOG_URL='https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/keiei-api-perflog';
 const PERF_LOG_ANON_KEY='sb_publishable_MrwPJAx_Ws_fdRutprKCiQ_dg3wCiTr';
+const apiLogBuf_=[];   // ⏱計測用：GAS呼び出しの名前・所要・失敗理由（直近80件）
 function logApiPerf_(actionName, ms, ok, errType){
+  try{ apiLogBuf_.push({ a:actionName||'', ms:Math.round(ms), ok:!!ok, e:errType||'', end:nowMs_() }); if(apiLogBuf_.length>80) apiLogBuf_.shift(); }catch(e){}
   try{
     if(typeof navigator==='undefined'||!navigator.sendBeacon) return;
     const payload=JSON.stringify({ app:'tori-dashboard', action:actionName||'', ms:Math.round(ms), ok:!!ok, errType:errType||'', t:Date.now() });
@@ -1707,7 +1709,12 @@ function perfReportText_(){
     const n=r.name.replace(/^https?:\/\//,'').replace(/\?.*$/,'').replace('script.google.com/macros/s/','GAS ').replace(/\/exec$/,'/exec').replace('uuvsxzhpxtghojoubjcc.supabase.co','supabase');
     out.push('+'+(r.startTime/1000).toFixed(1).padStart(5)+'s  '+(r.duration/1000).toFixed(1).padStart(5)+'秒  '+n.slice(0,70));
   });
-  out.push('（GASの行は同じURLなので、何のaction名かは表に出ません。件数と所要時間で見ます）');
+  out.push('');
+  out.push('【アプリが記録した通信の結果（完了・失敗したもの）】 開始 / 所要 / 名前 / 結果');
+  apiLogBuf_.filter(x=>x.a&&x.a.indexOf('keiei-api-perflog')<0).sort((a,b)=>(a.end-a.ms)-(b.end-b.ms)).forEach(x=>{
+    out.push('+'+((x.end-x.ms)/1000).toFixed(1).padStart(5)+'s  '+(x.ms/1000).toFixed(1).padStart(5)+'秒  '+x.a.slice(0,38).padEnd(38)+' '+(x.ok?'OK':'失敗'+(x.e?'('+x.e+')':'')));
+  });
+  out.push('（通信が完了・失敗する前のもの＝まだ待っている最中のものは、この一覧に出ません）');
   return out.join('\n');
 }
 function showPerfReport_(){
@@ -2809,7 +2816,9 @@ function render(){
   // 脱出ボタンをこのプレースホルダ自体にも出す（クリック後は即座にシート経路へ切替・タイムアウトを
   // 待たなくてよい）。
   const bqEscapeBtn=isAdminRole()?`<div style="margin-top:14px"><button class="icon-btn" onclick="App.setDailySource('sheet')">🧪 データ元をシートに戻す</button></div>`:'';
-  if(provGate){
+  if(provGate&&S.tab==='pl'){
+    body=viewPLFast_();
+  } else if(provGate){
     body=`<div class="panel" style="text-align:center;padding:60px 20px;color:#8c8375">⏳ このタブの確定データを読み込み中…（ダッシュボードは先に表示されています）</div>`;
   } else if(bqGateTabs && S.useBqDaily && D.dailyBqLoading && !bqGateHasData){
     body=`<div class="panel" style="text-align:center;padding:60px 20px;color:#8c8375">⏳ BigQueryから読み込み中…${bqEscapeBtn}</div>`;
@@ -6516,6 +6525,27 @@ function plStorePanelsHtml_(stores, mS,mE,pS,pE,yS,yE, prevName, showYoY, mLabel
     </div>`;
     EXPORT.push({ title:'PL_'+nm+'（'+mLabel+'）', headers:showYoY?['項目','当期','売上比',prevName,'前年同期']:['項目','当期','売上比',prevName], rows:expRows });
   });
+  return h;
+}
+// 速報PL（F1-b・2026-10-03）: GASの確定データ(DB_PL等)が届く前に、Supabaseの集計済み月次PL(kd_pl_monthly_summary)で
+// 月次の店舗別PLを出す。勘定科目の内訳・手入力経費の細目は確定データ後に通常のPL画面へ切り替わる。
+function viewPLFast_(){
+  const m0=plMonthDate(); const y=m0.getFullYear(), m=m0.getMonth();
+  const ym=y+'-'+String(m+1).padStart(2,'0');
+  let h=`<div class="panel"><div class="panel-head"><div><h3>損益（速報・集計済み）</h3><div class="sub">月次の店舗別。勘定科目の内訳は確定データの読み込み後に通常のPL画面へ切り替わります</div></div><div>${ymSelect('plMonth', y, m)}</div></div>`;
+  if(!D.plKd){ return h+`<div class="empty" style="padding:40px;text-align:center;color:#8c8375">⏳ 集計済みの損益を読み込み中…</div></div>`; }
+  const sc=scopeStores();
+  const rows=D.plKd.filter(r=>r.ym===ym&&sc.includes(r.store)).sort((a,b)=>b.sales-a.sales);
+  if(!rows.length) return h+`<div class="empty" style="padding:40px;text-align:center;color:#8c8375">${esc(ym)} の集計済みデータがありません</div></div>`;
+  const tot=rows.reduce((o,r)=>{ ['sales','costTotal','laborTotal','adManual','rent','other','gross','sga','op','pending'].forEach(k=>{ o[k]=(o[k]||0)+(r[k]||0); }); return o; },{});
+  const pct=(n,d)=>d>0?(n/d*100).toFixed(1)+'%':'—';
+  const line=(label,r,strong)=>`<tr${strong?' style="font-weight:700;background:#faf6ee"':''}><td>${esc(label)}</td><td>${yen(r.sales)}</td><td>${yen(r.costTotal)}<div class="mut" style="font-size:11px">${pct(r.costTotal,r.sales)}</div></td><td>${yen(r.laborTotal)}<div class="mut" style="font-size:11px">${pct(r.laborTotal,r.sales)}</div></td><td>${yen(r.adManual)}</td><td>${yen(r.rent)}</td><td>${yen(r.other)}</td><td>${yen(r.gross)}</td><td>${yen(r.sga)}</td><td style="color:${r.op<0?'#b5502f':'inherit'}">${yen(r.op)}<div class="mut" style="font-size:11px">${pct(r.op,r.sales)}</div></td></tr>`;
+  h+=`<div class="scroll-x"><table class="tbl"><thead><tr><th>店舗</th><th>売上</th><th>原価(F)</th><th>人件費(L)</th><th>広告</th><th>家賃</th><th>その他</th><th>粗利</th><th>販管費</th><th>営業利益</th></tr></thead><tbody>`;
+  h+=line('合計',tot,true);
+  rows.forEach(r=>{ h+=line(r.store,r,false); });
+  h+=`</tbody></table></div>`;
+  const last=rows.map(r=>r.computedAt).filter(Boolean).sort().pop();
+  h+=`<div class="mut" style="font-size:11px;margin-top:8px">⚡ 集計済みデータ（最終集計 ${esc(last?fmtJst_(last):'—')}）。全社共通経費など一部は確定データの反映後に変わることがあります${tot.pending?'／精算書反映待ち '+yen(tot.pending):''}</div></div>`;
   return h;
 }
 function viewPL(){
