@@ -1936,21 +1936,20 @@ async function fetchDataFast(){
   // 代わりにfetchDailyBQ()/fetchPlBQ()/fetchDepositBQ()で取得する（2026-08-22追加）
   const excl = S.useBqDaily ? HEAVY_KEYS.concat(['daily','PL','スポット人件費','借入返済元金']) : HEAVY_KEYS;
   // P-0c（2026-09-06・体感速度改善の優先順位変更）: 従来のGAS action:dataは初期表示の必須待ちから
-  // 外し、裏更新（完了次第fetchData内部のrender()で反映）に降格した。代わりにkeiei-api-homeだけを
-  // 待って先に速報表示する（両方とも並行して投げるので合計の通信時間は増えない。fetchDataは内部で
-  // 例外を握りつぶす実装のためawaitしなくても安全）。action:dataはHANDOFF.md記載の実測で失敗率38%
-  // （最頻出のGAS action）と分かっており、初期表示をこれに依存させないことが体感速度改善の要。
+  // 外し、裏更新（完了次第fetchData内部のrender()で反映）に降格した。2026-10-03追加修正:
+  // keiei-api-home自体が遅い/取れないユーザーでも初回表示を詰まらせないよう、ここでもawaitせず
+  // 完全に並列化する。ダッシュボード本体はD.home/D.daily未着でも軽い起動画面を即表示する。
   fetchData(true, { exclude:excl });
-  await fetchHomeApi_();                                  // 速報KPI・当月累計・店舗別サマリをここで待つ
-  // W3②（2026-09-06）: 媒体別・入金の当月速報（低リスクのため先読み表示に使う）＋PL（本番表示には
-  // 使わず旧結果との裏突合専用）をawaitせず並行取得。storeNameById_がD.home.stores依存のため
-  // fetchHomeApi_()の後に呼ぶ（順序が重要）。
-  const curYm_=ymdStr(Date.now()).slice(0,7);
-  fetchDashboardSummaryApi_('media', curYm_).then(d=>{ if(d){ D.mediaSummaryFast=d.rows; if(!targetModalOpen_()) render(); } });
-  fetchDashboardSummaryApi_('deposit', curYm_).then(d=>{ if(d){ D.depositSummaryFast=d.rows; D.depositSummaryFastYm=curYm_; if(!targetModalOpen_()) render(); } });
-  fetchDashboardSummaryApi_('pl', curYm_).then(d=>{ if(d){ D.plSummaryFast=d.rows; D.plSummaryFastYm=curYm_; if(!targetModalOpen_()) render(); } });
-  fetchAnalysisKd_();   // 2026-09-14: 推移分析専用の高速経路（脱GAS）。失敗時は自動でD.dailyへフォールバック
-  fetchPlKd_();   // 2026-09-18（ラウンド6 A-12）: PL新旧突合パネルの一般化用（現状は検証専用・本番表示は未使用）
+  fetchHomeApi_().then(()=>{
+    // W3②（2026-09-06）: 媒体別・入金の当月速報（低リスクのため先読み表示に使う）＋PL（本番表示には
+    // 使わず旧結果との裏突合専用）。storeNameById_がD.home.stores依存のためfetchHomeApi_()後に呼ぶ。
+    const curYm_=ymdStr(Date.now()).slice(0,7);
+    fetchDashboardSummaryApi_('media', curYm_).then(d=>{ if(d){ D.mediaSummaryFast=d.rows; if(!targetModalOpen_()) render(); } });
+    fetchDashboardSummaryApi_('deposit', curYm_).then(d=>{ if(d){ D.depositSummaryFast=d.rows; D.depositSummaryFastYm=curYm_; if(!targetModalOpen_()) render(); } });
+    fetchDashboardSummaryApi_('pl', curYm_).then(d=>{ if(d){ D.plSummaryFast=d.rows; D.plSummaryFastYm=curYm_; if(!targetModalOpen_()) render(); } });
+    fetchAnalysisKd_();   // 2026-09-14: 推移分析専用の高速経路（脱GAS）。失敗時は自動でD.dailyへフォールバック
+    fetchPlKd_();   // 2026-09-18（ラウンド6 A-12）: PL新旧突合パネルの一般化用（現状は検証専用・本番表示は未使用）
+  });
   if(S.useBqDaily){ fetchDailyBQ(); fetchPlBQ(); fetchDepositBQ(); fetchMediaBQ(); fetchSpotBQ(); fetchLoanBQ(); }
   fetchFreshness();                                       // データ鮮度表示（5分キャッシュ・下のfetchFreshness参照）
   // 2026-09-02追加: 更新(⌘R)ボタンは目標管理モーダルを開いたまま押せてしまうため、ここもガードする
@@ -2443,8 +2442,8 @@ function render(){
   // D.daily依存の3タブはプレースホルダにする。ただし、2026-10-03時点でダッシュボードには
   // kd_直読みの速報値(D.home)があるため、BQ読込中でも速報表示を優先する。これを塞ぐと
   // ログイン直後に「BigQueryから読み込み中…」で長時間止まって見える。
-  const bqGateTabs=(S.tab==='dash'||S.tab==='analysis'||S.tab==='target');
-  const bqGateHasData=(S.tab==='dash'&&!!D.home)||(S.tab==='analysis'&&!!(D.dailyKd&&D.dailyKd.length||D.daily.length))||(S.tab==='target'&&!!D.daily.length);
+  const bqGateTabs=(S.tab==='analysis'||S.tab==='target');
+  const bqGateHasData=(S.tab==='analysis'&&!!(D.dailyKd&&D.dailyKd.length||D.daily.length))||(S.tab==='target'&&!!D.daily.length);
   // 2026-09-14追加: 読み込み中/失敗時のプレースホルダは3タブとも「🧪データ元」トグル自体を
   // 覆ってしまい、BQ側がAPI_TIMEOUT_MS(3分)ぶん詰まった場合トグルへ辿り着けず身動きが取れなく
   // なる不具合があった（ユーザー報告「遅すぎて全然開けない」）。管理者だけに見える「シートに戻す」
@@ -2783,11 +2782,21 @@ function viewDashFast_(){
   }
   return h;
 }
+function viewDashStarting_(){
+  let h=periodCtrlHtml()+storeSegHtml();
+  h+=`<div class="mut" style="font-size:11px;margin:2px 0 8px">⚡ ダッシュボードを準備中（集計済みデータを先に確認しています…）</div>`;
+  h+=`<div class="kpi-grid">
+    ${['当月累計売上','原価率 (F)','人件費率 (L)','本日売上'].map(t=>`<div class="kpi"><div class="lb">${t}</div><div class="vl">—</div><div class="yy mut">読み込み中…</div></div>`).join('')}
+  </div>`;
+  h+=`<div class="panel"><div class="empty">先に画面を表示しています。数字は取得できた順に自動で入れ替わります。</div></div>`;
+  return h;
+}
 function viewDash(){
   // P-0c（2026-09-06）: D.dailyが届くまでのつなぎとして、D.home（kd_直読み）があれば
   // 簡易表示（F/L/FLが揃っていればそれも含む）を一瞬だけ表示する。9/11に「常時表示」化を
   // 試したが見づらいとの指摘で撤回し、元のつなぎ限定の挙動に戻した（TK-60②は保留）。
   if(!D.daily.length && D.home) return viewDashFast_();
+  if(!D.daily.length) return viewDashStarting_();
   const sc=scopeStores(); const scopeSet=new Set(sc); const selName=selStoreName();
   const r=periodRange(), p=prevRange(r);
   const a=dayMs(r.s), b=dayMs(r.e), pa2=dayMs(p.s), pb2=dayMs(p.e);
