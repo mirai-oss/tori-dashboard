@@ -1340,7 +1340,47 @@ function bqStoreMap_() {
 // 欠落するという実害が出ていた（ユーザー報告「予約帳・予約分析が急に空になった」の根本原因。
 // stg_reservationの行数が増えたタイミングで顕在化したとみられる）。pageTokenが無くなるまで
 // Jobs.getQueryResults()でページを取り切るよう修正。
+// 2026-10-03高速化: GAS標準のBigQuery機能(BigQuery.Jobs.query)は結果を圧縮せずに受け取るため、
+// 約6,300行×13列の日次データで9.6秒かかっていた（BigQuery側の処理自体は0.25秒。bqSpeedCheck2/3で実測）。
+// UrlFetchApp（自動で圧縮して受け取る）でREST APIを直接呼ぶと同じデータが1.7秒で取れる。
+// REST側が何らかの理由で使えない（HTTPエラー・例外）ときだけ従来方式(bqRowsLegacy_)に自動で戻す。
+function bqRowsRest_(sql) {
+  try {
+    var headers = { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() };
+    var base = 'https://bigquery.googleapis.com/bigquery/v2/projects/' + BQ_PROJECT + '/queries';
+    var r = UrlFetchApp.fetch(base, {
+      method: 'post', contentType: 'application/json', muteHttpExceptions: true, headers: headers,
+      payload: JSON.stringify({ query: sql, useLegacySql: false, timeoutMs: 30000, location: 'asia-northeast1' })
+    });
+    if (r.getResponseCode() !== 200) return undefined;
+    var res = JSON.parse(r.getContentText());
+    if (!res.jobComplete) return null;
+    var fields = (res.schema && res.schema.fields) || [];
+    var out = [fields.map(function (f) { return f.name; })];
+    var rows = res.rows || [];
+    for (var i = 0; i < rows.length; i++) out.push(rows[i].f.map(function (c) { return c.v; }));
+    var jobId = res.jobReference && res.jobReference.jobId;
+    var loc = (res.jobReference && res.jobReference.location) || 'asia-northeast1';
+    var pageToken = res.pageToken, guard = 0;
+    while (pageToken && jobId && guard < 500) {
+      guard++;
+      var pr = UrlFetchApp.fetch(base + '/' + encodeURIComponent(jobId) + '?location=' + encodeURIComponent(loc) + '&pageToken=' + encodeURIComponent(pageToken),
+        { method: 'get', muteHttpExceptions: true, headers: headers });
+      if (pr.getResponseCode() !== 200) return undefined;   // 途中で失敗したら従来方式でやり直す（中途半端な結果は返さない）
+      var page = JSON.parse(pr.getContentText());
+      var prows = page.rows || [];
+      for (var j = 0; j < prows.length; j++) out.push(prows[j].f.map(function (c) { return c.v; }));
+      pageToken = page.pageToken;
+    }
+    return out;
+  } catch (e) { return undefined; }
+}
 function bqRows_(sql) {
+  var viaRest = bqRowsRest_(sql);
+  if (viaRest !== undefined) return viaRest;
+  return bqRowsLegacy_(sql);
+}
+function bqRowsLegacy_(sql) {
   var res = BigQuery.Jobs.query({ query: sql, useLegacySql: false, timeoutMs: 30000 }, BQ_PROJECT);
   if (!res || !res.jobComplete) return null;
   var fields = (res.schema && res.schema.fields) || [];
