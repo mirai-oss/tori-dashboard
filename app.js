@@ -1610,9 +1610,20 @@ const API_TIMEOUT_MS=180000;
 // ないための代替）はレーンPのP-0a実装時に確定・必要なら合わせて直してもらう想定の暫定値。
 const PERF_LOG_URL='https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/keiei-api-perflog';
 const PERF_LOG_ANON_KEY='sb_publishable_MrwPJAx_Ws_fdRutprKCiQ_dg3wCiTr';
+// GASが連続で失敗(404/タイムアウト/エラー)している間は、補助的なGAS呼び出し（版チェック・承認待ちバッジ等）を5分間止め、
+// 混雑しているGASにさらに負担をかけない（2026-10-03 ⏱計測: GASがpingでも4〜15秒・data失敗中に補助呼び出しが重なっていた）。
+const gasHealth_={ fails:[], coolUntil:0 };
+function gasNoteResult_(actionName, ok){
+  if(!actionName||actionName.indexOf('keiei-')===0||actionName.indexOf('kd_')===0) return;   // Supabase側の通信は対象外（GASだけ）
+  const now=Date.now();
+  if(ok){ gasHealth_.fails=[]; return; }
+  gasHealth_.fails=gasHealth_.fails.filter(t=>now-t<120000); gasHealth_.fails.push(now);
+  if(gasHealth_.fails.length>=3) gasHealth_.coolUntil=now+300000;
+}
+function gasCooling_(){ return BOOT_GASLESS_&&Date.now()<gasHealth_.coolUntil; }
 const apiLogBuf_=[];   // ⏱計測用：GAS呼び出しの名前・所要・失敗理由（直近80件）
 function logApiPerf_(actionName, ms, ok, errType){
-  try{ apiLogBuf_.push({ a:actionName||'', ms:Math.round(ms), ok:!!ok, e:errType||'', end:nowMs_() }); if(apiLogBuf_.length>80) apiLogBuf_.shift(); }catch(e){}
+  try{ apiLogBuf_.push({ a:actionName||'', ms:Math.round(ms), ok:!!ok, e:errType||'', end:nowMs_() }); if(apiLogBuf_.length>80) apiLogBuf_.shift(); gasNoteResult_(actionName, ok); }catch(e){}
   try{
     if(typeof navigator==='undefined'||!navigator.sendBeacon) return;
     const payload=JSON.stringify({ app:'tori-dashboard', action:actionName||'', ms:Math.round(ms), ok:!!ok, errType:errType||'', t:Date.now() });
@@ -2521,7 +2532,8 @@ async function fetchCtPendingCount_(){
 }
 async function syncIfChanged(){
   if(!S.auth||!S.auth.token) return;
-  fetchCtPendingCount_();   // D.dataVersionとは無関係の別シートなので、下のmodalガード・バージョン一致スキップより前に毎回確認する
+  if(gasCooling_()) return;   // GASが連続失敗中は5分間、補助的な呼び出しを止める
+  if(BOOT_GASLESS_) gasRun_(()=>fetchCtPendingCount_()); else fetchCtPendingCount_();   // D.dataVersionとは無関係の別シートなので、下のmodalガード・バージョン一致スキップより前に確認する（直列）
   // 2026-08-30: モーダル（単価設定・PL入力等の手入力フォーム）を開いている間にこのバックグラウンド
   // 同期が動くと、最後にrender()が画面全体を作り直すため、入力欄が保存前の値（＝空欄）に巻き戻り、
   // 「入力途中で消えてやり直しになる」原因になっていた（ユーザー報告・ポーリング間隔＝60秒ごと、
