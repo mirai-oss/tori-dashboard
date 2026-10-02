@@ -607,44 +607,61 @@ function sessionSupaHeaders_(){
 function sessionSupaPut_(token, sess, exp){
   var h = sessionSupaHeaders_(); if (!h) return false;
   try {
-    UrlFetchApp.fetch(h.url + '/rest/v1/ds_sessions', {
+    var res = UrlFetchApp.fetch(h.url + '/rest/v1/ds_sessions', {
       method: 'post', headers: h.headers, muteHttpExceptions: true,
       payload: JSON.stringify({ token: token, sess: sess, expires_at: new Date(exp).toISOString(), last_seen_at: new Date().toISOString() })
     });
-    return true;
+    return res.getResponseCode() < 300;   // 2026-10-03: HTTPエラーでも「成功」と返していた（書けていないのに旧保存を省略してしまう事故を防ぐ）
   } catch (e) { return false; }
 }
 function sessionSupaGet_(token){
   var h = sessionSupaHeaders_(); if (!h) return null;
   try {
     var res = UrlFetchApp.fetch(h.url + '/rest/v1/ds_sessions?token=eq.' + encodeURIComponent(token) + '&select=sess,expires_at', { headers: h.headers, muteHttpExceptions: true });
-    if (res.getResponseCode() !== 200) return null;
+    // 2026-10-03: Supabaseの一時失敗(非200・例外)を「セッション無し(null)」と同じに扱うと、有効なセッションでも
+    // unauthorizedになり「勝手にログアウト」の原因になる（レーンP実測）。一時失敗は {err:true} で区別して返す。
+    if (res.getResponseCode() !== 200) return { err: true };
     var rows = JSON.parse(res.getContentText() || '[]');
     if (!rows.length) return null;
     var exp = new Date(rows[0].expires_at).getTime();
     if (!exp || new Date().getTime() > exp) { sessionSupaDel_(token); return null; }
     return { sess: rows[0].sess, exp: exp };
-  } catch (e) { return null; }
+  } catch (e) { return { err: true }; }
 }
 function sessionSupaDel_(token){
   var h = sessionSupaHeaders_(); if (!h) return;
   try { UrlFetchApp.fetch(h.url + '/rest/v1/ds_sessions?token=eq.' + encodeURIComponent(token), { method: 'delete', headers: h.headers, muteHttpExceptions: true }); } catch (e) {}
 }
+// F1-e（2026-10-03）: SESSION_BACKEND=supabase でSupabaseに書けた時は、スクリプトプロパティへの二重書きをしない
+// （tok_が溜まって容量上限に達しセッションが切れた事故の根治）。Supabaseに書けなかった時だけプロパティにも書く（安全網）。
+// 二重書きを戻したい時は、スクリプトプロパティ SESSION_PROPS_MIRROR に 1 を入れる。
+function sessionMirror_(){ return PropertiesService.getScriptProperties().getProperty('SESSION_PROPS_MIRROR') === '1'; }
 function sessionPut(token, sess){
   var exp = new Date().getTime() + TOKEN_HOURS * 3600 * 1000;
-  sessionStore().setProperty('tok_' + token, JSON.stringify({ sess: sess, exp: exp }));  // 常に書く（フォールバック・安全網として維持）
-  sessionSupaPut_(token, sess, exp);   // ベストエフォートで複製
+  var okSupa = sessionSupaPut_(token, sess, exp);
+  if (sessionBackend_() === 'supabase' && okSupa && !sessionMirror_()) return;
+  sessionStore().setProperty('tok_' + token, JSON.stringify({ sess: sess, exp: exp }));
 }
 function sessionGet(token){
   if (sessionBackend_() === 'supabase') {
     var hit = sessionSupaGet_(token);
-    if (hit) {
-      var expS = new Date().getTime() + TOKEN_HOURS * 3600 * 1000;   // 使うたびに期限を延長（Propertiesと同じsliding TTL）
-      sessionSupaPut_(token, hit.sess, expS);
-      sessionStore().setProperty('tok_' + token, JSON.stringify({ sess: hit.sess, exp: expS }));   // Propertiesにも同期（バックエンドを戻しても困らないように）
+    if (hit && hit.err) { Utilities.sleep(300); hit = sessionSupaGet_(token); }   // 一時失敗は1回だけやり直す
+    if (hit && !hit.err) {
+      // sliding更新は「期限が1時間以上縮んだ時」だけ（読むたびに書くと毎回Supabase書き込み＋重い）
+      var nowMs = new Date().getTime(), full = nowMs + TOKEN_HOURS * 3600 * 1000;
+      if (full - hit.exp > 3600 * 1000) {
+        sessionSupaPut_(token, hit.sess, full);
+        if (sessionMirror_()) sessionStore().setProperty('tok_' + token, JSON.stringify({ sess: hit.sess, exp: full }));
+      }
       return hit.sess;
     }
-    // ds_sessionsに無い＝移行前の古いセッション、またはSupabase側の一時不調。Propertiesへフォールバック（下続行）
+    if (hit && hit.err) {
+      // Supabaseが2回続けて不調。プロパティ側に控えがあればそれで通し、無ければ「セッション無し」と断定せず
+      // 専用エラーにする（クライアントはunauthorizedの時だけログアウトするため、一時不調でログアウトさせない）。
+      var raw0 = sessionStore().getProperty('tok_' + token);
+      if (!raw0) throw new Error('session_check_failed');
+    }
+    // hitがnull＝ds_sessionsに本当に無い（移行前の古いセッション等）。プロパティへフォールバック（下続行）
   }
   var store = sessionStore();
   var raw = store.getProperty('tok_' + token);
@@ -653,7 +670,7 @@ function sessionGet(token){
   if (!obj.exp || new Date().getTime() > obj.exp) { store.deleteProperty('tok_' + token); return null; }
   obj.exp = new Date().getTime() + TOKEN_HOURS * 3600 * 1000; // 使うたびに期限を延長
   store.setProperty('tok_' + token, JSON.stringify(obj));
-  sessionSupaPut_(token, obj.sess, obj.exp);   // Propertiesにしかなかった旧セッションもここでSupabaseへ複製（次回からsupabase経路で見つかる）
+  sessionSupaPut_(token, obj.sess, obj.exp);   // Propertiesにしかなかった旧セッションもここでSupabaseへ複製
   return obj.sess;
 }
 function sessionDel(token){ sessionStore().deleteProperty('tok_' + token); sessionSupaDel_(token); }
