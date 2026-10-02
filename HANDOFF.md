@@ -156,6 +156,14 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 ### 2026-09-30（MacBookセッション）経営ダッシュボードの年月切替で媒体別データが3ヶ月より前に出ない不具合を修正（コミット[a1d223b](https://github.com/mirai-oss/tori-dashboard/commit/a1d223b)・push済み）
 ユーザー報告「ホーム画面の『営業区分別 売上』を3ヶ月より前の月にすると『媒体別データがありません』になる」。原因は`bqMonthsForMedia_()`（D.mediaの必要取得月数を決める関数）が推移分析タブ（`S.aRange`/`S.cStart`）だけを見ており、ホームの年月ピッカー（`S.period`/`S.pMonth`/`S.pYear`）を一切考慮していなかったこと（9/23に推移分析側だけ直した同根の不具合。[前回の修正](https://github.com/mirai-oss/tori-dashboard/commit/c2d25b5)参照）。`homeMonthsBack_()`を新設し両方の必要月数の大きい方を返すよう拡張、`App.setYm('pMonth',...)`/`App.set('pYear',...)`/`App.period(...)`からも`ensureMediaMonths_()`を呼ぶよう配線。サンプルデータで5ヶ月前・2年前への切替時に正しい月数で追加取得がトリガーされること、当月表示のままなら余計な取得をしないことを確認済み。GitHub Pages反映済み（`app.js?v=210`）。
 
+### 2026-09-30（Mac miniセッション）SMBC GMO PAYMENT（カード売上・N-Style分）を精算書へ反映する`smbcCardSeisanSync`を追加（**デプロイ済み**・`ping` ver=`token-336h-v1-a6p27`）
+
+ns-daily-importの新規タスク`tasks/smbc-card-deposit.js`（カード決済代行SMBC GMO PAYMENTの月次売上取込）から呼ばれる中継アクション。
+- `smbcCardSeisanSync`: `ym`+`lines`（`[{storeName,salesAmount,feeAmount,halfLabel,kubun?}...]`）を受け取り、精算対象店舗（`seisan_pl_categories_target`。黒霧屋 新横浜を含む＝a6p7と同じ判定）へ、精算GASの`sd_apiAddExternalLine`（`seisan-dashboard/gas/SeisanDashboard.gs`・要`v5.23-extline-kubun`以降）を介して「カード売上」（区分=売上）「カード手数料」（区分=変動費）を明細追加。`BQ_LOAD_TOKEN`認証。
+- 振込明細書は月2回（前半1-15日・後半16日-末）発行されるため、呼び出し側のlines[].halfLabelで`sourceKey`を分けて衝突を回避。
+- a6p26でeligibility判定を`seisan_target`→`seisan_pl_categories_target`に変更（黒霧屋対応）。a6p27で`kubun`をsd_apiAddExternalLineへ渡すよう修正（渡さないと精算GAS側が常に'変動費'固定になるバグがあった＝精算GAS側v5.23で合わせて修正）。
+- DB_PL（経営ダッシュボードのPLタブ）へは書かない。
+
 ### 2026-09-26（Mac miniセッション）現金売上の月次照合用のGASアクション2つを追加（**gas/Code.gs変更・ユーザーの貼替＋再デプロイ待ち**・`ping` ver=`token-336h-v1-a6p24`）
 ユーザー要望「毎月3日に前月の現金売上をレジで取り直して管理システムと照合し、合っていればMF仕訳へ／ずれていればレジに合わせて管理システムを修正」の受け口。
 - `cashReconRead`（読み取り専用）: 売上DB「支払いDB」の指定月(`month:'YYYY-MM'`)の店舗×日の行（数値16列）を返す。`BQ_LOAD_TOKEN`認証・ログイン不要。
