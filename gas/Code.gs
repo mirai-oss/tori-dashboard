@@ -740,6 +740,29 @@ function bqSpeedCheck() {
   out.push('⑤bqDailyStore関数ごと: ' + (now() - t) + 'ms / キャッシュ' + (d && d.cached ? 'あり' : 'なし') + ' / ' + (d && d.ok ? 'OK' : '失敗'));
   Logger.log(out.join('\n'));
 }
+// 速度の診断その2（エディタから手動実行・読み取り専用）。日次データ取得の11秒の内訳を調べる。
+function bqSpeedCheck2() {
+  var now = function () { return new Date().getTime(); }, out = [], t;
+  var cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - 25);
+  var cs = Utilities.formatDate(cutoff, 'Asia/Tokyo', 'yyyy-MM-dd');
+  var sql = 'SELECT date, store_name, net_sales, guests_total, parttime_labor_cost, fulltime_labor_cost, labor_cost_total, cogs, cash, employee_salary_bonus, statutory_welfare, commute_allowance, parties_total FROM `' + BQ_PROJECT + '.' + BQ_SALES_DATASET + ".fact_daily_store` WHERE date >= DATE('" + cs + "') ORDER BY date";
+  try {
+    var tbl = BigQuery.Tables.get(BQ_PROJECT, BQ_SALES_DATASET, 'fact_daily_store');
+    out.push('A. テーブル種別=' + tbl.type + ' / 行数=' + tbl.numRows + ' / 容量=' + tbl.numBytes + 'バイト');
+  } catch (e) { out.push('A. テーブル情報の取得失敗: ' + e); }
+  try {
+    t = now();
+    var res = BigQuery.Jobs.query({ query: sql, useLegacySql: false, timeoutMs: 60000, useQueryCache: false }, BQ_PROJECT);
+    out.push('B. 1回目の応答: ' + (now() - t) + 'ms / 完了=' + res.jobComplete + ' / 受取行=' + (res.rows ? res.rows.length : 0) + ' / 総行=' + res.totalRows + ' / 続きページ=' + (res.pageToken ? 'あり' : 'なし'));
+    var jobId = res.jobReference.jobId, loc = res.jobReference.location, pt = res.pageToken, pages = 0;
+    t = now();
+    while (pt && pages < 200) { var pg = BigQuery.Jobs.getQueryResults(BQ_PROJECT, jobId, { pageToken: pt, location: loc }); pages++; pt = pg.pageToken; }
+    out.push('C. 続きのページ取得: ' + pages + '回 / ' + (now() - t) + 'ms');
+    var st = BigQuery.Jobs.get(BQ_PROJECT, jobId, { location: loc }).statistics;
+    out.push('D. ジョブ統計: 処理量=' + st.totalBytesProcessed + 'バイト / 待ち=' + (st.startTime - st.creationTime) + 'ms / 実行=' + (st.endTime - st.startTime) + 'ms / スロット=' + st.totalSlotMs + 'ms');
+  } catch (e2) { out.push('B〜D の実行失敗: ' + e2); }
+  Logger.log(out.join('\n'));
+}
 
 // ================== パスワードの保護 ==================
 // スプレッドシートに平文で置かないため、SHA-256＋アカウントごとのランダムsaltで保存する。
