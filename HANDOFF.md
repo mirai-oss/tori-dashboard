@@ -153,6 +153,11 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 
 ## 5. 作業ログ
 
+### 2026-10-05（MacBookセッション）現場フォーム管理の申請日時を日本時間表示に修正＋仕入れ移動履歴キャッシュ（gas a6p30・要貼替）
+- ユーザー報告「申請の時間が日本時間ではなさそう。管理システムの表示・取得時間は必ず日本時間にしてほしい」: Supabase(timestamptz)はUTC(+00:00)で返るのに、`ctAdminPendingHtml_`/`ctAdminLinkHtml_`が文字列を`slice(0,16)`でそのまま表示していて9時間ずれていた。`fmtJst_()`（Asia/Tokyo固定）を新設し両方に適用（app.js?v=216）。**今後、管理画面に日時を出すときはfmtJst_を使うこと**（UTC文字列のスライス禁止）。
+- `costTransferList`（🔀仕入れ移動の履歴）にPLキャッシュ世代(`bqCacheGen_('pl')`)を使った10分キャッシュを追加（gas/Code.gs・ping ver=a6p30・ユーザーの貼替待ち）。
+- 申し送り: PLタブ等のBigQueryモードの重さ・媒体別/デリバリーカードの読み込み停止は今日の変更と無関係の既存事象（ユーザー確認済み）。別日に専用計画で扱う。
+
 ### 2026-10-05（MacBookセッション）仕入れ移動公開フォーム: GAS/スプレッドシート経由をやめてSupabase直結化（コミット[7bb71e1](https://github.com/mirai-oss/tori-dashboard/commit/7bb71e1)・ns-portal側[f9f81b3](https://github.com/mirai-oss/ns-portal/commit/f9f81b3)・push済み・**gas/Code.gs変更・ユーザーのSQL適用＋Edge Functionデプロイ＋GAS貼替＋再デプロイ待ち**）
 前日のlocalStorageキャッシュ対応は「2回目以降の体感」だけの対症療法だったため、ユーザーから「スプレッドシートではなくSupabaseでやったら根本的に速くならないか？今後スプレッドシートを使わないように組み替えていく方針」という再提案依頼があり、Plan Mode経由で設計・実装。
 - **データの置き場所**: 品目マスタ・申請キューをns-portalのSupabaseへ新設（`cost_transfer_items`・`cost_transfer_requests`。マイグレーション`ns-portal/supabase/2026-10-05_cost_transfer_public_form.sql`）。公開リンクのトークンもGASスクリプトプロパティ(`COST_TRANSFER_FORM_TOKEN`)から`app_secrets`（key=`cost_transfer_form_token`）へ移した。

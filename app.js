@@ -1679,6 +1679,14 @@ async function api(params, timeoutMs, onRetry){
 }
 function stampNow(){ const n=new Date(); return (n.getMonth()+1)+'/'+n.getDate()+' '+String(n.getHours()).padStart(2,'0')+':'+String(n.getMinutes()).padStart(2,'0'); }
 // タイムスタンプ(ms)を「M/D HH:mm」に整形（週報の提出・編集日時表示用）
+// ISO文字列/Date/ミリ秒を日本時間（Asia/Tokyo）の'YYYY-MM-DD HH:mm'で返す（ブラウザの設定に関係なく常にJST）。
+// Supabaseのtimestamptzは+00:00（UTC）で返るため、文字列をそのままスライスすると9時間ずれる。
+function fmtJst_(v){
+  if(!v) return '';
+  const d=new Date(v); if(isNaN(d)) return '';
+  const p=new Intl.DateTimeFormat('ja-JP',{timeZone:'Asia/Tokyo',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}).formatToParts(d).reduce((o,x)=>(o[x.type]=x.value,o),{});
+  return p.year+'-'+p.month+'-'+p.day+' '+(p.hour==='24'?'00':p.hour)+':'+p.minute;
+}
 function fmtDT(t){ if(!t) return ''; const d=new Date(t); return (d.getMonth()+1)+'/'+d.getDate()+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); }
 function monthsWindow(){ const v=localStorage.getItem(LS.months); return v==null?13:Number(v); } // 0=全期間, 既定13ヶ月(前年比の最小)
 // 2026-09-19追加（ユーザー報告「推移分析の年初来×月別で前年比較がすべて0になる」対応）:
@@ -8282,7 +8290,7 @@ function ctAdminPendingHtml_(m){
   return `<div style="max-height:440px;overflow-y:auto">${rows.map(r=>`
     <div class="panel" style="padding:10px;margin-bottom:8px">
       <div style="display:flex;justify-content:space-between;font-size:11px;color:#8c8375">
-        <span>移動日: ${esc(r.date)}</span><span>${esc((r.submittedAt||'').slice(0,16).replace('T',' '))} 申請</span>
+        <span>移動日: ${esc(r.date)}</span><span>${esc(fmtJst_(r.submittedAt))} 申請</span>
       </div>
       <div style="font-weight:700;margin-top:2px">${shortStoreTd(r.fromStore)} → ${shortStoreTd(r.toStore)}</div>
       <table class="tbl" style="margin-top:6px"><tbody>
@@ -8329,7 +8337,7 @@ function ctAdminLinkHtml_(m){
   return `
     ${url?`<div><label style="font-size:12px;color:#8c8375">現在の公開リンク（現場のスマホ等にこのURLを共有してください）</label>
       <div style="display:flex;gap:6px;margin-top:4px"><input id="ct-link-url" readonly value="${esc(url)}" style="flex:1" onclick="this.select()"><button class="icon-btn" onclick="App.ctLinkCopy()">📋 コピー</button></div>
-      ${l.createdAt?`<div style="font-size:11px;color:#8c8375;margin-top:4px">発行日時: ${esc(l.createdAt.slice(0,16).replace('T',' '))}</div>`:''}
+      ${l.createdAt?`<div style="font-size:11px;color:#8c8375;margin-top:4px">発行日時: ${esc(fmtJst_(l.createdAt))}</div>`:''}
     </div>`:`<div class="empty">まだ公開リンクが発行されていません</div>`}
     <div class="modal-btns" style="margin-top:12px"><button class="icon-btn primary" onclick="App.ctLinkRegenerate()">🔄 リンクを再発行する</button></div>
     <div style="font-size:11px;color:#b5502f;margin-top:4px">⚠️ 再発行すると、今までのリンクは即座に使えなくなります。現場には新しいリンクを配布し直してください。</div>`;
