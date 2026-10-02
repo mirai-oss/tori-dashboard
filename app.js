@@ -235,7 +235,9 @@ const D = { daily:[], media:[], mediaMonthsLoaded:0, deposit:[], review:[], ad:[
   dailyKd:null,   // 2026-09-14: kd_dashboard_daily_summaryをSupabase直読み（GAS非経由・脱GAS移行）。
                     // 推移分析(viewAnalysis)専用の高速経路。D.dailyの他の用途（PL・目標管理等、原価/人件費の
                     // 内訳が必要）には使わない＝D.dailyはこれまでどおりGAS/シート経由のまま並行して残す。
-  plKd:null, plKdAt:0 };  // 2026-09-18（ラウンド6 A-12）: kd_pl_monthly_summaryをSupabase直読み（全期間・
+  plKd:null, plKdAt:0,
+  ctPendingCount:0,   // 2026-10-03追加: 現場フォーム（仕入れ移動）の承認待ち件数。「📋現場フォーム管理」ボタンのバッジに使う
+  };  // 2026-09-18（ラウンド6 A-12）: kd_pl_monthly_summaryをSupabase直読み（全期間・
                     // 店舗×年月の1行ずつ）。現時点では検証パネル(plShadowCompareNote_)の一般化にのみ使う
                     // （本番のKPIカード・PL表はまだ従来経路のまま＝全社共通経費がkd_側に無い既知の
                     // ギャップをレーンPに確認中のため、確認が取れるまで主表示は切り替えない）。
@@ -2145,8 +2147,20 @@ async function fetchVersion(){
   return null; // 未対応GAS/失敗時は null
 }
 function touchSyncBadge(){ S.lastSync=stampNow(); const el=document.querySelector('.sync-info'); if(el) el.innerHTML=connBadge(); }
+// 2026-10-03追加（ユーザー要望「承認依頼が来たか分かりにくいから未読バッジが欲しい」）:
+// 「📋現場フォーム管理」ボタンに承認待ち件数のバッジを出す。D.dataVersion（スプレッドシート
+// 本体の変更検知）とは別シート（DB_仕入れ移動申請）のため、syncIfChanged()のバージョン一致
+// スキップとは無関係に、ポーリングのたびに軽量確認する（社長・本部のみ）。
+async function fetchCtPendingCount_(){
+  if(!isAdminRole()||!S.auth||!S.auth.token) return;
+  try{
+    const d=await api({action:'costTransferPendingList', token:S.auth.token}, 20000);
+    if(d.ok){ D.ctPendingCount=d.rows.length; if(!S.modal) render(); }
+  }catch(e){ /* 失敗時は直前の値を維持（バッジが誤って消えないように） */ }
+}
 async function syncIfChanged(){
   if(!S.auth||!S.auth.token) return;
+  fetchCtPendingCount_();   // D.dataVersionとは無関係の別シートなので、下のmodalガード・バージョン一致スキップより前に毎回確認する
   // 2026-08-30: モーダル（単価設定・PL入力等の手入力フォーム）を開いている間にこのバックグラウンド
   // 同期が動くと、最後にrender()が画面全体を作り直すため、入力欄が保存前の値（＝空欄）に巻き戻り、
   // 「入力途中で消えてやり直しになる」原因になっていた（ユーザー報告・ポーリング間隔＝60秒ごと、
@@ -2349,6 +2363,7 @@ function afterLogin(){
   if(tabs.includes('reservation')){
     setTimeout(()=>{ fetchReservationBQ(); fetchSeatMaster(); }, 300);
   }
+  fetchCtPendingCount_();   // 2026-10-03追加: ログイン直後にも承認待ちバッジを取得しておく
 }
 function doLogout(msg){
   if(S.auth&&S.auth.token){ api({action:'logout',token:S.auth.token}).catch(()=>{}); }
@@ -6202,7 +6217,7 @@ function viewPL(){
     ${canUse('spot')?`<button class="icon-btn" onclick="App.openSpotInput()">＋ スポット人件費</button>`:''}
     ${canUse('spot')?`<button class="icon-btn" onclick="App.syncSpotPl()" title="スポット人件費の入力・削除をPLへ今すぐ反映します（普段は毎日AM5:00に自動実行）">🔄 スポット人件費をPLへ反映</button>`:''}
     ${isAdminRole()?`<button class="icon-btn" onclick="App.openCostTransfer()" title="店舗間で仕入れ（原価）を移動し、両店の原価率に反映します">🔀 仕入れ移動</button>`:''}
-    ${isAdminRole()?`<button class="icon-btn" onclick="App.openCostTransferAdmin()" title="現場向け公開フォームからの申請を承認／却下、フォームの商品・単価、公開リンクを管理します">📋 現場フォーム管理</button>`:''}
+    ${isAdminRole()?`<button class="icon-btn" onclick="App.openCostTransferAdmin()" title="現場向け公開フォームからの申請を承認／却下、フォームの商品・単価、公開リンクを管理します">📋 現場フォーム管理${D.ctPendingCount?` <span class="badge ng">${D.ctPendingCount}</span>`:''}</button>`:''}
     ${isAdminRole()?`<button class="icon-btn" onclick="App.plCleanupLegacyCombined()" title="勘定科目/補助科目の分離バグ修正前に結合形式のまま計上されていた古い行が残っていないか確認します（表示のみ・削除はしません。担当Cからの申し送り・一時的な機能）">🔎 古いPL行の残存チェック（一時）</button>`:''}
     <span class="period-label">損益（${mLabel} ／ ${esc(scopeLabel)}）</span></div>`
     +(multiActive
@@ -9393,6 +9408,7 @@ window.App = {
     S.modal=Object.assign({},S.modal,{pending:{loading:true}}); render();
     try{
       const d=await api({action:'costTransferPendingList', token:S.auth.token});
+      if(d.ok) D.ctPendingCount=d.rows.length;   // 2026-10-03追加: モーダル内の一覧と「📋」ボタンのバッジを常に一致させる
       if(!S.modal||S.modal.type!=='costTransferAdmin') return;
       S.modal=Object.assign({},S.modal,{pending:{loading:false, rows:d.ok?d.rows:[], err:d.ok?'':(d.error||'取得に失敗しました')}});
     }catch(e){
