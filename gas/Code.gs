@@ -823,6 +823,26 @@ function bqSpeedCheck4() {
   step('K. dataVersion（更新検知）', function () { dataVersion(); });
   Logger.log(out.join('\n'));
 }
+// 日別店舗(fact_daily_store)だけをBigQueryへ同期する軽い版（約30秒）。社員人件費など「ポータルで入力した内容」を
+// 反映するため。全9テーブルを同期する bqSyncSalesNow（数分）とは別に、毎時の自動実行(installLaborSyncTrigger)にも使う。
+function syncFactDailyStoreOnly() {
+  var t = null, ts = bqSalesTargets_();
+  for (var i = 0; i < ts.length; i++) if (ts[i].table === 'fact_daily_store') t = ts[i];
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(t.sheet);
+  if (!sh) { Logger.log('シートが見つかりません: ' + t.sheet); return; }
+  var storeIdx = bqStoreNameIndex_();
+  var laborData = bqBuildApiLaborCostMap_();
+  var csv = bqSheetToCsv_(sh, t.schema, t.startRow, storeIdx, function (row) { return bqApplyApiLaborCostRow_(row, laborData, storeIdx); });
+  var res = bqLoadSheetToTable_(csv, t.table, t.schema);
+  Logger.log('fact_daily_store 同期: ' + (res.ok ? '成功 ' + res.rows + '行' : '失敗 ' + res.error));
+}
+// 毎時の自動実行を登録する（エディタから1回だけ実行。何度実行しても重複登録しない）。
+function installLaborSyncTrigger() {
+  var ts = ScriptApp.getProjectTriggers(), n = 0;
+  ts.forEach(function (t) { if (t.getHandlerFunction() === 'syncFactDailyStoreOnly') { ScriptApp.deleteTrigger(t); n++; } });
+  ScriptApp.newTrigger('syncFactDailyStoreOnly').timeBased().everyHours(1).nearMinute(10).create();
+  Logger.log('毎時10分ごろにsyncFactDailyStoreOnlyを自動実行するよう登録しました（既存の同名の登録 ' + n + '件は作り直し）');
+}
 // BigQueryへの売上ミラー（fact_daily_store等）を今すぐ実行する（エディタから手動実行・数分かかる）。
 // 通常は毎日の自動処理が行う。社員人件費の反映をすぐ確認したい時に使う（その後、集計(kd_)は毎時の更新で追いつく）。
 function bqSyncSalesNow() {
