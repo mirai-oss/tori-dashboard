@@ -153,6 +153,17 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 
 ## 5. 作業ログ
 
+### 2026-10-05（MacBookセッション）仕入れ移動公開フォーム: GAS/スプレッドシート経由をやめてSupabase直結化（コミット[7bb71e1](https://github.com/mirai-oss/tori-dashboard/commit/7bb71e1)・ns-portal側[f9f81b3](https://github.com/mirai-oss/ns-portal/commit/f9f81b3)・push済み・**gas/Code.gs変更・ユーザーのSQL適用＋Edge Functionデプロイ＋GAS貼替＋再デプロイ待ち**）
+前日のlocalStorageキャッシュ対応は「2回目以降の体感」だけの対症療法だったため、ユーザーから「スプレッドシートではなくSupabaseでやったら根本的に速くならないか？今後スプレッドシートを使わないように組み替えていく方針」という再提案依頼があり、Plan Mode経由で設計・実装。
+- **データの置き場所**: 品目マスタ・申請キューをns-portalのSupabaseへ新設（`cost_transfer_items`・`cost_transfer_requests`。マイグレーション`ns-portal/supabase/2026-10-05_cost_transfer_public_form.sql`）。公開リンクのトークンもGASスクリプトプロパティ(`COST_TRANSFER_FORM_TOKEN`)から`app_secrets`（key=`cost_transfer_form_token`）へ移した。
+- **公開フォーム（読み込み・送信）はGASを一切経由しない**: 読み込みは`store_directory_v`（既存・店舗一覧）と新設`cost_transfer_items_v`（品目マスタの公開ビュー。`store_directory_v`と同じ「ベーステーブル非公開＋ビューだけanonにgrant select」パターン）をブラウザから直接SELECT。送信は新設Edge Function`cost-transfer-submit`（`ns-portal/supabase/functions/`）へ直接POST（トークン照合・金額のサーバー側再計算・発注グループLINE通知までを担当）。前日実装したlocalStorageキャッシュの仕組みはそのまま維持し、取得元だけ差し替えた。
+- **管理者側（承認待ち・品目マスタ編集・リンク発行）はGAS＋セッション認証のまま**: 中身を「スプレッドシートを読む」から「`SUPABASE_URL`/`SUPABASE_SERVICE_KEY`で直接読み書きする」へ差し替え（`ds_sessions`向けの既存パターン=`sessionSupaPut_`等を流用。新規の秘密情報は不要）。品目の識別子がスプレッドシート行番号からUUIDに変わったため`app.js`の管理画面コードも対応済み。
+- **LINE通知のリファクタ**: `line-webhook`の`push_order_group`ロジックを`ns-portal/supabase/functions/_shared/line.ts`の`linePushOrderGroup`へ切り出し、`cost-transfer-submit`からも直接呼べるようにした（GASの`notifyOrderLine_`は不要になり削除）。`line-webhook`の`push_order_group`アクション自体は、将来GAS以外の外部システム（キッチンプリンター連携等）から呼ぶ可能性を考えて残してある。
+- **削除したGAS関数**: `costTransferPublicInfo`・`costTransferPublicSubmit`・`costTransferTokenOk_`・`notifyOrderLine_`（`handle()`の該当ルーティングも削除）。`ping`のverを`a6p29`に更新。
+- ブラウザでキャッシュ有無・エラー時のフォールバック（未デプロイのSupabaseテーブルへの404でも画面が壊れない・キャッシュ表示を維持）・管理画面の品目UUID表示を確認済み。
+- **ユーザーへ渡したもの**: SQL・Edge Functionデプロイコマンド・GAS貼替（Cmd+F手順）・品目マスタの再登録・リンク再発行までの手順書（Artifact）。旧シート（`DB_仕入れ移動品目マスタ`・`DB_仕入れ移動申請`）は削除せず残してある（過去の記録として）。
+- **次セッションへの申し送り**: ユーザー側のSQL適用・Edge Functionデプロイ・GAS貼替・品目マスタ再登録・リンク再発行が完了するまでは、公開フォームは旧GAS経由のまま動き続ける（コード上は切り替え済みだがGAS側が未デプロイのため）。完了後の実機確認が必要。
+
 ### 2026-10-04（MacBookセッション）仕入れ移動公開フォーム: 初回以降の表示をlocalStorageキャッシュで即時化（コミット[37ea599](https://github.com/mirai-oss/tori-dashboard/commit/37ea599)・push済み・GAS変更なし）
 ユーザー報告「リンクを開いたときの読み込みが長くてストレス。Googleフォームみたいに開いてすぐ入力できるようにしたい」に対応。根本原因は`costTransferPublicInfo`がGASの大きなスプレッドシートを開く都度のコストを払うため毎回数秒〜十数秒かかること自体（GAS側はこれ以上は縮めづらい）。そこで2回目以降のアクセス体感を改善: 初回取得した店舗一覧・品目マスタを`localStorage`（`ctf_cache_v1_<token>`）へ保存し、次回以降はそれを**即時表示**（＝入力を即開始できる）。裏側では必ず最新データを取りに行き、内容が変わっていた場合だけ差し替えて再描画（変化が無ければ再描画しない＝入力中のフォーカスを不要に失わせない）。取得が失敗してもキャッシュ表示中なら黙って現状維持（エラー画面に切り替えない）。送信時の金額は元々サーバー側で品目マスタから再計算する設計のため、表示が一瞬古くてもPLへの影響はない（トークンが再発行で無効化された場合は送信時にサーバーがunauthorizedを返し、エラーメッセージも表示側と同じ文言に統一した）。ブラウザでキャッシュ有り/無しの両パターンの表示を確認済み。初回アクセス（キャッシュ無し）の読み込み時間そのものは変わらない点は申し送り。
 
