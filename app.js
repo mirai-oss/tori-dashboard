@@ -1360,6 +1360,7 @@ function ingestSheets(sheets, partial, scope){
   }
 }
 function loadSampleData(){
+  D.sampleLoaded=true;   // 本番ログイン時にafterLogin()が消す（本物が届く前にサンプルを本物のように見せない）
   if(window.__DAILY_CSV)   ingestDaily(csvToRows(window.__DAILY_CSV));
   if(window.__SALES_CSV)   ingestMedia(csvToRows(window.__SALES_CSV));
   if(window.__DEPOSIT_CSV) ingestDeposit(csvToRows(window.__DEPOSIT_CSV));
@@ -2662,7 +2663,16 @@ function applyBqDailyRoleDefault_(){
   if(localStorage.getItem(LS.dailyBq)!=null) return;
   S.useBqDaily=false;
 }
+// ログイン直後は、画面表示用のサンプルデータ(sample-data.js)を消して「準備中」表示にする（本物のデータが届くまでの間、
+// サンプルの数字を実データのように見せない。2026-10-03 ユーザー報告「7月度の数字のまま変わらない」）。
+// デモモード（API未設定）はサンプルが本来の表示なので消さない。
+function clearSampleForRealLogin_(){
+  if(!D.sampleLoaded||!apiUrl()||!S.auth||!(S.auth.token||S.auth.provisional)) return;
+  D.sampleLoaded=false;
+  D.daily=[]; D.media=[]; D.deposit=[]; D.review=[]; D.refDate=new Date();
+}
 function afterLogin(){
+  clearSampleForRealLogin_();
   const tabs=myTabs();
   S.tab=tabs[0];
   // F-3: ?tab=/#tab=で指定されたタブが権限上開けるなら、既定の先頭タブより優先する
@@ -10274,7 +10284,7 @@ window.App = {
       fetchData(true,{ only:['イベント'], partial:true });
     }catch(e){ toast('通信エラー: '+e.message); }
   },
-  refresh(){ if(S.auth&&S.auth.token){ fetchDataFast(); toast('最新データを取得中…'); } else { loadSampleData(); render(); toast('サンプルデータを再読込しました（API未接続）'); } },
+  refresh(){ if(S.auth&&(S.auth.token||S.auth.provisional)){ fetchDataFast(); toast('最新データを取得中…'); } else { loadSampleData(); render(); toast('サンプルデータを再読込しました（API未接続）'); } },
   csv: downloadCsv,
   pdf: downloadPdf,
   openConnect(){ if(S.auth && S.auth.account.role!=='社長'){ toast('接続設定は社長のみ変更できます'); return; } S.modal='connect'; render(); },
