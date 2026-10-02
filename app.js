@@ -1774,6 +1774,14 @@ async function fetchData(silent, opts, preD){
 // （このAPI自体が落ちても既存の表示経路を壊さない設計）。
 async function fetchHomeApi_(){
   if(!S.auth||!S.auth.token||!HOME_API_ENABLED_) return;
+  if(!D.home){
+    const cached=cacheLoad_('home_api');
+    if(cached){
+      D.home=cached;
+      D.homeErr='';
+      if(!targetModalOpen_()) render();
+    }
+  }
   D.homeLoading=true;
   try{
     const jwt=await portalAccessToken().catch(()=>null);
@@ -1790,6 +1798,7 @@ async function fetchHomeApi_(){
     finally{ if(tm) clearTimeout(tm); }
     if(res && res.ok && d && d.ok){
       D.home=d; D.homeErr='';
+      cacheSave_('home_api', d);
       logApiPerf_('keiei-api-home', nowMs_()-t0, true, '');
     } else {
       D.homeErr=(d&&d.error)||(errType==='timeout'?'応答がありません（15秒でタイムアウト）':('取得に失敗しました（HTTP '+(res&&res.status)+'）'));
@@ -2431,15 +2440,18 @@ function render(){
   let body='';
   // 実装指示書_BQ表示改善と社員給与按分_2026-08-24 タスク1: BQモード読込中／失敗時に
   // 前回の古い/部分的なdailyデータのまま壊れた暫定数字（例: 人件費率116%）が出ないよう、
-  // D.daily依存の3タブ（ダッシュボード・推移分析・目標管理）はこの間プレースホルダにする。
+  // D.daily依存の3タブはプレースホルダにする。ただし、2026-10-03時点でダッシュボードには
+  // kd_直読みの速報値(D.home)があるため、BQ読込中でも速報表示を優先する。これを塞ぐと
+  // ログイン直後に「BigQueryから読み込み中…」で長時間止まって見える。
   const bqGateTabs=(S.tab==='dash'||S.tab==='analysis'||S.tab==='target');
+  const bqGateHasData=(S.tab==='dash'&&!!D.home)||(S.tab==='analysis'&&!!(D.dailyKd&&D.dailyKd.length||D.daily.length))||(S.tab==='target'&&!!D.daily.length);
   // 2026-09-14追加: 読み込み中/失敗時のプレースホルダは3タブとも「🧪データ元」トグル自体を
   // 覆ってしまい、BQ側がAPI_TIMEOUT_MS(3分)ぶん詰まった場合トグルへ辿り着けず身動きが取れなく
   // なる不具合があった（ユーザー報告「遅すぎて全然開けない」）。管理者だけに見える「シートに戻す」
   // 脱出ボタンをこのプレースホルダ自体にも出す（クリック後は即座にシート経路へ切替・タイムアウトを
   // 待たなくてよい）。
   const bqEscapeBtn=isAdminRole()?`<div style="margin-top:14px"><button class="icon-btn" onclick="App.setDailySource('sheet')">🧪 データ元をシートに戻す</button></div>`:'';
-  if(bqGateTabs && S.useBqDaily && D.dailyBqLoading){
+  if(bqGateTabs && S.useBqDaily && D.dailyBqLoading && !bqGateHasData){
     body=`<div class="panel" style="text-align:center;padding:60px 20px;color:#8c8375">⏳ BigQueryから読み込み中…${bqEscapeBtn}</div>`;
   } else if(bqGateTabs && S.useBqDaily && D.dailyBqErr && !D.daily.length){
     body=`<div class="panel" style="text-align:center;padding:60px 20px;color:#b5502f">⚠️ データ取得に失敗しました。再読み込みしてください${bqEscapeBtn}</div>`;
