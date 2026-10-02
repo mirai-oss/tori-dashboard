@@ -81,6 +81,8 @@ function handle(p) {
     if (action === 'bqSyncPL') return out(bqSyncPL(p)); // PL経費(DB_PL)のBQミラー同期（専用トークン認証・ログイン不要）
     if (action === 'writeAdCost') return out(writeAdCost(p)); // A-8: 広告費書き込み（invoices側ad-cost-reflectから・AD_COST_WRITE_TOKEN認証・ログイン不要。2026-08-31追加）
     if (action === 'writePlFee') return out(writePlFee(p)); // A-8拡張: 勘定科目汎用のPL自動計上（invoices側pl-fee-reflectから・AD_COST_WRITE_TOKEN認証・ログイン不要。2026-09-01追加・設計書§5）
+    if (action === 'costTransferPublicInfo') return out(costTransferPublicInfo(p)); // 仕入れ移動：現場向け公開フォームの初期データ取得（COST_TRANSFER_FORM_TOKEN認証・ログイン不要。2026-10-02追加）
+    if (action === 'costTransferPublicSubmit') return out(costTransferPublicSubmit(p)); // 仕入れ移動：現場向け公開フォームの送信（承認待ちキューへ追加するだけでDB_PLには触れない。COST_TRANSFER_FORM_TOKEN認証・ログイン不要。2026-10-02追加）
     if (action === 'bqSyncAdCost') return out(bqSyncAdCost(p)); // 💾広告費DBのBQミラー同期（専用トークン認証・ログイン不要。writeAdCostから毎回自動で呼ばれるほか単独でも可。2026-08-31追加・A-8）
     if (action === 'bqGetAdCost') return out(bqGetAdCost(p)); // stg_ad_costの読み取り（専用トークン認証・ログイン不要・サーバー間呼び出し専用）。レーンPのkd_pl広告費充填用。2026-09-11追加
     if (action === 'bqSyncReservation') return out(bqSyncReservation(p)); // 予約(stg_reservation)のBQミラー同期（専用トークン認証・ログイン不要。2026-08-28追加・A-6）
@@ -139,6 +141,14 @@ function handle(p) {
     if (action === 'costTransferList') return out(costTransferList(p, session)); // 店舗間仕入れ移動：一覧取得（2026-09-23追加）
     if (action === 'costTransferAdd') return out(costTransferAdd(p, session)); // 店舗間仕入れ移動：登録
     if (action === 'costTransferCancel') return out(costTransferCancel(p, session)); // 店舗間仕入れ移動：取り消し
+    if (action === 'costTransferItemList') return out(costTransferItemList(p, session)); // 仕入れ移動：品目マスタ一覧（2026-10-02追加）
+    if (action === 'costTransferItemSave') return out(costTransferItemSave(p, session)); // 仕入れ移動：品目マスタ登録/更新
+    if (action === 'costTransferItemDelete') return out(costTransferItemDelete(p, session)); // 仕入れ移動：品目マスタ削除
+    if (action === 'costTransferLinkInfo') return out(costTransferLinkInfo(p, session)); // 仕入れ移動：公開リンクの現在のトークン確認
+    if (action === 'costTransferLinkRegenerate') return out(costTransferLinkRegenerate(p, session)); // 仕入れ移動：公開リンクの再発行（旧リンクは即失効）
+    if (action === 'costTransferPendingList') return out(costTransferPendingList(p, session)); // 仕入れ移動：承認待ち申請一覧
+    if (action === 'costTransferApprove') return out(costTransferApprove(p, session)); // 仕入れ移動：申請を承認（DB_PLへ反映）
+    if (action === 'costTransferReject') return out(costTransferReject(p, session)); // 仕入れ移動：申請を却下
     if (action === 'mfConfirmImport') return out(mfConfirmImport(p, session)); // MF取込：プレビューで確定した行をDB_PLへ反映
     if (action === 'saveAdFee') return out(saveAdFee(p, session)); // 広告費の手入力（管理シート💾広告費DBへupsert）
     if (action === 'saveAdSales') return out(saveAdSales(p, session)); // 売上・反響の手入力（管理シート💾売上DBへupsert）
@@ -333,6 +343,40 @@ function setupIfNeeded() {
     );
     spotSh.setFrozenRows(1);
     spotSh.setColumnWidths(1, 9, 120);
+  }
+
+  // 仕入れ移動品目マスタ（DB_仕入れ移動品目マスタ）。無ければ雛形を自動作成（2026-10-02追加・
+  // 現場向け公開フォーム対応）。列: 品名／単価／有効。公開フォームの品目プルダウン・単価自動計算の元データ。
+  var ctItemSh = ss.getSheetByName('DB_仕入れ移動品目マスタ');
+  if (!ctItemSh) {
+    ctItemSh = ss.insertSheet('DB_仕入れ移動品目マスタ');
+    ctItemSh.getRange(1, 1, 1, 3).setValues([['品名', '単価', '有効']])
+      .setFontWeight('bold').setBackground('#efe9dd');
+    ctItemSh.getRange('A1').setNote(
+      '店舗間の仕入れ移動フォーム（現場向け公開リンク）で選べる品目と単価です。\n' +
+      '・品名: フォームのプルダウンに表示される名前\n・単価: 数値（円）。数量と掛けて金額を自動計算\n' +
+      '・有効: FALSEにすると公開フォームの選択肢から消えます（行の削除はしなくてよい）'
+    );
+    ctItemSh.setFrozenRows(1);
+    ctItemSh.setColumnWidths(1, 3, 150);
+  }
+
+  // 仕入れ移動申請（DB_仕入れ移動申請）。無ければ雛形を自動作成（2026-10-02追加）。
+  // 現場の公開フォームからの送信は、ここへpending状態で1行追加されるだけでDB_PLには一切触れない。
+  // 社長・本部が承認（costTransferApprove）して初めてDB_PLへ反映される（costTransferWriteRow_経由）。
+  var ctReqSh = ss.getSheetByName('DB_仕入れ移動申請');
+  if (!ctReqSh) {
+    ctReqSh = ss.insertSheet('DB_仕入れ移動申請');
+    ctReqSh.getRange(1, 1, 1, 11).setValues([['申請ID', '申請日時', '移動日', '移動元店舗', '移動先店舗', '明細JSON', '合計金額', 'メモ', 'ステータス', '承認者', '承認日時']])
+      .setFontWeight('bold').setBackground('#efe9dd');
+    ctReqSh.getRange('A1').setNote(
+      '現場向け公開フォーム（?transferForm=トークン）からの送信を記録します。\n' +
+      '・ステータス: pending（承認待ち）／approved（承認済み・DB_PLへ反映済み）／rejected（却下）\n' +
+      '・明細JSON: [{name,qty,unitPrice,amount}] の配列。承認時にこの明細の数だけDB_PLへ行を追加します\n' +
+      '・手で編集しないでください（ステータスの不整合の原因になります。却下・取り消しは管理画面から行ってください）'
+    );
+    ctReqSh.setFrozenRows(1);
+    ctReqSh.setColumnWidths(1, 11, 130);
   }
 
   // 借入返済元金（DB_借入返済元金）。無ければ雛形を自動作成（2026-08-26追加・A-5）。
@@ -5508,6 +5552,20 @@ function savePlBulk(p, session) {
  * 2行は同じメモ「店舗間移動:<id>:<日付>」で紐付け、取り消しはこのメモを持つ2行を削除するだけ
  * （savePlEntries同様、DB_PL編集に別途の取り消し履歴シートは無いため、こちらも同じ扱いにした）。
  * 財務データの店舗間付け替えのため社長・本部のみ操作可。 */
+// DB_PLへの実際の書き込み（2行1組）＋BQ同期だけを切り出した内部関数（2026-10-02リファクタ）。
+// costTransferAdd（管理画面からの直接入力）とcostTransferApprove（現場フォーム申請の承認）の
+// 両方から呼ぶ。呼び出し元で金額・店舗の妥当性検証は済ませておくこと（ここでは検証しない）。
+function costTransferWriteRow_(date, fromStore, toStore, item, amount) {
+  var dp = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_PL');
+  if (!dp) return { ok: false, error: 'DB_PLシートがありません' };
+  var y = Number(date.slice(0, 4)), mo = Number(date.slice(5, 7));
+  var ymDate = new Date(y, mo - 1, 1); // DB_PLは月次粒度のため日付は月初に丸める（元の日付はメモに残す）
+  var id = Utilities.getUuid().split('-')[0];
+  var tag = '店舗間移動:' + id + ':' + date;
+  dp.appendRow([ymDate, fromStore, item + '（店舗間移動→' + toStore + '）', 'F', -amount, tag, '']);
+  dp.appendRow([ymDate, toStore, item + '（店舗間移動←' + fromStore + '）', 'F', amount, tag, '']);
+  return { ok: true, id: id, item: item, fromStore: fromStore, toStore: toStore, amount: amount, date: date };
+}
 function costTransferAdd(p, session) {
   if (!isAdmin(session)) return { ok: false, error: '店舗間の仕入れ移動は社長・本部のみ登録できます' };
   var date = String(p.date || '').trim();
@@ -5519,19 +5577,13 @@ function costTransferAdd(p, session) {
   if (!item) return { ok: false, error: '品名を入力してください' };
   var amount = Number(p.amount);
   if (!isFinite(amount) || amount <= 0) return { ok: false, error: '金額を正しく入力してください' };
-  var dp = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_PL');
-  if (!dp) return { ok: false, error: 'DB_PLシートがありません' };
-  var y = Number(date.slice(0, 4)), mo = Number(date.slice(5, 7));
-  var ymDate = new Date(y, mo - 1, 1); // DB_PLは月次粒度のため日付は月初に丸める（元の日付はメモに残す）
-  var id = Utilities.getUuid().split('-')[0];
-  var tag = '店舗間移動:' + id + ':' + date;
-  dp.appendRow([ymDate, fromStore, item + '（店舗間移動→' + toStore + '）', 'F', -amount, tag, '']);
-  dp.appendRow([ymDate, toStore, item + '（店舗間移動←' + fromStore + '）', 'F', amount, tag, '']);
+  var res = costTransferWriteRow_(date, fromStore, toStore, item, amount);
+  if (!res.ok) return res;
   try {
     var tkPlT = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
     if (tkPlT) bqSyncPL({ token: tkPlT });
   } catch (eSyncT) { /* BQ同期に失敗してもシート保存自体は成功として扱う（次回同期で追いつく） */ }
-  return { ok: true, id: id, item: item, fromStore: fromStore, toStore: toStore, amount: amount, date: date };
+  return res;
 }
 function costTransferCancel(p, session) {
   if (!isAdmin(session)) return { ok: false, error: '店舗間の仕入れ移動の取り消しは社長・本部のみ行えます' };
@@ -5582,6 +5634,195 @@ function costTransferList(p, session) {
     .filter(function (r) { return r.fromStore && r.toStore; }); // 片方しか無い＝データ異常。UIには出さない
   rows.sort(function (a, b) { return a.date < b.date ? 1 : (a.date > b.date ? -1 : 0); });
   return { ok: true, rows: rows.slice(0, 200) };
+}
+
+/* ================== 仕入れ移動：品目マスタ（2026-10-02追加・現場向け公開フォーム対応） ==================
+ * 現場の公開フォームで選べる「品名×単価」の一覧。管理画面（社長・本部）から編集する。 */
+function costTransferItemsRaw_() {
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_仕入れ移動品目マスタ');
+  if (!sh) return [];
+  var lastRow = sh.getLastRow();
+  if (lastRow < 2) return [];
+  var vals = sh.getRange(2, 1, lastRow - 1, 3).getValues();
+  var out = [];
+  for (var i = 0; i < vals.length; i++) {
+    var name = String(vals[i][0] || '').trim();
+    if (!name) continue;
+    out.push({ row: 2 + i, name: name, unitPrice: Number(vals[i][1]) || 0, active: vals[i][2] !== false });
+  }
+  return out;
+}
+function costTransferItemList(p, session) {
+  if (!isAdmin(session)) return { ok: false, error: '品目マスタは社長・本部のみ閲覧できます' };
+  return { ok: true, items: costTransferItemsRaw_() };
+}
+function costTransferItemSave(p, session) {
+  if (!isAdmin(session)) return { ok: false, error: '品目マスタは社長・本部のみ編集できます' };
+  var name = String(p.name || '').trim().slice(0, 60);
+  if (!name) return { ok: false, error: '品名を入力してください' };
+  var unitPrice = Number(p.unitPrice);
+  if (!isFinite(unitPrice) || unitPrice <= 0) return { ok: false, error: '単価を正しく入力してください' };
+  var active = p.active !== false;
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_仕入れ移動品目マスタ');
+  if (!sh) return { ok: false, error: 'DB_仕入れ移動品目マスタシートがありません' };
+  var rowNum = Number(p.row) || 0;
+  if (rowNum >= 2) sh.getRange(rowNum, 1, 1, 3).setValues([[name, unitPrice, active]]);
+  else sh.appendRow([name, unitPrice, active]);
+  return { ok: true };
+}
+function costTransferItemDelete(p, session) {
+  if (!isAdmin(session)) return { ok: false, error: '品目マスタは社長・本部のみ編集できます' };
+  var rowNum = Number(p.row) || 0;
+  if (rowNum < 2) return { ok: false, error: '対象の行が指定されていません' };
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_仕入れ移動品目マスタ');
+  if (!sh) return { ok: false, error: 'DB_仕入れ移動品目マスタシートがありません' };
+  sh.deleteRow(rowNum);
+  return { ok: true };
+}
+
+/* ================== 仕入れ移動：公開フォームリンク（2026-10-02追加） ==================
+ * writeAdCost等と同じ「スクリプトプロパティの固定トークンを単純文字列比較」方式。
+ * 再発行すると古いリンクは即座に使えなくなる（トークンを上書きするだけなので取り消し不要）。 */
+function costTransferLinkInfo(p, session) {
+  if (!isAdmin(session)) return { ok: false, error: '公開リンクの確認は社長・本部のみ行えます' };
+  var props = PropertiesService.getScriptProperties();
+  return { ok: true, token: props.getProperty('COST_TRANSFER_FORM_TOKEN') || '', createdAt: props.getProperty('COST_TRANSFER_FORM_TOKEN_AT') || '' };
+}
+function costTransferLinkRegenerate(p, session) {
+  if (!isAdmin(session)) return { ok: false, error: '公開リンクの再発行は社長・本部のみ行えます' };
+  var tk = Utilities.getUuid().replace(/-/g, '');
+  var props = PropertiesService.getScriptProperties();
+  props.setProperty('COST_TRANSFER_FORM_TOKEN', tk);
+  props.setProperty('COST_TRANSFER_FORM_TOKEN_AT', new Date().toISOString());
+  return { ok: true, token: tk };
+}
+
+/* ================== 仕入れ移動：申請の承認フロー（2026-10-02追加） ==================
+ * 現場の公開フォーム送信はDB_仕入れ移動申請へpendingで溜まるだけで、DB_PLには一切触れない。
+ * 社長・本部がcostTransferApproveで承認して初めて、明細の品目ごとにcostTransferWriteRow_で
+ * DB_PLへ反映される（1品目=1組の店舗間移動行として、既存のcostTransferList/Cancelでもそのまま見える）。 */
+function costTransferRequestsRaw_() {
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_仕入れ移動申請');
+  if (!sh) return [];
+  var lastRow = sh.getLastRow();
+  if (lastRow < 2) return [];
+  var vals = sh.getRange(2, 1, lastRow - 1, 11).getValues();
+  var out = [];
+  for (var i = 0; i < vals.length; i++) {
+    var reqId = String(vals[i][0] || '').trim();
+    if (!reqId) continue;
+    var items = [];
+    try { items = JSON.parse(vals[i][5] || '[]'); } catch (eJ) { items = []; }
+    out.push({
+      row: 2 + i, id: reqId,
+      submittedAt: vals[i][1] ? new Date(vals[i][1]).toISOString() : '',
+      date: vals[i][2] ? Utilities.formatDate(new Date(vals[i][2]), 'Asia/Tokyo', 'yyyy-MM-dd') : '',
+      fromStore: String(vals[i][3] || ''), toStore: String(vals[i][4] || ''),
+      items: items, total: Number(vals[i][6]) || 0, note: String(vals[i][7] || ''),
+      status: String(vals[i][8] || 'pending'), approver: String(vals[i][9] || ''),
+      approvedAt: vals[i][10] ? new Date(vals[i][10]).toISOString() : ''
+    });
+  }
+  return out;
+}
+function costTransferPendingList(p, session) {
+  if (!isAdmin(session)) return { ok: false, error: '承認待ち一覧は社長・本部のみ閲覧できます' };
+  var rows = costTransferRequestsRaw_().filter(function (r) { return r.status === 'pending'; });
+  rows.sort(function (a, b) { return a.submittedAt < b.submittedAt ? 1 : -1; });
+  return { ok: true, rows: rows };
+}
+function costTransferApprove(p, session) {
+  if (!isAdmin(session)) return { ok: false, error: '承認は社長・本部のみ行えます' };
+  var reqId = String(p.id || '').trim();
+  if (!reqId) return { ok: false, error: 'idが指定されていません' };
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_仕入れ移動申請');
+  if (!sh) return { ok: false, error: 'DB_仕入れ移動申請シートがありません' };
+  var target = null;
+  var all = costTransferRequestsRaw_();
+  for (var i = 0; i < all.length; i++) { if (all[i].id === reqId) { target = all[i]; break; } }
+  if (!target) return { ok: false, error: '対象の申請が見つかりません' };
+  if (target.status !== 'pending') return { ok: false, error: '既に' + (target.status === 'approved' ? '承認' : '却下') + '済みです' };
+  if (!target.items.length) return { ok: false, error: '明細が空です' };
+  var writtenIds = [];
+  for (var j = 0; j < target.items.length; j++) {
+    var it = target.items[j] || {};
+    var amt = Math.round(Number(it.unitPrice || 0) * Number(it.qty || 0)) || Number(it.amount) || 0;
+    if (!it.name || !(amt > 0)) continue;
+    var w = costTransferWriteRow_(target.date, target.fromStore, target.toStore, String(it.name).slice(0, 60), amt);
+    if (w.ok) writtenIds.push(w.id);
+  }
+  if (!writtenIds.length) return { ok: false, error: 'DB_PLへ書き込める明細がありませんでした' };
+  sh.getRange(target.row, 9, 1, 3).setValues([['approved', session.name || session.role || '', new Date()]]);
+  try {
+    var tkPlA = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+    if (tkPlA) bqSyncPL({ token: tkPlA });
+  } catch (eSyncA) { /* 無視 */ }
+  return { ok: true, writtenIds: writtenIds };
+}
+function costTransferReject(p, session) {
+  if (!isAdmin(session)) return { ok: false, error: '却下は社長・本部のみ行えます' };
+  var reqId = String(p.id || '').trim();
+  if (!reqId) return { ok: false, error: 'idが指定されていません' };
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_仕入れ移動申請');
+  if (!sh) return { ok: false, error: 'DB_仕入れ移動申請シートがありません' };
+  var target = null;
+  var all = costTransferRequestsRaw_();
+  for (var i = 0; i < all.length; i++) { if (all[i].id === reqId) { target = all[i]; break; } }
+  if (!target) return { ok: false, error: '対象の申請が見つかりません' };
+  if (target.status !== 'pending') return { ok: false, error: '既に処理済みです' };
+  var reason = String(p.reason || '').trim().slice(0, 200);
+  sh.getRange(target.row, 9, 1, 3).setValues([['rejected', session.name || session.role || '', new Date()]]);
+  if (reason) sh.getRange(target.row, 8).setValue((target.note ? target.note + ' / ' : '') + '却下理由: ' + reason);
+  return { ok: true };
+}
+
+/* ================== 仕入れ移動：現場向け公開フォーム（2026-10-02追加・ログイン不要） ==================
+ * writeAdCost等と同じ専用トークン認証（COST_TRANSFER_FORM_TOKEN）。requireSessionより手前の
+ * ゾーンでルーティングする（handle()参照）。金額はクライアント送信値を一切信用せず、必ず
+ * サーバー側で品目マスタ（costTransferItemsRaw_）の単価×数量から再計算する（改ざん防止）。 */
+function costTransferTokenOk_(p) {
+  var tk = PropertiesService.getScriptProperties().getProperty('COST_TRANSFER_FORM_TOKEN');
+  return !!tk && String((p || {}).token || '').trim() === String(tk).trim();
+}
+function costTransferPublicInfo(p) {
+  if (!costTransferTokenOk_(p)) return { ok: false, error: 'unauthorized' };
+  var items = costTransferItemsRaw_().filter(function (r) { return r.active; })
+    .map(function (r) { return { name: r.name, unitPrice: r.unitPrice }; });
+  var stores = [];
+  try {
+    var dir = fetchStoreDirectory_();
+    if (dir) stores = dir.filter(function (s) { return s.is_active; }).map(function (s) { return s.name; });
+  } catch (eDir) { /* 失敗時は空配列のまま（フォーム側は「読み込みに失敗しました」表示） */ }
+  return { ok: true, items: items, stores: stores };
+}
+function costTransferPublicSubmit(p) {
+  if (!costTransferTokenOk_(p)) return { ok: false, error: 'unauthorized' };
+  var date = String(p.date || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { ok: false, error: '移動日が不正です' };
+  var fromStore = String(p.fromStore || '').trim(), toStore = String(p.toStore || '').trim();
+  if (!fromStore || !toStore) return { ok: false, error: '移動元・移動先の店舗を選んでください' };
+  if (fromStore === toStore) return { ok: false, error: '移動元と移動先は別の店舗にしてください' };
+  var itemsIn = Array.isArray(p.items) ? p.items : [];
+  if (!itemsIn.length) return { ok: false, error: '商品を1つ以上追加してください' };
+  var priceByName = {};
+  costTransferItemsRaw_().filter(function (r) { return r.active; }).forEach(function (r) { priceByName[r.name] = r.unitPrice; });
+  var items = [], total = 0;
+  for (var i = 0; i < itemsIn.length; i++) {
+    var name = String((itemsIn[i] || {}).name || '').trim();
+    var qty = Number((itemsIn[i] || {}).qty);
+    if (!name || !priceByName.hasOwnProperty(name)) return { ok: false, error: '品目「' + name + '」は選択できません（削除・無効化された可能性があります。画面を更新してやり直してください）' };
+    if (!isFinite(qty) || qty <= 0) return { ok: false, error: '「' + name + '」の数量を正しく入力してください' };
+    var unitPrice = priceByName[name];
+    var amount = Math.round(unitPrice * qty);
+    items.push({ name: name, qty: qty, unitPrice: unitPrice, amount: amount });
+    total += amount;
+  }
+  var note = String(p.note || '').trim().slice(0, 300);
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_仕入れ移動申請');
+  if (!sh) return { ok: false, error: 'DB_仕入れ移動申請シートがありません' };
+  var id = Utilities.getUuid().split('-')[0];
+  sh.appendRow([id, new Date(), date, fromStore, toStore, JSON.stringify(items), total, note, 'pending', '', '']);
+  return { ok: true, id: id, total: total };
 }
 
 // MF取込マスタの新規マッピングをDB_科目対応へ反映（キー=MF勘定科目×MF補助科目。既存キーは上書き・無ければ追加）。

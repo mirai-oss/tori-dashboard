@@ -220,6 +220,8 @@ const S = {
   accounts:null, accErr:'', modal:null, loginErr:'',
   useBqDaily:(localStorage.getItem(LS.dailyBq)==='1'),   // 推移分析のデータソース切替（既定=false=シート。2026-08-22追加）
   embed:false, pendingTab:'',   // F-3(ns-portal統合ポータルシェル・2026-08-24追加): ?embed=1でヘッダー/ナビ非表示、?tab=でタブ直接指定
+  transferForm:null,   // {token,loading,error,stores,items,rows:[{name,qty}],date,fromStore,toStore,note,submitting,done}
+                        // ?transferForm=トークン（現場向け仕入れ移動の公開フォーム・ログイン不要。2026-10-02追加）
 };
 const D = { daily:[], media:[], mediaMonthsLoaded:0, deposit:[], review:[], ad:[], adfx:[], tanka:{}, tankaRows:[], tankaAvg:{}, tankaCv:{}, pl:[], dinii:[], diniiCols:[], targets:[], targetsM:[], events:[], extra:{}, storeAlias:{}, storeParent:{}, mediaClass:{}, adMediaMaster:[], adPlanMaster:{}, adStoreMaster:[], subItemMaster:{}, mfCategoryMap:{}, holidays:null, detailData:null, detailKey:'', detailLoading:'', refDate:null, maxDate:null,
   spot:[], spotBqLoading:false, spotBqErr:'',
@@ -2396,6 +2398,7 @@ function downloadPdf(){ window.print(); }
  * ===================================================================== */
 function render(){
   const root=$('root');
+  if(S.transferForm){ root.innerHTML=viewTransferForm(); return; }
   if(S.invite||S.inviteDone){ root.innerHTML=viewRegister(); return; }
   if(!S.auth){ root.innerHTML=viewLogin(); return; }
   if(S.reportMode){ root.innerHTML=viewReport(S.reportMode.kind, S.reportMode.date, S.reportMode.stores, S.reportMode.group); return; }
@@ -6199,6 +6202,7 @@ function viewPL(){
     ${canUse('spot')?`<button class="icon-btn" onclick="App.openSpotInput()">＋ スポット人件費</button>`:''}
     ${canUse('spot')?`<button class="icon-btn" onclick="App.syncSpotPl()" title="スポット人件費の入力・削除をPLへ今すぐ反映します（普段は毎日AM5:00に自動実行）">🔄 スポット人件費をPLへ反映</button>`:''}
     ${isAdminRole()?`<button class="icon-btn" onclick="App.openCostTransfer()" title="店舗間で仕入れ（原価）を移動し、両店の原価率に反映します">🔀 仕入れ移動</button>`:''}
+    ${isAdminRole()?`<button class="icon-btn" onclick="App.openCostTransferAdmin()" title="現場向け公開フォームからの申請を承認／却下、フォームの商品・単価、公開リンクを管理します">📋 現場フォーム管理</button>`:''}
     ${isAdminRole()?`<button class="icon-btn" onclick="App.plCleanupLegacyCombined()" title="勘定科目/補助科目の分離バグ修正前に結合形式のまま計上されていた古い行が残っていないか確認します（表示のみ・削除はしません。担当Cからの申し送り・一時的な機能）">🔎 古いPL行の残存チェック（一時）</button>`:''}
     <span class="period-label">損益（${mLabel} ／ ${esc(scopeLabel)}）</span></div>`
     +(multiActive
@@ -7461,6 +7465,7 @@ function viewModal(){
   if(S.modal&&S.modal.type==='plStorePick') return plStorePickModal();
   if(S.modal&&S.modal.type==='spotInput') return spotInputModal();
   if(S.modal&&S.modal.type==='costTransfer') return costTransferModal();
+  if(S.modal&&S.modal.type==='costTransferAdmin') return costTransferAdminModal();
   if(S.modal&&S.modal.type==='tanka') return tankaModal();
   if(S.modal&&S.modal.type==='mediaFee') return mediaFeeModal();
   return '';
@@ -8088,6 +8093,65 @@ function plInputModal(){
     </div>
   </div></div>`;
 }
+/* ---- 店舗間の仕入れ移動：現場向け公開フォーム（2026-10-02追加・ログイン不要） ----
+ * ?transferForm=トークンでアクセス。送信は承認待ち（DB_仕入れ移動申請）に入るだけで、
+ * DB_PLには一切触れない（社長・本部がPL管理タブの「📋現場申請の承認」から承認して初めて反映）。
+ * 金額はサーバー側（costTransferPublicSubmit）で品目マスタの単価×数量から再計算されるため、
+ * ここで表示する金額はあくまで目安（送信前の確認用）。 */
+function ctfPriceOf_(name){ const it=(S.transferForm.items||[]).find(x=>x.name===name); return it?it.unitPrice:0; }
+function ctfRowAmount_(r){ return ctfPriceOf_(r.name)*(Number(r.qty)||0); }
+function ctfTotal_(){ return (S.transferForm.rows||[]).reduce((s,r)=>s+ctfRowAmount_(r),0); }
+function viewTransferForm(){
+  const m=S.transferForm;
+  const wrap=(inner)=>`<div class="app" style="max-width:520px;margin:0 auto;padding:18px 14px">
+    <div class="panel" style="padding:20px">
+      <h3 style="margin-bottom:4px">🔀 店舗間の仕入れ移動</h3>
+      ${inner}
+    </div>
+  </div>`;
+  if(m.loading) return wrap(`<div class="empty">読み込んでいます…</div>`);
+  if(m.error) return wrap(`<div class="empty" style="color:#b5502f">${esc(m.error)}</div>`);
+  if(m.done) return wrap(`<div style="text-align:center;padding:16px 0">
+    <div style="font-size:15px;font-weight:700">✅ 送信しました</div>
+    <div class="sub" style="margin-top:6px">社長・本部の承認後にPLへ反映されます${m.doneTotal!=null?'（合計目安 '+yen(m.doneTotal)+'）':''}。</div>
+    <button class="icon-btn primary" style="margin-top:14px" onclick="App.ctfReset()">続けてもう1件入力する</button>
+  </div>`);
+  const stores=m.stores||[], items=m.items||[];
+  const todayStr=(()=>{ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); })();
+  const dateV=m.date||todayStr;
+  const fromSt=m.fromStore&&stores.includes(m.fromStore)?m.fromStore:stores[0];
+  const toSt=m.toStore&&stores.includes(m.toStore)&&m.toStore!==fromSt?m.toStore:(stores.find(s=>s!==fromSt)||stores[0]);
+  const rows=m.rows&&m.rows.length?m.rows:[{name:'',qty:''}];
+  const rowHtml=(r,i)=>`<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
+    <select style="flex:1" onchange="App.ctfRowChanged(${i},'name',this.value)">
+      <option value="">（商品を選択）</option>
+      ${items.map(it=>`<option value="${esc(it.name)}" ${r.name===it.name?'selected':''}>${esc(it.name)}（${yen(it.unitPrice)}）</option>`).join('')}
+    </select>
+    <input type="number" min="1" style="width:66px;text-align:right" placeholder="数量" value="${r.qty||''}" oninput="App.ctfRowChanged(${i},'qty',this.value)">
+    <span id="ctf-sub-${i}" style="width:84px;text-align:right;font-size:12px;color:#5c5348">${r.name?yen(ctfRowAmount_(r)):''}</span>
+    <button class="icon-btn" style="padding:2px 8px" onclick="App.ctfRemoveRow(${i})" ${rows.length<=1?'disabled':''}>✕</button>
+  </div>`;
+  return wrap(`
+    <div class="sub">移動した商品を入力して送信してください。送信後は社長・本部が確認してからPLに反映されます。</div>
+    ${!items.length?`<div class="empty" style="color:#b5502f;margin-top:10px">選べる商品がまだ登録されていません。管理者に連絡してください。</div>`:
+      !stores.length?`<div class="empty" style="color:#b5502f;margin-top:10px">店舗一覧を取得できませんでした。時間をおいて開き直してください。</div>`:`
+    <div class="form-grid" style="margin-top:10px">
+      <div><label>移動日</label><input type="date" value="${esc(dateV)}" onchange="App.ctfFieldChanged('date',this.value)"></div>
+      <div><label>移動元店舗</label><select onchange="App.ctfFieldChanged('fromStore',this.value)">${stores.map(s=>`<option value="${esc(s)}" ${fromSt===s?'selected':''}>${esc(s)}</option>`).join('')}</select></div>
+      <div><label>移動先店舗</label><select onchange="App.ctfFieldChanged('toStore',this.value)">${stores.map(s=>`<option value="${esc(s)}" ${toSt===s?'selected':''}>${esc(s)}</option>`).join('')}</select></div>
+    </div>
+    <div style="margin-top:14px">
+      <label style="font-size:12px;color:#8c8375">商品</label>
+      <div style="margin-top:6px">${rows.map((r,i)=>rowHtml(r,i)).join('')}</div>
+      <button class="icon-btn" onclick="App.ctfAddRow()">＋ 商品を追加</button>
+    </div>
+    <div style="text-align:right;margin-top:10px;font-weight:700">合計（目安）　<span id="ctf-total">${yen(ctfTotal_())}</span></div>
+    <div style="margin-top:10px"><label style="font-size:12px;color:#8c8375">メモ（任意）</label><input style="width:100%" value="${esc(m.note||'')}" oninput="App.ctfFieldChanged('note',this.value)"></div>
+    <div id="ctf-msg" style="font-size:12px;color:#b5502f;margin:8px 0"></div>
+    <button class="icon-btn primary" id="ctf-submit" style="width:100%;margin-top:6px" onclick="App.ctfSubmit()">送信</button>
+    `}
+  `);
+}
 /* ---- 店舗間の仕入れ移動モーダル（2026-09-23追加） ----
  * ある店舗で仕入れた商品を実際に別の店舗へ融通したときに使う。DB_PLへ移動元(マイナス)・
  * 移動先(プラス)の2行が追加され、両店の原価(F)・原価率へ即座に反映される（costTransferAdd参照）。
@@ -8128,6 +8192,82 @@ function costTransferModal(){
     </div>
     <div class="modal-btns"><button class="icon-btn" onclick="App.closeModal()">閉じる</button></div>
   </div></div>`;
+}
+/* ---- 店舗間の仕入れ移動：現場フォーム管理モーダル（2026-10-02追加） ----
+ * 現場向け公開フォーム（viewTransferForm）からの申請の承認待ち一覧・承認/却下、
+ * フォームで選べる品目（品名×単価）の管理、公開リンクの発行・再発行をまとめた管理者専用モーダル。
+ * S.modal={type:'costTransferAdmin', section:'pending'|'items'|'link', pending:{...}, items:{...}, link:{...}, itemEdit:{...}} */
+function costTransferAdminModal(){
+  const m=S.modal;
+  const section=m.section||'pending';
+  const tabBtn=(k,l)=>`<button class="${section===k?'on':''}" onclick="App.ctAdminSection('${k}')">${l}</button>`;
+  const body=section==='pending'?ctAdminPendingHtml_(m):(section==='items'?ctAdminItemsHtml_(m):ctAdminLinkHtml_(m));
+  return `<div class="modal-bg" onclick="if(event.target===this)App.closeModal()"><div class="modal" style="max-width:720px">
+    <h3>📋 現場フォーム管理（店舗間の仕入れ移動）</h3>
+    <div class="sub">現場向け公開フォームからの申請の承認・フォームで選べる商品と単価・公開リンクを管理します。</div>
+    <div class="seg" style="margin-top:10px">${tabBtn('pending','承認待ち')}${tabBtn('items','品目マスタ')}${tabBtn('link','公開リンク')}</div>
+    <div style="margin-top:12px">${body}</div>
+    <div class="modal-btns"><button class="icon-btn" onclick="App.closeModal()">閉じる</button></div>
+  </div></div>`;
+}
+function ctAdminPendingHtml_(m){
+  const p=m.pending||{};
+  if(p.loading) return `<div class="empty">読み込み中…</div>`;
+  if(p.err) return `<div class="empty" style="color:#b5502f">${esc(p.err)}</div>`;
+  const rows=p.rows||[];
+  if(!rows.length) return `<div class="empty">承認待ちの申請はありません</div>`;
+  return `<div style="max-height:440px;overflow-y:auto">${rows.map(r=>`
+    <div class="panel" style="padding:10px;margin-bottom:8px">
+      <div style="display:flex;justify-content:space-between;font-size:11px;color:#8c8375">
+        <span>移動日: ${esc(r.date)}</span><span>${esc((r.submittedAt||'').slice(0,16).replace('T',' '))} 申請</span>
+      </div>
+      <div style="font-weight:700;margin-top:2px">${shortStoreTd(r.fromStore)} → ${shortStoreTd(r.toStore)}</div>
+      <table class="tbl" style="margin-top:6px"><tbody>
+        ${(r.items||[]).map(it=>`<tr><td>${esc(it.name)}</td><td style="text-align:right">×${esc(String(it.qty))}</td><td style="text-align:right">${yen(it.amount)}</td></tr>`).join('')}
+      </tbody></table>
+      <div style="text-align:right;font-weight:700;margin-top:4px">合計　${yen(r.total)}</div>
+      ${r.note?`<div style="font-size:12px;color:#5c5348;margin-top:4px">メモ: ${esc(r.note)}</div>`:''}
+      <div class="modal-btns" style="margin-top:8px">
+        <button class="icon-btn primary" onclick="App.ctApprove('${esc(r.id)}')">承認してPLへ反映</button>
+        <button class="icon-btn" onclick="App.ctReject('${esc(r.id)}')">却下</button>
+      </div>
+    </div>`).join('')}</div>`;
+}
+function ctAdminItemsHtml_(m){
+  const it=m.items||{};
+  if(it.loading) return `<div class="empty">読み込み中…</div>`;
+  if(it.err) return `<div class="empty" style="color:#b5502f">${esc(it.err)}</div>`;
+  const rows=it.rows||[];
+  const e=m.itemEdit||{row:0,name:'',unitPrice:'',active:true};
+  return `
+    <div class="form-grid">
+      <div><label>品名</label><input id="cti-name" value="${esc(e.name||'')}" oninput="App.ctItemFieldChanged('name',this.value)"></div>
+      <div><label>単価（円）</label><input type="number" id="cti-price" value="${e.unitPrice||''}" style="text-align:right" oninput="App.ctItemFieldChanged('unitPrice',this.value)"></div>
+    </div>
+    <div id="cti-msg" style="font-size:12px;color:#b5502f;margin:6px 0"></div>
+    <div class="modal-btns"><button class="icon-btn primary" onclick="App.ctItemSave()">${e.row?'上書き保存':'＋ 追加'}</button>${e.row?`<button class="icon-btn" onclick="App.ctItemEditCancel()">新規入力に戻す</button>`:''}</div>
+    <table class="tbl" style="margin-top:10px"><thead><tr><th>品名</th><th style="text-align:right">単価</th><th>有効</th><th></th></tr></thead>
+      <tbody>${rows.length?rows.map(r=>`<tr>
+        <td>${esc(r.name)}</td><td style="text-align:right">${yen(r.unitPrice)}</td>
+        <td>${r.active?'✅':'—'}</td>
+        <td class="no-print"><button class="icon-btn" style="padding:1px 7px;font-size:10px" onclick="App.ctItemEditRow(${r.row})">編集</button>
+        <button class="icon-btn" style="padding:1px 7px;font-size:10px" onclick="App.ctItemToggleActive(${r.row},${!r.active})">${r.active?'無効化':'有効化'}</button>
+        <button class="icon-btn" style="padding:1px 7px;font-size:10px" onclick="App.ctItemDeleteRow(${r.row})">削除</button></td>
+      </tr>`).join(''):`<tr><td colspan="4" class="empty">品目が未登録です</td></tr>`}</tbody>
+    </table>`;
+}
+function ctAdminLinkHtml_(m){
+  const l=m.link||{};
+  if(l.loading) return `<div class="empty">読み込み中…</div>`;
+  if(l.err) return `<div class="empty" style="color:#b5502f">${esc(l.err)}</div>`;
+  const url=l.token?(location.origin+location.pathname+'?transferForm='+l.token):'';
+  return `
+    ${url?`<div><label style="font-size:12px;color:#8c8375">現在の公開リンク（現場のスマホ等にこのURLを共有してください）</label>
+      <div style="display:flex;gap:6px;margin-top:4px"><input id="ct-link-url" readonly value="${esc(url)}" style="flex:1" onclick="this.select()"><button class="icon-btn" onclick="App.ctLinkCopy()">📋 コピー</button></div>
+      ${l.createdAt?`<div style="font-size:11px;color:#8c8375;margin-top:4px">発行日時: ${esc(l.createdAt.slice(0,16).replace('T',' '))}</div>`:''}
+    </div>`:`<div class="empty">まだ公開リンクが発行されていません</div>`}
+    <div class="modal-btns" style="margin-top:12px"><button class="icon-btn primary" onclick="App.ctLinkRegenerate()">🔄 リンクを再発行する</button></div>
+    <div style="font-size:11px;color:#b5502f;margin-top:4px">⚠️ 再発行すると、今までのリンクは即座に使えなくなります。現場には新しいリンクを配布し直してください。</div>`;
 }
 /* ---- スポット人件費入力モーダル（2026-08-23追加） ----
  * タイミー等の単発人件費を1行ずつ記録。保存は saveSpotEntry（ID一致なら更新・無ければ追加）。
@@ -9179,6 +9319,185 @@ window.App = {
       await App.openCostTransfer();
     }catch(e){ toast('通信エラー: '+e.message); }
   },
+  /* ---- 店舗間の仕入れ移動：現場向け公開フォーム（2026-10-02追加） ----
+   * 日付・店舗の変更はselectのonchangeなので毎回render()して問題ない（ネイティブselectは
+   * render()を挟んでもフォーカス落ちしない）。数量・メモのoninputは毎回render()すると入力中に
+   * フォーカスが外れるため、costTransferModalのctFieldChangedと同じく状態だけ更新してrender()
+   * は呼ばない。ただし合計金額は入力のたびに見えてほしいので、数量変更時だけDOMを直接書き換える
+   * （ctfPatchTotals_）。 */
+  ctfFieldChanged(field,value){ S.transferForm=Object.assign({},S.transferForm,{[field]:value}); if(field==='date'||field==='fromStore'||field==='toStore') render(); },
+  ctfRowChanged(i,field,value){
+    const rows=(S.transferForm.rows||[]).map((r,idx)=>idx===i?Object.assign({},r,{[field]:value}):r);
+    S.transferForm=Object.assign({},S.transferForm,{rows});
+    if(field==='name') render(); else App.ctfPatchTotals_();
+  },
+  ctfPatchTotals_(){
+    (S.transferForm.rows||[]).forEach((r,i)=>{ const el=$('ctf-sub-'+i); if(el) el.textContent=r.name?yen(ctfRowAmount_(r)):''; });
+    const totalEl=$('ctf-total'); if(totalEl) totalEl.textContent=yen(ctfTotal_());
+  },
+  ctfAddRow(){ S.transferForm=Object.assign({},S.transferForm,{rows:(S.transferForm.rows||[]).concat([{name:'',qty:''}])}); render(); },
+  ctfRemoveRow(i){
+    let rows=(S.transferForm.rows||[]).filter((r,idx)=>idx!==i);
+    if(!rows.length) rows=[{name:'',qty:''}];
+    S.transferForm=Object.assign({},S.transferForm,{rows}); render();
+  },
+  async ctfSubmit(){
+    const m=S.transferForm;
+    const msg=$('ctf-msg'); if(msg){ msg.style.color='#b5502f'; msg.textContent=''; }
+    const todayStr=(()=>{ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); })();
+    const date=m.date||todayStr;
+    const stores=m.stores||[];
+    const fromStore=m.fromStore&&stores.includes(m.fromStore)?m.fromStore:stores[0];
+    const toStore=m.toStore&&stores.includes(m.toStore)&&m.toStore!==fromStore?m.toStore:stores.find(s=>s!==fromStore);
+    if(!fromStore||!toStore||fromStore===toStore){ if(msg) msg.textContent='移動元と移動先は別の店舗を選んでください'; return; }
+    const itemsRaw=(m.rows||[]).filter(r=>r.name&&Number(r.qty)>0).map(r=>({name:r.name,qty:Number(r.qty)}));
+    if(!itemsRaw.length){ if(msg) msg.textContent='商品と数量を1つ以上入力してください'; return; }
+    const btn=$('ctf-submit');
+    if(btn){ btn.disabled=true; btn.textContent='送信中…'; }
+    try{
+      const d=await api({action:'costTransferPublicSubmit', token:m.token, date, fromStore, toStore, items:itemsRaw, note:m.note||''});
+      if(!d.ok){
+        if(msg) msg.textContent=d.error||'送信に失敗しました';
+        if(btn){ btn.disabled=false; btn.textContent='送信'; }
+        return;
+      }
+      S.transferForm=Object.assign({},S.transferForm,{done:true, doneTotal:d.total});
+      render();
+    }catch(e){
+      if(msg) msg.textContent='通信エラー: '+(e&&e.message||e);
+      if(btn){ btn.disabled=false; btn.textContent='送信'; }
+    }
+  },
+  ctfReset(){
+    const {token,stores,items}=S.transferForm;
+    S.transferForm={ token, loading:false, stores, items, rows:[{name:'',qty:''}], note:'' };
+    render();
+  },
+  /* ---- 店舗間の仕入れ移動：現場フォーム管理（承認・品目マスタ・公開リンク。2026-10-02追加） ---- */
+  async openCostTransferAdmin(){
+    if(!isAdminRole()) return;
+    S.modal={type:'costTransferAdmin', section:'pending', pending:{loading:true}, items:{loading:true}, link:{loading:true}};
+    render();
+    await Promise.all([App.ctAdminLoadPending(), App.ctAdminLoadItems(), App.ctAdminLoadLink()]);
+  },
+  ctAdminSection(k){ if(S.modal) S.modal=Object.assign({},S.modal,{section:k}); render(); },
+  async ctAdminLoadPending(){
+    if(!S.modal||S.modal.type!=='costTransferAdmin') return;
+    S.modal=Object.assign({},S.modal,{pending:{loading:true}}); render();
+    try{
+      const d=await api({action:'costTransferPendingList', token:S.auth.token});
+      if(!S.modal||S.modal.type!=='costTransferAdmin') return;
+      S.modal=Object.assign({},S.modal,{pending:{loading:false, rows:d.ok?d.rows:[], err:d.ok?'':(d.error||'取得に失敗しました')}});
+    }catch(e){
+      if(!S.modal||S.modal.type!=='costTransferAdmin') return;
+      S.modal=Object.assign({},S.modal,{pending:{loading:false, rows:[], err:'通信エラー: '+(e&&e.message||e)}});
+    }
+    render();
+  },
+  async ctAdminLoadItems(){
+    if(!S.modal||S.modal.type!=='costTransferAdmin') return;
+    S.modal=Object.assign({},S.modal,{items:{loading:true}}); render();
+    try{
+      const d=await api({action:'costTransferItemList', token:S.auth.token});
+      if(!S.modal||S.modal.type!=='costTransferAdmin') return;
+      S.modal=Object.assign({},S.modal,{items:{loading:false, rows:d.ok?d.items:[], err:d.ok?'':(d.error||'取得に失敗しました')}});
+    }catch(e){
+      if(!S.modal||S.modal.type!=='costTransferAdmin') return;
+      S.modal=Object.assign({},S.modal,{items:{loading:false, rows:[], err:'通信エラー: '+(e&&e.message||e)}});
+    }
+    render();
+  },
+  async ctAdminLoadLink(){
+    if(!S.modal||S.modal.type!=='costTransferAdmin') return;
+    S.modal=Object.assign({},S.modal,{link:{loading:true}}); render();
+    try{
+      const d=await api({action:'costTransferLinkInfo', token:S.auth.token});
+      if(!S.modal||S.modal.type!=='costTransferAdmin') return;
+      S.modal=Object.assign({},S.modal,{link:{loading:false, token:d.ok?d.token:'', createdAt:d.ok?d.createdAt:'', err:d.ok?'':(d.error||'取得に失敗しました')}});
+    }catch(e){
+      if(!S.modal||S.modal.type!=='costTransferAdmin') return;
+      S.modal=Object.assign({},S.modal,{link:{loading:false, token:'', err:'通信エラー: '+(e&&e.message||e)}});
+    }
+    render();
+  },
+  async ctApprove(id){
+    if(!confirm('この申請を承認してPLへ反映しますか？')) return;
+    toast('承認中…');
+    try{
+      const d=await api({action:'costTransferApprove', token:S.auth.token, id});
+      if(!d.ok){ toast(d.error||'承認に失敗しました'); return; }
+      toast('承認しました');
+      await fetchData(true,{ only:['pl','PL'], partial:true });
+      if(S.useBqDaily) await fetchPlBQ();
+      await App.ctAdminLoadPending();
+    }catch(e){ toast('通信エラー: '+e.message); }
+  },
+  async ctReject(id){
+    const reason=prompt('却下理由（任意・現場への共有メモとして記録されます）');
+    if(reason===null) return; // キャンセル
+    toast('処理中…');
+    try{
+      const d=await api({action:'costTransferReject', token:S.auth.token, id, reason:reason||''});
+      if(!d.ok){ toast(d.error||'却下に失敗しました'); return; }
+      toast('却下しました');
+      await App.ctAdminLoadPending();
+    }catch(e){ toast('通信エラー: '+e.message); }
+  },
+  ctItemFieldChanged(field,value){ S.modal=Object.assign({},S.modal,{itemEdit:Object.assign({},S.modal.itemEdit||{},{[field]:value})}); },
+  ctItemEditRow(row){
+    const r=((S.modal.items&&S.modal.items.rows)||[]).find(x=>x.row===row);
+    if(!r) return;
+    S.modal=Object.assign({},S.modal,{itemEdit:{row:r.row,name:r.name,unitPrice:r.unitPrice,active:r.active}});
+    render();
+  },
+  ctItemEditCancel(){ S.modal=Object.assign({},S.modal,{itemEdit:null}); render(); },
+  async ctItemSave(){
+    const msg=$('cti-msg'); if(msg){ msg.style.color='#b5502f'; msg.textContent=''; }
+    const e=S.modal.itemEdit||{};
+    const name=(e.name||'').trim(), unitPrice=Number(e.unitPrice);
+    if(!name){ if(msg) msg.textContent='品名を入力してください'; return; }
+    if(!(unitPrice>0)){ if(msg) msg.textContent='単価を正しく入力してください'; return; }
+    try{
+      const d=await api({action:'costTransferItemSave', token:S.auth.token, row:e.row||0, name, unitPrice, active:e.active!==false});
+      if(!d.ok){ if(msg) msg.textContent=d.error||'保存に失敗しました'; return; }
+      toast('保存しました');
+      S.modal=Object.assign({},S.modal,{itemEdit:null});
+      await App.ctAdminLoadItems();
+    }catch(ex){ if(msg) msg.textContent='通信エラー: '+ex.message; }
+  },
+  async ctItemToggleActive(row,active){
+    const r=((S.modal.items&&S.modal.items.rows)||[]).find(x=>x.row===row);
+    if(!r) return;
+    try{
+      const d=await api({action:'costTransferItemSave', token:S.auth.token, row, name:r.name, unitPrice:r.unitPrice, active});
+      if(!d.ok){ toast(d.error||'更新に失敗しました'); return; }
+      await App.ctAdminLoadItems();
+    }catch(e){ toast('通信エラー: '+e.message); }
+  },
+  async ctItemDeleteRow(row){
+    if(!confirm('この品目を削除しますか？（フォームの選択肢から消えます）')) return;
+    try{
+      const d=await api({action:'costTransferItemDelete', token:S.auth.token, row});
+      if(!d.ok){ toast(d.error||'削除に失敗しました'); return; }
+      toast('削除しました');
+      await App.ctAdminLoadItems();
+    }catch(e){ toast('通信エラー: '+e.message); }
+  },
+  ctLinkCopy(){
+    const url=S.modal&&S.modal.link&&S.modal.link.token?(location.origin+location.pathname+'?transferForm='+S.modal.link.token):'';
+    if(!url) return;
+    if(navigator.clipboard&&navigator.clipboard.writeText) navigator.clipboard.writeText(url).then(()=>toast('コピーしました')).catch(()=>toast('コピーできませんでした'));
+  },
+  async ctLinkRegenerate(){
+    if(!confirm('リンクを再発行しますか？今までのリンクは即座に使えなくなります。')) return;
+    toast('再発行中…');
+    try{
+      const d=await api({action:'costTransferLinkRegenerate', token:S.auth.token});
+      if(!d.ok){ toast(d.error||'再発行に失敗しました'); return; }
+      toast('再発行しました');
+      await App.ctAdminLoadLink();
+    }catch(e){ toast('通信エラー: '+e.message); }
+  },
   /* ---- スポット人件費入力（2026-08-23追加） ---- */
   openSpotInput(){
     if(!requireFeature('spot'))return;
@@ -9650,6 +9969,20 @@ window.App = {
   loadSampleData();
   // URLパラメータ ?report=daily|weekly|monthly(&date=YYYY-MM-DD) でレポートカード表示（Lark日報の撮影用）
   // 招待リンク（?invite=トークン）→ 登録画面。ログインより先に判定する
+  // ?transferForm=トークン → 現場向け「店舗間の仕入れ移動」公開フォーム。ログインより先に判定する
+  // （?invite=と同じ考え方。渡されたtokenでcostTransferPublicInfoを叩き、無効ならエラー表示）
+  try{
+    const tq=new URLSearchParams(location.search).get('transferForm');
+    if(tq){
+      S.transferForm={ token:tq, loading:true, rows:[{name:'',qty:''}], note:'' };
+      api({ action:'costTransferPublicInfo', token:tq }).then(d=>{
+        if(!S.transferForm) return; // 読み込み中に離脱していたら何もしない
+        if(d.ok) S.transferForm=Object.assign({}, S.transferForm, { loading:false, stores:d.stores||[], items:d.items||[] });
+        else S.transferForm=Object.assign({}, S.transferForm, { loading:false, error:d.error==='unauthorized'?'このリンクは無効です（再発行されている可能性があります）。管理者に確認してください':(d.error||'読み込みに失敗しました') });
+        render();
+      }).catch(e=>{ if(!S.transferForm) return; S.transferForm=Object.assign({}, S.transferForm, { loading:false, error:'通信エラー: '+(e&&e.message||e) }); render(); });
+    }
+  }catch(e){}
   try{
     const iq=new URLSearchParams(location.search).get('invite');
     if(iq){
