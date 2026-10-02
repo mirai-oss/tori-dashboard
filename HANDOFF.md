@@ -153,6 +153,14 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 
 ## 5. 作業ログ
 
+### 2026-10-03（MacBookセッション）仕入れ移動フォーム: 承認待ちバッジ＋発注グループLINE通知を追加（**gas/Code.gs変更・ns-portal側も変更・ユーザーの貼替＋再デプロイ待ち**）
+ユーザーからの実機フィードバック3件に対応。
+- 「送信できなかった」「送信中が長すぎる」: `costTransferPublicInfo`/`costTransferPublicSubmit`の`api()`呼び出しが既定180秒×最大4回再試行（管理画面の重い処理向けの設計）になっていたのを1回20秒に短縮し、再試行中はボタン文言で分かるようにした（コミット[0d20f39](https://github.com/mirai-oss/tori-dashboard/commit/0d20f39)）。
+- 「承認依頼が来たか分かりにくい」: 「📋現場フォーム管理」ボタンに承認待ち件数バッジを追加。ログイン直後と既存のポーリング（`syncIfChanged`）のたびに軽量確認、承認/却下後は即反映（コミット[7befb79](https://github.com/mirai-oss/tori-dashboard/commit/7befb79)）。
+- 「シフト提出で使っているLINE公式アカウントから『発注グループ』へ発注情報を流したい」: `costTransferPublicSubmit`成功時に、ns-portalの`line-webhook` Edge Function（新設`push_order_group`アクション）へ中継してLINE通知する仕組みを追加（コミット[5615f64](https://github.com/mirai-oss/tori-dashboard/commit/5615f64)。ns-portal側は[c374bee](https://github.com/mirai-oss/ns-portal/commit/c374bee)）。送信先グループIDは、Botを「発注グループ」へ招待したときのjoinイベントで自動取得・保存（手動設定不要）。認証は専用合言葉`LINE_ORDER_PUSH_SECRET`（GASスクリプトプロパティ）↔`app_secrets.line_order_push_secret`。通知失敗は申請自体をブロックしない（ベストエフォート）。
+- **ユーザーへ渡したセットアップ手順**（Artifact）: Supabase側の合言葉追加・Edge Function貼替、GAS側のスクリプトプロパティ＋Code.gs貼替、LINEグループ作成の一連の手順。本番反映・LINEグループ作成・実機テストはユーザー側の作業待ち。
+- **申し送り（将来対応・今回は未着手）**: ユーザーから「将来的にはセントラルキッチンのキッチンプリンターにも発注情報を流したい」という要望あり。発注確定（現状は送信時点）のトリガーから、LINE通知と並行してプリンターAPI等へもファンアウトする設計を想定。プリンター側の仕様（メーカー・API有無）は未確認のため、着手時は要ヒアリング。
+
 ### 2026-09-30（MacBookセッション）店舗間の仕入れ移動：現場向け公開フォーム（承認制・品目マスタ対応）を追加（**gas/Code.gs変更・ユーザーの貼替＋再デプロイ待ち**）
 ユーザー要望「仕入れ移動を、入社フォームと同じようにリンク発行＋現場入力でできるようにしたい。商品ごとに単価を設定して数量選択・複数商品まとめて送信・将来の項目追加も視野に」に対応。入社フォーム（`~/nippo`。招待トークン・Supabase RPC）はバックエンドが別物のため直接流用できず、UX（1ページ完結フォーム・リンク発行→コピー）だけ参考にし、裏側はtori-dashboard自身の既存パターン（`writeAdCost`等と同じ固定トークン認証）に乗せた。
 - 公開フォーム: `?transferForm=トークン`でログイン不要アクセス（`viewTransferForm()`。`?invite=`と同じく`render()`の最上流で分岐）。品目を選ぶと単価が自動表示、数量入力で行・合計金額がライブ計算（フォーカスを保つため数量入力時はDOM直接書き換え、selectのonchangeだけ全体render()）。複数商品を1回でまとめて送信可能。
