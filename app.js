@@ -1687,6 +1687,96 @@ function scheduleGasRelogin_(){
     else scheduleGasRelogin_();
   }, 30000);
 }
+// ===== F1-a ログイン二段化（R2・2026-10-03）=====
+// LOGIN_2STAGE_=true（既定）: 統合アカウントはSupabase認証が通った時点で画面に入り（keiei-api-home等のkd_直読みで描画）、
+// GASのsupaloginは裏で取得する。それまで書き込み系は「入力系は準備中です」。GAS不調でもログアウトしない（F0の再接続機構）。
+// 旧動作へ即戻す: localStorage.setItem('login_2stage','0') → 再読み込み。
+const LOGIN_2STAGE_=(()=>{ try{ return localStorage.getItem('login_2stage')!=='0'; }catch(e){ return true; } })();
+const ACCT_CACHE_KEY_='toriAcctCache_v1';
+function acctCacheLoad_(uid){ try{ const o=JSON.parse(localStorage.getItem(ACCT_CACHE_KEY_)||'null'); return (o&&o.uid===uid&&o.account)?o.account:null; }catch(e){ return null; } }
+function acctCacheSave_(uid, account){ try{ if(uid&&account) localStorage.setItem(ACCT_CACHE_KEY_, JSON.stringify({ uid, account, t:Date.now() })); }catch(e){} }
+// kd_直読み系（GASトークン不要・Supabaseのログインだけで読める）が使うログイン判定
+function authed_(){ return !!(S.auth&&(S.auth.token||S.auth.provisional)); }
+// GAS必須の入力・保存系の「準備中」文言（二段化の裏でGASセッション取得中のみ差し替える）
+function noGasMsg_(def){ return (S.auth&&S.auth.provisional)?'入力系は準備中です（数秒後にもう一度お試しください）':def; }
+const PORTAL_ROLE_JA_={ CEO:'社長', HQ:'本部', TEAM:'マネージャー', TENCHO:'店舗' };
+// 画面に入るための「仮のアカウント」を作る。①前回GASで確定した情報(同じユーザー)があればそれ（全タブ・本権限）
+// ②無ければSupabaseのusers/user_storesから役職・担当店舗を引いて作る（この場合は安全のためダッシュボードのみ・入力系なし。
+// GASの確定後に本来のタブ・権限へ差し替わる）。3秒以内に作れなければnull＝従来どおりGAS待ちでログイン。
+async function provisionalAccount_(at, uid){
+  if(!at||!uid) return null;
+  const cached=acctCacheLoad_(uid);
+  if(cached) return { account:cached, fromCache:true };
+  const ctl=(typeof AbortController!=='undefined')?new AbortController():null;
+  const tm=ctl?setTimeout(()=>ctl.abort(),3000):null;
+  const H={ apikey:SSO_SUPA_KEY, Authorization:'Bearer '+at };
+  try{
+    const ur=await fetch(SSO_SUPA_URL+'/rest/v1/users?id=eq.'+encodeURIComponent(uid)+'&select=name,role,is_active',{ headers:H, signal:ctl?ctl.signal:undefined });
+    if(!ur.ok) return null;
+    const rows=await ur.json(); const u=rows&&rows[0];
+    if(!u||u.is_active===false) return null;
+    const role=PORTAL_ROLE_JA_[String(u.role||'').trim()];
+    if(!role) return null;
+    let stores='全店';
+    if(role==='マネージャー'||role==='店舗'){
+      const sr=await fetch(SSO_SUPA_URL+'/rest/v1/user_stores?user_id=eq.'+encodeURIComponent(uid)+'&select=stores(name)',{ headers:H, signal:ctl?ctl.signal:undefined });
+      if(!sr.ok) return null;
+      const names=(await sr.json()).map(r=>r.stores&&r.stores.name).filter(Boolean);
+      if(!names.length) return null;
+      stores=names.join('、');
+    }
+    return { account:{ id:'portal:'+uid, name:u.name||'', role, stores, tabs:'dash', perms:'なし', position:'', media:'' }, fromCache:false };
+  }catch(e){ return null; }
+  finally{ if(tm) clearTimeout(tm); }
+}
+// GASから確定アカウントを受け取った後、画面の権限（タブ・店舗範囲）を本来のものに揃える（今開いているタブは動かさない）
+function applyAuthoritativeAccount_(){
+  const tabs=myTabs();
+  if(S.pendingTab&&tabs.includes(S.pendingTab)){ S.tab=S.pendingTab; }
+  else if(!tabs.includes(S.tab)) S.tab=tabs[0];
+  const sc=scopeStores();
+  if(sc.length===1) S.store=sc[0]; else if(S.store!=='all'&&!sc.includes(S.store)) S.store='all';
+  if(!targetModalOpen_()) render();
+}
+// 裏でGASのsupaloginを取得（二段目）。成功→確定アカウントに差し替えてGAS側の読み込みを開始。
+// 「このメールに対応するアカウントが無い／無効化」は確定的な拒否なのでログアウト。それ以外（混雑・通信）はログアウトせず再接続を続ける。
+async function finishGasLogin_(at, uid){
+  try{
+    const d=await api({ action:'supalogin', stoken:at });
+    if(d&&d.ok&&d.token){
+      S.auth={ token:d.token, account:d.account, sso:true };
+      try{ localStorage.setItem(LS.sess, JSON.stringify(S.auth)); }catch(e){}
+      acctCacheSave_(uid, d.account);
+      S.gasSessionLost=false; gasRelogin_.tries=0;
+      applyAuthoritativeAccount_();
+      fetchDataFast({ gasOnly:true }).then(()=>startPolling());
+      return true;
+    }
+    const eo=String((d&&d.error)||'');
+    if(eo.indexOf('対応するダッシュボードアカウント')>=0||eo.indexOf('無効化')>=0){
+      try{ sessionStorage.setItem('toriSsoDeny', String(uid||'')); }catch(e){}   // 同じタブで再訪しても「入って→すぐ追い出される」を繰り返さない
+      doLogout(eo); return false;
+    }
+  }catch(e){ /* 通信混雑：下で再接続 */ }
+  S.gasSessionLost=true; S.connState='gaspending'; if(!targetModalOpen_()) render();
+  scheduleGasRelogin_();
+  return false;
+}
+// 二段化でログイン画面を飛ばして入る（成功=true）。失敗・仮アカウント不可=false→呼び出し元は従来のGAS待ちログインへ。
+async function enterWithSupabaseAuth_(at, uid){
+  if(!LOGIN_2STAGE_) return false;
+  try{ if(uid&&sessionStorage.getItem('toriSsoDeny')===String(uid)) return false; }catch(e){}
+  const prov=await provisionalAccount_(at, uid);
+  if(!prov) return false;
+  S.auth={ token:null, account:prov.account, sso:true, provisional:prov.fromCache?'cache':'derived' };
+  S.ssoAuto='';
+  afterLogin();
+  setConnecting_();
+  render();
+  fetchDataFast();            // kd_直読み・初回描画（GASは呼ばない：tokenが無い間は直列キューの各段が何もしない）
+  finishGasLogin_(at, uid);   // 裏でGAS supalogin
+  return true;
+}
 async function apiOnce_(params, timeoutMs){
   const url=apiUrl();
   if(!url) throw new Error('APIが未設定です');
@@ -1859,7 +1949,7 @@ async function fetchData(silent, opts, preD){
 // 動いているfetchData()（従来のGAS action:data）到着後の通常描画に何も変えずフォールバックする
 // （このAPI自体が落ちても既存の表示経路を壊さない設計）。
 async function fetchHomeApi_(){
-  if(!S.auth||!S.auth.token||!HOME_API_ENABLED_) return;
+  if(!authed_()||!HOME_API_ENABLED_) return;
   if(!D.home){
     const cached=cacheLoad_('home_api');
     if(cached){
@@ -1905,7 +1995,7 @@ function storeNameById_(id){
 // fetchHomeApi_と同じ「統合アカウントのJWTが取れる場合だけ」パターン。失敗時はnullを返すだけで
 // 呼び出し側は従来経路（GAS/BQ）の到着を待てば良い（何も壊れない設計）。
 async function fetchDashboardSummaryApi_(kind, ym){
-  if(!S.auth||!S.auth.token||!DASH_SUMMARY_ENABLED_) return null;
+  if(!authed_()||!DASH_SUMMARY_ENABLED_) return null;
   try{
     const jwt=await portalAccessToken().catch(()=>null);
     if(!jwt) return null;
@@ -1940,7 +2030,7 @@ async function fetchDashboardSummaryApi_(kind, ym){
 // 影響ゼロ）。統合アカウント未連携・取得失敗時はD.dailyKdがnullのままなので、viewAnalysis側は
 // 自動的に従来のD.daily（GAS/シート）へフォールバックする。
 async function fetchAnalysisKd_(){
-  if(!S.auth||!S.auth.token) return;
+  if(!authed_()) return;
   try{
     const jwt=await portalAccessToken().catch(()=>null);
     if(!jwt) return;   // 統合アカウント未連携。従来経路(D.daily)のみで表示させる
@@ -1976,7 +2066,7 @@ async function fetchAnalysisKd_(){
 // （全社共通経費がkd_側に無い既知のギャップをP確認待ちのため。D.plKdはいつでも安全にnullの
 // まま扱えるよう、参照側は必ずnullチェック・見つからない行はフォールバックする設計にすること）。
 async function fetchPlKd_(force){
-  if(!S.auth||!S.auth.token) return;
+  if(!authed_()) return;
   if(!force && D.plKd && (nowMs_()-D.plKdAt)<300000) return;   // 5分以内の再取得はスキップ（SWR）
   try{
     const jwt=await portalAccessToken().catch(()=>null);
@@ -2115,14 +2205,15 @@ async function freshnessFromSupabase_(){
       jobs:rows.map(x=>({ job:x.job, finishedAt:x.finished_at, status:x.status, rows:x.rows, error:x.error||null })) };
   }catch(e){ return null; }
 }
-async function fetchDataFast(){
+async function fetchDataFast(opts){
   if(!BOOT_GASLESS_) return fetchDataFastLegacy_();
+  const gasOnly=!!(opts&&opts.gasOnly);   // F1-a: 二段目（GAS確定後）はSupabase直読み・初回描画をやり直さずGAS側だけ読む
   const myRun=++prefetchRun;
-  D.mediaPending=true; D.media=[]; D.mediaMonthsLoaded=0; D.gasLoaded_={};
+  D.mediaPending=true; if(!gasOnly){ D.media=[]; D.mediaMonthsLoaded=0; } D.gasLoaded_={};
   // 1) 初回描画（GAS 0本）。ここまでの間にGASを呼ばない。
-  if(!targetModalOpen_()) render();
+  if(!gasOnly&&!targetModalOpen_()) render();
   // 2) Supabase直読み（GASではない）。完了しだい描画。
-  fetchHomeApi_().then(()=>{
+  if(!gasOnly) fetchHomeApi_().then(()=>{
     const curYm_=ymdStr(Date.now()).slice(0,7);
     fetchDashboardSummaryApi_('media', curYm_).then(d=>{ if(d){ D.mediaSummaryFast=d.rows; if(!targetModalOpen_()) render(); } });
     fetchDashboardSummaryApi_('deposit', curYm_).then(d=>{ if(d){ D.depositSummaryFast=d.rows; D.depositSummaryFastYm=curYm_; if(!targetModalOpen_()) render(); } });
@@ -2131,8 +2222,8 @@ async function fetchDataFast(){
     fetchPlKd_();
   });
   // 鮮度表示はSupabase直読み（失敗した時だけ、あとでGAS版を直列の最後に呼ぶ）
-  let freshOk=false;
-  freshnessFromSupabase_().then(f=>{ if(f){ D.freshness=f; D.freshnessAt=Date.now(); freshOk=true; const el=document.querySelector('.sync-info'); if(el) el.innerHTML=connBadge(); } });
+  let freshOk=gasOnly&&!!D.freshness;
+  if(!gasOnly) freshnessFromSupabase_().then(f=>{ if(f){ D.freshness=f; D.freshnessAt=Date.now(); freshOk=true; const el=document.querySelector('.sync-info'); if(el) el.innerHTML=connBadge(); } });
   // 3) GASは1本ずつ直列：action:data → 開いているタブに必要な分 → 鮮度(必要時のみ)→版チェック
   const excl = S.useBqDaily ? HEAVY_KEYS.concat(['daily','PL','スポット人件費','借入返済元金']) : HEAVY_KEYS;
   await new Promise(r=>setTimeout(r,0));   // 初回描画を先に画面へ出す
@@ -2434,6 +2525,9 @@ async function doSsoLogin(){
       S.loginErr=(j&&j.error_code==='invalid_credentials')?'メールアドレスまたはパスワードが違います':'統合アカウントの認証に失敗しました（'+(j.msg||r.status)+'）';
       S.ssoOpen=true; render(); return;
     }
+    // F1-a: Supabase認証が通ったらGASを待たずに画面へ入る（フラグOFF・仮アカウントを作れない時だけ従来のGAS待ち）。
+    try{ localStorage.setItem(PORTAL_LS_KEY, JSON.stringify({ at:j.access_token, rt:j.refresh_token, uid:j.user&&j.user.id })); }catch(e){}
+    if(await enterWithSupabaseAuth_(j.access_token, j.user&&j.user.id)) return;
     const d=await api({ action:'supalogin', stoken:j.access_token }, null, ()=>{ S.loginRetrying=true; render(); });
     S.loginRetrying=false;
     if(!d.ok){
@@ -2495,6 +2589,8 @@ async function trySilentPortalLogin(){
     const at=await portalAccessToken();
     if(!at) return;
     S.ssoAuto='trying'; render();
+    // F1-a: ポータルのログインが生きていればGASを待たずに画面へ入る（仮アカウントを作れない時だけ従来どおりGAS待ち）
+    { const ps=portalSession(); if(await enterWithSupabaseAuth_(at, ps&&ps.uid)) return; }
     // 2026-09-18（ラウンド6 A-11拡張・ユーザー実機フィードバック「そもそもログインして開けない
     // ことがある」対応）: 初回ロードの自動ログインでも接続混雑時はonRetryで状態を切り替え、
     // 「認証中…」のまま無言で固まって見えないようにする。
@@ -2558,6 +2654,7 @@ function afterLogin(){
 }
 function doLogout(msg){
   if(S.auth&&S.auth.token){ api({action:'logout',token:S.auth.token}).catch(()=>{}); }
+  try{ localStorage.removeItem(ACCT_CACHE_KEY_); }catch(e){}   // F1-a: 確定アカウントの控えは共有PC対策としてログアウト時に消す
   S.auth=null; stopPolling();
   try{ localStorage.removeItem(LS.sess); }catch(e){}
   if(msg) S.loginErr=msg;
@@ -9157,7 +9254,7 @@ window.App = {
     if(cmp) cmp.textContent=ly>0?('／ 昨年同曜日合計 '+yen(ly)+'（'+(t>0?(t/ly*100).toFixed(0)+'%）':'—）')):''; },
   async saveTargetInput(){
     const msg=$('tg-msg');
-    if(!S.auth||!S.auth.token){ msg.textContent='スプレッドシート接続時のみ保存できます（デモモードでは保存不可）'; return; }
+    if(!S.auth||!S.auth.token){ msg.textContent=noGasMsg_('スプレッドシート接続時のみ保存できます（デモモードでは保存不可）'); return; }
     const store=$('tg-store').value, month=$('tg-month').value;
     if(!store||!/^\d{4}-\d{2}$/.test(month)){ msg.textContent='店舗と対象月を確認してください'; return; }
     const daily=[];
@@ -9175,7 +9272,7 @@ window.App = {
   openTargetDay(store,date){ S.modal={type:'targetDay', store, date}; render(); },
   async saveTargetDay(){
     const msg=$('td-msg'); const m=S.modal;
-    if(!S.auth||!S.auth.token){ msg.textContent='スプレッドシート接続時のみ保存できます'; return; }
+    if(!S.auth||!S.auth.token){ msg.textContent=noGasMsg_('スプレッドシート接続時のみ保存できます'); return; }
     const v=String($('td-goal')&&$('td-goal').value||'').trim();
     msg.style.color='#8c8375'; msg.textContent='保存中…';
     try{
@@ -9327,7 +9424,7 @@ window.App = {
   },
   async runDepositImport(){
     const msg=$('dp-msg');
-    if(!S.auth||!S.auth.token){ msg.textContent='スプレッドシート接続時のみ取込できます（デモモードでは不可）'; return; }
+    if(!S.auth||!S.auth.token){ msg.textContent=noGasMsg_('スプレッドシート接続時のみ取込できます（デモモードでは不可）'); return; }
     const store=$('dp-store')&&$('dp-store').value;
     if(!store){ msg.textContent='店舗を選択してください'; return; }
     const atmOnly=$('dp-atm')&&$('dp-atm').checked;
@@ -9424,7 +9521,7 @@ window.App = {
   mfExportCsv(){ mfExportCsv(); },
   async mfConfirm(){
     const m=S.modal;
-    if(!S.auth||!S.auth.token){ m.msg='スプレッドシート接続時のみ取込できます（デモモードでは不可）'; render(); return; }
+    if(!S.auth||!S.auth.token){ m.msg=noGasMsg_('スプレッドシート接続時のみ取込できます（デモモードでは不可）'); render(); return; }
     const p=mfBuildPreview(m);
     if(p.unmapped.length){ m.msg='未解決の科目があります'; render(); return; }
     const entries=[];
@@ -9491,7 +9588,7 @@ window.App = {
   // 期間一括計上：開始月〜終了月の各月に同じ科目の経費を計上（金額空欄＝期間内のその科目を削除）
   async savePlBulk(){
     const msg=$('plb-msg');
-    if(!S.auth||!S.auth.token){ msg.textContent='スプレッドシート接続時のみ保存できます'; return; }
+    if(!S.auth||!S.auth.token){ msg.textContent=noGasMsg_('スプレッドシート接続時のみ保存できます'); return; }
     const ym1=$('plb-ym1').value, ym2=$('plb-ym2').value, store=$('pli-store').value;
     const item=$('plb-item').value.trim(), cat=$('plb-cat').value, memo=$('plb-memo').value.trim();
     const sub=($('plb-sub')&&$('plb-sub').value||'').trim();
@@ -9529,7 +9626,7 @@ window.App = {
   },
   async savePlInput(){
     const msg=$('pli-msg'); const m=S.modal;
-    if(!S.auth||!S.auth.token){ msg.textContent='スプレッドシート接続時のみ保存できます'; return; }
+    if(!S.auth||!S.auth.token){ msg.textContent=noGasMsg_('スプレッドシート接続時のみ保存できます'); return; }
     const entries=[];
     document.querySelectorAll('#pli-rows tr').forEach(tr=>{
       const item=tr.querySelector('.pli-item').value.trim();
@@ -9880,7 +9977,7 @@ window.App = {
   },
   async saveSpotInput(){
     const msg=$('sp-msg');
-    if(!S.auth||!S.auth.token){ msg.textContent='スプレッドシート接続時のみ保存できます'; return; }
+    if(!S.auth||!S.auth.token){ msg.textContent=noGasMsg_('スプレッドシート接続時のみ保存できます'); return; }
     const store=$('sp-store').value, date=$('sp-date').value, kind=$('sp-kind').value;
     const amount=Number($('sp-amt').value)||0, headcount=$('sp-headcount').value, memo=$('sp-memo').value.trim();
     const id=$('sp-edit-id').value;
@@ -9940,7 +10037,7 @@ window.App = {
   },
   async saveAdInput(){
     const msg=$('adi-msg');
-    if(!S.auth||!S.auth.token){ msg.textContent='スプレッドシート接続時のみ保存できます'; return; }
+    if(!S.auth||!S.auth.token){ msg.textContent=noGasMsg_('スプレッドシート接続時のみ保存できます'); return; }
     const ym=$('adi-ym').value, ymTo=$('adi-ym2')&&$('adi-ym2').value||'', store=$('adi-store').value;
     let media=$('adi-media').value; if(media==='__free__') media=$('adi-media-free').value.trim();
     let plan=$('adi-plan').value; if(plan==='__free__') plan=$('adi-plan-free').value.trim();
@@ -9976,7 +10073,7 @@ window.App = {
   },
   async saveAdSales(){
     const msg=$('as-msg');
-    if(!S.auth||!S.auth.token){ msg.textContent='スプレッドシート接続時のみ保存できます'; return; }
+    if(!S.auth||!S.auth.token){ msg.textContent=noGasMsg_('スプレッドシート接続時のみ保存できます'); return; }
     const ym=$('as-ym').value, store=$('as-store').value, media=$('as-media').value;
     if(!media){ msg.textContent='媒体を選択してください（⚙️媒体マスタが未受信の可能性があります）'; return; }
     const vals={}; AD_SALES_FIELDS.forEach(f=>{ vals[f.k]=String($('as-'+f.k).value).trim(); });
@@ -10030,7 +10127,7 @@ window.App = {
   },
   async runRsvImport(){
     const msg=$('rv-msg');
-    if(!S.auth||!S.auth.token){ msg.textContent='スプレッドシート接続時のみ取込できます'; return; }
+    if(!S.auth||!S.auth.token){ msg.textContent=noGasMsg_('スプレッドシート接続時のみ取込できます'); return; }
     const store=$('rv-store')&&$('rv-store').value;
     if(!store){ msg.textContent='店舗を選択してください'; return; }
     const rows=this.rsvSelectedRows();
@@ -10052,7 +10149,7 @@ window.App = {
   tankaMediaChange(v){ const c=$('tk-media-custom'); if(!c)return; if(v==='__custom__'){ c.style.display=''; c.focus(); } else { c.style.display='none'; } },
   async saveTankaRow(oldStore,oldMedia){
     const msg=$('tk-msg');
-    if(!S.auth||!S.auth.token){ msg.textContent='スプレッドシート接続時のみ保存できます'; return; }
+    if(!S.auth||!S.auth.token){ msg.textContent=noGasMsg_('スプレッドシート接続時のみ保存できます'); return; }
     const store=($('tk-store').value||'').trim();
     let media=($('tk-media').value||'').trim();
     if(media==='__custom__') media=($('tk-media-custom').value||'').trim();
@@ -10084,7 +10181,7 @@ window.App = {
   mediaFeeMediaChange(v){ const c=$('mf-media-custom'); if(!c)return; if(v==='__custom__'){ c.style.display=''; c.focus(); } else { c.style.display='none'; } },
   async saveMediaFeeRow(oldMedia,oldStore){
     const msg=$('mf-msg');
-    if(!S.auth||!S.auth.token){ msg.textContent='スプレッドシート接続時のみ保存できます'; return; }
+    if(!S.auth||!S.auth.token){ msg.textContent=noGasMsg_('スプレッドシート接続時のみ保存できます'); return; }
     let media=($('mf-media').value||'').trim();
     if(media==='__custom__') media=($('mf-media-custom').value||'').trim();
     if(!media){ msg.textContent='媒体を選択してください'; return; }
@@ -10124,7 +10221,7 @@ window.App = {
   rsvSetFloorTime(v){ S.rsvFloorTime=v; render(); },
   async saveEventInput(){
     const msg=$('ev-msg');
-    if(!S.auth||!S.auth.token){ msg.textContent='スプレッドシート接続時のみ保存できます'; return; }
+    if(!S.auth||!S.auth.token){ msg.textContent=noGasMsg_('スプレッドシート接続時のみ保存できます'); return; }
     const date=$('ev-date').value, name=$('ev-name').value.trim(), venue=$('ev-venue').value.trim(), memo=$('ev-memo').value.trim();
     const stores=[...$('ev-stores').querySelectorAll('input:checked')].map(i=>i.value).join(', ');
     if(!date||!name){ msg.textContent='日付とイベント名を入力してください'; return; }
