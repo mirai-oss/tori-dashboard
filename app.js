@@ -1617,6 +1617,76 @@ function logApiPerf_(actionName, ms, ok, errType){
   }catch(e){ /* 計測の失敗は握りつぶす。本来の処理には一切影響させない */ }
 }
 function nowMs_(){ return (typeof performance!=='undefined'&&performance.now)?performance.now():Date.now(); }
+// ===== F0（止血・2026-10-03・設計書_経営D即時表示_GASレス起動）=====
+// BOOT_GASLESS_=true（既定）: ①裏のGAS失敗(unauthorized)で統合アカウントの人を勝手にログアウトしない
+// ②起動時のGAS同時発射をやめ、初回描画のあとに1本ずつ直列・開いているタブ分だけ呼ぶ
+// ③起動→最初の数字表示のmsをkd_perf_log(app=keiei・action=boot_first_paint)へ記録。
+// 旧動作へ即戻す方法: ブラウザのコンソールで localStorage.setItem('boot_gasless','0') → 再読み込み
+// （戻すのをやめる時は localStorage.removeItem('boot_gasless')）。
+const BOOT_GASLESS_=(()=>{ try{ return localStorage.getItem('boot_gasless')!=='0'; }catch(e){ return true; } })();
+let gasQueue_=Promise.resolve();
+// GAS呼び出しを1本ずつ直列に流す（前の1本が終わるまで次を呼ばない）。フラグOFFなら即実行（従来どおり）。
+function gasRun_(fn){
+  if(!BOOT_GASLESS_) return Promise.resolve().then(fn);
+  const p=gasQueue_.then(()=>fn());
+  gasQueue_=p.catch(()=>{});
+  return p;
+}
+function logPerf_(appName, actionName, ms, ok, errType){
+  try{
+    if(typeof navigator==='undefined'||!navigator.sendBeacon) return;
+    const payload=JSON.stringify({ app:appName, action:actionName||'', ms:Math.round(ms), ok:!!ok, errType:errType||'', t:Date.now() });
+    navigator.sendBeacon(PERF_LOG_URL+'?apikey='+PERF_LOG_ANON_KEY, new Blob([payload], { type:'text/plain;charset=utf-8' }));
+  }catch(e){}
+}
+// 「ログイン（または再訪）→最初の数字表示」を1回だけ記録する。起点: 再訪=ページ読み込み開始(0)、
+// ログイン操作=ボタンを押した時点(S.bootT0)。「最初の数字」=速報(D.home)・日次(D.daily/D.dailyKd)のいずれかが画面に出た時。
+// errTypeは「キャッシュ有無|gasless/legacy」。ok=trueのみ（失敗時の記録は不要）。
+function bootMark_(){
+  if(S.bootLogged||!S.auth) return;
+  const has=!!(D.home||(D.daily&&D.daily.length)||(D.dailyKd&&D.dailyKd.length));
+  if(!has) return;
+  S.bootLogged=true;
+  logPerf_('keiei','boot_first_paint', nowMs_()-(S.bootT0||0), true, (D.homeFromCache?'cache':'nocache')+'|'+(BOOT_GASLESS_?'gasless':'legacy'));
+}
+// 統合アカウント（ポータルと同じログイン）の人か。旧ID/パスワードだけの人は従来動作のまま扱う。
+function isSsoUser_(){
+  try{
+    if(S.auth&&S.auth.sso) return true;
+    if(S.auth&&S.auth.account&&String(S.auth.account.id||'').indexOf('portal:')===0) return true;
+    const ps=portalSession(); return !!(ps&&ps.at&&ps.rt);   // ポータルに同じブラウザでログイン済み＝統合アカウント利用者
+  }catch(e){ return false; }
+}
+// 裏のGASセッションだけが切れた時（統合アカウントのJWTは有効）に、画面はそのまま・裏で取り直す。
+// 取り直しは30秒以上あけて最大6回まで（GASが長く不調でも無限に叩き続けない）。
+const gasRelogin_={ busy:false, last:0, tries:0, timer:null };
+async function regainGasSession_(){
+  if(gasRelogin_.busy||!S.auth||gasRelogin_.tries>=6) return false;
+  if(Date.now()-gasRelogin_.last<30000) return false;
+  gasRelogin_.busy=true; gasRelogin_.last=Date.now(); gasRelogin_.tries++;
+  try{
+    const at=await portalAccessToken().catch(()=>null);
+    if(!at) return false;
+    const d=await api({ action:'supalogin', stoken:at });
+    if(d&&d.ok&&d.token){
+      S.auth={ token:d.token, account:d.account, sso:true };
+      try{ localStorage.setItem(LS.sess, JSON.stringify(S.auth)); }catch(e){}
+      S.gasSessionLost=false; gasRelogin_.tries=0;
+      return true;
+    }
+  }catch(e){}
+  finally{ gasRelogin_.busy=false; }
+  return false;
+}
+function scheduleGasRelogin_(){
+  if(gasRelogin_.timer||gasRelogin_.tries>=6) return;
+  gasRelogin_.timer=setTimeout(async()=>{
+    gasRelogin_.timer=null;
+    if(!S.auth) return;
+    if(await regainGasSession_()){ if(S.connState==='gaspending') setConnecting_(); fetchDataFast().then(()=>startPolling()); }
+    else scheduleGasRelogin_();
+  }, 30000);
+}
 async function apiOnce_(params, timeoutMs){
   const url=apiUrl();
   if(!url) throw new Error('APIが未設定です');
@@ -1748,7 +1818,22 @@ async function fetchData(silent, opts, preD){
       }
     }
     if(!d.ok){
-      if(String(d.error||'').includes('unauthorized')){ doLogout('セッションの有効期限が切れました。再度ログインしてください'); return; }
+      if(String(d.error||'').includes('unauthorized')){
+        // F0①（2026-10-03）: 統合アカウントのJWTが有効な間は、裏のGASだけが失敗していても画面ごと
+        // ログアウトさせない（kd_＝Supabase側の数字は正常に出せるため）。接続表示を「入力系は準備中」に
+        // して、裏でGASセッションを取り直す。旧ID/パスワードのみの人・フラグOFF時は従来どおりログアウト。
+        if(BOOT_GASLESS_&&isSsoUser_()&&!opts._regained){
+          const at=await portalAccessToken().catch(()=>null);
+          if(at){
+            S.gasSessionLost=true; S.connState='gaspending';
+            if(!targetModalOpen_()) render();
+            if(await regainGasSession_()){ S.connState='connecting'; return fetchData(silent, Object.assign({}, opts, { _regained:true }), preD); }
+            scheduleGasRelogin_();
+            return;
+          }
+        }
+        doLogout('セッションの有効期限が切れました。再度ログインしてください'); return;
+      }
       throw new Error(d.error||'取得に失敗しました');
     }
     ingestSheets(d.sheets||{}, !!opts.partial, opts);
@@ -1760,6 +1845,7 @@ async function fetchData(silent, opts, preD){
       S.connState=(D.diag.daily&&D.diag.daily.indexOf('OK')===0)?'live':'livewarn';
     }
     S.lastSync=stampNow();
+    if(S.gasSessionLost){ S.gasSessionLost=false; gasRelogin_.tries=0; }   // F0: GASが応答した＝裏のセッションは有効
     // 2026-09-02追加: bqFallbackToSheet_経由でこの関数が呼ばれた場合、ここのrender()が
     // 目標管理モーダル入力中のDOMを巻き戻してしまう不具合があった（targetModalOpen_参照）。
     if(!targetModalOpen_()) render();
@@ -1777,7 +1863,7 @@ async function fetchHomeApi_(){
   if(!D.home){
     const cached=cacheLoad_('home_api');
     if(cached){
-      D.home=cached;
+      D.home=cached; D.homeFromCache=true;
       D.homeErr='';
       if(!targetModalOpen_()) render();
     }
@@ -1797,7 +1883,7 @@ async function fetchHomeApi_(){
     }catch(fe){ errType=(fe&&(fe.name==='AbortError'||fe.code===20))?'timeout':'network'; }
     finally{ if(tm) clearTimeout(tm); }
     if(res && res.ok && d && d.ok){
-      D.home=d; D.homeErr='';
+      D.home=d; D.homeErr=''; D.homeFromCache=false;
       cacheSave_('home_api', d);
       logApiPerf_('keiei-api-home', nowMs_()-t0, true, '');
     } else {
@@ -1930,7 +2016,7 @@ async function fetchPlKd_(force){
 const HEAVY_KEYS=['media','deposit','dinii','予約'];
 let prefetchRun=0;
 // 初回・更新時：まずダッシュボードに必要な軽いデータだけ出し、重い/他タブ用は裏で先読み
-async function fetchDataFast(){
+async function fetchDataFastLegacy_(){   // F0以前の動作（BOOT_GASLESS_=falseのときに使う）
   D.mediaPending=true; D.media=[]; D.mediaMonthsLoaded=0; // サンプル媒体データを一旦クリア
   // BigQueryモード中は、シート側のdaily/PL/depositを毎回上書きしないよう除外し、
   // 代わりにfetchDailyBQ()/fetchPlBQ()/fetchDepositBQ()で取得する（2026-08-22追加）
@@ -1971,6 +2057,92 @@ async function fetchDataFast(){
     }
     if(!S.useBqDaily){ D.mediaPending=false; if(!targetModalOpen_()) render(); }  // BQモードはfetchMediaBQ側でクリアする
   })();
+}
+// F0（2026-10-03）: 起動時のGAS同時発射をやめた新しい読み込み。
+// ・まず初回描画。GASは呼ばない（keiei-api-home等のSupabase直読みだけを先に動かす）。
+// ・GASは「開いているタブに必要な分だけ」を1本ずつ直列で呼ぶ（gasRun_）。他タブ分はそのタブを開いた時
+//   （ensureTabData_）に読む。鮮度表示はSupabase(kd_sync_status_v)直読み、版チェックは直列の最後。
+// ・フラグ BOOT_GASLESS_ が false の時は従来のfetchDataFastLegacy_をそのまま使う。
+function gasKeysForTab_(tab){
+  const bq=S.useBqDaily;
+  switch(tab){
+    case 'dash': case 'analysis': case 'target': case 'detail': return (bq?['daily','spot']:[]).concat(['media','dinii']);
+    case 'pl': return bq?['daily','pl','spot','loan']:[];
+    case 'deposit': return bq?['daily','deposit']:['deposit'];
+    case 'ad': return (bq?['daily']:[]).concat(['media']);
+    case 'review': return ['dinii'];
+    case 'reservation': return ['rsv'];
+    default: return [];
+  }
+}
+function gasLoaderForKey_(key){
+  const bq=S.useBqDaily;
+  const part=(keys)=>()=>fetchData(true,{ only:keys, partial:true });
+  const m={
+    daily:()=>fetchDailyBQ(), pl:()=>fetchPlBQ(), spot:()=>fetchSpotBQ(), loan:()=>fetchLoanBQ(),
+    deposit: bq?()=>fetchDepositBQ():part(['deposit']),
+    media: bq?()=>fetchMediaBQ():(async()=>{ await fetchData(true,{ only:['media'], partial:true }); D.mediaPending=false; if(!targetModalOpen_()) render(); await fetchDeliveryMedia_(); }),
+    dinii: part(['dinii']), rsv: part(['予約'])
+  };
+  return m[key]||null;
+}
+// タブに必要なデータのうち、まだ読んでいないものだけを1本ずつ直列で読む。force=trueなら読み込み済みも読み直す。
+async function ensureTabData_(tab, force, myRun){
+  const loaded=D.gasLoaded_||(D.gasLoaded_={});
+  const keys=gasKeysForTab_(tab);
+  for(const k of keys){
+    if(!force&&loaded[k]) continue;
+    const fn=gasLoaderForKey_(k); if(!fn) continue;
+    if(k==='media'){ D.mediaPending=true; }
+    await gasRun_(async()=>{
+      if(S.gasSessionLost||!S.auth||!S.auth.token) return;                   // 裏のGASセッション復旧待ち：呼ばない
+      if(myRun!=null&&myRun!==prefetchRun) return;                           // 新しい読み込みが始まったら中断
+      try{ await fn(); loaded[k]=true; }catch(e){}
+    });
+  }
+  if(!keys.includes('media')) D.mediaPending=false;
+}
+// Supabase(kd_sync_status_v)を直読みして「データ鮮度」を作る（GAS dataFreshnessと同じ形）。失敗時はnull。
+async function freshnessFromSupabase_(){
+  try{
+    const r=await fetch(SSO_SUPA_URL+'/rest/v1/kd_sync_status_v?select=*',{ headers:{ apikey:SSO_SUPA_KEY, Authorization:'Bearer '+SSO_SUPA_KEY } });
+    if(!r.ok) return null;
+    const rows=await r.json();
+    if(!Array.isArray(rows)) return null;
+    const byJob={}; rows.forEach(x=>{ byJob[x.job]=x; });
+    const main=byJob['kd_dashboard_daily_summary']||rows[0]||null;
+    return { ok:true, source:'kd_sync_status_v', syncedAt:main?main.finished_at:null, syncedOk:main?(main.status==='success'):null,
+      jobs:rows.map(x=>({ job:x.job, finishedAt:x.finished_at, status:x.status, rows:x.rows, error:x.error||null })) };
+  }catch(e){ return null; }
+}
+async function fetchDataFast(){
+  if(!BOOT_GASLESS_) return fetchDataFastLegacy_();
+  const myRun=++prefetchRun;
+  D.mediaPending=true; D.media=[]; D.mediaMonthsLoaded=0; D.gasLoaded_={};
+  // 1) 初回描画（GAS 0本）。ここまでの間にGASを呼ばない。
+  if(!targetModalOpen_()) render();
+  // 2) Supabase直読み（GASではない）。完了しだい描画。
+  fetchHomeApi_().then(()=>{
+    const curYm_=ymdStr(Date.now()).slice(0,7);
+    fetchDashboardSummaryApi_('media', curYm_).then(d=>{ if(d){ D.mediaSummaryFast=d.rows; if(!targetModalOpen_()) render(); } });
+    fetchDashboardSummaryApi_('deposit', curYm_).then(d=>{ if(d){ D.depositSummaryFast=d.rows; D.depositSummaryFastYm=curYm_; if(!targetModalOpen_()) render(); } });
+    fetchDashboardSummaryApi_('pl', curYm_).then(d=>{ if(d){ D.plSummaryFast=d.rows; D.plSummaryFastYm=curYm_; if(!targetModalOpen_()) render(); } });
+    fetchAnalysisKd_();
+    fetchPlKd_();
+  });
+  // 鮮度表示はSupabase直読み（失敗した時だけ、あとでGAS版を直列の最後に呼ぶ）
+  let freshOk=false;
+  freshnessFromSupabase_().then(f=>{ if(f){ D.freshness=f; D.freshnessAt=Date.now(); freshOk=true; const el=document.querySelector('.sync-info'); if(el) el.innerHTML=connBadge(); } });
+  // 3) GASは1本ずつ直列：action:data → 開いているタブに必要な分 → 鮮度(必要時のみ)→版チェック
+  const excl = S.useBqDaily ? HEAVY_KEYS.concat(['daily','PL','スポット人件費','借入返済元金']) : HEAVY_KEYS;
+  await new Promise(r=>setTimeout(r,0));   // 初回描画を先に画面へ出す
+  await gasRun_(async()=>{ if(myRun!==prefetchRun||!S.auth||!S.auth.token) return; await fetchData(true,{ exclude:excl }); });
+  await ensureTabData_(S.tab, false, myRun);
+  if(myRun!==prefetchRun) return;
+  if(!freshOk) await gasRun_(async()=>{ if(!S.gasSessionLost&&myRun===prefetchRun) await fetchFreshness(); });
+  await gasRun_(async()=>{ if(S.gasSessionLost||myRun!==prefetchRun||!S.auth||!S.auth.token) return; await fetchCtPendingCount_(); });   // 承認待ちバッジ（管理者のみ・初回描画後の直列の最後）
+  await gasRun_(async()=>{ if(S.gasSessionLost||myRun!==prefetchRun||!S.auth||!S.auth.token) return; const v=await fetchVersion(); if(v!==null) S.dataVersion=v; });
+  if(myRun===prefetchRun&&!targetModalOpen_()) render();
 }
 // 2026-09-02追加（担当D調査・ユーザー報告「目標管理で入力途中に画面が更新され入力が消える」）:
 // 目標管理タブはBQゲート対象タブのため、タブを開いた直後にfetchXxxBQ系が裏で走っている。
@@ -2104,7 +2276,7 @@ async function fetchMediaBQ(preD){
     else{ await bqFallbackToSheet_('media'); D.mediaMonthsLoaded=Infinity; }   // シート経路は月数で絞らず全件読むため
   }catch(e){ await bqFallbackToSheet_('media'); D.mediaMonthsLoaded=Infinity; }
   D.mediaPending=false; if(!targetModalOpen_()) render();
-  fetchDeliveryMedia_();
+  await fetchDeliveryMedia_();   // F0: 直列キュー内で次の呼び出しと重ならないよう待つ
 }
 // 2026-09-23追加（ユーザー報告バグ修正: 推移分析で「年初来」＋「営業区分絞込」を選ぶと6月より前が
 // ¥0になる）。原因はfetchMediaBQ()がページ読み込み時（既定=直近30日＝3ヶ月分）にしか呼ばれず、
@@ -2117,7 +2289,7 @@ function ensureMediaMonths_(){
   if(!S.useBqDaily||!S.auth||!S.auth.token) return;   // シートモードは元々全件読み・BQモードのみの問題
   if(bqMonthsForMedia_()<=(D.mediaMonthsLoaded||0)) return;
   D.mediaPending=true; render();
-  fetchMediaBQ();
+  gasRun_(()=>fetchMediaBQ());
 }
 // 2026-09-14追加（指示書_デリバリー売上取込_担当別・担当Aやること①②）: デリバリー売上
 // （ロケットナウ等・GAS新設bqGetDelivery→stg_delivery_order）をD.mediaへ合流させる。
@@ -2184,7 +2356,7 @@ async function syncIfChanged(){
   // 同期を止め、閉じたら次のポーリング/タブ復帰時に自動で再開する（入力中のデータが失われない
   // ようにするのが目的で、多少データが古いまま見える時間ができるのはこの間だけの許容範囲）。
   if(S.modal) return;
-  const v=await fetchVersion();
+  const v=await gasRun_(()=>fetchVersion());
   // 確実に「変化なし」と分かった時だけ重い読込をスキップ。versionが取れない古いGASでは従来通りフル取得。
   if(v!==null && v!=='' && S.dataVersion && v===S.dataVersion){ touchSyncBadge(); return; }
   await fetchDataFast();   // 変化があったら段階読み込みで再取得（軽いものを先に反映）
@@ -2220,6 +2392,7 @@ async function doLogin(){
       if(!d.ok){ S.loginErr=d.error||'ログインに失敗しました'; render(); return; }
       S.auth={ token:d.token, account:d.account };
       try{ localStorage.setItem(LS.sess, JSON.stringify(S.auth)); }catch(e){}
+      S.bootT0=nowMs_(); S.bootLogged=false;
       afterLogin();
       // 認証はここで完了 → 先にダッシュボードを表示し、重いデータ取得は裏で行う
       setConnecting_();
@@ -2249,7 +2422,7 @@ async function doLogin(){
 async function doSsoLogin(){
   const email=($('li-se').value||'').trim(), pw=$('li-sp').value||'';
   if(!email||!pw){ S.loginErr='メールアドレスとパスワードを入力してください'; S.ssoOpen=true; render(); return; }
-  S.loginErr='';
+  S.loginErr=''; S.bootT0=nowMs_(); S.bootLogged=false;
   $('li-sbtn').textContent='認証中…';
   try{
     const r=await fetch(SSO_SUPA_URL+'/auth/v1/token?grant_type=password',{
@@ -2269,7 +2442,7 @@ async function doSsoLogin(){
       S.loginErr=(eo.includes('unknown action')||eo==='unauthorized')?'サーバー側の更新（GAS再デプロイ）がまだのため、統合ログインはもう少し先になります':(eo||'ログインに失敗しました');
       S.ssoOpen=true; render(); return;
     }
-    S.auth={ token:d.token, account:d.account };
+    S.auth={ token:d.token, account:d.account, sso:true };
     try{ localStorage.setItem(LS.sess, JSON.stringify(S.auth)); }catch(e){}
     // P-2a（2026-09-02）: このフォームからの直接ログインでもportalAccessToken()（予約タブの
     // Supabase直読みが使うJWT）がすぐ使えるよう、取得済みのアクセス/リフレッシュトークンを
@@ -2327,7 +2500,7 @@ async function trySilentPortalLogin(){
     // 「認証中…」のまま無言で固まって見えないようにする。
     const d=await api({ action:'supalogin', stoken:at }, null, ()=>{ S.ssoAuto='retrying'; render(); });
     if(!d.ok){ S.ssoAuto=''; render(); return; }   // メール未登録などは黙って通常ログイン画面のまま（app_error応答は従来どおりサイレント）
-    S.auth={ token:d.token, account:d.account };
+    S.auth={ token:d.token, account:d.account, sso:true };
     try{ localStorage.setItem(LS.sess, JSON.stringify(S.auth)); }catch(e){}
     S.ssoAuto='';
     afterLogin();
@@ -2376,10 +2549,12 @@ function afterLogin(){
   // タブを開いた時にはすでに読み込み済み＝体感の「予約分析を押しても固まる」を解消する狙い。
   // fetchReservationBQ/fetchSeatMasterはどちらも「一度読めば十分」ガード付きなので、実際に
   // viewReservation()側から呼ばれた時は二重取得にならない。
-  if(tabs.includes('reservation')){
+  // F0（2026-10-03）: BOOT_GASLESS_中は、ログイン直後にGASを同時発射しない（予約の先読みはタブを開いた時に
+  // viewReservation()側で呼ばれる。承認待ちバッジはGAS直列キューの最後に回す）。
+  if(tabs.includes('reservation')&&!BOOT_GASLESS_){
     setTimeout(()=>{ fetchReservationBQ(); fetchSeatMaster(); }, 300);
   }
-  fetchCtPendingCount_();   // 2026-10-03追加: ログイン直後にも承認待ちバッジを取得しておく
+  if(!BOOT_GASLESS_) fetchCtPendingCount_();   // BOOT_GASLESS_中はfetchDataFast()の直列の最後で取得する   // 2026-10-03追加: ログイン直後にも承認待ちバッジを取得しておく
 }
 function doLogout(msg){
   if(S.auth&&S.auth.token){ api({action:'logout',token:S.auth.token}).catch(()=>{}); }
@@ -2434,6 +2609,7 @@ function render(){
   if(!S.auth){ root.innerHTML=viewLogin(); return; }
   if(S.reportMode){ root.innerHTML=viewReport(S.reportMode.kind, S.reportMode.date, S.reportMode.stores, S.reportMode.group); return; }
   EXPORT=[];
+  if(!S.bootLogged&&typeof requestAnimationFrame==='function') requestAnimationFrame(bootMark_);   // F0③: 起動→最初の数字表示を計測
   const tabs=myTabs();
   if(!tabs.includes(S.tab)) S.tab=tabs[0];
   let body='';
@@ -2531,6 +2707,7 @@ function connBadge(){
     if(elapsed>10000) return `<span style="color:#a2803f">● 同期中…（応答に時間がかかっています）</span>`;
     return `<span style="color:#a2803f">● 同期中…</span>`;
   }
+  if(S.connState==='gaspending') return `<span style="color:#a2803f">● 入力系は準備中です</span>（数字は表示できます。自動で再接続しています）`;
   if(S.connState==='error') return `<span style="color:#b5502f">● 同期エラー</span><br>最終同期 ${esc(S.lastSync||'—')}`;
   return `<span class="st-demo">● サンプルデータ表示中</span><br>接続設定からAPIを登録してください`;
 }
@@ -8875,7 +9052,7 @@ window.App = {
   ssoLogin: doSsoLogin,
   ssoToggle(){ S.ssoOpen=!S.ssoOpen; S.loginErr=''; render(); },
   logout(){ if(confirm('ログアウトしますか？')) doLogout(); },
-  tab(t){ S.tab=t; render(); },
+  tab(t){ S.tab=t; render(); if(BOOT_GASLESS_&&S.auth&&S.auth.token) ensureTabData_(t,false,null); },
   period(p){ S.period=p; S.pWeekIdx=null; render(); ensureMediaMonths_(); },
   store(n){ S.store=n; render(); },
   set(k,v){ S[k]=v; render(); if(k==='aRange'||k==='aSeg'||k==='cStart'||k==='cEnd'||k==='pYear'||k==='pDay') ensureMediaMonths_(); },
