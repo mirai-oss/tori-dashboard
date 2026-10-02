@@ -806,11 +806,20 @@ function bqSpeedCheck4() {
   step('K. dataVersion（更新検知）', function () { dataVersion(); });
   Logger.log(out.join('\n'));
 }
+// BigQueryへの売上ミラー（fact_daily_store等）を今すぐ実行する（エディタから手動実行・数分かかる）。
+// 通常は毎日の自動処理が行う。社員人件費の反映をすぐ確認したい時に使う（その後、集計(kd_)は毎時の更新で追いつく）。
+function bqSyncSalesNow() {
+  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+  var r = bqSyncAllSales({ token: tk });
+  var lines = ['同期結果: ' + (r.ok ? '成功' : '一部失敗') + ' / ' + r.time];
+  (r.results || []).forEach(function (x) { lines.push('  ' + x.table + ': ' + (x.ok ? x.rows + '行' : '失敗 ' + x.error)); });
+  Logger.log(lines.join('\n'));
+}
 // 社員人件費が画面に出ない時の切り分け（エディタから手動実行・読み取り専用・月ごとの合計金額だけ出す）。
 // ①スプレッドシート「分析_日別店舗」→②BigQuery fact_daily_store のどこで社員人件費が0になっているかを見る。
 function laborDiag() {
   var out = [];
-  out.push('API人件費切替の開始月(API_LABOR_COST_FROM_YM_): ' + API_LABOR_COST_FROM_YM_ + '（2099-01＝一時停止中＝スプレッドシートの値をそのまま使う）');
+  out.push('API人件費切替の開始月: アルバイト=' + API_LABOR_COST_FROM_YM_ + '（2099-01＝一時停止中）/ 社員=' + API_EMP_COST_FROM_YM_ + '（給与配分のある店舗×月だけ置き換え）');
   try {
     var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('分析_日別店舗');
     var hdr = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].map(function (h) { return String(h).trim(); });
@@ -2574,7 +2583,12 @@ function bqGetSeatMaster(p, session) {
 // スマレジタイムカード登録者全員の連携が完了するまで、社員・アルバイト人件費とも従来どおり
 // スプレッドシート値のまま運用する（この定数を遠い未来日付にして、年月比較(ym < ...)が常に
 // 成立せずAPI切替が発火しないようにする＝コード自体は消さず、後日日付を戻すだけで再開できる）。
-var API_LABOR_COST_FROM_YM_ = '2099-01'; // 一時停止中。スマレジタイムカード全員連携完了後、対象月に戻すこと
+var API_LABOR_COST_FROM_YM_ = '2099-01'; // アルバイト人件費のAPI切替：一時停止中。スマレジタイムカード全員連携完了後、対象月に戻すこと
+// 2026-10-03追加（ユーザー報告「ポータルの給与・インセンティブ配分に入れたのに社員人件費が出ない」）:
+// 社員人件費のAPI切替だけを分離して有効にする。給与配分(sf_payroll_allocations)はマスターが手で入れる完全なデータで、
+// 上のアルバイト人件費のAPIデータ不完全問題とは無関係。給与配分/給与明細が「ある店舗×月」だけ置き換わり、
+// 無い月は従来どおりスプレッドシート(社員人件費DB)の値のまま。止めたい場合は '2099-01' に戻す。
+var API_EMP_COST_FROM_YM_ = '2026-09';
 // 汎用: Supabaseの任意テーブル/ビューをページング付きで全件取得（bqFetchReservationRows_を一般化）。
 // filterQSはPostgRESTのクエリ文字列（例:'work_date=gte.2026-08-01'）。空文字なら絞り込み無し。
 function bqFetchSupabaseRows_(table, selectCols, filterQS) {
@@ -2613,19 +2627,20 @@ function bqBuildApiLaborCostMap_() {
 
     // ---- アルバイト人件費: SHAIN/TENCHOを除く全員の実績をそのまま店舗×日で使う（暦日割り不要） ----
     var lcd = bqFetchSupabaseRows_('labor_cost_daily', 'user_id,store_id,work_date,computed_cost,smaregi_estimate_cost',
-      'work_date=gte.' + API_LABOR_COST_FROM_YM_ + '-01');
+      'work_date=gte.' + API_EMP_COST_FROM_YM_ + '-01');
     var ptDaily = {}, ptCoveredMonth = {};
     // SHAIN/TENCHOの「その月どの店舗で何日働いたか」（sf_payroll_syncの店舗按分に使う。最多店舗を採用）
     var shainDayCount = {}; // userId|ym -> { storeId: dayCount }
     lcd.forEach(function (r) {
       var ym = String(r.work_date || '').slice(0, 7);
-      if (!ym || ym < API_LABOR_COST_FROM_YM_) return;
+      if (!ym || ym < API_EMP_COST_FROM_YM_) return;
       if (isShain(r.user_id)) {
         var key = r.user_id + '|' + ym;
         var d = shainDayCount[key] = shainDayCount[key] || {};
         d[r.store_id] = (d[r.store_id] || 0) + 1;
         return; // SHAIN/TENCHOの打刻はアルバイト人件費の合算には含めない
       }
+      if (ym < API_LABOR_COST_FROM_YM_) return;   // アルバイト人件費のAPI切替が止まっている間は集計しない
       var sName = storeMap[r.store_id]; if (!sName) return;
       var dateStr = String(r.work_date).slice(0, 10);
       var cost = (r.computed_cost != null) ? Number(r.computed_cost) : Number(r.smaregi_estimate_cost || 0);
@@ -2637,7 +2652,7 @@ function bqBuildApiLaborCostMap_() {
 
     // ---- 社員人件費①: sf_payroll_allocations（店舗×半月×人・マスター手動）を最優先 ----
     var alloc = bqFetchSupabaseRows_('sf_payroll_allocations', 'user_id,store_id,period_key,kind,amount',
-      'period_key=gte.' + API_LABOR_COST_FROM_YM_);
+      'period_key=gte.' + API_EMP_COST_FROM_YM_);
     var salBonus = {}, commute = {}; // storeId|ym -> sum
     var allocatedUserYm = {}; // userId|ym -> true（sf_payroll_syncフォールバック対象から除外）
     alloc.forEach(function (r) {
@@ -2652,7 +2667,7 @@ function bqBuildApiLaborCostMap_() {
     // ---- 社員人件費②: sf_payroll_sync（人×月・店舗の概念なし）を、①未入力の人だけ、
     //      labor_cost_dailyで判定した「その月最も多く働いた店舗」に計上 ----
     var sync = bqFetchSupabaseRows_('sf_payroll_sync', 'user_id,year_month,fixed_salary_amount,commute_allowance',
-      'year_month=gte.' + API_LABOR_COST_FROM_YM_);
+      'year_month=gte.' + API_EMP_COST_FROM_YM_);
     sync.forEach(function (r) {
       var ym = String(r.year_month || '');
       if (!ym || allocatedUserYm[r.user_id + '|' + ym]) return; // ①が優先
@@ -2690,18 +2705,18 @@ function bqApplyApiLaborCostRow_(row, laborData, storeIdx) {
   // そちらから"YYYY-MM"を組み立てる。
   var year0 = Number(row[2]), month0 = Number(row[3]);
   var ym = (year0 && month0) ? (year0 + '-' + String(month0).padStart(2, '0')) : '';
-  if (!ym || ym < API_LABOR_COST_FROM_YM_) return row;
+  if (!ym || (ym < API_LABOR_COST_FROM_YM_ && ym < API_EMP_COST_FROM_YM_)) return row;
   var storeName = bqResolveStoreName_(storeIdx, row[9]);
   var dateStr = (row[0] instanceof Date) ? Utilities.formatDate(row[0], 'Asia/Tokyo', 'yyyy-MM-dd') : String(row[0]).slice(0, 10);
   var changed = false;
   var pt = Number(row[23]) || 0;
-  if (laborData.ptCoveredMonth[storeName] && laborData.ptCoveredMonth[storeName][ym]) {
+  if (ym >= API_LABOR_COST_FROM_YM_ && laborData.ptCoveredMonth[storeName] && laborData.ptCoveredMonth[storeName][ym]) {
     var d = laborData.ptDaily[storeName]; pt = (d && d[dateStr] != null) ? d[dateStr] : 0; // 実績0円の日も信用する
     changed = true;
   }
   var salBonus = Number(row[32]) || 0, commute = Number(row[34]) || 0, statutory = Number(row[33]) || 0;
   var em = laborData.empMonthly[storeName] && laborData.empMonthly[storeName][ym];
-  if (em) {
+  if (em && ym >= API_EMP_COST_FROM_YM_) {
     var daysInMonth = new Date(year0, month0, 0).getDate();
     salBonus = em.fulltimeBase / daysInMonth; // 月合計を暦日割り（社員人件費DBと同じ考え方）
     commute = em.commute / daysInMonth;
