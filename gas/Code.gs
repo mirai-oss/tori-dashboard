@@ -763,6 +763,27 @@ function bqSpeedCheck2() {
   } catch (e2) { out.push('B〜D の実行失敗: ' + e2); }
   Logger.log(out.join('\n'));
 }
+// 速度の診断その3（エディタから手動実行・読み取り専用）。GAS標準のBigQuery機能ではなく
+// UrlFetchApp（自動で圧縮して受け取る）でREST APIを直接呼んだ場合の速さを測る。
+function bqSpeedCheck3() {
+  var now = function () { return new Date().getTime(); }, out = [], t;
+  var cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - 25);
+  var cs = Utilities.formatDate(cutoff, 'Asia/Tokyo', 'yyyy-MM-dd');
+  var sql = 'SELECT date, store_name, net_sales, guests_total, parttime_labor_cost, fulltime_labor_cost, labor_cost_total, cogs, cash, employee_salary_bonus, statutory_welfare, commute_allowance, parties_total FROM `' + BQ_PROJECT + '.' + BQ_SALES_DATASET + ".fact_daily_store` WHERE date >= DATE('" + cs + "') ORDER BY date";
+  try {
+    t = now();
+    var r = UrlFetchApp.fetch('https://bigquery.googleapis.com/bigquery/v2/projects/' + BQ_PROJECT + '/queries', {
+      method: 'post', contentType: 'application/json', muteHttpExceptions: true,
+      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+      payload: JSON.stringify({ query: sql, useLegacySql: false, timeoutMs: 60000, useQueryCache: false, location: 'asia-northeast1' })
+    });
+    var tFetch = now() - t;
+    t = now();
+    var body = r.getContentText(), obj = JSON.parse(body);
+    out.push('E. REST直接: 通信=' + tFetch + 'ms / 解析=' + (now() - t) + 'ms / HTTP ' + r.getResponseCode() + ' / 応答=' + body.length + '文字 / 完了=' + obj.jobComplete + ' / 行=' + (obj.rows ? obj.rows.length : 0) + (obj.error ? ' / エラー=' + obj.error.message : ''));
+  } catch (e) { out.push('E. 失敗: ' + e); }
+  Logger.log(out.join('\n'));
+}
 
 // ================== パスワードの保護 ==================
 // スプレッドシートに平文で置かないため、SHA-256＋アカウントごとのランダムsaltで保存する。
