@@ -678,10 +678,10 @@ function sessionCleanup(){
 // ログイン情報（tok_<uuid>）がスクリプトプロパティ（容量500KB・1件9KB）に溜まり続けて満杯に近づくと、
 // 新しいログインの書き込みが失敗/不安定になり、セッションが消えたように見える（TOKEN_HOURS=336時間と
 // 長く、掃除（sessionCleanup）はログイン10回に1回だけで取りこぼしもあるため溜まりやすい）。
-// ①sessionPropsReport_: 件数・おおよその容量をログに出すだけ（何も変更しない）
-// ②sessionPropsPurge_: 期限切れ・壊れたtok_だけ削除（他のプロパティは一切触らない）
-// ③sessionPropsPurgeAll_: tok_を全部削除（全員いったんログアウト。②で足りない場合のみ）
-function sessionPropsReport_(){
+// ①sessionPropsReport: 件数・おおよその容量をログに出すだけ（何も変更しない）
+// ②sessionPropsPurge: 期限切れ・壊れたtok_だけ削除（他のプロパティは一切触らない）
+// ③sessionPropsPurgeAll: tok_を全部削除（全員いったんログアウト。②で足りない場合のみ）
+function sessionPropsReport(){
   var all = PropertiesService.getScriptProperties().getProperties(), now = new Date().getTime();
   var total = 0, tokN = 0, tokBytes = 0, expired = 0, otherN = 0;
   for (var k in all) {
@@ -698,7 +698,7 @@ function sessionPropsReport_(){
   Logger.log(msg);
   return msg;
 }
-function sessionPropsPurge_(){
+function sessionPropsPurge(){
   var store = PropertiesService.getScriptProperties(), all = store.getProperties(), now = new Date().getTime();
   var keep = {}, removed = 0;
   for (var k in all) {
@@ -713,7 +713,7 @@ function sessionPropsPurge_(){
   Logger.log('期限切れ・壊れたセッションを ' + removed + '件 削除しました');
   return removed;
 }
-function sessionPropsPurgeAll_(){
+function sessionPropsPurgeAll(){
   var store = PropertiesService.getScriptProperties(), all = store.getProperties();
   var keep = {}, removed = 0;
   for (var k in all) { if (k.indexOf('tok_') === 0) { removed++; continue; } keep[k] = all[k]; }
