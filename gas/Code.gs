@@ -722,6 +722,25 @@ function sessionPropsPurgeAll(){
   return removed;
 }
 
+// 速度の診断（エディタから手動実行・読み取り専用）。ダッシュボードが「BigQueryから読み込み中」で
+// 止まる原因が、BigQuery本体・GASの下準備・スプレッドシートの読み出しのどれかを切り分ける。
+function bqSpeedCheck() {
+  var now = function () { return new Date().getTime(); }, out = [], t;
+  t = now(); var all = PropertiesService.getScriptProperties().getProperties();
+  out.push('①スクリプトプロパティ読み出し: ' + (now() - t) + 'ms（' + Object.keys(all).length + '件）');
+  t = now(); var ss = SpreadsheetApp.getActiveSpreadsheet(); ss.getSheetByName('DB_店舗ID対応');
+  out.push('②スプレッドシートを開く: ' + (now() - t) + 'ms');
+  t = now(); var r1 = bqRows_('SELECT 1 AS x');
+  out.push('③BigQuery往復(SELECT 1): ' + (now() - t) + 'ms ' + (r1 ? 'OK' : '失敗'));
+  var cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - 25);
+  var cs = Utilities.formatDate(cutoff, 'Asia/Tokyo', 'yyyy-MM-dd');
+  t = now(); var r2 = bqRows_('SELECT date, store_name, net_sales, guests_total, parttime_labor_cost, fulltime_labor_cost, labor_cost_total, cogs, cash, employee_salary_bonus, statutory_welfare, commute_allowance, parties_total FROM `' + BQ_PROJECT + '.' + BQ_SALES_DATASET + ".fact_daily_store` WHERE date >= DATE('" + cs + "') ORDER BY date");
+  out.push('④日次データ取得(25ヶ月): ' + (now() - t) + 'ms / ' + (r2 ? (r2.length - 1) + '行' : '失敗'));
+  t = now(); var d = bqDailyStore({ months: 25 }, { stores: '全店' });
+  out.push('⑤bqDailyStore関数ごと: ' + (now() - t) + 'ms / キャッシュ' + (d && d.cached ? 'あり' : 'なし') + ' / ' + (d && d.ok ? 'OK' : '失敗'));
+  Logger.log(out.join('\n'));
+}
+
 // ================== パスワードの保護 ==================
 // スプレッドシートに平文で置かないため、SHA-256＋アカウントごとのランダムsaltで保存する。
 // 保存形式: 'sha256$<salt>$<hex>'。旧データ（平文）はログイン成功時に自動でこの形式へ移行する。
