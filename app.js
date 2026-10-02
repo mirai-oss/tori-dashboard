@@ -8109,10 +8109,58 @@ function plInputModal(){
   </div></div>`;
 }
 /* ---- 店舗間の仕入れ移動：現場向け公開フォーム（2026-10-02追加・ログイン不要） ----
- * ?transferForm=トークンでアクセス。送信は承認待ち（DB_仕入れ移動申請）に入るだけで、
- * DB_PLには一切触れない（社長・本部がPL管理タブの「📋現場申請の承認」から承認して初めて反映）。
- * 金額はサーバー側（costTransferPublicSubmit）で品目マスタの単価×数量から再計算されるため、
+ * ?transferForm=トークンでアクセス。送信は承認待ち（Supabase cost_transfer_requests）に入るだけで、
+ * DB_PLには一切触れない（社長・本部がPL管理タブの「📋現場フォーム管理」から承認して初めて反映）。
+ * 2026-10-05からは読み込み（店舗一覧・品目マスタ）も送信もGASを経由せず、ブラウザから直接
+ * Supabase/Edge Function（cost-transfer-submit）を叩く（ctfFetchInfo_・App.ctfSubmit参照）。
+ * 金額はサーバー側（cost-transfer-submit）で品目マスタの単価×数量から再計算されるため、
  * ここで表示する金額はあくまで目安（送信前の確認用）。 */
+// 店舗一覧（store_directory_v）・品目マスタ（cost_transfer_items_v）を並行で直接取得する。
+// どちらもanonロールに select を許可した公開ビュー（ベーステーブル自体は非公開）。
+function ctfFetchInfo_(){
+  const h={apikey:SSO_SUPA_KEY, Authorization:'Bearer '+SSO_SUPA_KEY};
+  return Promise.all([
+    fetch(SSO_SUPA_URL+'/rest/v1/store_directory_v?select=name,is_active', {headers:h}).then(r=>r.ok?r.json():Promise.reject(new Error('店舗一覧の取得に失敗しました（HTTP '+r.status+'）'))),
+    fetch(SSO_SUPA_URL+'/rest/v1/cost_transfer_items_v?select=name,unit_price', {headers:h}).then(r=>r.ok?r.json():Promise.reject(new Error('品目マスタの取得に失敗しました（HTTP '+r.status+'）')))
+  ]).then(([storeRows,itemRows])=>({
+    stores:(storeRows||[]).filter(s=>s.is_active).map(s=>s.name),
+    items:(itemRows||[]).map(it=>({name:it.name, unitPrice:Number(it.unit_price)||0}))
+  }));
+}
+// 送信（cost-transfer-submit Edge Function）用の最小限のリトライ付きPOST。api()/apiOnce_と同じ
+// 指数バックオフ（API_RETRY_BACKOFF_MS_）を踏襲するが、宛先がGAS固定のapiUrl()ではないため
+// 専用に用意する。Edge Functionは成功・失敗ともJSONボディ（{ok,...}）を返す設計のため、
+// HTTPステータスに関わらずJSONが読めればそのまま返す（{ok:false,error}を呼び出し元で判定させる）。
+async function ctfPostOnce_(url, payload, timeoutMs){
+  const ctl=(typeof AbortController!=='undefined')?new AbortController():null;
+  const tm=ctl?setTimeout(()=>ctl.abort(), timeoutMs):null;
+  try{
+    const opt={ method:'POST', headers:{'Content-Type':'application/json', apikey:SSO_SUPA_KEY, Authorization:'Bearer '+SSO_SUPA_KEY}, body:JSON.stringify(payload) };
+    if(ctl) opt.signal=ctl.signal;
+    const r=await fetch(url, opt);
+    const d=await r.json().catch(()=>null);
+    if(d&&typeof d==='object') return d;
+    const err=new Error('HTTP '+r.status); err._retriable=r.status>=500; throw err;
+  }catch(e){
+    if(e&&(e.name==='AbortError'||e.code===20)){
+      const err=new Error('応答がありません（'+Math.round(timeoutMs/1000)+'秒でタイムアウト）。通信環境を確認してもう一度お試しください'); err._retriable=true; throw err;
+    }
+    if(!('_retriable' in e)) e._retriable=true; // fetch自体が失敗＝ネットワーク瞬断はリトライ対象
+    throw e;
+  }finally{ if(tm) clearTimeout(tm); }
+}
+async function ctfPost_(url, payload, timeoutMs, onRetry){
+  let lastErr;
+  for(let attempt=0; attempt<=API_RETRY_BACKOFF_MS_.length; attempt++){
+    if(attempt>0){
+      try{ if(onRetry) onRetry(attempt); }catch(e){}
+      await new Promise(res=>setTimeout(res, API_RETRY_BACKOFF_MS_[attempt-1]));
+    }
+    try{ return await ctfPostOnce_(url, payload, timeoutMs); }
+    catch(e){ lastErr=e; if(!e._retriable) throw e; }
+  }
+  throw lastErr;
+}
 function ctfPriceOf_(name){ const it=(S.transferForm.items||[]).find(x=>x.name===name); return it?it.unitPrice:0; }
 function ctfRowAmount_(r){ return ctfPriceOf_(r.name)*(Number(r.qty)||0); }
 function ctfTotal_(){ return (S.transferForm.rows||[]).reduce((s,r)=>s+ctfRowAmount_(r),0); }
@@ -8253,21 +8301,23 @@ function ctAdminItemsHtml_(m){
   if(it.loading) return `<div class="empty">読み込み中…</div>`;
   if(it.err) return `<div class="empty" style="color:#b5502f">${esc(it.err)}</div>`;
   const rows=it.rows||[];
-  const e=m.itemEdit||{row:0,name:'',unitPrice:'',active:true};
+  // 2026-10-05: 品目の識別子がスプレッドシート行番号からSupabaseのUUID（文字列）に変わったため、
+  // onclickへの埋め込みは数値のベタ書きではなくesc()したクォート付き文字列にする。
+  const e=m.itemEdit||{id:'',name:'',unitPrice:'',active:true};
   return `
     <div class="form-grid">
       <div><label>品名</label><input id="cti-name" value="${esc(e.name||'')}" oninput="App.ctItemFieldChanged('name',this.value)"></div>
       <div><label>単価（円）</label><input type="number" id="cti-price" value="${e.unitPrice||''}" style="text-align:right" oninput="App.ctItemFieldChanged('unitPrice',this.value)"></div>
     </div>
     <div id="cti-msg" style="font-size:12px;color:#b5502f;margin:6px 0"></div>
-    <div class="modal-btns"><button class="icon-btn primary" onclick="App.ctItemSave()">${e.row?'上書き保存':'＋ 追加'}</button>${e.row?`<button class="icon-btn" onclick="App.ctItemEditCancel()">新規入力に戻す</button>`:''}</div>
+    <div class="modal-btns"><button class="icon-btn primary" onclick="App.ctItemSave()">${e.id?'上書き保存':'＋ 追加'}</button>${e.id?`<button class="icon-btn" onclick="App.ctItemEditCancel()">新規入力に戻す</button>`:''}</div>
     <table class="tbl" style="margin-top:10px"><thead><tr><th>品名</th><th style="text-align:right">単価</th><th>有効</th><th></th></tr></thead>
       <tbody>${rows.length?rows.map(r=>`<tr>
         <td>${esc(r.name)}</td><td style="text-align:right">${yen(r.unitPrice)}</td>
         <td>${r.active?'✅':'—'}</td>
-        <td class="no-print"><button class="icon-btn" style="padding:1px 7px;font-size:10px" onclick="App.ctItemEditRow(${r.row})">編集</button>
-        <button class="icon-btn" style="padding:1px 7px;font-size:10px" onclick="App.ctItemToggleActive(${r.row},${!r.active})">${r.active?'無効化':'有効化'}</button>
-        <button class="icon-btn" style="padding:1px 7px;font-size:10px" onclick="App.ctItemDeleteRow(${r.row})">削除</button></td>
+        <td class="no-print"><button class="icon-btn" style="padding:1px 7px;font-size:10px" onclick="App.ctItemEditRow('${esc(r.id)}')">編集</button>
+        <button class="icon-btn" style="padding:1px 7px;font-size:10px" onclick="App.ctItemToggleActive('${esc(r.id)}',${!r.active})">${r.active?'無効化':'有効化'}</button>
+        <button class="icon-btn" style="padding:1px 7px;font-size:10px" onclick="App.ctItemDeleteRow('${esc(r.id)}')">削除</button></td>
       </tr>`).join(''):`<tr><td colspan="4" class="empty">品目が未登録です</td></tr>`}</tbody>
     </table>`;
 }
@@ -9370,12 +9420,10 @@ window.App = {
     const btn=$('ctf-submit');
     if(btn){ btn.disabled=true; btn.textContent='送信中…'; }
     try{
-      // 2026-10-03修正（ユーザー報告「送信中がめちゃくちゃ長い」）: 既定のapi()は管理画面の
-      // 重い処理向けに1回最大180秒×最大4回再試行という設計（admin向けには適切だが、現場の
-      // スマホからの数行だけの書き込みにはGoogleフォーム並みの手応えが要る）。この公開フォームの
-      // 2アクションだけ1回あたり20秒に短縮し、再試行中であることをボタンの文言で分かるようにする
-      // （「固まっているように見える」苦情への対応。再試行回数自体はapi()の仕組みをそのまま使う）。
-      const d=await api({action:'costTransferPublicSubmit', token:m.token, date, fromStore, toStore, items:itemsRaw, note:m.note||''}, 20000, (attempt)=>{
+      // 2026-10-05修正（スプレッドシート/GAS経由をやめるSupabase直結化）: GASのcostTransferPublicSubmit
+      // ではなく、Edge Function（cost-transfer-submit）へ直接POSTする。2026-10-03に付けた
+      // 「1回20秒・再試行中はボタン文言で表示」というUXはそのまま踏襲（ctfPost_参照）。
+      const d=await ctfPost_(SSO_SUPA_URL+'/functions/v1/cost-transfer-submit', {token:m.token, date, fromStore, toStore, items:itemsRaw, note:m.note||''}, 20000, (attempt)=>{
         if(btn) btn.textContent='送信できませんでした。再試行中…（'+attempt+'回目）';
       });
       if(!d.ok){
@@ -9467,10 +9515,11 @@ window.App = {
     }catch(e){ toast('通信エラー: '+e.message); }
   },
   ctItemFieldChanged(field,value){ S.modal=Object.assign({},S.modal,{itemEdit:Object.assign({},S.modal.itemEdit||{},{[field]:value})}); },
-  ctItemEditRow(row){
-    const r=((S.modal.items&&S.modal.items.rows)||[]).find(x=>x.row===row);
+  // 2026-10-05: 品目の識別子がスプレッドシート行番号(row)からSupabaseのUUID(id)に変わった。
+  ctItemEditRow(id){
+    const r=((S.modal.items&&S.modal.items.rows)||[]).find(x=>x.id===id);
     if(!r) return;
-    S.modal=Object.assign({},S.modal,{itemEdit:{row:r.row,name:r.name,unitPrice:r.unitPrice,active:r.active}});
+    S.modal=Object.assign({},S.modal,{itemEdit:{id:r.id,name:r.name,unitPrice:r.unitPrice,active:r.active}});
     render();
   },
   ctItemEditCancel(){ S.modal=Object.assign({},S.modal,{itemEdit:null}); render(); },
@@ -9481,26 +9530,26 @@ window.App = {
     if(!name){ if(msg) msg.textContent='品名を入力してください'; return; }
     if(!(unitPrice>0)){ if(msg) msg.textContent='単価を正しく入力してください'; return; }
     try{
-      const d=await api({action:'costTransferItemSave', token:S.auth.token, row:e.row||0, name, unitPrice, active:e.active!==false});
+      const d=await api({action:'costTransferItemSave', token:S.auth.token, id:e.id||'', name, unitPrice, active:e.active!==false});
       if(!d.ok){ if(msg) msg.textContent=d.error||'保存に失敗しました'; return; }
       toast('保存しました');
       S.modal=Object.assign({},S.modal,{itemEdit:null});
       await App.ctAdminLoadItems();
     }catch(ex){ if(msg) msg.textContent='通信エラー: '+ex.message; }
   },
-  async ctItemToggleActive(row,active){
-    const r=((S.modal.items&&S.modal.items.rows)||[]).find(x=>x.row===row);
+  async ctItemToggleActive(id,active){
+    const r=((S.modal.items&&S.modal.items.rows)||[]).find(x=>x.id===id);
     if(!r) return;
     try{
-      const d=await api({action:'costTransferItemSave', token:S.auth.token, row, name:r.name, unitPrice:r.unitPrice, active});
+      const d=await api({action:'costTransferItemSave', token:S.auth.token, id, name:r.name, unitPrice:r.unitPrice, active});
       if(!d.ok){ toast(d.error||'更新に失敗しました'); return; }
       await App.ctAdminLoadItems();
     }catch(e){ toast('通信エラー: '+e.message); }
   },
-  async ctItemDeleteRow(row){
+  async ctItemDeleteRow(id){
     if(!confirm('この品目を削除しますか？（フォームの選択肢から消えます）')) return;
     try{
-      const d=await api({action:'costTransferItemDelete', token:S.auth.token, row});
+      const d=await api({action:'costTransferItemDelete', token:S.auth.token, id});
       if(!d.ok){ toast(d.error||'削除に失敗しました'); return; }
       toast('削除しました');
       await App.ctAdminLoadItems();
@@ -9993,45 +10042,34 @@ window.App = {
   // URLパラメータ ?report=daily|weekly|monthly(&date=YYYY-MM-DD) でレポートカード表示（Lark日報の撮影用）
   // 招待リンク（?invite=トークン）→ 登録画面。ログインより先に判定する
   // ?transferForm=トークン → 現場向け「店舗間の仕入れ移動」公開フォーム。ログインより先に判定する
-  // （?invite=と同じ考え方。渡されたtokenでcostTransferPublicInfoを叩き、無効ならエラー表示）
+  // 2026-10-05修正（ユーザー要望「今後スプレッドシートを使わないように」）: 店舗一覧・品目マスタの
+  // 読み込みは、GAS（costTransferPublicInfo・スプレッドシート全体を開くコストがかかり数秒〜十数秒）
+  // を経由せず、ブラウザから直接Supabaseへ（store_directory_v・cost_transfer_items_v。どちらも
+  // anonで読める公開ビュー）。送信（ctfSubmit参照）だけはEdge Function経由で、金額の再計算・改ざん
+  // 対策・LINE通知はそちら側に移した。2026-10-04に追加したlocalStorageキャッシュ（ctf_cache_v1_*）は
+  // そのまま維持し、取得元だけSupabaseへ差し替える（初回アクセスも数百ms程度まで短縮される見込み）。
   try{
     const tq=new URLSearchParams(location.search).get('transferForm');
     if(tq){
-      // 2026-10-04修正（ユーザー報告「読み込みが長くてストレス。Googleフォームみたいに開いてすぐ
-      // 入力できるようにしたい」）: 店舗一覧・品目マスタはGASの実行時間（大きなスプレッドシートを
-      // 開くコスト）がかかり毎回数秒〜十数秒かかるが、内容は数日〜数週間単位でしか変わらない。
-      // 前回取得した内容をlocalStorageへ保存しておき、2回目以降のアクセスではそれを即表示（＝入力を
-      // 即開始できる）。裏側では必ず最新データを取りにいき、変化があれば差し替える（送信時の金額は
-      // 金額はいずれにせよサーバー側で品目マスタから再計算するため、表示が一時的に古くてもPLには
-      // 影響しない。トークン自体が再発行で無効化された場合も送信時にサーバーがunauthorizedを返す）。
       const cacheKey='ctf_cache_v1_'+tq;
       let cached=null;
       try{ const raw=localStorage.getItem(cacheKey); if(raw){ const d=JSON.parse(raw); if(d&&Array.isArray(d.stores)&&Array.isArray(d.items)) cached=d; } }catch(e){}
       S.transferForm = cached
         ? { token:tq, loading:false, stores:cached.stores, items:cached.items, rows:[{name:'',qty:''}], note:'' }
         : { token:tq, loading:true, rows:[{name:'',qty:''}], note:'' };
-      api({ action:'costTransferPublicInfo', token:tq }, 20000, ()=>{
-        if(!cached && S.transferForm) S.transferForm=Object.assign({}, S.transferForm, { loadingSlow:true });
-        if(!cached) render();
-      }).then(d=>{
+      const slowTimer=cached?null:setTimeout(()=>{ if(S.transferForm){ S.transferForm=Object.assign({},S.transferForm,{loadingSlow:true}); render(); } }, 4000);
+      ctfFetchInfo_().then(d=>{
+        clearTimeout(slowTimer);
         if(!S.transferForm) return; // 読み込み中に離脱していたら何もしない
-        if(d.ok){
-          const stores=d.stores||[], items=d.items||[];
-          try{ localStorage.setItem(cacheKey, JSON.stringify({stores,items})); }catch(e){}
-          const changed=!cached || JSON.stringify(stores)!==JSON.stringify(cached.stores) || JSON.stringify(items)!==JSON.stringify(cached.items);
-          S.transferForm=Object.assign({}, S.transferForm, { loading:false, loadingSlow:false, stores, items });
-          if(changed) render(); // キャッシュと同一内容なら再描画しない（入力中のフォーカスを不要に失わせない）
-        }else if(cached){
-          // キャッシュ表示中に最新取得が失敗した場合は、キャッシュがただ古い可能性もあるため
-          // エラー画面には切り替えず現状のフォームを維持する（送信時にサーバー側で最終判定される）
-          S.transferForm=Object.assign({}, S.transferForm, { loadingSlow:false });
-        }else{
-          S.transferForm=Object.assign({}, S.transferForm, { loading:false, loadingSlow:false, error:d.error==='unauthorized'?'このリンクは無効です（再発行されている可能性があります）。管理者に確認してください':(d.error||'読み込みに失敗しました') });
-          render();
-        }
+        const stores=d.stores||[], items=d.items||[];
+        try{ localStorage.setItem(cacheKey, JSON.stringify({stores,items})); }catch(e){}
+        const changed=!cached || JSON.stringify(stores)!==JSON.stringify(cached.stores) || JSON.stringify(items)!==JSON.stringify(cached.items);
+        S.transferForm=Object.assign({}, S.transferForm, { loading:false, loadingSlow:false, stores, items });
+        if(changed) render(); // キャッシュと同一内容なら再描画しない（入力中のフォーカスを不要に失わせない）
       }).catch(e=>{
+        clearTimeout(slowTimer);
         if(!S.transferForm) return;
-        if(cached){ S.transferForm=Object.assign({}, S.transferForm, { loadingSlow:false }); return; }
+        if(cached){ S.transferForm=Object.assign({}, S.transferForm, { loadingSlow:false }); return; } // キャッシュ表示中の取得失敗はエラー画面に切り替えず現状維持
         S.transferForm=Object.assign({}, S.transferForm, { loading:false, loadingSlow:false, error:'通信エラー: '+(e&&e.message||e) });
         render();
       });

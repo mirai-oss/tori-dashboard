@@ -53,7 +53,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-a6p28', time: new Date().toISOString() }); // a6p28=smbcRemoveDupLines追加（smbcCardSeisanSyncの精算書二重計上を解消した際、2026-09以前に自動取込経路で既に入ってしまったsmbc-card:…sourceKeyの明細を削除するための一時運用関数。専用トークン認証・精算GAS sd_apiRemoveExternalLineへ中継・2026-10-01）。a6p4=bqGetReservationNamesにUser-Agent追加(2026-09-04)+bqFetchReservationRows_のORDER BY削除(92000行超でstatement timeout・2026-09-05)。a6p5=syncSeisanCategoriesToPlが店舗×月の同期結果を精算書側(sd_apiMarkPlSynced)へ書き戻すように追加（2026-09-05・業務委託精算書自動連携）。a6p6=dbPlDiag追加（実機E2E不一致の一時調査用）。a6p7=syncSeisanCategoriesToPlの対象店舗判定をseisan_target→seisan_pl_categories_targetに変更（運営委託費と経費PL反映を別々にON/OFFできるように・黒霧屋 新横浜対応）。a6p8=diagDepositsPerf追加（PayPay銀行取込46分化の原因切り分け用一時診断・2026-09-07）。a6p9=apiSetAdExclude追加（媒体販促費を手入力で確定させたあとPL画面だけ自動連携分を除外できるように・DB_広告除外設定シート新設・2026-09-07）。a6p10=importDepositsにLockServiceを追加（並行実行による入金二重計上バグを修正・2026-09-08）。a6p11=diagDepositDupScan追加（入金DBの重複行を行番号付きで列挙する読み取り専用診断・2026-09-08）。a6p12=cleanupDepositDuplicates追加（特定済み重複11件をユーザー承認のうえ削除・2026-09-08）。a6p13=cleanupDepositDuplicatesの認証をトークン→セッションに変更（トークン認証で原因不明のunauthorized・実行して重複11件×2シートの削除完了確認済み・2026-09-08）。a6p14=bqFetchReservationRows_をOFFSET(Rangeヘッダー)ページングからid（主キー・索引あり）によるkeysetページングに変更（rsv_reservationsが93000行超に増えOFFSET方式でも再度statement timeoutが発生したため・2026-09-05のORDER BY削除とは別問題＝あの時は無索引3列複合ソートが原因、今回はidという主キー＝索引ありの列でORDER BYするので同じ罠には当たらない。実測でOFFSET方式の同条件比1039ms→keyset方式299msを確認済み・2026-09-09）。a6p15=writeAccountCostToPl_の補助科目消失バグを修正（担当CからPL内訳UUID表示バグの申し送り。G列に冪等キー(noteTag)だけを書いていてsubAccountを一切保存していなかったため、補助科目の代わりにsourceKeyがそのまま表示されていた。列を増やすと他のPL自動連携が壊れるため増やさず、G列の値を「<subAccount>　<noteTag>」の複合形式にしてapp.js側で表示時に分離する方式に変更・2026-09-10）。a6p16=担当Cからの申し送り（続き83）対応の一時action追加・詳細は関数コメント参照・2026-09-10。a6p17=cleanupPlLegacyCombined_の結果をalert()ではなくスプレッドシートの新タブへ書き出すよう変更（コピーしづらいとのユーザー指摘対応・行番号つき）・2026-09-10。a6p18=fetchStoreDirectory_を実行内メモ化（PayPay銀行取込が2026-09-10に全店舗連鎖失敗した件の真因修正。importDeposits_locked_が入金DB既存行ごとにnormStoreName_→fetchStoreDirectory_→CacheService往復を繰り返し、入金DBが4800行超に増えた結果1回の取込で実測345秒かかりNode側5分タイムアウトで連鎖失敗していた。実行スコープ変数で1回だけ取得するよう変更・2026-09-11）。a6p19=判定_高速化検証と実装GO §2-1対応（担当A）: dataFreshness()をBigQuery全件スキャン＋スプレッドシート走査からkd_sync_status_v（新設ビュー）直読みへ置換（軽量化・D提案）。bqGetAdCost追加（stg_ad_cost読み取り・BQ_LOAD_TOKEN認証・レーンPのkd_pl広告費充填用）・2026-09-11。a6p20=bqLoadDeliveryOrders追加（デリバリー売上=ロケットナウ等の明細をBQ sales.stg_delivery_orderへMERGE投入。担当D・設計書_デリバリー売上取込_ロケットナウ_2026-09-11.md §3-1・実データ2本で検証済みのns-daily-import/tasks/delivery-sales.jsから呼ばれる想定）・2026-09-11。a6p21=a6p20で追加したbqLoadDeliveryOrders一式が、その後の別セッション経由のユーザー手動貼替（診断ボタン追加のための全文貼替）で編集画面から消失していたのをMac miniセッションが検知・再挿入（本番デプロイのアクティブバージョンには残っていたため実害は限定的だったが、次に貼替が起きると再度失われる状態だった）・2026-09-11。詳細はHANDOFF.md参照。a6p23=supaLoginを拡張（担当D・ユーザー要望「ポータルでアカウント発行したら役職ごとにダッシュボードにも自動で入れるようにしたい」）: アカウント管理シートに個別登録が無い統合アカウントは、ポータル側Supabase（users.role・user_stores→stores.name。SUPABASE_SERVICE_KEY使用）を正本にrole/storesを自動組み立てするportalAutoAccount_を追加。役職対応=CEO→社長・HQ→本部（全店固定）・TEAM→マネージャー・TENCHO/SHAIN→店舗（いずれもuser_stores基準の担当店舗のみ。0件なら非対応）・AL→非対応（従来どおり個別登録が必要）。シート個別登録がある場合はそちらを最優先（無変更）。PL等の機密タブは既存のROLE_TABS/ROLE_FEATURESが役職別に絞るため、この変換だけで店舗ロールはPL非表示のまま・2026-09-17 a6p24=cashReconRead/paymentDailyReplace/seisanCashSync追加（現金売上の月次照合＝レジ再取得との突合用の読み取りと、レジの正しい値へ店舗×日の売上（支払いDB1行）を書き換える修正用。専用トークン認証・書き換えは修正ログ付き・LockService・2026-09-26）。a6p25=smbcCardSeisanSync追加（SMBC GMO PAYMENT・N-Style分のカード売上/手数料を精算対象店舗の精算書へ明細追加。専用トークン認証・精算GAS sd_apiAddExternalLineへ中継・DB_PLへは書かない。振込明細書が月2回（前半1-15日・後半16日-末）発行されるためlines[].halfLabelで区別しsourceKey衝突を回避・2026-09-30）。a6p26=smbcCardSeisanSyncの対象店舗判定をseisan_target→seisan_pl_categories_targetに変更（ユーザー指摘「黒霧屋 新横浜もこれは対象」・a6p7と同じ理由で黒霧屋 新横浜を含める・2026-09-30）。a6p27=smbcCardSeisanSyncが精算GASへ渡すsd_apiAddExternalLineの引数にkubunを追加（ユーザー指摘「カード売上が変動費で入っている」。精算GAS側(v5.23)がkubun未指定時に常に'変動費'固定だったバグとセットで修正。カード売上='売上'・カード手数料='変動費'・2026-09-30）。
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-a6p29', time: new Date().toISOString() }); // a6p29=仕入れ移動公開フォームのSupabase直結化（担当: Supabase化・2026-10-05）: costTransferPublicInfo/Submit/TokenOk_/notifyOrderLine_を削除（公開フォームはブラウザから直接Supabase/Edge Function cost-transfer-submitを叩くようになったためGAS側のこの経路は不要に）。costTransferItemsRaw_/ItemSave/ItemDelete/LinkInfo/LinkRegenerate/RequestsRaw_/PendingList/Approve/Rejectは中身をスプレッドシート読み書きからSUPABASE_URL/SUPABASE_SERVICE_KEY直読み書き（cost_transfer_items/cost_transfer_requests/app_secrets）に差し替え（ds_sessions向けsessionSupaPut_等と同じ既存パターン）。管理画面側のaction名・戻り値の形・ログイン/isAdmin認証は変更なし。品目の識別子がスプレッドシート行番号(row)からSupabaseのUUID(id)に変わったためapp.js側の対応箇所も合わせて変更（HANDOFF.md参照）。a6p28=smbcRemoveDupLines追加（smbcCardSeisanSyncの精算書二重計上を解消した際、2026-09以前に自動取込経路で既に入ってしまったsmbc-card:…sourceKeyの明細を削除するための一時運用関数。専用トークン認証・精算GAS sd_apiRemoveExternalLineへ中継・2026-10-01）。a6p4=bqGetReservationNamesにUser-Agent追加(2026-09-04)+bqFetchReservationRows_のORDER BY削除(92000行超でstatement timeout・2026-09-05)。a6p5=syncSeisanCategoriesToPlが店舗×月の同期結果を精算書側(sd_apiMarkPlSynced)へ書き戻すように追加（2026-09-05・業務委託精算書自動連携）。a6p6=dbPlDiag追加（実機E2E不一致の一時調査用）。a6p7=syncSeisanCategoriesToPlの対象店舗判定をseisan_target→seisan_pl_categories_targetに変更（運営委託費と経費PL反映を別々にON/OFFできるように・黒霧屋 新横浜対応）。a6p8=diagDepositsPerf追加（PayPay銀行取込46分化の原因切り分け用一時診断・2026-09-07）。a6p9=apiSetAdExclude追加（媒体販促費を手入力で確定させたあとPL画面だけ自動連携分を除外できるように・DB_広告除外設定シート新設・2026-09-07）。a6p10=importDepositsにLockServiceを追加（並行実行による入金二重計上バグを修正・2026-09-08）。a6p11=diagDepositDupScan追加（入金DBの重複行を行番号付きで列挙する読み取り専用診断・2026-09-08）。a6p12=cleanupDepositDuplicates追加（特定済み重複11件をユーザー承認のうえ削除・2026-09-08）。a6p13=cleanupDepositDuplicatesの認証をトークン→セッションに変更（トークン認証で原因不明のunauthorized・実行して重複11件×2シートの削除完了確認済み・2026-09-08）。a6p14=bqFetchReservationRows_をOFFSET(Rangeヘッダー)ページングからid（主キー・索引あり）によるkeysetページングに変更（rsv_reservationsが93000行超に増えOFFSET方式でも再度statement timeoutが発生したため・2026-09-05のORDER BY削除とは別問題＝あの時は無索引3列複合ソートが原因、今回はidという主キー＝索引ありの列でORDER BYするので同じ罠には当たらない。実測でOFFSET方式の同条件比1039ms→keyset方式299msを確認済み・2026-09-09）。a6p15=writeAccountCostToPl_の補助科目消失バグを修正（担当CからPL内訳UUID表示バグの申し送り。G列に冪等キー(noteTag)だけを書いていてsubAccountを一切保存していなかったため、補助科目の代わりにsourceKeyがそのまま表示されていた。列を増やすと他のPL自動連携が壊れるため増やさず、G列の値を「<subAccount>　<noteTag>」の複合形式にしてapp.js側で表示時に分離する方式に変更・2026-09-10）。a6p16=担当Cからの申し送り（続き83）対応の一時action追加・詳細は関数コメント参照・2026-09-10。a6p17=cleanupPlLegacyCombined_の結果をalert()ではなくスプレッドシートの新タブへ書き出すよう変更（コピーしづらいとのユーザー指摘対応・行番号つき）・2026-09-10。a6p18=fetchStoreDirectory_を実行内メモ化（PayPay銀行取込が2026-09-10に全店舗連鎖失敗した件の真因修正。importDeposits_locked_が入金DB既存行ごとにnormStoreName_→fetchStoreDirectory_→CacheService往復を繰り返し、入金DBが4800行超に増えた結果1回の取込で実測345秒かかりNode側5分タイムアウトで連鎖失敗していた。実行スコープ変数で1回だけ取得するよう変更・2026-09-11）。a6p19=判定_高速化検証と実装GO §2-1対応（担当A）: dataFreshness()をBigQuery全件スキャン＋スプレッドシート走査からkd_sync_status_v（新設ビュー）直読みへ置換（軽量化・D提案）。bqGetAdCost追加（stg_ad_cost読み取り・BQ_LOAD_TOKEN認証・レーンPのkd_pl広告費充填用）・2026-09-11。a6p20=bqLoadDeliveryOrders追加（デリバリー売上=ロケットナウ等の明細をBQ sales.stg_delivery_orderへMERGE投入。担当D・設計書_デリバリー売上取込_ロケットナウ_2026-09-11.md §3-1・実データ2本で検証済みのns-daily-import/tasks/delivery-sales.jsから呼ばれる想定）・2026-09-11。a6p21=a6p20で追加したbqLoadDeliveryOrders一式が、その後の別セッション経由のユーザー手動貼替（診断ボタン追加のための全文貼替）で編集画面から消失していたのをMac miniセッションが検知・再挿入（本番デプロイのアクティブバージョンには残っていたため実害は限定的だったが、次に貼替が起きると再度失われる状態だった）・2026-09-11。詳細はHANDOFF.md参照。a6p23=supaLoginを拡張（担当D・ユーザー要望「ポータルでアカウント発行したら役職ごとにダッシュボードにも自動で入れるようにしたい」）: アカウント管理シートに個別登録が無い統合アカウントは、ポータル側Supabase（users.role・user_stores→stores.name。SUPABASE_SERVICE_KEY使用）を正本にrole/storesを自動組み立てするportalAutoAccount_を追加。役職対応=CEO→社長・HQ→本部（全店固定）・TEAM→マネージャー・TENCHO/SHAIN→店舗（いずれもuser_stores基準の担当店舗のみ。0件なら非対応）・AL→非対応（従来どおり個別登録が必要）。シート個別登録がある場合はそちらを最優先（無変更）。PL等の機密タブは既存のROLE_TABS/ROLE_FEATURESが役職別に絞るため、この変換だけで店舗ロールはPL非表示のまま・2026-09-17 a6p24=cashReconRead/paymentDailyReplace/seisanCashSync追加（現金売上の月次照合＝レジ再取得との突合用の読み取りと、レジの正しい値へ店舗×日の売上（支払いDB1行）を書き換える修正用。専用トークン認証・書き換えは修正ログ付き・LockService・2026-09-26）。a6p25=smbcCardSeisanSync追加（SMBC GMO PAYMENT・N-Style分のカード売上/手数料を精算対象店舗の精算書へ明細追加。専用トークン認証・精算GAS sd_apiAddExternalLineへ中継・DB_PLへは書かない。振込明細書が月2回（前半1-15日・後半16日-末）発行されるためlines[].halfLabelで区別しsourceKey衝突を回避・2026-09-30）。a6p26=smbcCardSeisanSyncの対象店舗判定をseisan_target→seisan_pl_categories_targetに変更（ユーザー指摘「黒霧屋 新横浜もこれは対象」・a6p7と同じ理由で黒霧屋 新横浜を含める・2026-09-30）。a6p27=smbcCardSeisanSyncが精算GASへ渡すsd_apiAddExternalLineの引数にkubunを追加（ユーザー指摘「カード売上が変動費で入っている」。精算GAS側(v5.23)がkubun未指定時に常に'変動費'固定だったバグとセットで修正。カード売上='売上'・カード手数料='変動費'・2026-09-30）。
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'dbPlDiag') return out(dbPlDiag(p)); // 2026-09-05一時追加: DB_PLシートの生データを店舗×月で確認（読み取り専用・原因特定でき次第削除）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
@@ -83,8 +83,6 @@ function handle(p) {
     if (action === 'bqSyncPL') return out(bqSyncPL(p)); // PL経費(DB_PL)のBQミラー同期（専用トークン認証・ログイン不要）
     if (action === 'writeAdCost') return out(writeAdCost(p)); // A-8: 広告費書き込み（invoices側ad-cost-reflectから・AD_COST_WRITE_TOKEN認証・ログイン不要。2026-08-31追加）
     if (action === 'writePlFee') return out(writePlFee(p)); // A-8拡張: 勘定科目汎用のPL自動計上（invoices側pl-fee-reflectから・AD_COST_WRITE_TOKEN認証・ログイン不要。2026-09-01追加・設計書§5）
-    if (action === 'costTransferPublicInfo') return out(costTransferPublicInfo(p)); // 仕入れ移動：現場向け公開フォームの初期データ取得（COST_TRANSFER_FORM_TOKEN認証・ログイン不要。2026-10-02追加）
-    if (action === 'costTransferPublicSubmit') return out(costTransferPublicSubmit(p)); // 仕入れ移動：現場向け公開フォームの送信（承認待ちキューへ追加するだけでDB_PLには触れない。COST_TRANSFER_FORM_TOKEN認証・ログイン不要。2026-10-02追加）
     if (action === 'bqSyncAdCost') return out(bqSyncAdCost(p)); // 💾広告費DBのBQミラー同期（専用トークン認証・ログイン不要。writeAdCostから毎回自動で呼ばれるほか単独でも可。2026-08-31追加・A-8）
     if (action === 'bqGetAdCost') return out(bqGetAdCost(p)); // stg_ad_costの読み取り（専用トークン認証・ログイン不要・サーバー間呼び出し専用）。レーンPのkd_pl広告費充填用。2026-09-11追加
     if (action === 'bqSyncReservation') return out(bqSyncReservation(p)); // 予約(stg_reservation)のBQミラー同期（専用トークン認証・ログイン不要。2026-08-28追加・A-6）
@@ -5638,21 +5636,31 @@ function costTransferList(p, session) {
   return { ok: true, rows: rows.slice(0, 200) };
 }
 
-/* ================== 仕入れ移動：品目マスタ（2026-10-02追加・現場向け公開フォーム対応） ==================
- * 現場の公開フォームで選べる「品名×単価」の一覧。管理画面（社長・本部）から編集する。 */
+/* ================== 仕入れ移動：品目マスタ・申請キュー（2026-10-05・Supabase直結化） ==================
+ * 2026-10-02に追加した現場向け公開フォームは、読み込み・送信のたびにGASが巨大なスプレッドシート
+ * 全体を開くコストを払っていた（数秒〜十数秒）。ユーザー要望「今後スプレッドシートを使わないように
+ * 組み替えていく」の第一弾として、品目マスタ・申請キューをns-portalのSupabase（cost_transfer_items・
+ * cost_transfer_requests。ns-portal/supabase/2026-10-05_cost_transfer_public_form.sql）へ移した。
+ * 公開フォーム自身（読み込み・送信）はブラウザから直接Supabase/Edge Function（cost-transfer-submit）を
+ * 叩くようになり、ここから完全に切り離された（costTransferPublicInfo/Submitは削除）。
+ * 管理者側（承認待ち・品目マスタ編集・リンク発行）はこれまで通りGAS・セッション認証のままで、
+ * 中身だけ「スプレッドシートを読む」から「SUPABASE_URL/SUPABASE_SERVICE_KEYで直接読み書きする」に
+ * 差し替える（ds_sessions向けのsessionSupaPut_等と同じ既存パターン。rsvStoreMap_参照）。 */
+function costTransferSupaHeaders_() {
+  var url = PropertiesService.getScriptProperties().getProperty('SUPABASE_URL');
+  var key = PropertiesService.getScriptProperties().getProperty('SUPABASE_SERVICE_KEY');
+  if (!url || !key) return null;
+  return { url: url, headers: { apikey: key, Authorization: 'Bearer ' + key, 'Content-Type': 'application/json' } };
+}
 function costTransferItemsRaw_() {
-  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_仕入れ移動品目マスタ');
-  if (!sh) return [];
-  var lastRow = sh.getLastRow();
-  if (lastRow < 2) return [];
-  var vals = sh.getRange(2, 1, lastRow - 1, 3).getValues();
-  var out = [];
-  for (var i = 0; i < vals.length; i++) {
-    var name = String(vals[i][0] || '').trim();
-    if (!name) continue;
-    out.push({ row: 2 + i, name: name, unitPrice: Number(vals[i][1]) || 0, active: vals[i][2] !== false });
-  }
-  return out;
+  var h = costTransferSupaHeaders_();
+  if (!h) return [];
+  try {
+    var res = UrlFetchApp.fetch(h.url + '/rest/v1/cost_transfer_items?select=id,name,unit_price,active&order=name.asc', { headers: h.headers, muteHttpExceptions: true });
+    if (res.getResponseCode() !== 200) return [];
+    var rows = JSON.parse(res.getContentText() || '[]');
+    return rows.map(function (r) { return { id: r.id, name: String(r.name || ''), unitPrice: Number(r.unit_price) || 0, active: r.active !== false }; });
+  } catch (e) { return []; }
 }
 function costTransferItemList(p, session) {
   if (!isAdmin(session)) return { ok: false, error: '品目マスタは社長・本部のみ閲覧できます' };
@@ -5665,80 +5673,102 @@ function costTransferItemSave(p, session) {
   var unitPrice = Number(p.unitPrice);
   if (!isFinite(unitPrice) || unitPrice <= 0) return { ok: false, error: '単価を正しく入力してください' };
   var active = p.active !== false;
-  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_仕入れ移動品目マスタ');
-  if (!sh) return { ok: false, error: 'DB_仕入れ移動品目マスタシートがありません' };
-  var rowNum = Number(p.row) || 0;
-  if (rowNum >= 2) sh.getRange(rowNum, 1, 1, 3).setValues([[name, unitPrice, active]]);
-  else sh.appendRow([name, unitPrice, active]);
-  return { ok: true };
+  var h = costTransferSupaHeaders_();
+  if (!h) return { ok: false, error: 'Script PropertiesにSUPABASE_URL/SUPABASE_SERVICE_KEYが未設定です' };
+  var id = String(p.id || '').trim();
+  try {
+    var res = id
+      ? UrlFetchApp.fetch(h.url + '/rest/v1/cost_transfer_items?id=eq.' + encodeURIComponent(id), {
+          method: 'patch', headers: h.headers, muteHttpExceptions: true,
+          payload: JSON.stringify({ name: name, unit_price: unitPrice, active: active, updated_at: new Date().toISOString() })
+        })
+      : UrlFetchApp.fetch(h.url + '/rest/v1/cost_transfer_items', {
+          method: 'post', headers: h.headers, muteHttpExceptions: true,
+          payload: JSON.stringify({ name: name, unit_price: unitPrice, active: active })
+        });
+    if (res.getResponseCode() >= 300) return { ok: false, error: 'Supabase保存失敗[' + res.getResponseCode() + ']: ' + res.getContentText().slice(0, 200) };
+    return { ok: true };
+  } catch (e) { return { ok: false, error: String(e && e.message || e) }; }
 }
 function costTransferItemDelete(p, session) {
   if (!isAdmin(session)) return { ok: false, error: '品目マスタは社長・本部のみ編集できます' };
-  var rowNum = Number(p.row) || 0;
-  if (rowNum < 2) return { ok: false, error: '対象の行が指定されていません' };
-  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_仕入れ移動品目マスタ');
-  if (!sh) return { ok: false, error: 'DB_仕入れ移動品目マスタシートがありません' };
-  sh.deleteRow(rowNum);
-  return { ok: true };
+  var id = String(p.id || '').trim();
+  if (!id) return { ok: false, error: '対象が指定されていません' };
+  var h = costTransferSupaHeaders_();
+  if (!h) return { ok: false, error: 'Script PropertiesにSUPABASE_URL/SUPABASE_SERVICE_KEYが未設定です' };
+  try {
+    var res = UrlFetchApp.fetch(h.url + '/rest/v1/cost_transfer_items?id=eq.' + encodeURIComponent(id), { method: 'delete', headers: h.headers, muteHttpExceptions: true });
+    if (res.getResponseCode() >= 300) return { ok: false, error: 'Supabase削除失敗[' + res.getResponseCode() + ']' };
+    return { ok: true };
+  } catch (e) { return { ok: false, error: String(e && e.message || e) }; }
 }
 
-/* ================== 仕入れ移動：公開フォームリンク（2026-10-02追加） ==================
- * writeAdCost等と同じ「スクリプトプロパティの固定トークンを単純文字列比較」方式。
- * 再発行すると古いリンクは即座に使えなくなる（トークンを上書きするだけなので取り消し不要）。 */
+/* ================== 仕入れ移動：公開フォームリンク（2026-10-05・app_secretsへ移行） ==================
+ * トークンの置き場所をGASスクリプトプロパティ(COST_TRANSFER_FORM_TOKEN)からSupabaseの
+ * app_secrets（key='cost_transfer_form_token'。LINE通知の合言葉等と同じ置き場所）へ統一。
+ * 公開フォーム側（Edge Function）も同じ場所を見るため、ここで発行した値が即座に有効になる。
+ * 再発行すると古いリンクは即座に使えなくなる（値を上書きするだけなので取り消し不要）という
+ * 挙動はこれまで通り。 */
 function costTransferLinkInfo(p, session) {
   if (!isAdmin(session)) return { ok: false, error: '公開リンクの確認は社長・本部のみ行えます' };
-  var props = PropertiesService.getScriptProperties();
-  return { ok: true, token: props.getProperty('COST_TRANSFER_FORM_TOKEN') || '', createdAt: props.getProperty('COST_TRANSFER_FORM_TOKEN_AT') || '' };
+  var h = costTransferSupaHeaders_();
+  if (!h) return { ok: false, error: 'Script PropertiesにSUPABASE_URL/SUPABASE_SERVICE_KEYが未設定です' };
+  try {
+    var res = UrlFetchApp.fetch(h.url + '/rest/v1/app_secrets?key=eq.cost_transfer_form_token&select=value,updated_at', { headers: h.headers, muteHttpExceptions: true });
+    if (res.getResponseCode() !== 200) return { ok: false, error: 'Supabase取得失敗[' + res.getResponseCode() + ']' };
+    var rows = JSON.parse(res.getContentText() || '[]');
+    return { ok: true, token: rows.length ? String(rows[0].value || '') : '', createdAt: rows.length ? (rows[0].updated_at || '') : '' };
+  } catch (e) { return { ok: false, error: String(e && e.message || e) }; }
 }
 function costTransferLinkRegenerate(p, session) {
   if (!isAdmin(session)) return { ok: false, error: '公開リンクの再発行は社長・本部のみ行えます' };
+  var h = costTransferSupaHeaders_();
+  if (!h) return { ok: false, error: 'Script PropertiesにSUPABASE_URL/SUPABASE_SERVICE_KEYが未設定です' };
   var tk = Utilities.getUuid().replace(/-/g, '');
-  var props = PropertiesService.getScriptProperties();
-  props.setProperty('COST_TRANSFER_FORM_TOKEN', tk);
-  props.setProperty('COST_TRANSFER_FORM_TOKEN_AT', new Date().toISOString());
-  return { ok: true, token: tk };
+  try {
+    var hUpsert = Object.assign({}, h.headers, { Prefer: 'resolution=merge-duplicates' });
+    var res = UrlFetchApp.fetch(h.url + '/rest/v1/app_secrets?on_conflict=key', {
+      method: 'post', headers: hUpsert, muteHttpExceptions: true,
+      payload: JSON.stringify({ key: 'cost_transfer_form_token', value: tk, updated_at: new Date().toISOString() })
+    });
+    if (res.getResponseCode() >= 300) return { ok: false, error: 'Supabase更新失敗[' + res.getResponseCode() + ']: ' + res.getContentText().slice(0, 200) };
+    return { ok: true, token: tk };
+  } catch (e) { return { ok: false, error: String(e && e.message || e) }; }
 }
 
-/* ================== 仕入れ移動：申請の承認フロー（2026-10-02追加） ==================
- * 現場の公開フォーム送信はDB_仕入れ移動申請へpendingで溜まるだけで、DB_PLには一切触れない。
- * 社長・本部がcostTransferApproveで承認して初めて、明細の品目ごとにcostTransferWriteRow_で
- * DB_PLへ反映される（1品目=1組の店舗間移動行として、既存のcostTransferList/Cancelでもそのまま見える）。 */
-function costTransferRequestsRaw_() {
-  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_仕入れ移動申請');
-  if (!sh) return [];
-  var lastRow = sh.getLastRow();
-  if (lastRow < 2) return [];
-  var vals = sh.getRange(2, 1, lastRow - 1, 11).getValues();
-  var out = [];
-  for (var i = 0; i < vals.length; i++) {
-    var reqId = String(vals[i][0] || '').trim();
-    if (!reqId) continue;
-    var items = [];
-    try { items = JSON.parse(vals[i][5] || '[]'); } catch (eJ) { items = []; }
-    out.push({
-      row: 2 + i, id: reqId,
-      submittedAt: vals[i][1] ? new Date(vals[i][1]).toISOString() : '',
-      date: vals[i][2] ? Utilities.formatDate(new Date(vals[i][2]), 'Asia/Tokyo', 'yyyy-MM-dd') : '',
-      fromStore: String(vals[i][3] || ''), toStore: String(vals[i][4] || ''),
-      items: items, total: Number(vals[i][6]) || 0, note: String(vals[i][7] || ''),
-      status: String(vals[i][8] || 'pending'), approver: String(vals[i][9] || ''),
-      approvedAt: vals[i][10] ? new Date(vals[i][10]).toISOString() : ''
+/* ================== 仕入れ移動：申請の承認フロー（2026-10-05・Supabase直結化） ==================
+ * 現場の公開フォーム送信は（ブラウザ→Edge Function経由で）cost_transfer_requestsへpendingで
+ * 溜まるだけで、DB_PLには一切触れない。社長・本部がcostTransferApproveで承認して初めて、明細の
+ * 品目ごとにcostTransferWriteRow_でDB_PLへ反映される（ここはスプレッドシートのまま・変更なし）。 */
+function costTransferRequestsRaw_(filterStatus) {
+  var h = costTransferSupaHeaders_();
+  if (!h) return [];
+  try {
+    var qs = 'select=id,submitted_at,transfer_date,from_store,to_store,items,total,note,status,approver,approved_at&order=submitted_at.desc';
+    if (filterStatus) qs += '&status=eq.' + encodeURIComponent(filterStatus);
+    var res = UrlFetchApp.fetch(h.url + '/rest/v1/cost_transfer_requests?' + qs, { headers: h.headers, muteHttpExceptions: true });
+    if (res.getResponseCode() !== 200) return [];
+    var rows = JSON.parse(res.getContentText() || '[]');
+    return rows.map(function (r) {
+      return {
+        id: r.id, submittedAt: r.submitted_at || '', date: r.transfer_date || '',
+        fromStore: String(r.from_store || ''), toStore: String(r.to_store || ''),
+        items: r.items || [], total: Number(r.total) || 0, note: String(r.note || ''),
+        status: String(r.status || 'pending'), approver: String(r.approver || ''), approvedAt: r.approved_at || ''
+      };
     });
-  }
-  return out;
+  } catch (e) { return []; }
 }
 function costTransferPendingList(p, session) {
   if (!isAdmin(session)) return { ok: false, error: '承認待ち一覧は社長・本部のみ閲覧できます' };
-  var rows = costTransferRequestsRaw_().filter(function (r) { return r.status === 'pending'; });
-  rows.sort(function (a, b) { return a.submittedAt < b.submittedAt ? 1 : -1; });
-  return { ok: true, rows: rows };
+  return { ok: true, rows: costTransferRequestsRaw_('pending') };
 }
 function costTransferApprove(p, session) {
   if (!isAdmin(session)) return { ok: false, error: '承認は社長・本部のみ行えます' };
   var reqId = String(p.id || '').trim();
   if (!reqId) return { ok: false, error: 'idが指定されていません' };
-  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_仕入れ移動申請');
-  if (!sh) return { ok: false, error: 'DB_仕入れ移動申請シートがありません' };
+  var h = costTransferSupaHeaders_();
+  if (!h) return { ok: false, error: 'Script PropertiesにSUPABASE_URL/SUPABASE_SERVICE_KEYが未設定です' };
   var target = null;
   var all = costTransferRequestsRaw_();
   for (var i = 0; i < all.length; i++) { if (all[i].id === reqId) { target = all[i]; break; } }
@@ -5754,7 +5784,17 @@ function costTransferApprove(p, session) {
     if (w.ok) writtenIds.push(w.id);
   }
   if (!writtenIds.length) return { ok: false, error: 'DB_PLへ書き込める明細がありませんでした' };
-  sh.getRange(target.row, 9, 1, 3).setValues([['approved', session.name || session.role || '', new Date()]]);
+  // PLへの書き込み（上）は既に完了済み。申請の状態更新がここで失敗しても、二重計上防止のため
+  // PL反映自体は取り消さず、「手動確認してください」で管理者に気付けるようにする。
+  try {
+    var res = UrlFetchApp.fetch(h.url + '/rest/v1/cost_transfer_requests?id=eq.' + encodeURIComponent(reqId), {
+      method: 'patch', headers: h.headers, muteHttpExceptions: true,
+      payload: JSON.stringify({ status: 'approved', approver: session.name || session.role || '', approved_at: new Date().toISOString() })
+    });
+    if (res.getResponseCode() >= 300) return { ok: false, error: 'PLへは反映しましたが、申請の状態更新に失敗しました[' + res.getResponseCode() + ']（二重承認しないよう手動確認してください）' };
+  } catch (e) {
+    return { ok: false, error: 'PLへは反映しましたが、申請の状態更新でエラー: ' + String(e && e.message || e) + '（二重承認しないよう手動確認してください）' };
+  }
   try {
     var tkPlA = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
     if (tkPlA) bqSyncPL({ token: tkPlA });
@@ -5765,88 +5805,23 @@ function costTransferReject(p, session) {
   if (!isAdmin(session)) return { ok: false, error: '却下は社長・本部のみ行えます' };
   var reqId = String(p.id || '').trim();
   if (!reqId) return { ok: false, error: 'idが指定されていません' };
-  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_仕入れ移動申請');
-  if (!sh) return { ok: false, error: 'DB_仕入れ移動申請シートがありません' };
+  var h = costTransferSupaHeaders_();
+  if (!h) return { ok: false, error: 'Script PropertiesにSUPABASE_URL/SUPABASE_SERVICE_KEYが未設定です' };
   var target = null;
   var all = costTransferRequestsRaw_();
   for (var i = 0; i < all.length; i++) { if (all[i].id === reqId) { target = all[i]; break; } }
   if (!target) return { ok: false, error: '対象の申請が見つかりません' };
   if (target.status !== 'pending') return { ok: false, error: '既に処理済みです' };
   var reason = String(p.reason || '').trim().slice(0, 200);
-  sh.getRange(target.row, 9, 1, 3).setValues([['rejected', session.name || session.role || '', new Date()]]);
-  if (reason) sh.getRange(target.row, 8).setValue((target.note ? target.note + ' / ' : '') + '却下理由: ' + reason);
-  return { ok: true };
-}
-
-/* ================== 仕入れ移動：現場向け公開フォーム（2026-10-02追加・ログイン不要） ==================
- * writeAdCost等と同じ専用トークン認証（COST_TRANSFER_FORM_TOKEN）。requireSessionより手前の
- * ゾーンでルーティングする（handle()参照）。金額はクライアント送信値を一切信用せず、必ず
- * サーバー側で品目マスタ（costTransferItemsRaw_）の単価×数量から再計算する（改ざん防止）。 */
-function costTransferTokenOk_(p) {
-  var tk = PropertiesService.getScriptProperties().getProperty('COST_TRANSFER_FORM_TOKEN');
-  return !!tk && String((p || {}).token || '').trim() === String(tk).trim();
-}
-function costTransferPublicInfo(p) {
-  if (!costTransferTokenOk_(p)) return { ok: false, error: 'unauthorized' };
-  var items = costTransferItemsRaw_().filter(function (r) { return r.active; })
-    .map(function (r) { return { name: r.name, unitPrice: r.unitPrice }; });
-  var stores = [];
+  var payload = { status: 'rejected', approver: session.name || session.role || '', approved_at: new Date().toISOString() };
+  if (reason) payload.reject_reason = reason; // 旧シート版はメモ欄に追記で上書きしていたが、専用列に分離（元のメモを壊さない）
   try {
-    var dir = fetchStoreDirectory_();
-    if (dir) stores = dir.filter(function (s) { return s.is_active; }).map(function (s) { return s.name; });
-  } catch (eDir) { /* 失敗時は空配列のまま（フォーム側は「読み込みに失敗しました」表示） */ }
-  return { ok: true, items: items, stores: stores };
-}
-function costTransferPublicSubmit(p) {
-  if (!costTransferTokenOk_(p)) return { ok: false, error: 'unauthorized' };
-  var date = String(p.date || '').trim();
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { ok: false, error: '移動日が不正です' };
-  var fromStore = String(p.fromStore || '').trim(), toStore = String(p.toStore || '').trim();
-  if (!fromStore || !toStore) return { ok: false, error: '移動元・移動先の店舗を選んでください' };
-  if (fromStore === toStore) return { ok: false, error: '移動元と移動先は別の店舗にしてください' };
-  var itemsIn = Array.isArray(p.items) ? p.items : [];
-  if (!itemsIn.length) return { ok: false, error: '商品を1つ以上追加してください' };
-  var priceByName = {};
-  costTransferItemsRaw_().filter(function (r) { return r.active; }).forEach(function (r) { priceByName[r.name] = r.unitPrice; });
-  var items = [], total = 0;
-  for (var i = 0; i < itemsIn.length; i++) {
-    var name = String((itemsIn[i] || {}).name || '').trim();
-    var qty = Number((itemsIn[i] || {}).qty);
-    if (!name || !priceByName.hasOwnProperty(name)) return { ok: false, error: '品目「' + name + '」は選択できません（削除・無効化された可能性があります。画面を更新してやり直してください）' };
-    if (!isFinite(qty) || qty <= 0) return { ok: false, error: '「' + name + '」の数量を正しく入力してください' };
-    var unitPrice = priceByName[name];
-    var amount = Math.round(unitPrice * qty);
-    items.push({ name: name, qty: qty, unitPrice: unitPrice, amount: amount });
-    total += amount;
-  }
-  var note = String(p.note || '').trim().slice(0, 300);
-  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_仕入れ移動申請');
-  if (!sh) return { ok: false, error: 'DB_仕入れ移動申請シートがありません' };
-  var id = Utilities.getUuid().split('-')[0];
-  sh.appendRow([id, new Date(), date, fromStore, toStore, JSON.stringify(items), total, note, 'pending', '', '']);
-  notifyOrderLine_(date, fromStore, toStore, items, note);   // 2026-10-03追加: 失敗しても申請自体は成功のまま返す（ベストエフォート）
-  return { ok: true, id: id, total: total };
-}
-
-// 発注（店舗間の仕入れ移動）を「発注グループ」LINEへ通知（2026-10-03追加）。
-// ns-portalのline-webhook Edge Function（push_order_groupアクション）へ中継するだけで、
-// LINE側の認証・送信先グループIDの管理は全てそちら側（app_secrets）に持たせている。
-// LINE通知に失敗しても仕入れ移動の申請自体（DB_仕入れ移動申請への記録）は成功のまま進める
-// （通知はあくまで付加価値。PL反映は別途社長・本部の承認フローで担保されているため）。
-function notifyOrderLine_(date, fromStore, toStore, items, note) {
-  try {
-    var secretProp = PropertiesService.getScriptProperties().getProperty('LINE_ORDER_PUSH_SECRET');
-    if (!secretProp) { Logger.log('notifyOrderLine_: LINE_ORDER_PUSH_SECRET未設定のためスキップ'); return; }
-    UrlFetchApp.fetch(STORE_DIRECTORY_URL_.replace(/\/rest\/v1\/.*$/, '') + '/functions/v1/line-webhook', {
-      method: 'post',
-      contentType: 'application/json',
-      headers: { apikey: STORE_DIRECTORY_ANON_KEY_, Authorization: 'Bearer ' + STORE_DIRECTORY_ANON_KEY_ },
-      payload: JSON.stringify({ action: 'push_order_group', secret: secretProp, date: date, fromStore: fromStore, toStore: toStore, items: items, note: note }),
-      muteHttpExceptions: true
+    var res = UrlFetchApp.fetch(h.url + '/rest/v1/cost_transfer_requests?id=eq.' + encodeURIComponent(reqId), {
+      method: 'patch', headers: h.headers, muteHttpExceptions: true, payload: JSON.stringify(payload)
     });
-  } catch (e) {
-    Logger.log('notifyOrderLine_失敗（申請自体には影響なし）: ' + e);
-  }
+    if (res.getResponseCode() >= 300) return { ok: false, error: 'Supabase更新失敗[' + res.getResponseCode() + ']' };
+    return { ok: true };
+  } catch (e) { return { ok: false, error: String(e && e.message || e) }; }
 }
 
 // MF取込マスタの新規マッピングをDB_科目対応へ反映（キー=MF勘定科目×MF補助科目。既存キーは上書き・無ければ追加）。
