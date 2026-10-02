@@ -470,7 +470,7 @@ function ingestDaily(rows){
     if(t>max)max=t;
   }
   if(!recs.length){ D.diag.daily='0件（ヘッダーは一致したがデータ行なし）'; return false; }
-  D.daily=recs; D.maxDate=new Date(max); D.diag.daily='OK '+recs.length+'件';
+  D.daily=recs; D.maxDate=new Date(max); D.diag.daily='OK '+recs.length+'件'; D.dailyReal_=true; D.dailyProvisional=false;
   D.hasLaborSplit=(iEmpBase>=0&&iWelf>=0&&iComm>=0);
   const jstYest=(()=>{ const n=new Date(Date.now()+9*3600000); return new Date(n.getUTCFullYear(),n.getUTCMonth(),n.getUTCDate()-1).getTime(); })();
   D.refDate=new Date(Math.min(max,jstYest));
@@ -2068,29 +2068,61 @@ async function fetchAnalysisKd_(){
   try{
     const jwt=await portalAccessToken().catch(()=>null);
     if(!jwt) return;   // 統合アカウント未連携。従来経路(D.daily)のみで表示させる
-    const base=SSO_SUPA_URL+'/rest/v1/kd_dashboard_daily_summary?select=store_id,period_date,net_sales,guests&order=period_date.asc';
-    const PAGE=2000;
-    let offset=0, rowsAll=[], guard=0;
     const t0=nowMs_();
-    // 2026-09-19修正（重大バグ・ユーザー報告「推移分析が全月0になる」）: PostgREST側にRangeで
-    // 要求した件数より少ない件数しか返さない上限設定（db-max-rowsが既定1000等）があると、
-    // 従来の「返ってきた件数がPAGE未満なら最後のページ」という判定は誤り（上限で切られただけで
-    // まだ後続がある）。実機で1ページ目=1000件返った時点でこの誤判定によりページングが止まり、
-    // period_date.asc（古い順）の並びのため最も古いデータしか読めておらず、直近（当年）の日付が
-    // 一切取得できていなかった。offsetは実際に受け取った件数ぶんだけ進め、空配列が返るまで
-    // ページングを続けるよう修正（サーバー側の上限設定に依存しない・正しい終了判定）。
-    while(guard++<60){   // 60ページ(=1ページ最低でも数百件は返る想定なので十分な安全弁)
-      const res=await fetch(base,{ headers:{ apikey:SSO_SUPA_KEY, Authorization:'Bearer '+jwt, Range:offset+'-'+(offset+PAGE-1) } });
-      if(!res.ok){ logApiPerf_('kd_dashboard_daily_summary:analysis', nowMs_()-t0, false, 'http_'+res.status); return; }
-      const page=await res.json().catch(()=>null);
-      if(!Array.isArray(page) || page.length===0) break;
-      rowsAll=rowsAll.concat(page);
-      offset+=page.length;
-    }
-    logApiPerf_('kd_dashboard_daily_summary:analysis', nowMs_()-t0, true, '');
-    D.dailyKd=rowsAll.map(r=>({ store:storeNameById_(r.store_id)||'', t:parseDateStr(r.period_date), sales:Number(r.net_sales||0), guests:Number(r.guests||0) })).filter(r=>r.store&&r.t);
+    // F1-b/c（2026-10-03）: 売上・客数に加えて組数・原価・人件費(PA/社員)も読み、GASの確定データが届く前でも
+    // 通常のダッシュボード画面を出せるようにする（adoptKdDaily_）。ページは並列取得（総件数はContent-Rangeで判明）。
+    // 2026-09-19の教訓: PostgRESTは1リクエストの上限(db-max-rows)で切られることがあるため、1000件ずつ・
+    // 総件数まで取り切る。列が未適用の環境(400)では従来の4列だけで取り直す。
+    const PAGE=1000;
+    const urlOf=(sel)=>SSO_SUPA_URL+'/rest/v1/kd_dashboard_daily_summary?select='+sel+'&order=period_date.asc,store_id.asc';
+    const page=async(sel,off)=>{
+      const res=await fetch(urlOf(sel),{ headers:{ apikey:SSO_SUPA_KEY, Authorization:'Bearer '+jwt, 'Range-Unit':'items', Range:off+'-'+(off+PAGE-1), Prefer:'count=exact' } });
+      if(!res.ok) return { ok:false, status:res.status };
+      const rows=await res.json().catch(()=>null);
+      const m=String(res.headers.get('Content-Range')||'').match(/\/(\d+)$/);
+      return { ok:Array.isArray(rows), rows:rows||[], total:m?Number(m[1]):null };
+    };
+    const load=async(sel)=>{
+      const first=await page(sel,0);
+      if(!first.ok) return first;
+      let rows=first.rows;
+      if(first.total!=null && first.total>rows.length){
+        const offs=[]; for(let o=PAGE;o<first.total;o+=PAGE) offs.push(o);
+        const rest=await Promise.all(offs.map(o=>page(sel,o)));
+        for(const r of rest){ if(!r.ok) return { ok:false, status:r.status }; rows=rows.concat(r.rows); }
+      } else if(first.total==null && rows.length>=PAGE){
+        // 総件数が取れない環境：空配列が返るまで順に取る（従来方式）
+        let off=PAGE, guard=0;
+        while(guard++<60){ const r=await page(sel,off); if(!r.ok||!r.rows.length) break; rows=rows.concat(r.rows); off+=r.rows.length; }
+      }
+      return { ok:true, rows };
+    };
+    let full=true;
+    let r=await load('store_id,period_date,net_sales,guests,parties,cost,labor,labor_pa,labor_emp');
+    if(!r.ok){ full=false; r=await load('store_id,period_date,net_sales,guests'); }
+    if(!r.ok){ logApiPerf_('kd_dashboard_daily_summary:analysis', nowMs_()-t0, false, 'http_'+r.status); return; }
+    logApiPerf_('kd_dashboard_daily_summary:analysis', nowMs_()-t0, true, full?'full':'basic');
+    const n=(v)=>Number(v||0);
+    D.dailyKd=r.rows.map(x=>({ store:storeNameById_(x.store_id)||'', t:parseDateStr(x.period_date), sales:n(x.net_sales), guests:n(x.guests),
+      parties:n(x.parties), cost:n(x.cost), labor:n(x.labor), pa:n(x.labor_pa), emp:n(x.labor_emp) })).filter(x=>x.store&&x.t);
+    D.dailyKdFull=full;
+    adoptKdDaily_();
     if(!targetModalOpen_()) render();
   }catch(e){ /* 失敗してもD.dailyKdはnullのまま＝viewAnalysis側が既存のD.daily経路へ自動フォールバック */ }
+}
+// GASの確定データ(D.daily)が届く前に、Supabaseの集計済み日次(D.dailyKd)から通常の画面用D.dailyを作る（F1-b/c）。
+// 現金・社員給与賞与等の内訳は持たないため、現金を使う入金管理などは確定データが届くまで読み込み中表示にする
+// （render()のD.dailyProvisionalゲート）。GASの確定データが届いたら（ingestDaily）完全に置き換わる。
+function adoptKdDaily_(){
+  if(!BOOT_GASLESS_||D.dailyReal_||!D.dailyKdFull) return;
+  const rows=D.dailyKd; if(!rows||!rows.length) return;
+  let max=0;
+  D.daily=rows.map(x=>{ if(x.t>max) max=x.t; return { store:x.store, t:x.t, sales:x.sales, guests:x.guests, pa:x.pa, emp:x.emp, labor:x.labor, cost:x.cost, cash:0,
+    groups:x.parties, empBase:0, welfare:0, commute:0 }; });
+  D.maxDate=new Date(max); D.hasLaborSplit=false; D.diag.daily='kd速報 '+rows.length+'件';
+  const jstYest=(()=>{ const n=new Date(Date.now()+9*3600000); return new Date(n.getUTCFullYear(),n.getUTCMonth(),n.getUTCDate()-1).getTime(); })();
+  D.refDate=new Date(Math.min(max,jstYest));
+  D.dailyProvisional=true;
 }
 // 2026-09-18（ラウンド6 A-12・fetchAnalysisKd_と同じ考え方）: kd_pl_monthly_summaryを
 // Supabase直読み（店舗×年月で1行・全期間ぶん。実測190行程度なので通常1ページで終わる）。
@@ -2681,6 +2713,7 @@ function clearSampleForRealLogin_(){
   if(!D.sampleLoaded||!apiUrl()||!S.auth||!(S.auth.token||S.auth.provisional)) return;
   D.sampleLoaded=false;
   D.daily=[]; D.media=[]; D.deposit=[]; D.review=[]; D.refDate=new Date();
+  D.dailyReal_=false; D.dailyProvisional=false;   // サンプルの取り込みで付いた「確定データ済み」の印を外す
 }
 function afterLogin(){
   clearSampleForRealLogin_();
@@ -2769,13 +2802,16 @@ function render(){
   // ログイン直後に「BigQueryから読み込み中…」で長時間止まって見える。
   const bqGateTabs=(S.tab==='analysis'||S.tab==='target');
   const bqGateHasData=(S.tab==='analysis'&&!!(D.dailyKd&&D.dailyKd.length||D.daily.length))||(S.tab==='target'&&!!D.daily.length);
+  const provGate=!!D.dailyProvisional&&['target','pl','deposit','ad','partner','detail'].includes(S.tab);   // 速報(kd)には現金・社員給与内訳が無いタブは確定データ待ち
   // 2026-09-14追加: 読み込み中/失敗時のプレースホルダは3タブとも「🧪データ元」トグル自体を
   // 覆ってしまい、BQ側がAPI_TIMEOUT_MS(3分)ぶん詰まった場合トグルへ辿り着けず身動きが取れなく
   // なる不具合があった（ユーザー報告「遅すぎて全然開けない」）。管理者だけに見える「シートに戻す」
   // 脱出ボタンをこのプレースホルダ自体にも出す（クリック後は即座にシート経路へ切替・タイムアウトを
   // 待たなくてよい）。
   const bqEscapeBtn=isAdminRole()?`<div style="margin-top:14px"><button class="icon-btn" onclick="App.setDailySource('sheet')">🧪 データ元をシートに戻す</button></div>`:'';
-  if(bqGateTabs && S.useBqDaily && D.dailyBqLoading && !bqGateHasData){
+  if(provGate){
+    body=`<div class="panel" style="text-align:center;padding:60px 20px;color:#8c8375">⏳ このタブの確定データを読み込み中…（ダッシュボードは先に表示されています）</div>`;
+  } else if(bqGateTabs && S.useBqDaily && D.dailyBqLoading && !bqGateHasData){
     body=`<div class="panel" style="text-align:center;padding:60px 20px;color:#8c8375">⏳ BigQueryから読み込み中…${bqEscapeBtn}</div>`;
   } else if(bqGateTabs && S.useBqDaily && D.dailyBqErr && !D.daily.length){
     body=`<div class="panel" style="text-align:center;padding:60px 20px;color:#b5502f">⚠️ データ取得に失敗しました。再読み込みしてください${bqEscapeBtn}</div>`;
@@ -2845,6 +2881,7 @@ function freshnessLine(){
 function connBadge(){
   if(S.connState==='live') return `<span class="st-live">● スプレッドシート連携中</span>（自動更新）<br>最終同期 ${esc(S.lastSync)}`+freshnessLine();
   if(S.connState==='livewarn') return `<span style="color:#b5502f">● 連携中（データ未取込）</span><br>最終同期 ${esc(S.lastSync)}`+freshnessLine();
+  if(S.connState==='connecting'&&D.dailyProvisional) return `<span style="color:#a2803f">● 集計済みデータで表示中</span>（詳細を更新しています）`;
   if(S.connState==='connecting'){
     // 2026-09-19追加（ユーザー報告「ログイン時に同期中でずっと止まっている」対応）: GAS側が
     // 混雑時に実測100〜260秒かかることがあり（HANDOFF.md記載）、従来は「● 同期中…」のまま
