@@ -8109,7 +8109,7 @@ function viewTransferForm(){
       ${inner}
     </div>
   </div>`;
-  if(m.loading) return wrap(`<div class="empty">読み込んでいます…</div>`);
+  if(m.loading) return wrap(`<div class="empty">読み込んでいます…${m.loadingSlow?'<br><span style="font-size:11px">時間がかかっています。電波の良い場所でお待ちください</span>':''}</div>`);
   if(m.error) return wrap(`<div class="empty" style="color:#b5502f">${esc(m.error)}</div>`);
   if(m.done) return wrap(`<div style="text-align:center;padding:16px 0">
     <div style="font-size:15px;font-weight:700">✅ 送信しました</div>
@@ -9355,7 +9355,14 @@ window.App = {
     const btn=$('ctf-submit');
     if(btn){ btn.disabled=true; btn.textContent='送信中…'; }
     try{
-      const d=await api({action:'costTransferPublicSubmit', token:m.token, date, fromStore, toStore, items:itemsRaw, note:m.note||''});
+      // 2026-10-03修正（ユーザー報告「送信中がめちゃくちゃ長い」）: 既定のapi()は管理画面の
+      // 重い処理向けに1回最大180秒×最大4回再試行という設計（admin向けには適切だが、現場の
+      // スマホからの数行だけの書き込みにはGoogleフォーム並みの手応えが要る）。この公開フォームの
+      // 2アクションだけ1回あたり20秒に短縮し、再試行中であることをボタンの文言で分かるようにする
+      // （「固まっているように見える」苦情への対応。再試行回数自体はapi()の仕組みをそのまま使う）。
+      const d=await api({action:'costTransferPublicSubmit', token:m.token, date, fromStore, toStore, items:itemsRaw, note:m.note||''}, 20000, (attempt)=>{
+        if(btn) btn.textContent='送信できませんでした。再試行中…（'+attempt+'回目）';
+      });
       if(!d.ok){
         if(msg) msg.textContent=d.error||'送信に失敗しました';
         if(btn){ btn.disabled=false; btn.textContent='送信'; }
@@ -9364,7 +9371,7 @@ window.App = {
       S.transferForm=Object.assign({},S.transferForm,{done:true, doneTotal:d.total});
       render();
     }catch(e){
-      if(msg) msg.textContent='通信エラー: '+(e&&e.message||e);
+      if(msg) msg.textContent='通信エラー: '+(e&&e.message||e)+'（電波の良い場所でもう一度お試しください）';
       if(btn){ btn.disabled=false; btn.textContent='送信'; }
     }
   },
@@ -9975,12 +9982,15 @@ window.App = {
     const tq=new URLSearchParams(location.search).get('transferForm');
     if(tq){
       S.transferForm={ token:tq, loading:true, rows:[{name:'',qty:''}], note:'' };
-      api({ action:'costTransferPublicInfo', token:tq }).then(d=>{
-        if(!S.transferForm) return; // 読み込み中に離脱していたら何もしない
-        if(d.ok) S.transferForm=Object.assign({}, S.transferForm, { loading:false, stores:d.stores||[], items:d.items||[] });
-        else S.transferForm=Object.assign({}, S.transferForm, { loading:false, error:d.error==='unauthorized'?'このリンクは無効です（再発行されている可能性があります）。管理者に確認してください':(d.error||'読み込みに失敗しました') });
+      api({ action:'costTransferPublicInfo', token:tq }, 20000, ()=>{
+        if(S.transferForm) S.transferForm=Object.assign({}, S.transferForm, { loadingSlow:true });
         render();
-      }).catch(e=>{ if(!S.transferForm) return; S.transferForm=Object.assign({}, S.transferForm, { loading:false, error:'通信エラー: '+(e&&e.message||e) }); render(); });
+      }).then(d=>{
+        if(!S.transferForm) return; // 読み込み中に離脱していたら何もしない
+        if(d.ok) S.transferForm=Object.assign({}, S.transferForm, { loading:false, loadingSlow:false, stores:d.stores||[], items:d.items||[] });
+        else S.transferForm=Object.assign({}, S.transferForm, { loading:false, loadingSlow:false, error:d.error==='unauthorized'?'このリンクは無効です（再発行されている可能性があります）。管理者に確認してください':(d.error||'読み込みに失敗しました') });
+        render();
+      }).catch(e=>{ if(!S.transferForm) return; S.transferForm=Object.assign({}, S.transferForm, { loading:false, loadingSlow:false, error:'通信エラー: '+(e&&e.message||e) }); render(); });
     }
   }catch(e){}
   try{
