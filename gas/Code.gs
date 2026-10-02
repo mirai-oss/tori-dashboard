@@ -673,6 +673,55 @@ function sessionCleanup(){
   }
 }
 
+// ===== セッション用スクリプトプロパティの診断・掃除（2026-10-03追加・エディタから手動実行する運用関数） =====
+// ユーザー報告「セッションの有効期限が切れました（何度も）」「スクリプトプロパティを追加できない」。
+// ログイン情報（tok_<uuid>）がスクリプトプロパティ（容量500KB・1件9KB）に溜まり続けて満杯に近づくと、
+// 新しいログインの書き込みが失敗/不安定になり、セッションが消えたように見える（TOKEN_HOURS=336時間と
+// 長く、掃除（sessionCleanup）はログイン10回に1回だけで取りこぼしもあるため溜まりやすい）。
+// ①sessionPropsReport_: 件数・おおよその容量をログに出すだけ（何も変更しない）
+// ②sessionPropsPurge_: 期限切れ・壊れたtok_だけ削除（他のプロパティは一切触らない）
+// ③sessionPropsPurgeAll_: tok_を全部削除（全員いったんログアウト。②で足りない場合のみ）
+function sessionPropsReport_(){
+  var all = PropertiesService.getScriptProperties().getProperties(), now = new Date().getTime();
+  var total = 0, tokN = 0, tokBytes = 0, expired = 0, otherN = 0;
+  for (var k in all) {
+    var b = (k.length + String(all[k]).length) * 3;   // 日本語混在を見込んだ概算バイト数
+    total += b;
+    if (k.indexOf('tok_') === 0) {
+      tokN++; tokBytes += b;
+      try { var o = JSON.parse(all[k]); if (!o.exp || now > o.exp) expired++; } catch (e) { expired++; }
+    } else otherN++;
+  }
+  var msg = '全プロパティ: ' + (tokN + otherN) + '件 / 概算 ' + Math.round(total / 1024) + 'KB（上限500KB）\n' +
+            'セッション(tok_): ' + tokN + '件 / 概算 ' + Math.round(tokBytes / 1024) + 'KB（うち期限切れ・壊れ ' + expired + '件）\n' +
+            'それ以外の設定: ' + otherN + '件';
+  Logger.log(msg);
+  return msg;
+}
+function sessionPropsPurge_(){
+  var store = PropertiesService.getScriptProperties(), all = store.getProperties(), now = new Date().getTime();
+  var keep = {}, removed = 0;
+  for (var k in all) {
+    if (k.indexOf('tok_') === 0) {
+      var dead = false;
+      try { var o = JSON.parse(all[k]); dead = !o.exp || now > o.exp; } catch (e) { dead = true; }
+      if (dead) { removed++; continue; }
+    }
+    keep[k] = all[k];
+  }
+  if (removed) store.setProperties(keep, true);   // 1回の書き込みで置き換え（1件ずつ消すより速い）
+  Logger.log('期限切れ・壊れたセッションを ' + removed + '件 削除しました');
+  return removed;
+}
+function sessionPropsPurgeAll_(){
+  var store = PropertiesService.getScriptProperties(), all = store.getProperties();
+  var keep = {}, removed = 0;
+  for (var k in all) { if (k.indexOf('tok_') === 0) { removed++; continue; } keep[k] = all[k]; }
+  if (removed) store.setProperties(keep, true);
+  Logger.log('セッションを全て ' + removed + '件 削除しました（全員再ログインが必要）');
+  return removed;
+}
+
 // ================== パスワードの保護 ==================
 // スプレッドシートに平文で置かないため、SHA-256＋アカウントごとのランダムsaltで保存する。
 // 保存形式: 'sha256$<salt>$<hex>'。旧データ（平文）はログイン成功時に自動でこの形式へ移行する。
