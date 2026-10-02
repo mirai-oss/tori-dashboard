@@ -806,6 +806,35 @@ function bqSpeedCheck4() {
   step('K. dataVersion（更新検知）', function () { dataVersion(); });
   Logger.log(out.join('\n'));
 }
+// 社員人件費が画面に出ない時の切り分け（エディタから手動実行・読み取り専用・月ごとの合計金額だけ出す）。
+// ①スプレッドシート「分析_日別店舗」→②BigQuery fact_daily_store のどこで社員人件費が0になっているかを見る。
+function laborDiag() {
+  var out = [];
+  out.push('API人件費切替の開始月(API_LABOR_COST_FROM_YM_): ' + API_LABOR_COST_FROM_YM_ + '（2099-01＝一時停止中＝スプレッドシートの値をそのまま使う）');
+  try {
+    var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('分析_日別店舗');
+    var hdr = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].map(function (h) { return String(h).trim(); });
+    var cD = hdr.indexOf('日付'), cE = hdr.indexOf('社員人件費'), cP = hdr.indexOf('アルバイト人件費'), cS = hdr.indexOf('純売上');
+    var vals = sh.getRange(2, 1, sh.getLastRow() - 1, sh.getLastColumn()).getValues();
+    var byM = {}, maxD = '';
+    for (var i = 0; i < vals.length; i++) {
+      var d = vals[i][cD]; if (!(d instanceof Date)) continue;
+      var m = Utilities.formatDate(d, 'Asia/Tokyo', 'yyyy-MM'), dd = Utilities.formatDate(d, 'Asia/Tokyo', 'yyyy-MM-dd');
+      var o = byM[m] || (byM[m] = { emp: 0, pa: 0, s: 0, n: 0 });
+      o.emp += Number(vals[i][cE]) || 0; o.pa += Number(vals[i][cP]) || 0; o.s += Number(vals[i][cS]) || 0; o.n++;
+      if (Number(vals[i][cS]) > 0 && dd > maxD) maxD = dd;
+    }
+    var ms = Object.keys(byM).sort().slice(-5);
+    out.push('① スプレッドシート(分析_日別店舗)  ※売上のある最新日: ' + maxD);
+    ms.forEach(function (m) { out.push('   ' + m + ': 社員人件費 ' + Math.round(byM[m].emp).toLocaleString() + '円 / アルバイト ' + Math.round(byM[m].pa).toLocaleString() + '円 / 売上 ' + Math.round(byM[m].s).toLocaleString() + '円'); });
+  } catch (e) { out.push('① 失敗: ' + e); }
+  try {
+    var rows = bqRows_("SELECT FORMAT_DATE('%Y-%m', date) AS m, SUM(fulltime_labor_cost) AS emp, SUM(parttime_labor_cost) AS pa, SUM(net_sales) AS s, MAX(IF(net_sales>0, date, NULL)) AS d FROM `" + BQ_PROJECT + '.' + BQ_SALES_DATASET + ".fact_daily_store` WHERE date >= DATE_SUB(CURRENT_DATE('Asia/Tokyo'), INTERVAL 150 DAY) GROUP BY m ORDER BY m");
+    out.push('② BigQuery(fact_daily_store)');
+    for (var r = 1; r < rows.length; r++) out.push('   ' + rows[r][0] + ': 社員人件費 ' + Math.round(Number(rows[r][1]) || 0).toLocaleString() + '円 / アルバイト ' + Math.round(Number(rows[r][2]) || 0).toLocaleString() + '円 / 売上 ' + Math.round(Number(rows[r][3]) || 0).toLocaleString() + '円  ※売上のある最新日: ' + rows[r][4]);
+  } catch (e2) { out.push('② 失敗: ' + e2); }
+  Logger.log(out.join('\n'));
+}
 // F1-d（Q1・旧ID/パスワードログイン廃止の準備）: アカウント管理シートの「有効なアカウント」のうち、
 // メール未登録（＝統合アカウントでログインできず、旧ID/パスワードでしか入れない人）を役職別の人数だけで報告する。
 // 個人情報（名前・ID・メール）は一切出さない。読み取り専用・エディタから手動実行。
