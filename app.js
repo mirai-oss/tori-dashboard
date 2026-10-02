@@ -9379,7 +9379,7 @@ window.App = {
         if(btn) btn.textContent='送信できませんでした。再試行中…（'+attempt+'回目）';
       });
       if(!d.ok){
-        if(msg) msg.textContent=d.error||'送信に失敗しました';
+        if(msg) msg.textContent=d.error==='unauthorized'?'このリンクは無効です（再発行されている可能性があります）。管理者に確認してください':(d.error||'送信に失敗しました');
         if(btn){ btn.disabled=false; btn.textContent='送信'; }
         return;
       }
@@ -9997,16 +9997,44 @@ window.App = {
   try{
     const tq=new URLSearchParams(location.search).get('transferForm');
     if(tq){
-      S.transferForm={ token:tq, loading:true, rows:[{name:'',qty:''}], note:'' };
+      // 2026-10-04修正（ユーザー報告「読み込みが長くてストレス。Googleフォームみたいに開いてすぐ
+      // 入力できるようにしたい」）: 店舗一覧・品目マスタはGASの実行時間（大きなスプレッドシートを
+      // 開くコスト）がかかり毎回数秒〜十数秒かかるが、内容は数日〜数週間単位でしか変わらない。
+      // 前回取得した内容をlocalStorageへ保存しておき、2回目以降のアクセスではそれを即表示（＝入力を
+      // 即開始できる）。裏側では必ず最新データを取りにいき、変化があれば差し替える（送信時の金額は
+      // 金額はいずれにせよサーバー側で品目マスタから再計算するため、表示が一時的に古くてもPLには
+      // 影響しない。トークン自体が再発行で無効化された場合も送信時にサーバーがunauthorizedを返す）。
+      const cacheKey='ctf_cache_v1_'+tq;
+      let cached=null;
+      try{ const raw=localStorage.getItem(cacheKey); if(raw){ const d=JSON.parse(raw); if(d&&Array.isArray(d.stores)&&Array.isArray(d.items)) cached=d; } }catch(e){}
+      S.transferForm = cached
+        ? { token:tq, loading:false, stores:cached.stores, items:cached.items, rows:[{name:'',qty:''}], note:'' }
+        : { token:tq, loading:true, rows:[{name:'',qty:''}], note:'' };
       api({ action:'costTransferPublicInfo', token:tq }, 20000, ()=>{
-        if(S.transferForm) S.transferForm=Object.assign({}, S.transferForm, { loadingSlow:true });
-        render();
+        if(!cached && S.transferForm) S.transferForm=Object.assign({}, S.transferForm, { loadingSlow:true });
+        if(!cached) render();
       }).then(d=>{
         if(!S.transferForm) return; // 読み込み中に離脱していたら何もしない
-        if(d.ok) S.transferForm=Object.assign({}, S.transferForm, { loading:false, loadingSlow:false, stores:d.stores||[], items:d.items||[] });
-        else S.transferForm=Object.assign({}, S.transferForm, { loading:false, loadingSlow:false, error:d.error==='unauthorized'?'このリンクは無効です（再発行されている可能性があります）。管理者に確認してください':(d.error||'読み込みに失敗しました') });
+        if(d.ok){
+          const stores=d.stores||[], items=d.items||[];
+          try{ localStorage.setItem(cacheKey, JSON.stringify({stores,items})); }catch(e){}
+          const changed=!cached || JSON.stringify(stores)!==JSON.stringify(cached.stores) || JSON.stringify(items)!==JSON.stringify(cached.items);
+          S.transferForm=Object.assign({}, S.transferForm, { loading:false, loadingSlow:false, stores, items });
+          if(changed) render(); // キャッシュと同一内容なら再描画しない（入力中のフォーカスを不要に失わせない）
+        }else if(cached){
+          // キャッシュ表示中に最新取得が失敗した場合は、キャッシュがただ古い可能性もあるため
+          // エラー画面には切り替えず現状のフォームを維持する（送信時にサーバー側で最終判定される）
+          S.transferForm=Object.assign({}, S.transferForm, { loadingSlow:false });
+        }else{
+          S.transferForm=Object.assign({}, S.transferForm, { loading:false, loadingSlow:false, error:d.error==='unauthorized'?'このリンクは無効です（再発行されている可能性があります）。管理者に確認してください':(d.error||'読み込みに失敗しました') });
+          render();
+        }
+      }).catch(e=>{
+        if(!S.transferForm) return;
+        if(cached){ S.transferForm=Object.assign({}, S.transferForm, { loadingSlow:false }); return; }
+        S.transferForm=Object.assign({}, S.transferForm, { loading:false, loadingSlow:false, error:'通信エラー: '+(e&&e.message||e) });
         render();
-      }).catch(e=>{ if(!S.transferForm) return; S.transferForm=Object.assign({}, S.transferForm, { loading:false, loadingSlow:false, error:'通信エラー: '+(e&&e.message||e) }); render(); });
+      });
     }
   }catch(e){}
   try{
