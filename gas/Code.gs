@@ -7274,3 +7274,5 @@ function bqDetailItemDailySizeCheck() {
   Logger.log(msg);
   return msg;
 }
+// エディタから実行して確認するための公開版（末尾が _ の関数は実行メニューに出ないため）。DB_PLの年月が空の行の数をログに出す。
+function plBlankYmCheck() { var n = plBlankYmCount_(); Logger.log(n === 0 ? '年月が空の行はありません（0件）' : ('年月が空の行が ' + n + ' 件あります。DB_PLを直してください')); return n; }
