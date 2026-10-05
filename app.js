@@ -4160,6 +4160,87 @@ function fetchDetailKey_(){
   const r=detailRange(); const seg=(S.dSegment==='lunch'||S.dSegment==='dinner')?S.dSegment:'';
   return 'detail|'+[r.from,r.to,S.dStore,S.dBasis||'checkout',seg].join('|');
 }
+// ===== 明細タブのkd直読み（F2・2026-10-05・レーンP回答書 §3 kind:'detail'）=====
+// 日次分解(kd_detail_item_daily/hour_daily)をサーバー側RPCで期間集計して返す。GAS(BigQuery)を通さない。
+// 既定OFF（localStorage.detail_kd='1' で有効）。旧bqDetail経路と並べて突合（🧪新旧突合）して合えば既定ONにする。
+// 対象外（従来経路のみ）: 集計基準 order/arrival、時間帯×商品(hourItem)。
+const DETAIL_KD_=(()=>{ try{ return localStorage.getItem('detail_kd')==='1'; }catch(e){ return false; } })();
+function storeIdByName_(name){
+  if(!D.home||!D.home.stores) return null;
+  const hit=D.home.stores.find(s=>s.storeName===name); return hit?hit.storeId:null;
+}
+async function detailKdCall_(r, daypart, storeName){
+  const jwt=await portalAccessToken().catch(()=>null); if(!jwt) throw new Error('統合アカウント未連携');
+  const body={ kind:'detail', from:r.from, to:r.to, daypart, basis:'excl', limit:3000 };
+  if(storeName&&storeName!=='all'){ const id=storeIdByName_(storeName); if(!id) throw new Error('店舗IDが不明: '+storeName); body.store_ids=[id]; }
+  const res=await fetch(DASH_SUMMARY_API_URL,{ method:'POST', headers:{ 'Content-Type':'application/json', apikey:SSO_SUPA_KEY, Authorization:'Bearer '+jwt }, body:JSON.stringify(body) });
+  const d=await res.json().catch(()=>null);
+  if(!res.ok||!d||d.ok===false) throw new Error((d&&d.error)||('http_'+res.status));
+  return d.detail||d;
+}
+// 旧bqDetailと同じ形（[見出し,行...]）へ。店舗別の客数・組数・売上はレジ実績(D.daily)へ差し替え、区分指定時は会計数比で按分（旧経路のフォールバックと同じ考え方）。
+function detailKdAdapt_(o, oAll, r, seg){
+  const fromT=parseDateStr(r.from), toT=parseDateStr(r.to);
+  const real={};
+  (D.daily||[]).forEach(x=>{ if(x.t<fromT||x.t>toT) return; const a=real[x.store]||(real[x.store]={sales:0,guests:0,groups:0}); a.sales+=x.sales||0; a.guests+=x.guests||0; a.groups+=(x.groups!=null?x.groups:0); });
+  const allBy={}; ((oAll&&oAll.stores)||[]).forEach(x=>{ allBy[x.store_id]=x; });
+  const stores=[['店舗','sales','sales_excl','checks','guests','drink','karaoke','food']];
+  (o.stores||[]).forEach(x=>{
+    const nm=storeNameById_(x.store_id)||''; if(!nm) return;
+    let excl=Number(x.sales_excl||0), checks=Number(x.checks||0), guests=Number(x.guests_otoshi||0);
+    const rawExcl=excl; const rl=real[nm];
+    if(rl&&rl.sales>0){
+      if(seg&&allBy[x.store_id]){
+        const al=allBy[x.store_id]; const rc=Number(al.checks||0), re=Number(al.sales_excl||0);
+        if(rc>0&&re>0){ checks=rl.groups*(Number(x.checks||0)/rc); guests=rl.guests*(Number(x.checks||0)/rc); excl=rl.sales*(rawExcl/re); }
+      } else { excl=rl.sales; checks=rl.groups||checks; guests=rl.guests; }
+    }
+    const sc=rawExcl>0?excl/rawExcl:1;
+    stores.push([nm, Math.round(excl*1.1), Math.round(excl), Math.round(checks), Math.round(guests), Math.round(Number(x.drink_excl||0)*sc), Math.round(Number(x.karaoke_excl||0)*sc), Math.round(Number(x.food_excl||0)*sc)]);
+  });
+  const hour=[['hour','sales','sales_excl','checks','guests','qty']].concat((o.hours||[]).map(x=>[x.hour,Number(x.sales_incl||0),Number(x.sales_excl||0),Number(x.checks||0),Number(x.guests_otoshi||0),Number(x.qty||0)]));
+  const item=[['menu','sales','sales_excl','qty']].concat((o.items||[]).map(x=>[x.item_name,Number(x.sales_incl||0),Number(x.sales_excl||0),Number(x.qty||0)]));
+  return { hour, item, store:stores, hourItem:[], segment:seg||'' };
+}
+async function fetchDetailKd_(r, seg){
+  const dp=seg||'all';
+  const [o,oAll]=await Promise.all([ detailKdCall_(r,dp,S.dStore), seg?detailKdCall_(r,'all',S.dStore):Promise.resolve(null) ]);
+  return detailKdAdapt_(o, oAll, r, seg);
+}
+function showTextReport_(title, text){
+  const old=document.getElementById('perfRep'); if(old) old.remove();
+  const d=document.createElement('div'); d.id='perfRep';
+  d.style.cssText='position:fixed;inset:5% 5%;z-index:99999;background:#fff;border:2px solid #3d5163;border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:8px;box-shadow:0 8px 40px rgba(0,0,0,.35)';
+  d.innerHTML='<div style="font-weight:700"></div><textarea readonly style="flex:1;font:12px/1.5 monospace;width:100%"></textarea><div><button class="icon-btn" id="perfRepClose">閉じる</button></div>';
+  d.firstChild.textContent=title; d.querySelector('textarea').value=text;
+  document.body.appendChild(d); d.querySelector('#perfRepClose').onclick=()=>d.remove();
+}
+// 🧪新旧突合: 今の条件（期間・店舗・区分）で 旧bqDetail(GAS) と 新kd を並べて差を出す。全文をそのまま共有してください。
+async function detailCompare_(){
+  const r=detailRange(); const seg=(S.dSegment==='lunch'||S.dSegment==='dinner')?S.dSegment:'';
+  const L=['期間 '+r.from+'〜'+r.to+' / 店舗 '+S.dStore+' / 区分 '+(seg||'全体'), '（旧=GAS bqDetail、新=kd。差は 新−旧）',''];
+  let oldD=null,newD=null;
+  try{ oldD=await api({ action:'bqDetail', token:S.auth.token, from:r.from, to:r.to, store:S.dStore, basis:'checkout', segment:seg }, 120000); }catch(e){ L.push('旧の取得失敗: '+(e.message||e)); }
+  try{ newD=await fetchDetailKd_(r,seg); }catch(e){ L.push('新の取得失敗: '+(e.message||e)); }
+  if(!oldD||!oldD.ok||!newD){ showTextReport_('🧪新旧突合（取得できず）', L.join('\n')+'\n旧ok='+(oldD&&oldD.ok)); return; }
+  const rows=(a)=>{ const H=a[0]||[]; return a.slice(1).map(x=>{ const o={}; H.forEach((h,i)=>{ o[String(h)]=x[i]; }); return o; }); };
+  const n=v=>Math.round(Number(v)||0);
+  const cmp=(label,a,b)=>{ const d=n(b)-n(a); return label+': 旧 '+n(a).toLocaleString()+' / 新 '+n(b).toLocaleString()+' / 差 '+d.toLocaleString()+(n(a)?' ('+(d/n(a)*100).toFixed(2)+'%)':''); };
+  const so=rows(oldD.store||[]), sn=rows(newD.store||[]);
+  L.push('■ 店舗別');
+  const names=[...new Set(so.map(x=>x['店舗']).concat(sn.map(x=>x['店舗'])))];
+  names.forEach(nm=>{ const a=so.find(x=>x['店舗']===nm)||{}, b=sn.find(x=>x['店舗']===nm)||{};
+    L.push(' '+nm); ['sales_excl','checks','guests','drink','food','karaoke'].forEach(k=>L.push('   '+cmp(k,a[k],b[k]))); });
+  const ho=rows(oldD.hour||[]), hn=rows(newD.hour||[]);
+  const sum=(arr,k)=>arr.reduce((s,x)=>s+(Number(x[k])||0),0);
+  L.push('','■ 時間帯別（合計）'); ['sales_excl','checks','guests','qty'].forEach(k=>L.push(' '+cmp(k,sum(ho,k),sum(hn,k))));
+  L.push(' 時間帯の行数: 旧 '+ho.length+' / 新 '+hn.length);
+  const io=rows(oldD.item||[]), inn=rows(newD.item||[]);
+  L.push('','■ 商品別'); L.push(' 商品数: 旧 '+io.length+' / 新 '+inn.length); L.push(' '+cmp('売上税抜合計',sum(io,'sales_excl'),sum(inn,'sales_excl'))); L.push(' '+cmp('出数合計',sum(io,'qty'),sum(inn,'qty')));
+  L.push(' 上位10（旧）: '+io.slice(0,10).map(x=>x.menu+'='+n(x.sales_excl)).join(' / '));
+  L.push(' 上位10（新）: '+inn.slice(0,10).map(x=>x.menu+'='+n(x.sales_excl)).join(' / '));
+  showTextReport_('🧪明細 新旧突合（全文コピーして共有してください）', L.join('\n'));
+}
 async function fetchDetail(){
   if(!S.auth||!S.auth.token) return;
   const r=detailRange(); const seg=(S.dSegment==='lunch'||S.dSegment==='dinner')?S.dSegment:'';
@@ -4177,6 +4258,13 @@ async function fetchDetail(){
   D.detailLoading=key;
   render(); // 「更新中」バッジを即座に出す
   try{
+    if(DETAIL_KD_&&(S.dBasis||'checkout')==='checkout'){   // F2: kd直読み（失敗時は従来のGAS経路へ）
+      try{
+        const kd=await fetchDetailKd_(r,seg);
+        if(D.detailLoading!==key) return;
+        D.detailData=kd; D.detailKey=key; D.detailStaleKey=null; cacheSave_(key, D.detailData); D.detailLoading=''; render(); return;
+      }catch(ek){ logApiPerf_('detail_kd', 0, false, String(ek&&ek.message||ek).slice(0,40)); }
+    }
     const d=await api({ action:'bqDetail', token:S.auth.token, from:r.from, to:r.to, store:S.dStore, basis:S.dBasis||'checkout', segment:seg });
     if(D.detailLoading!==key) return; // 途中でさらに別条件へ切り替わっていたら、この結果は捨てる（古い結果で上書きしない）
     if(d&&d.ok){
@@ -4226,6 +4314,7 @@ function viewDetail(){
       <option value="dinner" ${seg==='dinner'?'selected':''}>営業区分：ディナー</option>
     </select>
     <span class="period-label">${esc(r.label)} ／ ${S.dStore==='all'?(fullAccess?'全店':'担当店舗（一覧）'):esc(S.dStore)}（${taxLb}${seg?'・'+(seg==='lunch'?'ランチ':'ディナー'):''}）</span>
+    ${isAdminRole()?`<button class="icon-btn" onclick="App.detailCompare()" title="旧(GAS)と新(kd)の数字を並べて比べます">🧪新旧突合</button>`:''}
   </div>
   <div class="note-box no-print" style="margin:4px 0 2px;padding:9px 13px;font-size:11.5px">ℹ️ ${seg?'営業区分（ランチ/ディナー）で絞り込み中の上部サマリー・店舗別テーブルは、レジ実績（同期済みの期間）を、POS明細（dinii）から算出した「その区分の構成比」で按分した数字です（fact_daily_storeが日別合計のみでランチ/ディナー別を持たないため。全体の実績合計とは一致しますが、明細側の推定精度の影響は受けます）。ランチ/ディナーの境目は、店舗×曜日ごとに予約タブの「営業時間」設定を見て判定します（例：土日は夜の部のみの店舗なら、その曜日は終日ディナー扱い。曜日設定が無い店舗は昼の部の閉店時刻、丸ごと未設定の店舗は16:00を既定値として使用。祝日の特別営業は今回は未対応で通常の曜日と同じ扱いです）。時間帯別・商品別の内訳は引き続きPOS明細からの推定です。':'上部サマリー・店舗別テーブルの売上/客数/組数は、レジ実績（同期済みの期間のみ）。時間帯別・商品別の内訳はPOS明細からの推定です（傾向・構成比を見る用）。'}</div>`;
   // その日のイベント（「日」表示かつ特定店舗を選んでいるときだけ・その店舗対象のイベントのみ）。
@@ -9612,6 +9701,7 @@ window.App = {
   ssoToggle(){ S.ssoOpen=!S.ssoOpen; S.loginErr=''; render(); },
   logout(){ if(confirm('ログアウトしますか？')) doLogout(); },
   perfReport(){ showPerfReport_(); },
+  detailCompare(){ detailCompare_(); },
   tab(t){ S.tab=t; render(); if(t==='requestLog') loadRequestLog_(false); if(BOOT_GASLESS_&&S.auth&&S.auth.token) ensureTabData_(t,false,null); },
   reqLogSetMonth(v){ if(/^\d{4}-\d{2}$/.test(v||'')){ S.reqLogYm=v; loadRequestLog_(true); } },
   reqLogKind(k){ S.reqLogKind=k; render(); },
