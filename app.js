@@ -1657,13 +1657,17 @@ function nowMs_(){ return (typeof performance!=='undefined'&&performance.now)?pe
 // 旧動作へ即戻す方法: ブラウザのコンソールで localStorage.setItem('boot_gasless','0') → 再読み込み
 // （戻すのをやめる時は localStorage.removeItem('boot_gasless')）。
 const BOOT_GASLESS_=(()=>{ try{ return localStorage.getItem('boot_gasless')!=='0'; }catch(e){ return true; } })();
-let gasQueue_=Promise.resolve();
 // GAS呼び出しを1本ずつ直列に流す（前の1本が終わるまで次を呼ばない）。フラグOFFなら即実行（従来どおり）。
-function gasRun_(fn){
+// prio=true（ユーザーがタブを開いた時など）は、待っている裏の読み込みより先に流す（実行中の1本は止められない）。
+const gasQ_=[]; let gasBusy_=false;
+async function gasPump_(){
+  if(gasBusy_) return; gasBusy_=true;
+  while(gasQ_.length){ const t=gasQ_.shift(); try{ t.res(await t.fn()); }catch(e){ t.rej(e); } }
+  gasBusy_=false;
+}
+function gasRun_(fn,prio){
   if(!BOOT_GASLESS_) return Promise.resolve().then(fn);
-  const p=gasQueue_.then(()=>fn());
-  gasQueue_=p.catch(()=>{});
-  return p;
+  return new Promise((res,rej)=>{ const t={fn,res,rej}; if(prio) gasQ_.unshift(t); else gasQ_.push(t); gasPump_(); });
 }
 function logPerf_(appName, actionName, ms, ok, errType){
   try{
@@ -2302,7 +2306,7 @@ function gasLoaderForKey_(key){
   return m[key]||null;
 }
 // タブに必要なデータのうち、まだ読んでいないものだけを1本ずつ直列で読む。force=trueなら読み込み済みも読み直す。
-async function ensureTabData_(tab, force, myRun, filter){
+async function ensureTabData_(tab, force, myRun, filter, prio){
   const loaded=D.gasLoaded_||(D.gasLoaded_={});
   const keys=gasKeysForTab_(tab).filter(k=>!filter||filter(k));
   for(const k of keys){
@@ -2311,10 +2315,11 @@ async function ensureTabData_(tab, force, myRun, filter){
     const fn=gasLoaderForKey_(k); if(!fn) continue;
     if(k==='media'){ D.mediaPending=true; }
     await gasRun_(async()=>{
+      if(loaded[k]&&!force) return;                                          // 先に別の呼び出しで読み込み済みなら省略
       if(S.gasSessionLost||!S.auth||!S.auth.token) return;                   // 裏のGASセッション復旧待ち：呼ばない
       if(myRun!=null&&myRun!==prefetchRun) return;                           // 新しい読み込みが始まったら中断
       try{ await fn(); loaded[k]=true; }catch(e){}
-    });
+    }, prio);
   }
   if(!filter&&!keys.includes('media')) D.mediaPending=false;
 }
@@ -2422,6 +2427,8 @@ async function fetchDataFast(opts){
   // ①開いているタブの「数字に必須」なデータ（日次・スポット・PL・入金・借入）を最優先 ②その他のシート(action:data) ③残り(媒体・口コミ等)
   const must=k=>(k==='daily'||k==='spot'||k==='pl'||k==='deposit'||k==='loan');
   await ensureTabData_(S.tab, false, myRun, must);
+  // PLタブは開く人が多く待たされやすいので、重い action:data(約20秒)より先にPL用(pl・loan)を読んでおく
+  if(S.tab!=='pl'&&myTabs().includes('pl')) await ensureTabData_('pl', false, myRun, k=>k==='pl'||k==='loan'||k==='spot');
   await gasRun_(async()=>{ if(myRun!==prefetchRun||!S.auth||!S.auth.token) return; await fetchData(true,{ exclude:excl }); });
   await ensureTabData_(S.tab, false, myRun, k=>!must(k));
   if(myRun!==prefetchRun) return;
@@ -9715,7 +9722,7 @@ window.App = {
   logout(){ if(confirm('ログアウトしますか？')) doLogout(); },
   perfReport(){ showPerfReport_(); },
   detailCompare(){ detailCompare_(); },
-  tab(t){ S.tab=t; render(); if(t==='requestLog') loadRequestLog_(false); if(BOOT_GASLESS_&&S.auth&&S.auth.token) ensureTabData_(t,false,null); },
+  tab(t){ S.tab=t; render(); if(t==='requestLog') loadRequestLog_(false); if(BOOT_GASLESS_&&S.auth&&S.auth.token) ensureTabData_(t,false,null,null,true); },
   reqLogSetMonth(v){ if(/^\d{4}-\d{2}$/.test(v||'')){ S.reqLogYm=v; loadRequestLog_(true); } },
   reqLogKind(k){ S.reqLogKind=k; render(); },
   reqLogReload(){ loadRequestLog_(true); },
