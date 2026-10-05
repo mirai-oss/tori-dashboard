@@ -4176,7 +4176,8 @@ async function detailKdCall_(r, daypart, storeName){
   const res=await fetch(DASH_SUMMARY_API_URL,{ method:'POST', headers:{ 'Content-Type':'application/json', apikey:SSO_SUPA_KEY, Authorization:'Bearer '+jwt }, body:JSON.stringify(body) });
   const d=await res.json().catch(()=>null);
   if(!res.ok||!d||d.ok===false) throw new Error((d&&d.error)||('http_'+res.status));
-  return d.detail||d;
+  const o=d.detail||d; (window.__detailKdDbg=window.__detailKdDbg||[]).push({ body, scope:d.scope||null, nStores:(o.stores||[]).length, nItems:(o.items||[]).length, nHours:(o.hours||[]).length, meta:o.meta||null, keys:Object.keys(d) });
+  return o;
 }
 // 旧bqDetailと同じ形（[見出し,行...]）へ。店舗別の客数・組数・売上はレジ実績(D.daily)へ差し替え、区分指定時は会計数比で按分（旧経路のフォールバックと同じ考え方）。
 function detailKdAdapt_(o, oAll, r, seg){
@@ -4229,7 +4230,7 @@ function showTextReport_(title, text){
 async function detailCompare_(){
   const r=detailRange(); const seg=(S.dSegment==='lunch'||S.dSegment==='dinner')?S.dSegment:'';
   const L=['期間 '+r.from+'〜'+r.to+' / 店舗 '+S.dStore+' / 区分 '+(seg||'全体'), '（旧=GAS bqDetail、新=kd。差は 新−旧）',''];
-  let oldD=null,newD=null;
+  let oldD=null,newD=null; window.__detailKdDbg=[];
   try{ oldD=await api({ action:'bqDetail', token:S.auth.token, from:r.from, to:r.to, store:S.dStore, basis:'checkout', segment:seg }, 120000); }catch(e){ L.push('旧の取得失敗: '+(e.message||e)); }
   try{ newD=await fetchDetailKd_(r,seg); }catch(e){ L.push('新の取得失敗: '+(e.message||e)); }
   if(!oldD||!oldD.ok||!newD){ showTextReport_('🧪新旧突合（取得できず）', L.join('\n')+'\n旧ok='+(oldD&&oldD.ok)); return; }
@@ -4249,6 +4250,7 @@ async function detailCompare_(){
   L.push('','■ 商品別'); L.push(' 商品数: 旧 '+io.length+' / 新 '+inn.length); L.push(' '+cmp('売上税抜合計',sum(io,'sales_excl'),sum(inn,'sales_excl'))); L.push(' '+cmp('出数合計',sum(io,'qty'),sum(inn,'qty')));
   L.push(' 上位10（旧）: '+io.slice(0,10).map(x=>x.menu+'='+n(x.sales_excl)).join(' / '));
   L.push(' 上位10（新）: '+inn.slice(0,10).map(x=>x.menu+'='+n(x.sales_excl)).join(' / '));
+  L.push('','■ 通信内容（デバッグ）'); (window.__detailKdDbg||[]).forEach(x=>L.push(' '+JSON.stringify(x)));
   showTextReport_('🧪明細 新旧突合（全文コピーして共有してください）', L.join('\n'));
 }
 async function fetchDetail(){
