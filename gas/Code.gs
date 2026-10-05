@@ -3045,6 +3045,22 @@ function bqPlYm_(v) {
   return String(v || '').trim();
 }
 function bqCsvStr_(v) { return '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"'; }
+// ===== 2026-10-05追加: PL同期の安全装置とkd即時反映 =====
+// 年月が空の行がDB_PLにあると、そのままBigQuery/Supabase(kd)へ広がってPLが崩れる（2026-10の事故）。
+// 空の行があるうちは同期を止める（前回の正しい値が画面に残る）。直したら次の保存・同期で自動的に再開する。
+function plBlankYmCount_() {
+  try {
+    var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_PL');
+    if (!sh || sh.getLastRow() < 2) return 0;
+    var vals = sh.getRange(2, 1, sh.getLastRow() - 1, 3).getValues(), n = 0;
+    for (var i = 0; i < vals.length; i++) {
+      if (String(vals[i][2] || '').trim() && !/^\d{4}\/\d{2}$/.test(bqPlYm_(vals[i][0]))) n++;
+    }
+    return n;
+  } catch (e) { return 0; }
+}
+// レーンP(Supabase)のkd_を即時に入れ替えるよう依頼する（失敗しても保存自体には影響させない）。
+function kdNotifyEntries_(kinds) { try { var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN'); if (!tk) return; UrlFetchApp.fetch('https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/keiei-kd-refresh', {method:'post', contentType:'application/json', muteHttpExceptions:true, payload: JSON.stringify({op:'entries', kinds:kinds, token:tk})}); } catch (e) {} }
 function bqSyncPL(p) {
   var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
   if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
@@ -3064,11 +3080,13 @@ function bqSyncPL(p) {
       isFinite(amt) ? amt.toFixed(6) : '0', bqCsvStr_(r[5]), bqCsvStr_(r[6])
     ].join(','));
   }
+  var blankYm = plBlankYmCount_();
+  if (blankYm > 0) return { ok: false, error: 'DB_PLに年月が空の行が ' + blankYm + ' 件あるため同期を止めました（年月を直すと自動で再開します）' };
   var csv = lines.join('\n');
   var plSyncRes = bqLoadSheetToTable_(csv, 'stg_pl', BQ_STG_PL_SCHEMA);
   // PL画面のキャッシュ（bqGetPL・実装指示書_ダッシュボード高速化タスク3）を無効化。
   // 同期直後にキャッシュが古いままだと「入力したのに反映されない」に見えるため。
-  if (plSyncRes && plSyncRes.ok) bqCacheGenBump_('pl');
+  if (plSyncRes && plSyncRes.ok) { bqCacheGenBump_('pl'); kdNotifyEntries_(['pl']); }
   return plSyncRes;
 }
 // PLタブ用: DB_PLのBQミラーを読む。bqDailyStoreと同じ方針（ログイン必須・店舗スコープ制限）で、
@@ -3124,7 +3142,7 @@ function bqSyncSpotNow_() {
     if (!sh) return { ok: false, error: 'シートが見つかりません' };
     var csv = bqSheetToCsv_(sh, BQ_STG_SPOT_SCHEMA, 2, bqStoreNameIndex_());
     var res = bqLoadSheetToTable_(csv, 'stg_spot', BQ_STG_SPOT_SCHEMA);
-    if (res && res.ok) bqCacheGenBump_('spot');
+    if (res && res.ok) { bqCacheGenBump_('spot'); kdNotifyEntries_(['spot']); }
     return res;
   } catch (e) { return { ok: false, error: String(e && e.message || e) }; }
 }
@@ -3170,7 +3188,7 @@ function bqSyncLoanNow_() {
     if (!sh) return;
     var csv = bqSheetToCsv_(sh, BQ_STG_LOAN_SCHEMA, 2, bqStoreNameIndex_());
     var res = bqLoadSheetToTable_(csv, 'stg_loan_principal', BQ_STG_LOAN_SCHEMA);
-    if (res && res.ok) bqCacheGenBump_('loan');
+    if (res && res.ok) { bqCacheGenBump_('loan'); kdNotifyEntries_(['loan']); }
   } catch (e) { /* 即時同期失敗は無視（次回定期同期で追いつく） */ }
 }
 // 簡易キャッシュフロー（PLタブ）用: stg_loan_principalを店舗権限フィルタ付きで読む。bqGetSpotと同じ方針。
