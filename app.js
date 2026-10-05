@@ -7102,6 +7102,7 @@ function viewPL(){
     <div class="seg">${[['month','月次'],['year','年間'],['custom','期間指定']].map(([k,l])=>`<button class="${P===k?'on':''}" onclick="App.set('plPeriod','${k}')">${l}</button>`).join('')}</div>
     ${ctrlHtml}
     ${canUse('plInput')?`<button class="icon-btn primary" onclick="App.openPlInput()">✎ 経費を入力</button>`:''}
+    ${isAdminRole()?`<button class="icon-btn primary" onclick="App.openPlGrid()" title="Supabaseに直接保存する表形式の入力画面（年月が空の行は保存できません）">📝 PL入力（表）</button>`:''}
     ${canUse('plInput')?`<button class="icon-btn" onclick="App.openMfImport()">📥 MF取込</button>`:''}
     ${canUse('spot')?`<button class="icon-btn" onclick="App.openSpotInput()">＋ スポット人件費</button>`:''}
     ${canUse('spot')?`<button class="icon-btn" onclick="App.syncSpotPl()" title="スポット人件費の入力・削除をPLへ今すぐ反映します（普段は毎日AM5:00に自動実行）">🔄 スポット人件費をPLへ反映</button>`:''}
@@ -8350,6 +8351,60 @@ async function loadAccounts(){
 }
 
 /* ---------------- モーダル ---------------- */
+
+/* ---- PL入力（表形式・F3・2026-10-05）----
+ * 正本はSupabase pl_entries（年月必須・変更履歴つき）。表で見渡して編集／スプレッドシートから貼り付け／現状の出力(コピー)ができる。
+ * 保存はRPC pl_entries_bulk_upsert（1行でも不正なら何も書かない・理由を行ごとに表示）。削除はソフト削除（履歴に残る）。 */
+async function plRpc_(name, body){
+  const jwt=await portalAccessToken().catch(()=>null); if(!jwt) throw new Error('統合アカウントでログインしてください');
+  const res=await fetch(SSO_SUPA_URL+'/rest/v1/rpc/'+name,{ method:'POST', headers:{ 'Content-Type':'application/json', apikey:SSO_SUPA_KEY, Authorization:'Bearer '+jwt }, body:JSON.stringify(body||{}) });
+  const d=await res.json().catch(()=>null);
+  if(!res.ok) throw new Error((d&&(d.message||d.error))||('HTTP '+res.status));
+  return d;
+}
+function plgRowHtml_(r,i){
+  const err=(S.modal.errs||{})[i]; const st='width:100%;box-sizing:border-box;padding:3px 4px;font-size:12px';
+  const cell=(f,w,extra)=>`<td style="padding:1px 2px"><input style="${st};${extra||''}" value="${esc(r[f]==null?'':r[f])}" oninput="App.plgSet(${i},'${f}',this.value)"></td>`;
+  return `<tr style="${r._del?'opacity:.4;text-decoration:line-through;':''}${err?'background:#fbe9e4;':''}" title="${esc(err||'')}">
+    ${cell('ym')}${cell('store')}${cell('item')}<td style="padding:1px 2px"><select style="${st}" oninput="App.plgSet(${i},'cat',this.value)">${PLG_CATS_.map(c=>`<option ${String(r.cat||'').toUpperCase()===c?'selected':''}>${c}</option>`).join('')}</select></td>
+    ${cell('amount',0,'text-align:right')}${cell('sub')}${cell('memo')}
+    <td style="font-size:11px;color:#8c8375;white-space:nowrap">${esc(r.source||(r.id?'':'新規'))}</td>
+    <td><button class="icon-btn" style="padding:1px 6px" onclick="App.plgDel(${i})">${r._del?'↩':'🗑'}</button></td></tr>${err?`<tr><td colspan="9" style="color:#b5502f;font-size:11px;padding:0 4px 4px">⚠ ${esc(err)}</td></tr>`:''}`;
+}
+const PLG_CATS_=['F','L','A','R','O','S','X'];
+function plgBodyHtml_(){ const rows=S.modal.rows||[]; return rows.length?rows.map((r,i)=>plgRowHtml_(r,i)).join(''):`<tr><td colspan="9" class="empty" style="padding:24px;text-align:center;color:#8c8375">${S.modal.loading?'読み込み中…':'この条件の行がありません（＋行を追加／貼り付け取込ができます）'}</td></tr>`; }
+function plGridModal(){
+  const m=S.modal; const stores=allStores();
+  return `<div class="modal-bg" onclick="if(event.target===this)App.closeModal()"><div class="modal" style="max-width:1180px;width:96vw">
+    <h3>📝 PL入力（表形式）</h3>
+    <div class="sub">年月は必須です。保存すると Supabase に直接書き込まれ（変更履歴つき）、PL画面に反映されます。スプレッドシートからの貼り付け（列の順: 年月・店舗名・勘定科目・区分・金額・メモ・補助科目）もできます。</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0">
+      <input type="month" value="${esc(m.from)}" oninput="S.modal.from=this.value"> 〜 <input type="month" value="${esc(m.to)}" oninput="S.modal.to=this.value">
+      <select oninput="S.modal.store=this.value"><option value="all" ${m.store==='all'?'selected':''}>全店</option><option value="__common__" ${m.store==='__common__'?'selected':''}>全社共通のみ</option>${stores.map(x=>`<option ${m.store===x?'selected':''}>${esc(x)}</option>`).join('')}</select>
+      <button class="icon-btn" onclick="App.plgLoad()">読み込み</button>
+      <button class="icon-btn" onclick="App.plgAdd()">＋ 行を追加</button>
+      <button class="icon-btn" onclick="App.plgPasteToggle()">📋 貼り付け取込</button>
+      <button class="icon-btn" onclick="App.plgCopy()">⧉ 表をコピー</button>
+    </div>
+    <div id="plg-paste" style="display:${m.paste?'block':'none'};margin:6px 0"><textarea id="plg-paste-ta" style="width:100%;height:90px;font:12px monospace" placeholder="スプレッドシートの行をコピーして、ここに貼り付けます"></textarea><button class="icon-btn" onclick="App.plgPasteApply()">この内容を表に追加</button></div>
+    <div class="scroll-x" style="max-height:52vh"><table class="tbl" style="min-width:980px"><thead><tr><th>年月</th><th>店舗名（空=全社共通）</th><th>勘定科目</th><th>区分</th><th>金額</th><th>補助科目</th><th>メモ</th><th>由来</th><th></th></tr></thead><tbody id="plg-body">${plgBodyHtml_()}</tbody></table></div>
+    <label style="font-size:12px;display:block;margin-top:8px"><input type="checkbox" ${m.replace?'checked':''} onchange="S.modal.replace=this.checked"> 表にある（年月×店舗）の手入力行を、いまの表の内容で置き換える（表にない手入力行は削除されます）</label>
+    <div id="plg-msg" style="font-size:12px;color:${m.err?'#b5502f':'#4a7a6a'};margin:8px 0;white-space:pre-wrap">${esc(m.msg||'')}</div>
+    <div class="modal-btns"><button class="icon-btn" onclick="App.plgSave(true)">検証だけ</button><button class="icon-btn primary" onclick="App.plgSave(false)">保存</button><button class="icon-btn" onclick="App.closeModal()">閉じる</button></div>
+  </div></div>`;
+}
+function plgPayload_(){
+  const m=S.modal, rows=[], idx=[], dels=[];
+  (m.rows||[]).forEach((r,i)=>{
+    if(r._del){ if(r.id) dels.push(r.id); return; }
+    if(r.id&&!r._dirty&&!m.replace) return;
+    if(!r.id&&!String(r.item||'').trim()&&!String(r.amount||'').trim()) return;   // 空の新規行は無視
+    const o={ year_month:String(r.ym||'').trim(), store_name:String(r.store||'').trim(), item:String(r.item||'').trim(), category:String(r.cat||'').trim().toUpperCase(), amount:String(r.amount==null?'':r.amount).trim(), memo:String(r.memo||''), sub_item:String(r.sub||'') };
+    if(r.id) o.id=r.id; if(r.source) o.source=r.source; if(r.source_key) o.source_key=r.source_key;
+    rows.push(o); idx.push(i);
+  });
+  return { rows, idx, dels };
+}
 function viewModal(){
   if(S.modal==='connect') return connectModal();
   if(S.modal&&S.modal.type==='account') return accountModal();
@@ -8361,6 +8416,7 @@ function viewModal(){
   if(S.modal&&S.modal.type==='mfImport') return mfImportModal();
   if(S.modal&&S.modal.type==='depNote') return depNoteModal();
   if(S.modal&&S.modal.type==='plInput') return plInputModal();
+  if(S.modal&&S.modal.type==='plGrid') return plGridModal();
   if(S.modal&&S.modal.type==='adInput') return adInputModal();
   if(S.modal&&S.modal.type==='adSales') return adSalesModal();
   if(S.modal&&S.modal.type==='rsvImport') return rsvImportModal();
@@ -10267,6 +10323,59 @@ window.App = {
     }catch(e){ m.msg='通信エラー: '+e.message; render(); }
   },
   /* ---- PL経費入力 ---- */
+  openPlGrid(){
+    const n=new Date(Date.now()+9*3600000); const ym=n.getUTCFullYear()+'-'+String(n.getUTCMonth()+1).padStart(2,'0');
+    S.modal={ type:'plGrid', from:ym, to:ym, store:'all', rows:[], loading:false, msg:'', err:false, errs:{}, replace:false, paste:false };
+    render(); App.plgLoad();
+  },
+  async plgLoad(){
+    const m=S.modal; if(!m||m.type!=='plGrid') return; m.loading=true; m.msg='読み込み中…'; m.err=false; m.errs={}; render();
+    try{
+      const body={ p_from:m.from, p_to:m.to, p_store:null, p_include_deleted:false };
+      if(m.store!=='all'&&m.store!=='__common__'){ const id=storeIdByName_(m.store); if(id) body.p_store=id; }
+      const d=await plRpc_('pl_entries_export', body);
+      if(!d||d.ok===false) throw new Error((d&&d.error)||'取得に失敗しました');
+      let rows=(d.rows||[]).map(x=>({ id:x.id, ym:x.year_month, store:x.store_name||'', item:x.item, cat:x.category, amount:x.amount, sub:x.sub_item||'', memo:x.memo||'', source:x.source||'', source_key:x.source_key||'' }));
+      if(m.store==='__common__') rows=rows.filter(r=>!r.store);
+      m.rows=rows; m.msg=rows.length+' 行を読み込みました'; m.err=false;
+    }catch(e){ m.rows=[]; m.msg='読み込めませんでした: '+(e.message||e)+'\n（移行前は空です／統合アカウントでのログインが必要です）'; m.err=true; }
+    m.loading=false; render();
+  },
+  plgSet(i,f,v){ const r=S.modal.rows[i]; if(!r) return; r[f]=v; r._dirty=true; },
+  plgAdd(){ const m=S.modal; m.rows.unshift({ ym:m.from, store:(m.store==='all'||m.store==='__common__')?'':m.store, item:'', cat:'O', amount:'', sub:'', memo:'', source:'', _dirty:true }); m.errs={}; const b=$('plg-body'); if(b) b.innerHTML=plgBodyHtml_(); },
+  plgDel(i){ const r=S.modal.rows[i]; if(!r) return; if(!r.id&&!r._del){ S.modal.rows.splice(i,1); } else r._del=!r._del; S.modal.errs={}; const b=$('plg-body'); if(b) b.innerHTML=plgBodyHtml_(); },
+  plgPasteToggle(){ S.modal.paste=!S.modal.paste; const d=$('plg-paste'); if(d) d.style.display=S.modal.paste?'block':'none'; },
+  plgPasteApply(){
+    const ta=$('plg-paste-ta'); const t=ta?ta.value:''; const m=S.modal; let n=0;
+    t.split(/\r?\n/).forEach(line=>{
+      if(!line.trim()) return; const c=line.split('\t'); if(/^年月/.test(String(c[0]).trim())) return;
+      m.rows.unshift({ ym:String(c[0]||'').trim(), store:String(c[1]||'').trim(), item:String(c[2]||'').trim(), cat:String(c[3]||'O').trim().toUpperCase()||'O', amount:String(c[4]||'').trim(), memo:String(c[5]||'').trim(), sub:String(c[6]||'').trim(), source:'', _dirty:true }); n++; });
+    if(ta) ta.value=''; m.errs={}; m.msg=n+' 行を表の先頭に追加しました。内容を確認して「検証だけ」→「保存」を押してください'; m.err=false;
+    const b=$('plg-body'); if(b) b.innerHTML=plgBodyHtml_(); const g=$('plg-msg'); if(g){ g.textContent=m.msg; g.style.color='#4a7a6a'; }
+  },
+  async plgCopy(){
+    const rows=(S.modal.rows||[]).filter(r=>!r._del);
+    const txt=['年月','店舗名','勘定科目','区分','金額','メモ','補助科目'].join('\t')+'\n'+rows.map(r=>[r.ym,r.store,r.item,r.cat,r.amount,r.memo,r.sub].join('\t')).join('\n');
+    try{ await navigator.clipboard.writeText(txt); toast('表をコピーしました（スプレッドシートに貼り付けできます）'); }catch(e){ const ta=$('plg-paste-ta'); S.modal.paste=true; const d=$('plg-paste'); if(d) d.style.display='block'; if(ta){ ta.value=txt; ta.select(); } toast('コピーできなかったので、下の欄に出しました（全選択してコピーしてください）'); }
+  },
+  async plgSave(dry){
+    const m=S.modal; const pl=plgPayload_(); m.errs={};
+    const msg=(t,err)=>{ m.msg=t; m.err=!!err; const g=$('plg-msg'); if(g){ g.textContent=t; g.style.color=err?'#b5502f':'#4a7a6a'; } };
+    if(!pl.rows.length&&!pl.dels.length){ msg('保存する変更がありません',false); return; }
+    msg(dry?'検証中…':'保存中…',false);
+    try{
+      let res={ ok:true, inserted:0, updated:0, deleted:0 };
+      if(pl.rows.length){
+        res=await plRpc_('pl_entries_bulk_upsert',{ p_rows:pl.rows, p_mode:m.replace?'replace_month_store':'upsert', p_dry_run:!!dry, p_actor:null, p_scope:[] });
+        if(!res||res.ok===false){ (res.errors||[]).forEach(e=>{ const ri=pl.idx[e.index]; if(ri!=null) m.errs[ri]=e.reason; }); const b=$('plg-body'); if(b) b.innerHTML=plgBodyHtml_(); msg('修正が必要な行が '+((res&&res.error_count)||0)+' 件あります（赤い行）。何も保存していません。',true); return; }
+      }
+      if(dry){ msg('検証OK（'+pl.rows.length+' 行）。保存すると書き込まれます'+(pl.dels.length?'／削除 '+pl.dels.length+' 行':''),false); return; }
+      if(pl.dels.length) await plRpc_('pl_entries_delete',{ p_ids:pl.dels, p_actor:null });
+      msg('保存しました（追加 '+(res.inserted||0)+'／更新 '+(res.updated||0)+'／削除 '+((res.deleted||0)+pl.dels.length)+'）。PLへは数十秒で反映されます',false);
+      toast('PLを保存しました'); setTimeout(()=>{ if(S.auth) fetchKdEntries_(); },25000);
+      await App.plgLoad();
+    }catch(e){ msg('保存できませんでした: '+(e.message||e),true); }
+  },
   openPlInput(){
     if(!requireFeature('plInput'))return;
     const m0=plMonthDate();
