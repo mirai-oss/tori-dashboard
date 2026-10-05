@@ -2877,7 +2877,9 @@ function renderInner_(){
   // ログイン直後に「BigQueryから読み込み中…」で長時間止まって見える。
   const bqGateTabs=(S.tab==='analysis'||S.tab==='target');
   const bqGateHasData=(S.tab==='analysis'&&!!(D.dailyKd&&D.dailyKd.length||D.daily.length))||(S.tab==='target'&&!!D.daily.length);
-  const provGate=!!D.dailyProvisional&&['target','pl','deposit','ad','partner','detail'].includes(S.tab);   // 速報(kd)には現金・社員給与内訳が無いタブは確定データ待ち
+  // F1-b/c: 入金タブはkd_deposit_monthly_summaryの速報(当月)があれば確定データ待ちにしない（viewDepositが速報表で描く）
+  const depFastOk=S.tab==='deposit'&&!D.deposit.length&&!!(D.depositSummaryFast&&D.depositSummaryFast.length)&&D.depositSummaryFastYm===ymdStr(depMonthDate()).slice(0,7);
+  const provGate=!!D.dailyProvisional&&!depFastOk&&['target','pl','deposit','ad','partner','detail'].includes(S.tab);   // 速報(kd)には現金・社員給与内訳が無いタブは確定データ待ち
   // 2026-09-14追加: 読み込み中/失敗時のプレースホルダは3タブとも「🧪データ元」トグル自体を
   // 覆ってしまい、BQ側がAPI_TIMEOUT_MS(3分)ぶん詰まった場合トグルへ辿り着けず身動きが取れなく
   // なる不具合があった（ユーザー報告「遅すぎて全然開けない」）。管理者だけに見える「シートに戻す」
@@ -2887,7 +2889,7 @@ function renderInner_(){
   if(provGate&&S.tab==='pl'){
     body=viewPLFast_();
   } else if(provGate){
-    body=`<div class="panel" style="text-align:center;padding:60px 20px;color:#8c8375">⏳ このタブの確定データを読み込み中…（ダッシュボードは先に表示されています）</div>`;
+    body=`<div class="panel" style="text-align:center;padding:60px 20px;color:#8c8375">⏳ このタブの確定データを読み込み中…（ダッシュボードは先に表示されています）<div style="margin-top:10px;font-size:12px">${S.gasSessionLost?'裏の接続を復旧しています。しばらくお待ちください':'画面はそのまま、読み込みが終わり次第自動で表示されます（初回は30秒〜1分かかることがあります）'}</div></div>`;
   } else if(bqGateTabs && S.useBqDaily && D.dailyBqLoading && !bqGateHasData){
     body=`<div class="panel" style="text-align:center;padding:60px 20px;color:#8c8375">⏳ BigQueryから読み込み中…${bqEscapeBtn}</div>`;
   } else if(bqGateTabs && S.useBqDaily && D.dailyBqErr && !D.daily.length){
