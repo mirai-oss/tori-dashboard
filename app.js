@@ -489,7 +489,7 @@ function ingestDaily(rows){
     if(t>max)max=t;
   }
   if(!recs.length){ D.diag.daily='0件（ヘッダーは一致したがデータ行なし）'; return false; }
-  D.daily=recs; D.maxDate=new Date(max); D.diag.daily='OK '+recs.length+'件'; D.dailyReal_=true; D.dailyProvisional=false;
+  D.daily=recs; D.maxDate=new Date(max); D.diag.daily='OK '+recs.length+'件'; D.dailyReal_=true; D.dailyProvisional=false; D.dailySrc_='gas';
   D.hasLaborSplit=(iEmpBase>=0&&iWelf>=0&&iComm>=0);
   const jstYest=(()=>{ const n=new Date(Date.now()+9*3600000); return new Date(n.getUTCFullYear(),n.getUTCMonth(),n.getUTCDate()-1).getTime(); })();
   D.refDate=new Date(Math.min(max,jstYest));
@@ -1936,6 +1936,8 @@ function bqMonthsForDaily_(){
 async function fetchDepCarry(beforeStr){
   if(!S.auth||!S.auth.token) return;               // デモ・未ログインは対象外（ローカル計算のまま）
   if(S.depCarry.key===beforeStr && (S.depCarry.rows||S.depCarry.loading)) return; // 取得済み or 取得中
+  const kdc=D.kdCarry_&&D.kdCarry_[beforeStr.slice(0,7)];
+  if(kdc&&kdc.length){ S.depCarry={ key:beforeStr, rows:kdc, loading:false, err:'' }; render(); return; }   // F1-b/c: kd_deposit_carry（GAS depositCarryと全店一致を確認済み）
   S.depCarry={ key:beforeStr, rows:S.depCarry.key===beforeStr?S.depCarry.rows:null, loading:true, err:'' };
   try{
     const d=await api({ action:'depositCarry', token:S.auth.token, before:beforeStr });
@@ -2304,6 +2306,7 @@ async function ensureTabData_(tab, force, myRun, filter){
   const loaded=D.gasLoaded_||(D.gasLoaded_={});
   const keys=gasKeysForTab_(tab).filter(k=>!filter||filter(k));
   for(const k of keys){
+    if(!force&&(k==='daily'||k==='deposit')&&D.kdFullP_){ try{ await D.kdFullP_; }catch(e){} }   // F1-b/c: kdで取れたらGASは呼ばない
     if(!force&&loaded[k]) continue;
     const fn=gasLoaderForKey_(k); if(!fn) continue;
     if(k==='media'){ D.mediaPending=true; }
@@ -2328,15 +2331,76 @@ async function freshnessFromSupabase_(){
       jobs:rows.map(x=>({ job:x.job, finishedAt:x.finished_at, status:x.status, rows:x.rows, error:x.error||null })) };
   }catch(e){ return null; }
 }
+
+// F1-b/c（2026-10-05・レーンP回答書 回答_レーンP_経営D_F2用kd追加）: 日次(現金・人件費内訳つき)・入金日次・月初繰越を
+// keiei-api-dashboard-summary(kind:'daily'|'deposit_daily'|'deposit_carry')から読み、GASを待たずに確定データとして使う。
+// 失敗時は何も変えない（＝従来どおりGAS bqDailyStoreが読まれる）。成功すると D.daily=確定(kd)・gasLoaded_.daily=true で
+// GASの日次読みを省略する。旧経路へは localStorage.kd_full=0 で即戻せる。
+const KD_FULL_ = (()=>{ try{ return localStorage.getItem('kd_full')!=='0'; }catch(e){ return true; } })();
+async function dashSummaryPaged_(kind, months){
+  const jwt=await portalAccessToken().catch(()=>null); if(!jwt) return null;
+  const rows=[]; let offset=0, guard=0;
+  while(guard++<6){
+    const res=await fetch(DASH_SUMMARY_API_URL,{ method:'POST', headers:{ 'Content-Type':'application/json', apikey:SSO_SUPA_KEY, Authorization:'Bearer '+jwt },
+      body:JSON.stringify({ kinds:[kind], months, limit:5000, offset }) });
+    const d=await res.json().catch(()=>null);
+    if(!res.ok||!d||!d.ok) return null;
+    const part=(d.results&&d.results[kind])||d;
+    rows.push(...(part.rows||[]));
+    if(!part.hasMore) break;
+    offset=part.nextOffset!=null?part.nextOffset:rows.length;
+  }
+  return rows;
+}
+async function fetchKdFull_(){
+  if(!KD_FULL_||!authed_()||!BOOT_GASLESS_) return false;
+  const t0=nowMs_();
+  try{
+    const mw=monthsWindow();
+    const months=mw===0?36:Math.min(36,bqMonthsForDaily_()||36);
+    const [daily,depDaily,carry]=await Promise.all([ dashSummaryPaged_('daily',months), dashSummaryPaged_('deposit_daily',months), dashSummaryPaged_('deposit_carry',36) ]);
+    if(!daily||!daily.length){ logApiPerf_('kd_full:daily', nowMs_()-t0, false, 'empty'); return false; }
+    const recs=[]; let max=0;
+    daily.forEach(r=>{
+      const st=storeNameById_(r.store_id); const t=parseDateStr(r.date); if(!st||!t) return;
+      recs.push({ store:st, t, sales:Number(r.net_sales||0), guests:Number(r.guests_total||0), pa:Number(r.parttime_labor_cost||0), emp:Number(r.fulltime_labor_cost||0),
+        labor:Number(r.labor_cost_total||0), cost:Number(r.cogs||0), cash:Number(r.cash||0), groups:(r.parties_total==null?null:Number(r.parties_total)),
+        empBase:Number(r.employee_salary_bonus||0), welfare:Number(r.statutory_welfare||0), commute:Number(r.commute_allowance||0) });
+      if(t>max) max=t;
+    });
+    if(!recs.length) return false;
+    D.daily=recs; D.maxDate=new Date(max); D.hasLaborSplit=true; D.diag.daily='OK kd '+recs.length+'件';
+    D.dailyReal_=true; D.dailyProvisional=false; D.dailyBqLoading=false; D.dailyBqErr=''; D.dailySrc_='kd';
+    const jstYest=(()=>{ const n=new Date(Date.now()+9*3600000); return new Date(n.getUTCFullYear(),n.getUTCMonth(),n.getUTCDate()-1).getTime(); })();
+    D.refDate=new Date(Math.min(max,jstYest));
+    if(depDaily){
+      D.deposit=depDaily.map(r=>{ const st=storeNameById_(r.store_id); const t=parseDateStr(r.date); return (st&&t)?{ store:st, t, amount:Number(r.deposit_amount||0) }:null; }).filter(x=>x&&x.amount);
+      D.diag.deposit='OK kd '+D.deposit.length+'件'; D.depositBqErr=''; D.depositBqLoading=false;
+      (D.gasLoaded_||(D.gasLoaded_={})).deposit=true;
+    }
+    if(carry){
+      D.kdCarry_={};
+      carry.forEach(r=>{ const st=storeNameById_(r.store_id); if(!st) return; (D.kdCarry_[r.year_month]||(D.kdCarry_[r.year_month]=[])).push([st, Number(r.cash_before||0), Number(r.deposit_before||0)]); });
+    }
+    D.kdFullOk_=true; (D.gasLoaded_||(D.gasLoaded_={})).daily=true;
+    logApiPerf_('kd_full:daily', nowMs_()-t0, true, '');
+    if(S.useBqDaily) S.connState='live';
+    if(!targetModalOpen_()) render();
+    return true;
+  }catch(e){ logApiPerf_('kd_full:daily', nowMs_()-t0, false, 'exception'); return false; }
+}
 async function fetchDataFast(opts){
   if(!BOOT_GASLESS_) return fetchDataFastLegacy_();
   const gasOnly=!!(opts&&opts.gasOnly);   // F1-a: 二段目（GAS確定後）はSupabase直読み・初回描画をやり直さずGAS側だけ読む
   const myRun=++prefetchRun;
   D.mediaPending=true; if(!gasOnly){ D.media=[]; D.mediaMonthsLoaded=0; } D.gasLoaded_={};
+  if(D.kdFullOk_){ D.gasLoaded_.daily=true; if(D.diag.deposit&&D.diag.deposit.indexOf('kd')>=0) D.gasLoaded_.deposit=true; }
   // 1) 初回描画（GAS 0本）。ここまでの間にGASを呼ばない。
   if(!gasOnly&&!targetModalOpen_()) render();
   // 2) Supabase直読み（GASではない）。完了しだい描画。
-  if(!gasOnly) fetchHomeApi_().then(()=>{
+  const homeP_=gasOnly?null:fetchHomeApi_();
+  if(!gasOnly) D.kdFullP_=homeP_.then(()=>fetchKdFull_());
+  if(!gasOnly) homeP_.then(()=>{
     const curYm_=ymdStr(Date.now()).slice(0,7);
     fetchDashboardSummaryApi_('media', curYm_).then(d=>{ if(d){ D.mediaSummaryFast=d.rows; if(!targetModalOpen_()) render(); } });
     fetchDashboardSummaryApi_('deposit', curYm_).then(d=>{ if(d){ D.depositSummaryFast=d.rows; D.depositSummaryFastYm=curYm_; if(!targetModalOpen_()) render(); } });
@@ -2905,7 +2969,8 @@ function renderInner_(){
   // 脱出ボタンをこのプレースホルダ自体にも出す（クリック後は即座にシート経路へ切替・タイムアウトを
   // 待たなくてよい）。
   const bqEscapeBtn=isAdminRole()?`<div style="margin-top:14px"><button class="icon-btn" onclick="App.setDailySource('sheet')">🧪 データ元をシートに戻す</button></div>`:'';
-  if(provGate&&S.tab==='pl'){
+  const plWait=S.tab==='pl'&&!provGate&&D.dailySrc_==='kd'&&S.useBqDaily&&!(D.gasLoaded_&&D.gasLoaded_.pl);   // 日次はkdで揃ったがPL(GAS)はまだ → PL速報を出す
+  if((provGate||plWait)&&S.tab==='pl'){
     body=viewPLFast_();
   } else if(provGate){
     body=`<div class="panel" style="text-align:center;padding:60px 20px;color:#8c8375">⏳ このタブの確定データを読み込み中…（ダッシュボードは先に表示されています）<div style="margin-top:10px;font-size:12px">${S.gasSessionLost?'裏の接続を復旧しています。しばらくお待ちください':'画面はそのまま、読み込みが終わり次第自動で表示されます（初回は30秒〜1分かかることがあります）'}</div></div>`;
