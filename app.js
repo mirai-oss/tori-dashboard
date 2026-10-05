@@ -4183,13 +4183,23 @@ function detailKdAdapt_(o, oAll, r, seg){
   const fromT=parseDateStr(r.from), toT=parseDateStr(r.to);
   const real={};
   (D.daily||[]).forEach(x=>{ if(x.t<fromT||x.t>toT) return; const a=real[x.store]||(real[x.store]={sales:0,guests:0,groups:0}); a.sales+=x.sales||0; a.guests+=x.guests||0; a.groups+=(x.groups!=null?x.groups:0); });
+  // 区分指定時、旧bqDetailは stg_media(DB_媒体分類)の実データを優先して使う → 画面側の媒体データ(D.media)で同じ基準にする（無ければ会計数比で按分）
+  const segMedia={};
+  if(seg&&D.media&&D.media.length){
+    const want=seg==='lunch'?'ランチ':null;
+    D.media.forEach(m=>{ if(m.t<fromT||m.t>toT) return; const sg=mediaClassOf(m.media).seg; if(sg==='デリバリー') return;
+      const isL=(sg==='ランチ'); if(want?!isL:isL) return;
+      const a=segMedia[m.store]||(segMedia[m.store]={sales:0,guests:0,groups:0}); a.sales+=m.net||0; a.guests+=m.guests||0; a.groups+=m.groups||0; });
+  }
   const allBy={}; ((oAll&&oAll.stores)||[]).forEach(x=>{ allBy[x.store_id]=x; });
   const stores=[['店舗','sales','sales_excl','checks','guests','drink','karaoke','food']];
   (o.stores||[]).forEach(x=>{
     const nm=storeNameById_(x.store_id)||''; if(!nm) return;
     let excl=Number(x.sales_excl||0), checks=Number(x.checks||0), guests=Number(x.guests_otoshi||0);
     const rawExcl=excl; const rl=real[nm];
-    if(rl&&rl.sales>0){
+    const sm=segMedia[nm];
+    if(seg&&sm&&(sm.guests>0||sm.sales>0)){ excl=sm.sales; checks=sm.groups; guests=sm.guests; }
+    else if(rl&&rl.sales>0){
       if(seg&&allBy[x.store_id]){
         const al=allBy[x.store_id]; const rc=Number(al.checks||0), re=Number(al.sales_excl||0);
         if(rc>0&&re>0){ checks=rl.groups*(Number(x.checks||0)/rc); guests=rl.guests*(Number(x.checks||0)/rc); excl=rl.sales*(rawExcl/re); }
@@ -4205,7 +4215,7 @@ function detailKdAdapt_(o, oAll, r, seg){
 async function fetchDetailKd_(r, seg){
   const dp=seg||'all';
   const [o,oAll]=await Promise.all([ detailKdCall_(r,dp,S.dStore), seg?detailKdCall_(r,'all',S.dStore):Promise.resolve(null) ]);
-  return detailKdAdapt_(o, oAll, r, seg);
+  const out=detailKdAdapt_(o, oAll, r, seg); out.kdRaw={ o, oAll, r, seg }; return out;
 }
 function showTextReport_(title, text){
   const old=document.getElementById('perfRep'); if(old) old.remove();
@@ -4262,7 +4272,7 @@ async function fetchDetail(){
       try{
         const kd=await fetchDetailKd_(r,seg);
         if(D.detailLoading!==key) return;
-        D.detailData=kd; D.detailKey=key; D.detailStaleKey=null; cacheSave_(key, D.detailData); D.detailLoading=''; render(); return;
+        D.detailData=kd; D.detailKey=key; D.detailStaleKey=null; D.detailLoading=''; render(); return;
       }catch(ek){ logApiPerf_('detail_kd', 0, false, String(ek&&ek.message||ek).slice(0,40)); }
     }
     const d=await api({ action:'bqDetail', token:S.auth.token, from:r.from, to:r.to, store:S.dStore, basis:S.dBasis||'checkout', segment:seg });
@@ -4339,7 +4349,8 @@ function viewDetail(){
   if(isStale && !D.detailData){ return h+`<div class="panel"><div class="empty">読み込み中…（BigQuery集計）</div></div>`; }
   const updating = isStale || !!D.detailLoading;
   if(updating){ h+=`<div class="note-box no-print" style="margin:2px 0 6px;padding:6px 13px;font-size:11.5px;color:#8c8375">⏳ 更新中…（前回の結果を表示中）</div>`; }
-  const dd=D.detailData;
+  let dd=D.detailData;
+  if(dd&&dd.kdRaw){ const k=dd.kdRaw; const re=detailKdAdapt_(k.o,k.oAll,k.r,k.seg); re.kdRaw=k; dd=re; }   // 媒体・日次データが後から届いても最新の基準で再計算
   if(dd.err){ return h+`<div class="panel"><div class="empty">取得エラー: ${esc(dd.err)}</div></div>`; }
   const salesAt=(H,row)=>{ const ie=hcol(H,'sales_excl'),is=hcol(H,'sales'); return num(row[taxExcl?(ie>=0?ie:is):(is>=0?is:ie)]); };
 
