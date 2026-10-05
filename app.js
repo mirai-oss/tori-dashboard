@@ -2826,7 +2826,40 @@ function downloadPdf(){ window.print(); }
 /* =====================================================================
  * 描画
  * ===================================================================== */
+/* 再描画してもスクロール位置（横スクロール表・タブ・モーダル・画面全体）を戻さない */
+function scrollSnap_(root){
+  const snap={y:window.scrollY||0,x:window.scrollX||0,els:[]};
+  try{
+    const cnt={};
+    root.querySelectorAll('*').forEach(el=>{
+      const sig=el.tagName+'.'+(typeof el.className==='string'?el.className:'');
+      const i=cnt[sig]=(cnt[sig]==null?0:cnt[sig]+1);
+      if(el.scrollLeft>0||el.scrollTop>0) snap.els.push({sig,i,l:el.scrollLeft,t:el.scrollTop});
+    });
+  }catch(e){}
+  return snap;
+}
+function scrollRestore_(root,snap){
+  try{
+    const cnt={},want={};
+    snap.els.forEach(e=>{ want[e.sig+'#'+e.i]=e; });
+    if(snap.els.length) root.querySelectorAll('*').forEach(el=>{
+      const sig=el.tagName+'.'+(typeof el.className==='string'?el.className:'');
+      const i=cnt[sig]=(cnt[sig]==null?0:cnt[sig]+1);
+      const w=want[sig+'#'+i]; if(w){ el.scrollLeft=w.l; el.scrollTop=w.t; }
+    });
+    if(snap.y||snap.x) window.scrollTo(snap.x,snap.y);
+  }catch(e){}
+}
 function render(){
+  const root=$('root');
+  const snap=root?scrollSnap_(root):null;
+  const sameView=snap&&S.auth&&!S.reportMode&&!S.transferForm&&render.lastTab_===S.tab;   // タブ切替時は先頭から
+  render.lastTab_=S.tab;
+  renderInner_();
+  if(sameView) scrollRestore_(root,snap);
+}
+function renderInner_(){
   const root=$('root');
   if(S.transferForm){ root.innerHTML=viewTransferForm(); return; }
   if(S.invite||S.inviteDone){ root.innerHTML=viewRegister(); return; }
