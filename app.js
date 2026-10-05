@@ -6587,6 +6587,8 @@ async function loadRequestLog_(force){
 }
 function viewRequestLog(){
   if(!isAdminRole()) return `<div class="panel"><div class="empty">この画面は社長・本部のみ見られます</div></div>`;
+  // ポータル経由(?tab=・nsPortalSetTab)や初期表示ではApp.tab()を通らないため、データ未取得ならここで取りに行く（読み込み中のまま止まる不具合の修正）
+  if(!D.reqLog&&!D.reqLogReq_){ D.reqLogReq_=true; setTimeout(()=>{ loadRequestLog_(false).finally(()=>{ D.reqLogReq_=false; }); },0); }
   const L=D.reqLog||{ loading:true, rows:[] };
   const ym=reqLogMonth_();
   const kf=S.reqLogKind||'';
