@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>仕入れ移動の申請フォーム</title>
+<style>
+:root{--bg:#faf8f4;--card:#fff;--ink:#2b2f36;--muted:#8a8f98;--line:#dfe2e6;--btn:#48586a;--err:#c0392b;--ok:#2e7d4f}
+@media (prefers-color-scheme:dark){:root{--bg:#1b1d21;--card:#25282d;--ink:#eceef1;--muted:#9aa0a8;--line:#3a3e45;--btn:#5d7186;--err:#ff8a7a;--ok:#6fcf97}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif;padding:16px}
+.wrap{max-width:460px;margin:24px auto}
+.card{background:var(--card);border-radius:16px;box-shadow:0 1px 8px rgba(0,0,0,.08);padding:18px}
+h1{font-size:16px;margin:0 0 6px}
+.sub{font-size:11.5px;color:var(--muted);margin:0 0 14px;line-height:1.6}
+label{display:block;font-size:11.5px;color:var(--muted);margin:12px 0 4px}
+input,select,textarea{width:100%;font-size:16px;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--ink);font-family:inherit}
+textarea{min-height:64px;resize:vertical}
+button{width:100%;margin-top:18px;padding:11px;border:0;border-radius:8px;background:var(--btn);color:#fff;font-size:15px;cursor:pointer;font-family:inherit}
+button:disabled{opacity:.5;cursor:default}
+button.ghost{background:transparent;color:var(--btn);border:1px solid var(--btn)}
+.msg{font-size:13px;margin-top:10px;min-height:18px}
+.msg.err{color:var(--err)}
+.done{text-align:center;padding:10px 0}
+.done b{display:block;font-size:17px;color:var(--ok);margin-bottom:8px}
+.cand{width:100%;font-size:15px;padding:4px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--ink);font-family:inherit;margin-top:6px}
+.cand option{padding:7px 8px;border-radius:6px}
+.pick{font-size:12.5px;color:var(--ok);margin-top:6px;min-height:16px}
+.note{font-size:11.5px;color:var(--muted);margin-top:4px;line-height:1.6}
+.row{display:flex;gap:6px;align-items:center;margin-top:8px}.row select{flex:1}.row input{width:78px;text-align:right}.row .sub2{width:78px;text-align:right;font-size:12px;color:var(--muted)}.row button{width:auto;margin:0;padding:6px 10px;background:transparent;color:var(--err);border:1px solid var(--line)}
+.total{text-align:right;margin-top:10px;font-weight:700;font-size:14px}
+</style>
+</head>
+<body>
+<div class="wrap"><div class="card" id="app"><p class="sub">読み込み中…</p></div></div>
+<script>
+const SUPA_URL="https://uuvsxzhpxtghojoubjcc.supabase.co";
+const SUPA_KEY="sb_publishable_MrwPJAx_Ws_fdRutprKCiQ_dg3wCiTr"; // 公開用キー。権限は合言葉つきのEdge Function側で守る
+const TOKEN=new URLSearchParams(location.search).get("k")||"";
+const $=id=>document.getElementById(id);
+const esc=s=>String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const todayJst=()=>new Date(Date.now()+9*3600e3).toISOString().slice(0,10);
+const norm=x=>String(x||"").normalize("NFKC").replace(/[\s　]+/g,"").toLowerCase();
+const yen=n=>"¥"+Math.round(n||0).toLocaleString("ja-JP");
+async function post(fn,payload){
+  const r=await fetch(SUPA_URL+"/functions/v1/"+fn,{method:"POST",headers:{apikey:SUPA_KEY,Authorization:"Bearer "+SUPA_KEY,"Content-Type":"application/json"},body:JSON.stringify(payload)});
+  let b=null;try{b=await r.json()}catch(e){}
+  if(!b)throw new Error("通信に失敗しました（HTTP "+r.status+"）");
+  return b;
+}
+// 申請者の検索（退職申請フォームと同じ：名前の一部を入力→一覧から選ぶ）
+let staff=[],pickId="";
+function pickerHtml(){return `<label>申請者（あなたの名前を入力して検索）</label><input id="f-q" placeholder="例: 山田" autocomplete="off">
+  <select id="f-cand" class="cand" size="4" style="display:none"></select><div class="pick" id="f-pick"></div>`}
+function pickerInit(){
+  const draw=()=>{const q=norm($("f-q").value),box=$("f-cand");
+    if(!q){box.style.display="none";box.innerHTML="";return}
+    const list=staff.filter(m=>norm(m.name).includes(q)).slice(0,50);
+    box.style.display="";box.size=Math.max(2,Math.min(6,list.length||2));
+    box.innerHTML=list.length?list.map(m=>`<option value="${esc(m.id)}" ${m.id===pickId?"selected":""}>${esc(m.name)}</option>`).join(""):`<option disabled>見つかりません</option>`};
+  $("f-q").oninput=()=>{pickId="";$("f-pick").textContent="";draw()};
+  $("f-cand").onchange=()=>{const v=$("f-cand").value;if(!v)return;pickId=v;const m=staff.find(x=>x.id===v);$("f-pick").textContent=m?"✔ 選択中: "+m.name:""};
+}
+
+let stores=[],items=[],rows=[{name:"",qty:""}];
+const price=n=>(items.find(i=>i.name===n)||{}).unitPrice||0;
+function totalOf(){return rows.reduce((t,r)=>t+(r.name&&Number(r.qty)>0?Math.round(price(r.name)*Number(r.qty)):0),0)}
+function rowsHtml(){
+  return rows.map((r,i)=>`<div class="row"><select data-i="${i}" class="r-name"><option value="">商品を選ぶ</option>${items.map(it=>`<option ${r.name===it.name?"selected":""}>${esc(it.name)}</option>`).join("")}</select>
+    <input type="number" min="1" inputmode="numeric" data-i="${i}" class="r-qty" placeholder="数量" value="${esc(r.qty)}">
+    <span class="sub2" id="sub-${i}">${r.name&&Number(r.qty)>0?yen(price(r.name)*Number(r.qty)):""}</span>
+    ${rows.length>1?`<button data-i="${i}" class="r-del" title="この行を削除">×</button>`:""}</div>`).join("");
+}
+function bindRows(){
+  document.querySelectorAll(".r-name").forEach(el=>el.onchange=()=>{rows[+el.dataset.i].name=el.value;sync(+el.dataset.i)});
+  document.querySelectorAll(".r-qty").forEach(el=>el.oninput=()=>{rows[+el.dataset.i].qty=el.value;sync(+el.dataset.i)});
+  document.querySelectorAll(".r-del").forEach(el=>el.onclick=()=>{rows.splice(+el.dataset.i,1);$("rows").innerHTML=rowsHtml();bindRows();$("total").textContent=yen(totalOf())});
+}
+function sync(i){const r=rows[i],s=$("sub-"+i);if(s)s.textContent=r.name&&Number(r.qty)>0?yen(price(r.name)*Number(r.qty)):"";$("total").textContent=yen(totalOf())}
+function render(){
+  pickId="";rows=[{name:"",qty:""}];
+  $("app").innerHTML=`<h1>🔀 仕入れ移動の申請</h1>
+  <p class="sub">店舗間で移動した商品を入力して送信してください。同じ店舗間なら、商品を何件でも追加できます。送信後は本部が確認してからPLに反映されます（送っただけでは何も変わりません）。</p>
+  <label>移動日</label><input type="date" id="f-date" value="${todayJst()}">
+  <label>移動元店舗</label><select id="f-from"><option value="">（選んでください）</option>${stores.map(s=>`<option>${esc(s)}</option>`).join("")}</select>
+  <label>移動先店舗</label><select id="f-to"><option value="">（選んでください）</option>${stores.map(s=>`<option>${esc(s)}</option>`).join("")}</select>
+  <label>商品</label><div id="rows">${rowsHtml()}</div>
+  <button id="f-add" class="ghost" style="margin-top:10px">＋ 商品を追加</button>
+  <div class="total">合計（目安） <span id="total">¥0</span></div>
+  ${pickerHtml()}
+  <label>メモ（任意）</label><textarea id="f-note" maxlength="300" placeholder="例: 週末の仕込み用"></textarea>
+  <div class="msg err" id="f-msg"></div>
+  <button id="f-send">送信</button>`;
+  bindRows();pickerInit();
+  $("f-add").onclick=()=>{rows.push({name:"",qty:""});$("rows").innerHTML=rowsHtml();bindRows()};
+  $("f-send").onclick=send;
+}
+async function send(){
+  const date=$("f-date").value,from=$("f-from").value,to=$("f-to").value,note=$("f-note").value.trim();
+  const m=$("f-msg");m.className="msg err";m.textContent="";
+  if(!date){m.textContent="移動日を選んでください";return}
+  if(!from||!to){m.textContent="移動元と移動先の店舗を選んでください";return}
+  if(from===to){m.textContent="移動元と移動先は別の店舗にしてください";return}
+  const list=rows.filter(r=>r.name&&Number(r.qty)>0).map(r=>({name:r.name,qty:Number(r.qty)}));
+  if(!list.length){m.textContent="商品と数量を1つ以上入力してください";return}
+  if(rows.some(r=>(r.name&&!(Number(r.qty)>0))||(!r.name&&Number(r.qty)>0))){m.textContent="商品と数量はセットで入力してください（空の行は × で消せます）";return}
+  if(!pickId){m.textContent="申請者を検索して、一覧から選んでください";return}
+  const who=(staff.find(x=>x.id===pickId)||{}).name||"";
+  if(!confirm(`${from} → ${to}（${date.replace(/-/g,"/")}）\n商品 ${list.length}件／合計 ${yen(totalOf())}\n申請者: ${who}\nこの内容で送信します。よろしいですか？`))return;
+  const b=$("f-send");b.disabled=true;b.textContent="送信中…";
+  try{
+    const res=await post("cost-transfer-submit",{token:TOKEN,date,fromStore:from,toStore:to,items:list,note,requesterId:pickId});
+    if(!res.ok)throw new Error(res.error==="unauthorized"?"このURLは無効です（再発行された可能性があります）。本部に確認してください":(res.error||"送信に失敗しました"));
+    $("app").innerHTML=`<div class="done"><b>✅ 送信しました</b><p class="sub" style="margin:0 0 6px">${esc(from)} → ${esc(to)}（${list.length}件・${yen(res.total)}）を本部へ送りました。<br>本部が確認してからPLに反映されます。</p>
+      <button id="f-again" class="ghost">続けてもう1件申請する</button></div>`;
+    $("f-again").onclick=render;
+  }catch(e){b.disabled=false;b.textContent="送信";m.textContent=e.message}
+}
+(async()=>{
+  if(!TOKEN){$("app").innerHTML=`<h1>🔀 仕入れ移動の申請</h1><p class="sub">このURLでは開けません。本部から受け取ったURLをそのまま開いてください。</p>`;return}
+  const H={apikey:SUPA_KEY,Authorization:"Bearer "+SUPA_KEY};
+  try{
+    const [sr,ir,st]=await Promise.all([
+      fetch(SUPA_URL+"/rest/v1/store_directory_v?select=name,is_active",{headers:H}).then(r=>r.ok?r.json():Promise.reject(new Error("店舗一覧の取得に失敗しました"))),
+      fetch(SUPA_URL+"/rest/v1/cost_transfer_items_v?select=name,unit_price",{headers:H}).then(r=>r.ok?r.json():Promise.reject(new Error("商品一覧の取得に失敗しました"))),
+      post("cost-transfer-submit",{token:TOKEN,action:"staff"})]);
+    if(!st.ok)throw new Error(st.error==="unauthorized"?"このURLは無効です（再発行された可能性があります）。本部に確認してください":(st.error||"読み込みに失敗しました"));
+    stores=(sr||[]).filter(s=>s.is_active).map(s=>s.name);
+    items=(ir||[]).map(i=>({name:i.name,unitPrice:Number(i.unit_price)||0}));
+    staff=st.staff||[];
+    if(!items.length){$("app").innerHTML=`<h1>🔀 仕入れ移動の申請</h1><p class="sub" style="color:var(--err)">選べる商品がまだ登録されていません。本部に連絡してください。</p>`;return}
+    render();
+  }catch(e){$("app").innerHTML=`<h1>🔀 仕入れ移動の申請</h1><p class="sub" style="color:var(--err)">${esc(e.message)}</p>`}
+})();
+</script>
+</body>
+</html>

@@ -2353,7 +2353,9 @@ async function fetchDataFast(opts){
 // 「該当モーダル表示中はrenderを抑制」パターンを、目標管理の2種類のモーダル(target/targetDay)にも適用する。
 // 2026-09-23追加: 「仕入れ移動」モーダルもフォーム入力中に裏で定期ポーリング(startPolling)の
 // render()が走ると入力が消えてしまう（ユーザー報告）ため、目標モーダルと同じガード対象に加えた。
-function targetModalOpen_(){ return !!(S.modal && (S.modal.type==='target' || S.modal.type==='targetDay' || S.modal.type==='costTransfer')); }
+// 2026-10-05: 入力系のモーダルはすべて対象にする（スポット人件費・仕入れ移動の管理・経費入力など、裏の更新(render)で入力途中の値が
+// 消えるというユーザー報告が続いたため。モーダルを開いている間は、データ到着による再描画を一律に止め、閉じた時に最新になる）。
+function targetModalOpen_(){ return !!S.modal; }
 // 推移分析のデータ元をBigQuery(fact_daily_store)に切り替えているときに呼ぶ。
 // GAS側のbqDailyStoreは既存action:'data'と同じ形({sheets:{daily:[...]}})で返すので、
 // 既存のingestSheets()/ingestDaily()をそのまま使い回せる（2026-08-22追加）。
@@ -6562,10 +6564,61 @@ function plStorePanelsHtml_(stores, mS,mE,pS,pE,yS,yE, prevName, showYoY, mLabel
   });
   return h;
 }
+/* ---- 申請フォームURL（2026-10-05・社長/本部のみ）----
+ * 退職申請・仕入れ移動・スポット人件費の「ログイン不要の申請フォーム」のURLを1か所にまとめる（何のURLか・誰が使うか・送信後どうなるか付き）。
+ * URLの合言葉はSupabase RPCで取得/再発行（再発行すると古いURLは即無効）。 */
+const REQFORMS_=[
+  { key:'retire', ico:'🚪', name:'退職申請', who:'店長・チーム長（現場の責任者）', what:'退職する従業員と退職日を申請します。', after:'本部が承認すると退職日が登録され、退職日の翌日にログインと打刻が止まります（承認・却下は「アカウント管理」の退職申請一覧）。',
+    get:'hr_get_retire_form_token', rotate:'hr_rotate_retire_form_token', url:t=>'https://mirai-oss.github.io/nippo/retire-form.html?k='+t },
+  { key:'transfer', ico:'🔀', name:'仕入れ移動', who:'現場のスタッフ（店舗間で商品を融通した人）', what:'移動元・移動先の店舗と、移動した商品（複数可）を申請します。', after:'社長・本部が「🔀仕入れ移動 → 現場フォーム管理」で承認すると、PLの原価（F）に反映されます。',
+    kind:'transfer', url:t=>'https://mirai-oss.github.io/tori-dashboard/transfer-form.html?k='+t },
+  { key:'spot', ico:'⏱', name:'スポット人件費', who:'店長・現場のスタッフ（タイミー等を使った人）', what:'店舗・勤務日・金額・人数を申請します。', after:'社長・本部が「申請履歴」タブで承認すると、日別の人件費率と月次PLに反映されます。',
+    kind:'spot', url:t=>'https://mirai-oss.github.io/tori-dashboard/spot-form.html?k='+t },
+];
+async function reqFormRpc_(name, args){
+  const jwt=await portalAccessToken().catch(()=>null);
+  if(!jwt) throw new Error('統合アカウントでログインしてください（ポータルのログインが必要です）');
+  const r=await fetch(SSO_SUPA_URL+'/rest/v1/rpc/'+name,{ method:'POST', headers:{ apikey:SSO_SUPA_KEY, Authorization:'Bearer '+jwt, 'Content-Type':'application/json' }, body:JSON.stringify(args||{}) });
+  const d=await r.json().catch(()=>null);
+  if(!r.ok) throw new Error((d&&(d.message||d.hint))?String(d.message||d.hint):('HTTP '+r.status));
+  return d;
+}
+async function loadRequestForms_(){
+  D.reqForms={ loading:true, tokens:{}, errs:{} }; if(S.tab==='requestLog'&&!targetModalOpen_()) render();
+  const out={ loading:false, tokens:{}, errs:{} };
+  await Promise.all(REQFORMS_.map(async f=>{
+    try{ out.tokens[f.key]=String(f.get?await reqFormRpc_(f.get):await reqFormRpc_('request_form_link',{ p_kind:f.kind })||''); }
+    catch(e){ const m=String(e&&e.message||e); out.errs[f.key]=/Could not find|schema cache|404/.test(m)?'データベース設定がまだ適用されていません':m; }
+  }));
+  D.reqForms=out; if(S.tab==='requestLog'&&!targetModalOpen_()) render();
+}
+function viewRequestForms(){
+  if(!isAdminRole()) return `<div class="panel"><div class="empty">この画面は社長・本部のみ見られます</div></div>`;
+  if(!D.reqForms&&!D.reqFormsReq_){ D.reqFormsReq_=true; setTimeout(()=>{ loadRequestForms_().finally(()=>{ D.reqFormsReq_=false; }); },0); }
+  const L=D.reqForms||{ loading:true, tokens:{}, errs:{} };
+  let h=`<div class="panel"><div class="panel-head"><div><h3>申請フォームURL</h3><div class="sub">ログイン不要で申請できるフォームのURLです。現場に渡すURLを、ここから確認・コピーできます。送っただけでは何も変わらず、本部が確認（承認）してから反映されます。</div></div>
+    <div><button class="icon-btn" onclick="App.reqFormsReload()">↻ 更新</button></div></div>`;
+  REQFORMS_.forEach(f=>{
+    const t=L.tokens[f.key], err=L.errs[f.key];
+    const url=t?f.url(t):'';
+    h+=`<div style="border:1px solid var(--line2);border-radius:12px;padding:12px 14px;margin:10px 0">
+      <div style="font-weight:700;font-size:14px">${f.ico} ${esc(f.name)}の申請フォーム</div>
+      <div class="mut" style="font-size:12px;margin:4px 0 8px;line-height:1.7"><b>誰が使う:</b> ${esc(f.who)}<br><b>内容:</b> ${esc(f.what)}<br><b>送信後:</b> ${esc(f.after)}</div>
+      ${L.loading?`<div class="mut">⏳ 読み込み中…</div>`:(err?`<div style="color:#b5502f;font-size:12px">${esc(err)}</div>`:(url?`
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><input readonly id="rf-${f.key}" value="${esc(url)}" style="flex:1;min-width:240px;font-size:12px" onclick="this.select()">
+        <button class="icon-btn primary" onclick="App.reqFormCopy('${f.key}')">コピー</button>
+        <a class="icon-btn" href="${esc(url)}" target="_blank" rel="noopener" style="text-decoration:none">開く ↗</a>
+        <button class="icon-btn" onclick="App.reqFormRotate('${f.key}')" title="漏れた・配り直したい時。古いURLは即座に使えなくなります">URLを作り直す</button></div>`:`<div class="mut">URLがまだありません</div>`))}
+    </div>`;
+  });
+  h+=`<div class="mut" style="font-size:11px;margin-top:6px">※URLを知っている人は誰でも申請できますが、申請は「承認待ち」で入るだけです。URLが外部に漏れた場合は「URLを作り直す」で古いURLを無効にできます。</div></div>`;
+  return h;
+}
 /* ---- 申請履歴（2026-10-05・社長/本部のみ）----
  * 退職申請・スポット人件費・仕入れ移動（現場申請/管理者登録）の「いつ・誰が申請し、いつ・誰が承認したか」を月ごとに見る。
  * データはSupabaseのRPC request_history(月)から直接取得（GASを通さない・社長/本部/マスターのみ許可）。 */
-const REQLOG_KIND_={ cost_transfer:'仕入れ移動（現場申請）', cost_transfer_direct:'仕入れ移動（管理者登録）', spot_labor:'スポット人件費', retirement:'退職申請' };
+const REQLOG_KIND_={ cost_transfer:'仕入れ移動（現場申請）', cost_transfer_direct:'仕入れ移動（管理者登録）', spot_labor:'スポット人件費（入力）', spot_labor_request:'スポット人件費（申請）', retirement:'退職申請' };
+const NIPPO_RETIRE_URL_='https://mirai-oss.github.io/nippo/?page=admin&m=retire';   // 退職申請の承認・却下はnippoの画面（アカウント管理内）
 const REQLOG_STATUS_={ pending:'承認待ち', approved:'承認済み', rejected:'却下', direct:'直接登録（承認なし）' };
 function reqLogMonth_(){ return S.reqLogYm||(()=>{ const d=new Date(Date.now()+9*3600000); return d.getUTCFullYear()+'-'+String(d.getUTCMonth()+1).padStart(2,'0'); })(); }
 async function loadRequestLog_(force){
@@ -6583,16 +6636,22 @@ async function loadRequestLog_(force){
     const m=String(e&&e.message||e);
     D.reqLog={ ym, loading:false, rows:[], err:/function .*request_history|schema cache|404/.test(m)?'申請履歴のデータベース設定がまだ適用されていません（管理者がSQLを適用すると表示されます）':m, at:Date.now() };
   }
-  if(S.tab==='requestLog') render();
+  if(S.tab==='requestLog'&&!targetModalOpen_()) render();
 }
 function viewRequestLog(){
+  const sub=S.reqSub||'log';
+  const subBar=`<div style="display:flex;gap:8px;margin-bottom:10px"><button class="icon-btn ${sub==='log'?'primary':''}" onclick="App.reqSub('log')">📜 申請履歴</button><button class="icon-btn ${sub==='forms'?'primary':''}" onclick="App.reqSub('forms')">📎 申請フォームURL</button></div>`;
+  if(sub==='forms') return subBar+viewRequestForms();
+  return subBar+viewRequestLogList_();
+}
+function viewRequestLogList_(){
   if(!isAdminRole()) return `<div class="panel"><div class="empty">この画面は社長・本部のみ見られます</div></div>`;
   // ポータル経由(?tab=・nsPortalSetTab)や初期表示ではApp.tab()を通らないため、データ未取得ならここで取りに行く（読み込み中のまま止まる不具合の修正）
   if(!D.reqLog&&!D.reqLogReq_){ D.reqLogReq_=true; setTimeout(()=>{ loadRequestLog_(false).finally(()=>{ D.reqLogReq_=false; }); },0); }
   const L=D.reqLog||{ loading:true, rows:[] };
   const ym=reqLogMonth_();
   const kf=S.reqLogKind||'';
-  const rows=(L.rows||[]).filter(r=>!kf||r.kind===kf||(kf==='cost_transfer'&&r.kind==='cost_transfer_direct'));
+  const rows=(L.rows||[]).filter(r=>!kf||r.kind===kf||(kf==='cost_transfer'&&r.kind==='cost_transfer_direct')||(kf==='spot_labor'&&r.kind==='spot_labor_request'));
   const kinds=[['','すべて'],['retirement','退職申請'],['spot_labor','スポット人件費'],['cost_transfer','仕入れ移動']];
   const chip=([k,l])=>`<button class="icon-btn ${kf===k?'primary':''}" style="margin-right:6px" onclick="App.reqLogKind('${k}')">${l}</button>`;
   const stCls=(st)=>st==='approved'?'color:#4c7d5c':st==='rejected'?'color:#b5502f':st==='pending'?'color:#a2803f':'color:#8c8375';
@@ -6606,7 +6665,7 @@ function viewRequestLog(){
     h+=`<div class="mut" style="font-size:12px;margin-bottom:6px">${rows.length}件</div><div class="scroll-x"><table class="tbl"><thead><tr><th>申請日時</th><th>種類</th><th>申請者</th><th>内容</th><th style="text-align:right">金額</th><th>状態</th><th>承認・却下日時</th><th>承認者</th></tr></thead><tbody>`;
     rows.forEach(r=>{
       h+=`<tr><td style="white-space:nowrap">${esc(fmtJst_(r.occurred_at))}</td><td>${esc(REQLOG_KIND_[r.kind]||r.kind)}</td><td>${esc(r.requester||'')}</td><td>${esc(r.summary||'')}</td><td style="text-align:right">${r.amount!=null?yen(r.amount):''}</td>
-        <td style="${stCls(r.status)};white-space:nowrap">${esc(REQLOG_STATUS_[r.status]||r.status)}</td><td style="white-space:nowrap">${esc(r.decided_at?fmtJst_(r.decided_at):'')}</td><td>${esc(r.decided_by||'')}</td></tr>`;
+        <td style="${stCls(r.status)};white-space:nowrap">${esc(REQLOG_STATUS_[r.status]||r.status)}</td><td style="white-space:nowrap">${esc(r.decided_at?fmtJst_(r.decided_at):'')}</td><td>${esc(r.decided_by||'')}${(r.kind==='spot_labor_request'&&r.status==='pending')?`<div style="margin-top:4px;white-space:nowrap"><button class="icon-btn primary" style="padding:2px 8px;font-size:11px" data-id="${esc(r.ref_id)}" onclick="App.spotReqDecide(this.dataset.id,'approved')">承認</button> <button class="icon-btn" style="padding:2px 8px;font-size:11px" data-id="${esc(r.ref_id)}" onclick="App.spotReqDecide(this.dataset.id,'rejected')">却下</button></div>`:''}${(r.kind==='retirement'&&r.status==='pending')?`<div style="margin-top:4px"><a href="${NIPPO_RETIRE_URL_}" target="_blank" rel="noopener" style="font-size:11px">承認・却下はこちら ↗</a></div>`:''}</td></tr>`;
     });
     h+=`</tbody></table></div>`;
     EXPORT.push({ title:'申請履歴('+ym+')', headers:['申請日時','種類','申請者','内容','金額','状態','承認・却下日時','承認者'],
@@ -8880,6 +8939,7 @@ function spotInputModal(){
   const t0=dayMs(new Date(y,mo-1,1)), t1=dayMs(new Date(y,mo,0));
   const rows=D.spot.filter(r=>r.t>=t0&&r.t<=t1&&normStore(r.store)===normStore(st)).sort((a,b)=>b.t-a.t);
   const e=m.edit||null;   // 編集中のエントリ（{id,...}）。App.spotEditRowでセットされる
+  const dr=(!e&&m.draft)||{};   // 新規入力の下書き（店舗・月の切り替えで再描画しても入力途中の値を残す）
   if(!D.staffDir&&!D.staffDirReq_){ D.staffDirReq_=true; fetchStaffDir_().then(()=>{ D.staffDirReq_=false; if(S.modal&&S.modal.type==='spotInput'&&!document.activeElement.matches('input,select,textarea')) render(); }); }   // 申請者の名簿を裏で取得
   const todayStr=(()=>{ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); })();
   return `<div class="modal-bg" onclick="if(event.target===this)App.closeModal()"><div class="modal" style="max-width:600px">
@@ -8893,12 +8953,12 @@ function spotInputModal(){
     <div style="margin-top:12px;border-top:1px dashed var(--line2);padding-top:10px">
       <div style="font-weight:700;font-size:13px">${e?'編集中：保存すると上書きします':'＋ 新規追加'}</div>
       <div class="form-grid" style="margin-top:6px">
-        <div><label>日付</label><input type="date" id="sp-date" value="${e?esc(new Date(e.t).getFullYear()+'-'+String(new Date(e.t).getMonth()+1).padStart(2,'0')+'-'+String(new Date(e.t).getDate()).padStart(2,'0')):todayStr}"></div>
-        <div><label>区分</label><select id="sp-kind"><option value="タイミー" ${(!e||e.kind==='タイミー')?'selected':''}>タイミー</option><option value="その他" ${e&&e.kind==='その他'?'selected':''}>その他</option></select></div>
-        <div><label>金額（円）</label><input type="number" id="sp-amt" value="${e?Math.round(e.amount):''}" placeholder="例 12000" style="text-align:right"></div>
-        <div><label>人数（任意）</label><input type="number" id="sp-headcount" value="${e&&e.headcount!==''?e.headcount:''}" placeholder="例 2"></div>
-        ${Array.isArray(D.staffDir)&&D.staffDir.length?`<div style="grid-column:1/-1"><label>申請者（任意・名前を入力して候補から選択）</label><input list="sp-staff-list" id="sp-requester" placeholder="申請した人の名前" autocomplete="off"><datalist id="sp-staff-list">${D.staffDir.map(u=>`<option value="${esc(u.name)}"></option>`).join('')}</datalist></div>`:''}
-        <div style="grid-column:1/-1"><label>メモ（任意）</label><input id="sp-memo" value="${e?esc(e.memo||''):''}"></div>
+        <div><label>日付</label><input type="date" id="sp-date" value="${e?esc(new Date(e.t).getFullYear()+'-'+String(new Date(e.t).getMonth()+1).padStart(2,'0')+'-'+String(new Date(e.t).getDate()).padStart(2,'0')):(dr.date||todayStr)}"></div>
+        <div><label>区分</label><select id="sp-kind"><option value="タイミー" ${((!e&&dr.kind!=='その他')||(e&&e.kind==='タイミー'))?'selected':''}>タイミー</option><option value="その他" ${((e&&e.kind==='その他')||(!e&&dr.kind==='その他'))?'selected':''}>その他</option></select></div>
+        <div><label>金額（円）</label><input type="number" id="sp-amt" value="${e?Math.round(e.amount):esc(dr.amount||'')}" placeholder="例 12000" style="text-align:right"></div>
+        <div><label>人数（任意）</label><input type="number" id="sp-headcount" value="${e&&e.headcount!==''?e.headcount:esc(dr.headcount||'')}" placeholder="例 2"></div>
+        ${Array.isArray(D.staffDir)&&D.staffDir.length?`<div style="grid-column:1/-1"><label>申請者（任意・名前を入力して候補から選択）</label><input list="sp-staff-list" id="sp-requester" placeholder="申請した人の名前" value="${esc(dr.requester||'')}" autocomplete="off"><datalist id="sp-staff-list">${D.staffDir.map(u=>`<option value="${esc(u.name)}"></option>`).join('')}</datalist></div>`:''}
+        <div style="grid-column:1/-1"><label>メモ（任意）</label><input id="sp-memo" value="${e?esc(e.memo||''):esc(dr.memo||'')}"></div>
       </div>
       <input type="hidden" id="sp-edit-id" value="${e?esc(e.id):''}">
       <div id="sp-msg" style="font-size:12px;color:#b5502f;margin:8px 0"></div>
@@ -9380,6 +9440,45 @@ window.App = {
   reqLogSetMonth(v){ if(/^\d{4}-\d{2}$/.test(v||'')){ S.reqLogYm=v; loadRequestLog_(true); } },
   reqLogKind(k){ S.reqLogKind=k; render(); },
   reqLogReload(){ loadRequestLog_(true); },
+  reqSub(k){ S.reqSub=k; render(); if(k==='forms') loadRequestForms_(); },
+  reqFormsReload(){ loadRequestForms_(); },
+  reqFormCopy(key){
+    const el=$('rf-'+key); if(!el) return; el.select();
+    try{ navigator.clipboard.writeText(el.value).then(()=>toast('URLをコピーしました')).catch(()=>{ document.execCommand('copy'); toast('URLをコピーしました'); }); }catch(e){ try{ document.execCommand('copy'); toast('URLをコピーしました'); }catch(e2){ toast('コピーできませんでした。URLを選択して⌘Cで貼り付けてください'); } }
+  },
+  async reqFormRotate(key){
+    const f=REQFORMS_.find(x=>x.key===key); if(!f) return;
+    if(!confirm('「'+f.name+'」のURLを作り直します。\n古いURLは今すぐ使えなくなります（現場に配り直しが必要です）。\nよろしいですか？')) return;
+    try{
+      await (f.rotate?reqFormRpc_(f.rotate):reqFormRpc_('request_form_link_rotate',{ p_kind:f.kind }));
+      toast('URLを作り直しました'); await loadRequestForms_();
+    }catch(e){ toast('作り直せませんでした: '+(e&&e.message||e)); }
+  },
+  // スポット人件費の申請を承認/却下（承認＝GASでスプレッドシートへ記録→Supabaseで承認済みに）
+  async spotReqDecide(id, decision){
+    if(!id) return;
+    try{
+      if(decision==='rejected'){
+        const reason=prompt('却下の理由（任意・申請した人には表示されません）','');
+        if(reason===null) return;
+        await reqFormRpc_('spot_request_decide',{ p_id:id, p_decision:'rejected', p_reason:reason||'' });
+        toast('却下しました'); await loadRequestLog_(true); return;
+      }
+      if(!S.auth||!S.auth.token){ toast('入力系は準備中です（数秒後にもう一度お試しください）'); return; }
+      const g=await reqFormRpc_('spot_request_get',{ p_id:id }); const q=Array.isArray(g)?g[0]:g;
+      if(!q){ toast('申請が見つかりません'); return; }
+      if(q.status!=='pending'){ toast('既に処理済みです'); await loadRequestLog_(true); return; }
+      if(!confirm(q.store_name+'／'+q.work_date+'／'+q.kind+'／'+yen(q.amount)+(q.headcount!=null?'／'+q.headcount+'人':'')+'\n申請者: '+(q.requester_name||'')+'\n\nこの内容で承認し、スポット人件費に記録します。よろしいですか？')) return;
+      toast('承認中…');
+      const d=await api({ action:'saveSpotEntry', token:S.auth.token, id:'', store:q.store_name, date:q.work_date, kind:q.kind, amount:q.amount, headcount:q.headcount==null?'':q.headcount, memo:q.note||'' });
+      if(!d.ok){ toast(d.error||'記録に失敗しました（承認はしていません）'); return; }
+      try{ await reqFormRpc_('spot_request_decide',{ p_id:id, p_decision:'approved', p_reason:'' }); }
+      catch(e){ toast('記録は済みましたが、承認済みへの更新に失敗しました。履歴を更新して確認してください（二重承認に注意）: '+(e&&e.message||e)); return; }
+      toast('承認しました（スポット人件費に記録）');
+      fetchData(true,{ only:['スポット人件費'], partial:true }).then(()=>{ if(S.useBqDaily&&!d.bqWarn) fetchSpotBQ(); });
+      await loadRequestLog_(true);
+    }catch(e){ toast('処理できませんでした: '+(e&&e.message||e)); }
+  },
   period(p){ S.period=p; S.pWeekIdx=null; render(); ensureMediaMonths_(); },
   store(n){ S.store=n; render(); },
   set(k,v){ S[k]=v; render(); if(k==='aRange'||k==='aSeg'||k==='cStart'||k==='cEnd'||k==='pYear'||k==='pDay') ensureMediaMonths_(); },
@@ -10180,7 +10279,9 @@ window.App = {
     S.modal={type:'spotInput', ym, store:selStoreName()||scopeStores()[0], edit:null}; render();
   },
   spotSwitch(){ const ym=$('sp-ym')&&$('sp-ym').value, st=$('sp-store')&&$('sp-store').value;
-    S.modal={type:'spotInput', ym:ym||S.modal.ym, store:st||S.modal.store, edit:null}; render(); },
+    const g=(id)=>($(id)&&$(id).value)||'';
+    const draft={ date:g('sp-date'), kind:g('sp-kind'), amount:g('sp-amt'), headcount:g('sp-headcount'), requester:g('sp-requester'), memo:g('sp-memo') };   // 入力途中の値を残す
+    S.modal={type:'spotInput', ym:ym||S.modal.ym, store:st||S.modal.store, edit:null, draft}; render(); },
   spotEditRow(id){
     const e=D.spot.find(r=>r.id===id); if(!e) return;
     S.modal=Object.assign({}, S.modal, { edit:e }); render();
@@ -10267,7 +10368,7 @@ window.App = {
       toast(d.bqWarn?'保存しました。ただし '+d.bqWarn:'スポット人件費を保存しました');
       logRequestEvent_({ kind:'spot_labor', requesterName, requesterId, store, amount, action:id?'update':'create', refId:d.id||id||'',
         summary:store+'／'+date+'／'+kind+(headcount!==''?'／'+headcount+'人':'') });
-      S.modal=Object.assign({}, S.modal, { edit:null });
+      S.modal=Object.assign({}, S.modal, { edit:null, draft:null });
       await fetchData(true,{ only:['スポット人件費'], partial:true });
       if(S.useBqDaily && !d.bqWarn) fetchSpotBQ();   // BQモードの画面にも即座に反映（キャッシュ世代はGAS側で既に更新済み）
       render();
