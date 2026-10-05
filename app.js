@@ -2318,7 +2318,7 @@ async function ensureTabData_(tab, force, myRun, filter, prio){
       if(loaded[k]&&!force) return;                                          // 先に別の呼び出しで読み込み済みなら省略
       if(S.gasSessionLost||!S.auth||!S.auth.token) return;                   // 裏のGASセッション復旧待ち：呼ばない
       if(myRun!=null&&myRun!==prefetchRun) return;                           // 新しい読み込みが始まったら中断
-      try{ await fn(); loaded[k]=true; }catch(e){}
+      try{ await fn(); loaded[k]=true; (D.gasLoadedAt_||(D.gasLoadedAt_={}))[k]=Date.now(); }catch(e){}
     }, prio);
   }
   if(!filter&&!keys.includes('media')) D.mediaPending=false;
@@ -2398,7 +2398,11 @@ async function fetchDataFast(opts){
   if(!BOOT_GASLESS_) return fetchDataFastLegacy_();
   const gasOnly=!!(opts&&opts.gasOnly);   // F1-a: 二段目（GAS確定後）はSupabase直読み・初回描画をやり直さずGAS側だけ読む
   const myRun=++prefetchRun;
-  D.mediaPending=true; if(!gasOnly){ D.media=[]; D.mediaMonthsLoaded=0; } D.gasLoaded_={};
+  D.mediaPending=true; if(!gasOnly){ D.media=[]; D.mediaMonthsLoaded=0; }
+  {  // 直近2分以内に読み込み済みのGAS分は、連続した再起動(タブ切替・再表示等)で読み直さない（手動更新は全て読み直す）
+    const prev=D.gasLoaded_||{}, at=D.gasLoadedAt_||{}, now0=Date.now(); D.gasLoaded_={};
+    if(!(opts&&opts.force)) Object.keys(prev).forEach(k=>{ if(prev[k]&&now0-(at[k]||0)<120000) D.gasLoaded_[k]=true; });
+  }
   if(D.kdFullOk_){ D.gasLoaded_.daily=true; if(D.diag.deposit&&D.diag.deposit.indexOf('kd')>=0) D.gasLoaded_.deposit=true; }
   // 1) 初回描画（GAS 0本）。ここまでの間にGASを呼ばない。
   if(!gasOnly&&!targetModalOpen_()) render();
@@ -2429,7 +2433,7 @@ async function fetchDataFast(opts){
   await ensureTabData_(S.tab, false, myRun, must);
   // PLタブは開く人が多く待たされやすいので、重い action:data(約20秒)より先にPL用(pl・loan)を読んでおく
   if(S.tab!=='pl'&&myTabs().includes('pl')) await ensureTabData_('pl', false, myRun, k=>k==='pl'||k==='loan'||k==='spot');
-  await gasRun_(async()=>{ if(myRun!==prefetchRun||!S.auth||!S.auth.token) return; await fetchData(true,{ exclude:excl }); });
+  await gasRun_(async()=>{ if(myRun!==prefetchRun||!S.auth||!S.auth.token) return; if(!(opts&&opts.force)&&Date.now()-(D.dataAt_||0)<120000) return; await fetchData(true,{ exclude:excl }); D.dataAt_=Date.now(); });
   await ensureTabData_(S.tab, false, myRun, k=>!must(k));
   if(myRun!==prefetchRun) return;
   if(!freshOk) await gasRun_(async()=>{ if(!S.gasSessionLost&&myRun===prefetchRun) await fetchFreshness(); });
@@ -2473,7 +2477,7 @@ async function fetchPlBQ(preD){
   if(!S.auth||!S.auth.token) return;
   D.plBqLoading=true; if(!targetModalOpen_()) render();
   try{
-    const d=preD||await api({ action:'bqGetPL', token:S.auth.token });
+    const d=preD||await api({ action:'bqGetPL', token:S.auth.token }, 25000);
     if(d&&d.ok&&d.sheets){ ingestSheets(d.sheets, true); D.plBqErr=''; D.bqFallback.PL=false; }
     else{ D.plBqErr=(d&&d.error)||'取得に失敗しました'; await bqFallbackToSheet_('PL'); }
   }catch(e){ D.plBqErr=String(e&&e.message||e); await bqFallbackToSheet_('PL'); }
@@ -2484,7 +2488,7 @@ async function fetchSpotBQ(preD){
   if(!S.auth||!S.auth.token) return;
   D.spotBqLoading=true; if(!targetModalOpen_()) render();
   try{
-    const d=preD||await api({ action:'bqGetSpot', token:S.auth.token });
+    const d=preD||await api({ action:'bqGetSpot', token:S.auth.token }, 25000);
     if(d&&d.ok&&d.sheets){ ingestSheets(d.sheets, true); D.spotBqErr=''; D.bqFallback['スポット人件費']=false; }
     else{ D.spotBqErr=(d&&d.error)||'取得に失敗しました'; await bqFallbackToSheet_('スポット人件費'); }
   }catch(e){ D.spotBqErr=String(e&&e.message||e); await bqFallbackToSheet_('スポット人件費'); }
@@ -2495,7 +2499,7 @@ async function fetchLoanBQ(preD){
   if(!S.auth||!S.auth.token) return;
   D.loanBqLoading=true; if(!targetModalOpen_()) render();
   try{
-    const d=preD||await api({ action:'bqGetLoanPrincipal', token:S.auth.token });
+    const d=preD||await api({ action:'bqGetLoanPrincipal', token:S.auth.token }, 25000);
     if(d&&d.ok&&d.sheets){ ingestSheets(d.sheets, true); D.loanBqErr=''; D.bqFallback['借入返済元金']=false; }
     else{ D.loanBqErr=(d&&d.error)||'取得に失敗しました'; await bqFallbackToSheet_('借入返済元金'); }
   }catch(e){ D.loanBqErr=String(e&&e.message||e); await bqFallbackToSheet_('借入返済元金'); }
@@ -2507,7 +2511,7 @@ async function fetchDepositBQ(preD){
   if(!S.auth||!S.auth.token) return;
   D.depositBqLoading=true; if(!targetModalOpen_()) render();
   try{
-    const d=preD||await api({ action:'bqGetDeposit', token:S.auth.token });
+    const d=preD||await api({ action:'bqGetDeposit', token:S.auth.token }, 25000);
     if(d&&d.ok&&d.sheets){ ingestSheets(d.sheets, true); D.depositBqErr=''; D.bqFallback.deposit=false; }
     else{ D.depositBqErr=(d&&d.error)||'取得に失敗しました'; await bqFallbackToSheet_('deposit'); }
   }catch(e){ D.depositBqErr=String(e&&e.message||e); await bqFallbackToSheet_('deposit'); }
@@ -10974,7 +10978,7 @@ window.App = {
       fetchData(true,{ only:['イベント'], partial:true });
     }catch(e){ toast('通信エラー: '+e.message); }
   },
-  refresh(){ if(S.auth&&(S.auth.token||S.auth.provisional)){ fetchDataFast(); toast('最新データを取得中…'); } else { loadSampleData(); render(); toast('サンプルデータを再読込しました（API未接続）'); } },
+  refresh(){ if(S.auth&&(S.auth.token||S.auth.provisional)){ fetchDataFast({ force:true }); toast('最新データを取得中…'); } else { loadSampleData(); render(); toast('サンプルデータを再読込しました（API未接続）'); } },
   csv: downloadCsv,
   pdf: downloadPdf,
   openConnect(){ if(S.auth && S.auth.account.role!=='社長'){ toast('接続設定は社長のみ変更できます'); return; } S.modal='connect'; render(); },
