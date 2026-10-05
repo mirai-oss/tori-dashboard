@@ -2324,6 +2324,7 @@ async function fetchDataFast(opts){
     fetchDashboardSummaryApi_('pl', curYm_).then(d=>{ if(d){ D.plSummaryFast=d.rows; D.plSummaryFastYm=curYm_; if(!targetModalOpen_()) render(); } });
     fetchAnalysisKd_();
     fetchPlKd_();
+    fetchReqPending_();   // 申請の承認待ち件数（未読バッジ）
   });
   // 鮮度表示はSupabase直読み（失敗した時だけ、あとでGAS版を直列の最後に呼ぶ）
   let freshOk=gasOnly&&!!D.freshness;
@@ -2553,6 +2554,7 @@ async function fetchCtPendingCount_(){
 }
 async function syncIfChanged(){
   if(!S.auth||!S.auth.token) return;
+  fetchReqPending_();   // Supabaseだけなので、GAS不調中でも更新する（申請の承認待ちバッジ）
   if(gasCooling_()) return;   // GASが連続失敗中は5分間、補助的な呼び出しを止める
   if(BOOT_GASLESS_) gasRun_(()=>fetchCtPendingCount_()); else fetchCtPendingCount_();   // D.dataVersionとは無関係の別シートなので、下のmodalガード・バージョン一致スキップより前に確認する（直列）
   // 2026-08-30: モーダル（単価設定・PL入力等の手入力フォーム）を開いている間にこのバックグラウンド
@@ -3009,7 +3011,8 @@ function viewNav(){
   const tabs=myTabs();
   return `<nav class="tabs">`+tabs.map(t=>{
     const label=(t==='ad'&&!D.ad.length)?TAB_LABELS[t]+'（未接続）':TAB_LABELS[t];
-    return `<button class="${S.tab===t?'on':''}" onclick="App.tab('${t}')">${label}</button>`;
+    const bd=(t==='requestLog'&&D.reqPending&&D.reqPending.total)?` <span class="badge ng">${D.reqPending.total}</span>`:'';
+    return `<button class="${S.tab===t?'on':''}" onclick="App.tab('${t}')">${label}${bd}</button>`;
   }).join('')+`</nav>`;
 }
 
@@ -6621,6 +6624,20 @@ const REQLOG_KIND_={ cost_transfer:'仕入れ移動（現場申請）', cost_tra
 const NIPPO_RETIRE_URL_='https://mirai-oss.github.io/nippo/?page=admin&m=retire';   // 退職申請の承認・却下はnippoの画面（アカウント管理内）
 const REQLOG_STATUS_={ pending:'承認待ち', approved:'承認済み', rejected:'却下', direct:'直接登録（承認なし）' };
 function reqLogMonth_(){ return S.reqLogYm||(()=>{ const d=new Date(Date.now()+9*3600000); return d.getUTCFullYear()+'-'+String(d.getUTCMonth()+1).padStart(2,'0'); })(); }
+// 承認待ち件数（未読バッジ）。Supabase RPC request_pending_counts（社長・本部のみ・GASを通さない）。取れない時はバッジなし。
+async function fetchReqPending_(){
+  if(!isAdminRole()) return;
+  try{
+    const r=await reqFormRpc_('request_pending_counts');
+    if(!Array.isArray(r)) return;
+    const o={ cost_transfer:0, spot_labor_request:0, retirement:0 };
+    r.forEach(x=>{ o[x.kind]=Number(x.n)||0; });
+    o.total=o.cost_transfer+o.spot_labor_request+o.retirement;
+    const changed=!D.reqPending||D.reqPending.total!==o.total;
+    D.reqPending=o;
+    if(changed&&!targetModalOpen_()){ const nav=document.querySelector('nav.tabs'); if(nav) nav.outerHTML=viewNav(); }
+  }catch(e){ /* SQL未適用・通信失敗はバッジなしのまま */ }
+}
 async function loadRequestLog_(force){
   const ym=reqLogMonth_();
   if(!force&&D.reqLog&&D.reqLog.ym===ym&&!D.reqLog.err&&Date.now()-D.reqLog.at<60000) return;
@@ -6631,7 +6648,7 @@ async function loadRequestLog_(force){
     const r=await fetch(SSO_SUPA_URL+'/rest/v1/rpc/request_history',{ method:'POST', headers:{ apikey:SSO_SUPA_KEY, Authorization:'Bearer '+jwt, 'Content-Type':'application/json' }, body:JSON.stringify({ p_month:ym }) });
     const d=await r.json().catch(()=>null);
     if(!r.ok) throw new Error((d&&(d.message||d.hint))?String(d.message||d.hint):('HTTP '+r.status));
-    D.reqLog={ ym, loading:false, rows:Array.isArray(d)?d:[], err:'', at:Date.now() };
+    D.reqLog={ ym, loading:false, rows:Array.isArray(d)?d:[], err:'', at:Date.now() }; fetchReqPending_();
   }catch(e){
     const m=String(e&&e.message||e);
     D.reqLog={ ym, loading:false, rows:[], err:/function .*request_history|schema cache|404/.test(m)?'申請履歴のデータベース設定がまだ適用されていません（管理者がSQLを適用すると表示されます）':m, at:Date.now() };
@@ -6640,7 +6657,7 @@ async function loadRequestLog_(force){
 }
 function viewRequestLog(){
   const sub=S.reqSub||'log';
-  const subBar=`<div style="display:flex;gap:8px;margin-bottom:10px"><button class="icon-btn ${sub==='log'?'primary':''}" onclick="App.reqSub('log')">📜 申請履歴</button><button class="icon-btn ${sub==='forms'?'primary':''}" onclick="App.reqSub('forms')">📎 申請フォームURL</button></div>`;
+  const subBar=`<div style="display:flex;gap:8px;margin-bottom:10px"><button class="icon-btn ${sub==='log'?'primary':''}" onclick="App.reqSub('log')">📜 申請履歴${(D.reqPending&&D.reqPending.total)?` <span class="badge ng">${D.reqPending.total}</span>`:''}</button><button class="icon-btn ${sub==='forms'?'primary':''}" onclick="App.reqSub('forms')">📎 申請フォームURL</button></div>`;
   if(sub==='forms') return subBar+viewRequestForms();
   return subBar+viewRequestLogList_();
 }
