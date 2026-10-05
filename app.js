@@ -282,14 +282,33 @@ const addD = (d,n)=>new Date(d.getFullYear(),d.getMonth(),d.getDate()+n);
 const sub1y = (d)=>new Date(d.getFullYear()-1,d.getMonth(),d.getDate());
 const WD = ['日','月','火','水','木','金','土'];
 const mdw = (d)=>(d.getMonth()+1)+'/'+d.getDate()+'('+WD[d.getDay()]+')';
-// 日本の祝日（2024〜2027年・振替休日/国民の休日含む）
-const JP_HOLIDAYS=new Set(('2024:1/1,1/8,2/11,2/12,2/23,3/20,4/29,5/3,5/4,5/5,5/6,7/15,8/11,8/12,9/16,9/22,9/23,10/14,11/3,11/4,11/23|'+
- '2025:1/1,1/13,2/11,2/23,2/24,3/20,4/29,5/3,5/4,5/5,5/6,7/21,8/11,9/15,9/23,10/13,11/3,11/23,11/24|'+
- '2026:1/1,1/12,2/11,2/23,3/20,4/29,5/3,5/4,5/5,5/6,7/20,8/11,9/21,9/22,9/23,10/12,11/3,11/23|'+
- '2027:1/1,1/11,2/11,2/23,3/21,3/22,4/29,5/3,5/4,5/5,7/19,8/11,9/20,9/23,10/11,11/3,11/23')
- .split('|').flatMap(y=>{ const[Y,ds]=y.split(':'); return ds.split(',').map(md=>Y+'-'+md); }));
-// 祝日判定：内蔵テーブル（〜2027）＋ スプレッドシート「DB_祝日」で追加した分（D.holidays）
-const isJpHoliday=(d)=>{ const k=d.getFullYear()+'-'+(d.getMonth()+1)+'/'+d.getDate(); return JP_HOLIDAYS.has(k)||(D.holidays&&D.holidays.has(k)); };
+// 日本の祝日（計算式・年の制限なし。2026-10-05に固定表(2024〜2027)から置換）
+// ポータルDB(jp_is_holiday)・日報(sfV12JpHolidayName)と同じロジック。3箇所は必ず揃えて直すこと。
+//   ①固定日 ②ハッピーマンデー ③春分・秋分（近似式）④振替休日（日曜と重なった祝日の後、最初の祝日でない日）
+//   ⑤国民の休日（前後を祝日に挟まれた日）。法改正で祝日が変わった年は DB_祝日 シートで追加できる（削除は式の修正が必要）。
+function jpNationalHolidayName(y,m,d){
+  const F={'1-1':'元日','2-11':'建国記念の日','2-23':'天皇誕生日','4-29':'昭和の日','5-3':'憲法記念日','5-4':'みどりの日','5-5':'こどもの日','8-11':'山の日','11-3':'文化の日','11-23':'勤労感謝の日'};
+  if(F[m+'-'+d]) return F[m+'-'+d];
+  if(new Date(y,m-1,d).getDay()===1){ const w=Math.ceil(d/7);
+    if(m===1&&w===2) return '成人の日'; if(m===7&&w===3) return '海の日';
+    if(m===9&&w===3) return '敬老の日'; if(m===10&&w===2) return 'スポーツの日'; }
+  const sp=Math.floor(20.8431+0.242194*(y-1980))-Math.floor((y-1980)/4);
+  const au=Math.floor(23.2488+0.242194*(y-1980))-Math.floor((y-1980)/4);
+  if(m===3&&d===sp) return '春分の日'; if(m===9&&d===au) return '秋分の日';
+  return '';
+}
+function jpHolidayName(dt){
+  const nat=(x)=>jpNationalHolidayName(x.getFullYear(),x.getMonth()+1,x.getDate());
+  const add=(x,n)=>new Date(x.getFullYear(),x.getMonth(),x.getDate()+n);
+  const n0=nat(dt); if(n0) return n0;
+  for(let p=add(dt,-1); nat(p); p=add(p,-1)){ if(p.getDay()===0) return '振替休日'; }   // 直前に連続する祝日の中に日曜がある
+  if(nat(add(dt,-1))&&nat(add(dt,1))) return '国民の休日';
+  return '';
+}
+// 旧コード互換（'YYYY-M/D' キーで has() を呼ぶ箇所が残っているため、同じ形の入口を残す）
+const JP_HOLIDAYS={ has(k){ const m=String(k).match(/^(\d{4})-(\d{1,2})\/(\d{1,2})$/); return !!m&&!!jpHolidayName(new Date(+m[1],+m[2]-1,+m[3])); } };
+// 祝日判定：計算式（年の制限なし）＋ スプレッドシート「DB_祝日」で追加した分（D.holidays）
+const isJpHoliday=(d)=>{ const k=d.getFullYear()+'-'+(d.getMonth()+1)+'/'+d.getDate(); return !!jpHolidayName(d)||!!(D.holidays&&D.holidays.has(k)); };
 const isRedDay=(d)=>d.getDay()===0||d.getDay()===6||isJpHoliday(d);   // 土日祝
 // HTML用の日付表示：M/D(曜) — 土日祝は曜日を赤に。祝日は「祝」を付記
 const mdwH=(d)=>{ const wd=WD[d.getDay()]+(isJpHoliday(d)?'・祝':'');
