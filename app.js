@@ -2300,7 +2300,7 @@ function gasLoaderForKey_(key){
   const m={
     daily:()=>fetchDailyBQ(), pl:()=>fetchPlBQ(), spot:()=>fetchSpotBQ(), loan:()=>fetchLoanBQ(),
     deposit: bq?()=>fetchDepositBQ():part(['deposit']),
-    media: bq?()=>fetchMediaBQ():(async()=>{ await fetchData(true,{ only:['media'], partial:true }); D.mediaPending=false; if(!targetModalOpen_()) render(); await fetchDeliveryMedia_(); }),
+    media: bq?(()=>D.kdMediaOk_?fetchDeliveryMedia_():fetchMediaBQ()):(async()=>{ await fetchData(true,{ only:['media'], partial:true }); D.mediaPending=false; if(!targetModalOpen_()) render(); await fetchDeliveryMedia_(); }),
     dinii: part(['dinii']), rsv: part(['予約']), cov: part(['明細カバレッジ'])
   };
   return m[key]||null;
@@ -2342,12 +2342,12 @@ async function freshnessFromSupabase_(){
 // 失敗時は何も変えない（＝従来どおりGAS bqDailyStoreが読まれる）。成功すると D.daily=確定(kd)・gasLoaded_.daily=true で
 // GASの日次読みを省略する。旧経路へは localStorage.kd_full=0 で即戻せる。
 const KD_FULL_ = (()=>{ try{ return localStorage.getItem('kd_full')!=='0'; }catch(e){ return true; } })();
-async function dashSummaryPaged_(kind, months){
+async function dashSummaryPaged_(kind, months, extra){
   const jwt=await portalAccessToken().catch(()=>null); if(!jwt) return null;
   const rows=[]; let offset=0, guard=0;
-  while(guard++<6){
+  while(guard++<8){
     const res=await fetch(DASH_SUMMARY_API_URL,{ method:'POST', headers:{ 'Content-Type':'application/json', apikey:SSO_SUPA_KEY, Authorization:'Bearer '+jwt },
-      body:JSON.stringify({ kinds:[kind], months, limit:5000, offset }) });
+      body:JSON.stringify(Object.assign({ kinds:[kind], limit:5000, offset }, months?{months}:{}, extra||{})) });
     const d=await res.json().catch(()=>null);
     if(!res.ok||!d||!d.ok) return null;
     const part=(d.results&&d.results[kind])||d;
@@ -2356,6 +2356,38 @@ async function dashSummaryPaged_(kind, months){
     offset=part.nextOffset!=null?part.nextOffset:rows.length;
   }
   return rows;
+}
+
+// F1-b/c（2026-10-05・レーンP回答 kind:'pl_entries'|'spot'|'loan'|'media_daily'）: PL(行レベル)・スポット人件費・借入返済・媒体日次をkd直読みで組み立てる。
+// 取得できたものだけ gasLoaded_ を立て、GASの該当読込を省く。失敗時は何もしない（従来どおりGASが読む）。旧経路へ: localStorage.kd_entries=0。
+const KD_ENTRIES_=(()=>{ try{ return localStorage.getItem('kd_entries')!=='0'; }catch(e){ return true; } })();
+async function fetchKdEntries_(){
+  if(!KD_ENTRIES_||!authed_()||!BOOT_GASLESS_) return;
+  const loaded=(D.gasLoaded_||(D.gasLoaded_={})); const at=(D.gasLoadedAt_||(D.gasLoadedAt_={})); const nm=(r)=>String(r.store_name||storeNameById_(r.store_id)||'').trim();
+  const mark=(k)=>{ loaded[k]=true; at[k]=Date.now(); };
+  const t0=nowMs_();
+  const job=async(kind,months,extra,build)=>{
+    try{
+      const rows=await dashSummaryPaged_(kind,months,extra); if(!rows) return false;
+      build(rows); logApiPerf_('kd_entries:'+kind, nowMs_()-t0, true, ''); return true;
+    }catch(e){ logApiPerf_('kd_entries:'+kind, nowMs_()-t0, false, 'exception'); return false; }
+  };
+  const ymSlash=(v)=>String(v||'').replace('-','/');
+  await Promise.all([
+    job('pl_entries',0,{ from:'2023-01', to:'2029-12' },(rows)=>{
+      const sh=[['年月','店舗名','勘定科目','区分','金額','メモ','補助科目']].concat(rows.map(r=>[ymSlash(r.year_month), nm(r), r.item, r.category, Number(r.amount||0), r.memo||'', r.sub_item||'']));
+      ingestSheets({ PL:sh }, true); D.plBqErr=''; D.bqFallback.PL=false; D.plBqLoading=false; mark('pl'); }),
+    job('spot',36,null,(rows)=>{
+      const sh=[['日付','店舗名','区分','金額','人数','メモ','入力者','入力日時','ID']].concat(rows.map(r=>[String(r.work_date||'').slice(0,10), nm(r), r.kind||'', Number(r.amount||0), r.headcount==null?'':Number(r.headcount), r.memo||'', r.entered_by||'', r.entered_at||'', r.spot_id||'']));
+      ingestSheets({ 'スポット人件費':sh }, true); D.spotBqErr=''; D.bqFallback['スポット人件費']=false; D.spotBqLoading=false; mark('spot'); }),
+    job('loan',0,{ from:'2023-01', to:'2029-12' },(rows)=>{
+      const sh=[['年月','店舗','法人','元金額','メモ']].concat(rows.map(r=>[r.year_month, nm(r), r.corp_name||'', Number(r.principal||0), r.memo||'']));
+      ingestSheets({ '借入返済元金':sh }, true); D.loanBqErr=''; D.bqFallback['借入返済元金']=false; D.loanBqLoading=false; mark('loan'); }),
+    job('media_daily',24,null,(rows)=>{
+      const sh=[['店舗名','営業日','媒体名','客数','客組数','純売上']].concat(rows.map(r=>[nm(r), String(r.biz_date||'').slice(0,10).replace(/-/g,'/'), r.media_raw||r.media_name||'', Number(r.guests||0), Number(r.parties||0), Number(r.net_sales||0)]));
+      ingestSheets({ media:sh }, true); D.bqFallback.media=false; D.mediaMonthsLoaded=24; D.mediaPending=false; D.kdMediaOk_=true; })
+  ]);
+  if(!targetModalOpen_()) render();
 }
 async function fetchKdFull_(){
   if(!KD_FULL_||!authed_()||!BOOT_GASLESS_) return false;
@@ -2389,6 +2421,7 @@ async function fetchKdFull_(){
     }
     D.kdFullOk_=true; (D.gasLoaded_||(D.gasLoaded_={})).daily=true;
     logApiPerf_('kd_full:daily', nowMs_()-t0, true, '');
+    fetchKdEntries_();   // PL行・スポット・借入・媒体日次もkdから（失敗時はGAS経路のまま）
     if(S.useBqDaily) S.connState='live';
     if(!targetModalOpen_()) render();
     return true;
