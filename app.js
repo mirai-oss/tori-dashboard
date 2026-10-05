@@ -67,8 +67,8 @@ const PALETTE = ['#3d5163','#b5502f','#5f7052','#c9a86a','#7d8b6f','#2a6f8f','#9
 const C_NOW='#3d5163', C_PREV='#c9b7a0', C_MID='#7d8b6f';
 const LS = { api:'toriApiUrl', sess:'toriSession', acc:'toriDemoAccounts', poll:'toriPollSec', months:'toriMonths', dailyBq:'toriDailySourceBq' };
 const ROLE_TABS = {
-  '社長':       ['dash','target','analysis','detail','pl','deposit','ad','reservation','review','weekly','weeklyAdmin','ai','accounts'],
-  '本部':       ['dash','target','analysis','detail','pl','deposit','ad','reservation','review','weekly','weeklyAdmin','ai','accounts'],
+  '社長':       ['dash','target','analysis','detail','pl','deposit','ad','reservation','review','weekly','weeklyAdmin','ai','accounts','requestLog'],
+  '本部':       ['dash','target','analysis','detail','pl','deposit','ad','reservation','review','weekly','weeklyAdmin','ai','accounts','requestLog'],
   'マネージャー':['dash','target','analysis','detail','pl','deposit','ad','reservation','review','weekly','weeklyAdmin','ai'],
   '店舗':       ['dash','target','analysis','detail','deposit','reservation','review','weekly','ai'],   // PL・広告管理は既定で非表示（アカウントごとの「表示タブ」で変更可）
   // 外販先（Ring-style・いちご屋など）に売上を確認してもらうためのアカウント。
@@ -76,7 +76,7 @@ const ROLE_TABS = {
   '外販':       ['partner'],
 };
 // reservation='予約'（2026-08-28追加・A-6。Sync4後。stg_reservationのBQミラーを表示）
-const TAB_LABELS = { partner:'媒体売上', dash:'ダッシュボード', target:'目標管理', analysis:'推移分析', detail:'明細分析', pl:'PL（損益）', deposit:'入金管理', ad:'広告管理', reservation:'予約', review:'口コミ', weekly:'週報', weeklyAdmin:'週報管理', ai:'AI検索', accounts:'アカウント管理' };
+const TAB_LABELS = { partner:'媒体売上', dash:'ダッシュボード', target:'目標管理', analysis:'推移分析', detail:'明細分析', pl:'PL（損益）', deposit:'入金管理', ad:'広告管理', reservation:'予約', review:'口コミ', weekly:'週報', weeklyAdmin:'週報管理', ai:'AI検索', accounts:'アカウント管理', requestLog:'申請履歴' };
 // 入力・取込系の機能権限。閲覧は「表示タブ」で、データを書き込む操作はこちらで制御する。
 // 既定は権限ごとの ROLE_FEATURES、アカウントごとに上書きしたい場合は「アカウント」シートのI列に保存する。
 const FEATURE_LABELS = {
@@ -1418,7 +1418,7 @@ function myTabs(){
   if(!ov) return base;
   const admin=acc&&(acc.role==='社長'||acc.role==='本部');
   // 個別指定があればそれを表示（順序は正規順）。アカウント管理は社長・本部のみ常に表示
-  const tabs=Object.keys(TAB_LABELS).filter(k=>k==='accounts'?admin:ov.includes(k));
+  const tabs=Object.keys(TAB_LABELS).filter(k=>(k==='accounts'||k==='requestLog')?admin:ov.includes(k));
   return tabs.length?tabs:base;
 }
 function isAdminRole(){ const a=S.auth&&S.auth.account; return a&&(a.role==='社長'||a.role==='本部'); }
@@ -2081,6 +2081,25 @@ async function fetchDashboardSummaryApi_(kind, ym){
 // D.dailyKdは推移分析（viewAnalysis）だけが優先して使う並行データ源という設計（既存の他機能への
 // 影響ゼロ）。統合アカウント未連携・取得失敗時はD.dailyKdがnullのままなので、viewAnalysis側は
 // 自動的に従来のD.daily（GAS/シート）へフォールバックする。
+// 従業員名簿（申請者の選択肢）。Supabase RPC staff_directory（ログイン済みのみ・GASを通さない）。取れない時は申請者欄を出さない。
+async function fetchStaffDir_(){
+  if(D.staffDir&&Date.now()-(D.staffDirAt||0)<600000) return D.staffDir;
+  try{
+    const jwt=await portalAccessToken().catch(()=>null); if(!jwt) return null;
+    const r=await fetch(SSO_SUPA_URL+'/rest/v1/rpc/staff_directory',{ method:'POST', headers:{ apikey:SSO_SUPA_KEY, Authorization:'Bearer '+jwt, 'Content-Type':'application/json' }, body:'{}' });
+    if(!r.ok) return null;
+    const rows=await r.json(); if(!Array.isArray(rows)) return null;
+    D.staffDir=rows; D.staffDirAt=Date.now(); return rows;
+  }catch(e){ return null; }
+}
+// 申請履歴への記録（ベストエフォート・GASを通さない）。Supabase RPC request_log_add。失敗しても本処理は成功のまま。
+async function logRequestEvent_(rec){
+  try{
+    const jwt=await portalAccessToken().catch(()=>null); if(!jwt) return;
+    await fetch(SSO_SUPA_URL+'/rest/v1/rpc/request_log_add',{ method:'POST', headers:{ apikey:SSO_SUPA_KEY, Authorization:'Bearer '+jwt, 'Content-Type':'application/json' },
+      body:JSON.stringify({ p_kind:rec.kind, p_requester_name:rec.requesterName||'', p_requester_id:rec.requesterId||null, p_store:rec.store||'', p_summary:rec.summary||'', p_amount:(rec.amount==null?null:Number(rec.amount)), p_action:rec.action||'create', p_ref_id:rec.refId||'' }) });
+  }catch(e){}
+}
 async function fetchAnalysisKd_(){
   if(!authed_()) return;
   try{
@@ -2851,6 +2870,7 @@ function render(){
   else if(S.tab==='weeklyAdmin') body=viewWeeklyAdmin();
   else if(S.tab==='ai') body=viewAI();
   else if(S.tab==='accounts') body=viewAccounts();
+  else if(S.tab==='requestLog') body=viewRequestLog();
   // F-3(ns-portal統合ポータルシェルからのembed依頼・2026-08-24): ?embed=1のときは
   // 自画面のヘッダー（ロゴ・接続設定・ログアウト等）とタブ切替ナビを隠す
   // （ポータル側のサイドバーが同じ役割を担うため二重表示を避ける）。
@@ -6542,6 +6562,56 @@ function plStorePanelsHtml_(stores, mS,mE,pS,pE,yS,yE, prevName, showYoY, mLabel
   });
   return h;
 }
+/* ---- 申請履歴（2026-10-05・社長/本部のみ）----
+ * 退職申請・スポット人件費・仕入れ移動（現場申請/管理者登録）の「いつ・誰が申請し、いつ・誰が承認したか」を月ごとに見る。
+ * データはSupabaseのRPC request_history(月)から直接取得（GASを通さない・社長/本部/マスターのみ許可）。 */
+const REQLOG_KIND_={ cost_transfer:'仕入れ移動（現場申請）', cost_transfer_direct:'仕入れ移動（管理者登録）', spot_labor:'スポット人件費', retirement:'退職申請' };
+const REQLOG_STATUS_={ pending:'承認待ち', approved:'承認済み', rejected:'却下', direct:'直接登録（承認なし）' };
+function reqLogMonth_(){ return S.reqLogYm||(()=>{ const d=new Date(Date.now()+9*3600000); return d.getUTCFullYear()+'-'+String(d.getUTCMonth()+1).padStart(2,'0'); })(); }
+async function loadRequestLog_(force){
+  const ym=reqLogMonth_();
+  if(!force&&D.reqLog&&D.reqLog.ym===ym&&!D.reqLog.err&&Date.now()-D.reqLog.at<60000) return;
+  D.reqLog={ ym, loading:true, rows:[], err:'', at:Date.now() }; if(S.tab==='requestLog') render();
+  try{
+    const jwt=await portalAccessToken().catch(()=>null);
+    if(!jwt) throw new Error('統合アカウントでログインしてください（ポータルのログインが必要です）');
+    const r=await fetch(SSO_SUPA_URL+'/rest/v1/rpc/request_history',{ method:'POST', headers:{ apikey:SSO_SUPA_KEY, Authorization:'Bearer '+jwt, 'Content-Type':'application/json' }, body:JSON.stringify({ p_month:ym }) });
+    const d=await r.json().catch(()=>null);
+    if(!r.ok) throw new Error((d&&(d.message||d.hint))?String(d.message||d.hint):('HTTP '+r.status));
+    D.reqLog={ ym, loading:false, rows:Array.isArray(d)?d:[], err:'', at:Date.now() };
+  }catch(e){
+    const m=String(e&&e.message||e);
+    D.reqLog={ ym, loading:false, rows:[], err:/function .*request_history|schema cache|404/.test(m)?'申請履歴のデータベース設定がまだ適用されていません（管理者がSQLを適用すると表示されます）':m, at:Date.now() };
+  }
+  if(S.tab==='requestLog') render();
+}
+function viewRequestLog(){
+  if(!isAdminRole()) return `<div class="panel"><div class="empty">この画面は社長・本部のみ見られます</div></div>`;
+  const L=D.reqLog||{ loading:true, rows:[] };
+  const ym=reqLogMonth_();
+  const kf=S.reqLogKind||'';
+  const rows=(L.rows||[]).filter(r=>!kf||r.kind===kf||(kf==='cost_transfer'&&r.kind==='cost_transfer_direct'));
+  const kinds=[['','すべて'],['retirement','退職申請'],['spot_labor','スポット人件費'],['cost_transfer','仕入れ移動']];
+  const chip=([k,l])=>`<button class="icon-btn ${kf===k?'primary':''}" style="margin-right:6px" onclick="App.reqLogKind('${k}')">${l}</button>`;
+  const stCls=(st)=>st==='approved'?'color:#4c7d5c':st==='rejected'?'color:#b5502f':st==='pending'?'color:#a2803f':'color:#8c8375';
+  let h=`<div class="panel"><div class="panel-head"><div><h3>申請履歴</h3><div class="sub">退職申請・スポット人件費・仕入れ移動の「いつ・誰が申請し、いつ・誰が承認したか」を月ごとに表示します（社長・本部のみ）</div></div>
+    <div><input type="month" value="${esc(ym)}" onchange="App.reqLogSetMonth(this.value)"> <button class="icon-btn" onclick="App.reqLogReload()">↻ 更新</button></div></div>
+    <div style="margin:8px 0">${kinds.map(chip).join('')}</div>`;
+  if(L.loading) h+=`<div class="empty" style="padding:40px;text-align:center;color:#8c8375">⏳ 読み込み中…</div>`;
+  else if(L.err) h+=`<div class="empty" style="color:#b5502f;padding:30px">${esc(L.err)}</div>`;
+  else if(!rows.length) h+=`<div class="empty" style="padding:30px">この月の申請はありません</div>`;
+  else{
+    h+=`<div class="mut" style="font-size:12px;margin-bottom:6px">${rows.length}件</div><div class="scroll-x"><table class="tbl"><thead><tr><th>申請日時</th><th>種類</th><th>申請者</th><th>内容</th><th style="text-align:right">金額</th><th>状態</th><th>承認・却下日時</th><th>承認者</th></tr></thead><tbody>`;
+    rows.forEach(r=>{
+      h+=`<tr><td style="white-space:nowrap">${esc(fmtJst_(r.occurred_at))}</td><td>${esc(REQLOG_KIND_[r.kind]||r.kind)}</td><td>${esc(r.requester||'')}</td><td>${esc(r.summary||'')}</td><td style="text-align:right">${r.amount!=null?yen(r.amount):''}</td>
+        <td style="${stCls(r.status)};white-space:nowrap">${esc(REQLOG_STATUS_[r.status]||r.status)}</td><td style="white-space:nowrap">${esc(r.decided_at?fmtJst_(r.decided_at):'')}</td><td>${esc(r.decided_by||'')}</td></tr>`;
+    });
+    h+=`</tbody></table></div>`;
+    EXPORT.push({ title:'申請履歴('+ym+')', headers:['申請日時','種類','申請者','内容','金額','状態','承認・却下日時','承認者'],
+      rows:rows.map(r=>[fmtJst_(r.occurred_at),REQLOG_KIND_[r.kind]||r.kind,r.requester||'',r.summary||'',r.amount!=null?Math.round(r.amount):'',REQLOG_STATUS_[r.status]||r.status,r.decided_at?fmtJst_(r.decided_at):'',r.decided_by||'']) });
+  }
+  return h+`</div>`;
+}
 // 速報PL（F1-b・2026-10-03）: GASの確定データ(DB_PL等)が届く前に、Supabaseの集計済み月次PL(kd_pl_monthly_summary)で
 // 月次の店舗別PLを出す。勘定科目の内訳・手入力経費の細目は確定データ後に通常のPL画面へ切り替わる。
 function viewPLFast_(){
@@ -8554,6 +8624,12 @@ function plInputModal(){
  * ここで表示する金額はあくまで目安（送信前の確認用）。 */
 // 店舗一覧（store_directory_v）・品目マスタ（cost_transfer_items_v）を並行で直接取得する。
 // どちらもanonロールに select を許可した公開ビュー（ベーステーブル自体は非公開）。
+// 申請者の選択肢（従業員名簿）。フォームのトークンで認証するEdge Function(action=staff)から取る。
+// 取れなかった（Edge Function未更新・通信失敗）場合はnull＝申請者欄を出さず従来どおり送信できる（段階的な導入のため）。
+function ctfFetchStaff_(token){
+  return fetch(SSO_SUPA_URL+'/functions/v1/cost-transfer-submit',{ method:'POST', headers:{'Content-Type':'application/json', apikey:SSO_SUPA_KEY, Authorization:'Bearer '+SSO_SUPA_KEY}, body:JSON.stringify({token, action:'staff'}) })
+    .then(r=>r.json()).then(d=>(d&&d.ok&&Array.isArray(d.staff))?d.staff:null).catch(()=>null);
+}
 function ctfFetchInfo_(){
   const h={apikey:SSO_SUPA_KEY, Authorization:'Bearer '+SSO_SUPA_KEY};
   return Promise.all([
@@ -8607,7 +8683,7 @@ function ctfEff_(m){
   return {date:m.date||todayStr, from, to};
 }
 // 入力が始まっているか（始まっていれば裏の再取得で画面を作り直さない）
-function ctfDirty_(m){ return !!(m.fromStore||m.toStore||m.date||m.note||(m.rows||[]).some(r=>r.name||r.qty)); }
+function ctfDirty_(m){ return !!(m.fromStore||m.toStore||m.date||m.note||m.requesterName||(m.rows||[]).some(r=>r.name||r.qty)); }
 function ctfPriceOf_(name){ const it=(S.transferForm.items||[]).find(x=>x.name===name); return it?it.unitPrice:0; }
 function ctfRowAmount_(r){ return ctfPriceOf_(r.name)*(Number(r.qty)||0); }
 function ctfTotal_(){ return (S.transferForm.rows||[]).reduce((s,r)=>s+ctfRowAmount_(r),0); }
@@ -8647,6 +8723,9 @@ function viewTransferForm(){
       <div><label>移動元店舗</label><select id="ctf-from" onchange="App.ctfFieldChanged('fromStore',this.value)">${stores.map(s=>`<option value="${esc(s)}" ${fromSt===s?'selected':''}>${esc(s)}</option>`).join('')}</select></div>
       <div><label>移動先店舗</label><select id="ctf-to" onchange="App.ctfFieldChanged('toStore',this.value)">${stores.map(s=>`<option value="${esc(s)}" ${toSt===s?'selected':''}>${esc(s)}</option>`).join('')}</select></div>
     </div>
+    ${Array.isArray(m.staff)&&m.staff.length?`<div style="margin-top:12px"><label style="font-size:12px;color:#8c8375">申請者（あなたの名前を入力して、候補から選んでください）</label>
+      <input list="ctf-staff-list" id="ctf-requester" style="width:100%" placeholder="名前を入力して検索" value="${esc(m.requesterName||'')}" oninput="App.ctfFieldChanged('requesterName',this.value)" autocomplete="off">
+      <datalist id="ctf-staff-list">${m.staff.map(u=>`<option value="${esc(u.name)}"></option>`).join('')}</datalist></div>`:''}
     <div style="margin-top:14px">
       <label style="font-size:12px;color:#8c8375">商品</label>
       <div style="margin-top:6px">${rows.map((r,i)=>rowHtml(r,i)).join('')}</div>
@@ -8681,8 +8760,17 @@ function costTransferModal(){
       <div><label>移動日</label><input type="date" id="ct-date" value="${esc(dateV)}" onchange="App.ctFieldChanged('date',this.value)"></div>
       <div><label>移動元店舗</label><select id="ct-from" onchange="App.ctFieldChanged('fromStore',this.value)">${stores.map(s=>`<option value="${esc(s)}" ${fromSt===s?'selected':''}>${esc(s)}</option>`).join('')}</select></div>
       <div><label>移動先店舗</label><select id="ct-to" onchange="App.ctFieldChanged('toStore',this.value)">${stores.map(s=>`<option value="${esc(s)}" ${toSt===s?'selected':''}>${esc(s)}</option>`).join('')}</select></div>
-      <div><label>品名</label><input id="ct-item" value="${esc(m.item||'')}" placeholder="例: サムゲタン" oninput="App.ctFieldChanged('item',this.value)"></div>
-      <div><label>金額（円・税別）</label><input type="number" id="ct-amount" value="${m.amount||''}" placeholder="例 10000" style="text-align:right" oninput="App.ctFieldChanged('amount',this.value)"></div>
+    </div>
+    ${Array.isArray(D.staffDir)&&D.staffDir.length?`<div style="margin-top:10px"><label style="font-size:12px;color:#8c8375">申請者（任意・名前を入力して候補から選択）</label>
+      <input list="ct-staff-list" id="ct-requester" style="width:100%" placeholder="申請した人の名前" value="${esc(m.requesterName||'')}" oninput="App.ctFieldChanged('requesterName',this.value)" autocomplete="off">
+      <datalist id="ct-staff-list">${D.staffDir.map(u=>`<option value="${esc(u.name)}"></option>`).join('')}</datalist></div>`:''}
+    <div style="margin-top:12px">
+      <label style="font-size:12px;color:#8c8375">商品（同じ店舗間の移動なら、まとめて複数入力できます）</label>
+      <div style="margin-top:6px">${(m.lines&&m.lines.length?m.lines:[{item:'',amount:''}]).map((l,i)=>`<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
+        <input style="flex:1" placeholder="品名 例: 参鶏湯" value="${esc(l.item||'')}" oninput="App.ctLineChanged(${i},'item',this.value)">
+        <input type="number" style="width:120px;text-align:right" placeholder="金額(円・税別)" value="${l.amount||''}" oninput="App.ctLineChanged(${i},'amount',this.value)">
+        <button class="icon-btn" style="padding:2px 8px" title="この行を削除" onclick="App.ctLineRemove(${i})">🗑</button></div>`).join('')}</div>
+      <button class="icon-btn" onclick="App.ctLineAdd()">＋ 商品を追加</button>
     </div>
     <div id="ct-msg" style="font-size:12px;color:#b5502f;margin:8px 0"></div>
     <div class="modal-btns"><button class="icon-btn primary" onclick="App.saveCostTransfer()">登録</button></div>
@@ -8790,6 +8878,7 @@ function spotInputModal(){
   const t0=dayMs(new Date(y,mo-1,1)), t1=dayMs(new Date(y,mo,0));
   const rows=D.spot.filter(r=>r.t>=t0&&r.t<=t1&&normStore(r.store)===normStore(st)).sort((a,b)=>b.t-a.t);
   const e=m.edit||null;   // 編集中のエントリ（{id,...}）。App.spotEditRowでセットされる
+  if(!D.staffDir&&!D.staffDirReq_){ D.staffDirReq_=true; fetchStaffDir_().then(()=>{ D.staffDirReq_=false; if(S.modal&&S.modal.type==='spotInput'&&!document.activeElement.matches('input,select,textarea')) render(); }); }   // 申請者の名簿を裏で取得
   const todayStr=(()=>{ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); })();
   return `<div class="modal-bg" onclick="if(event.target===this)App.closeModal()"><div class="modal" style="max-width:600px">
     <h3>スポット人件費（タイミー等）</h3>
@@ -8806,6 +8895,7 @@ function spotInputModal(){
         <div><label>区分</label><select id="sp-kind"><option value="タイミー" ${(!e||e.kind==='タイミー')?'selected':''}>タイミー</option><option value="その他" ${e&&e.kind==='その他'?'selected':''}>その他</option></select></div>
         <div><label>金額（円）</label><input type="number" id="sp-amt" value="${e?Math.round(e.amount):''}" placeholder="例 12000" style="text-align:right"></div>
         <div><label>人数（任意）</label><input type="number" id="sp-headcount" value="${e&&e.headcount!==''?e.headcount:''}" placeholder="例 2"></div>
+        ${Array.isArray(D.staffDir)&&D.staffDir.length?`<div style="grid-column:1/-1"><label>申請者（任意・名前を入力して候補から選択）</label><input list="sp-staff-list" id="sp-requester" placeholder="申請した人の名前" autocomplete="off"><datalist id="sp-staff-list">${D.staffDir.map(u=>`<option value="${esc(u.name)}"></option>`).join('')}</datalist></div>`:''}
         <div style="grid-column:1/-1"><label>メモ（任意）</label><input id="sp-memo" value="${e?esc(e.memo||''):''}"></div>
       </div>
       <input type="hidden" id="sp-edit-id" value="${e?esc(e.id):''}">
@@ -9284,7 +9374,10 @@ window.App = {
   ssoToggle(){ S.ssoOpen=!S.ssoOpen; S.loginErr=''; render(); },
   logout(){ if(confirm('ログアウトしますか？')) doLogout(); },
   perfReport(){ showPerfReport_(); },
-  tab(t){ S.tab=t; render(); if(BOOT_GASLESS_&&S.auth&&S.auth.token) ensureTabData_(t,false,null); },
+  tab(t){ S.tab=t; render(); if(t==='requestLog') loadRequestLog_(false); if(BOOT_GASLESS_&&S.auth&&S.auth.token) ensureTabData_(t,false,null); },
+  reqLogSetMonth(v){ if(/^\d{4}-\d{2}$/.test(v||'')){ S.reqLogYm=v; loadRequestLog_(true); } },
+  reqLogKind(k){ S.reqLogKind=k; render(); },
+  reqLogReload(){ loadRequestLog_(true); },
   period(p){ S.period=p; S.pWeekIdx=null; render(); ensureMediaMonths_(); },
   store(n){ S.store=n; render(); },
   set(k,v){ S[k]=v; render(); if(k==='aRange'||k==='aSeg'||k==='cStart'||k==='cEnd'||k==='pYear'||k==='pDay') ensureMediaMonths_(); },
@@ -9785,6 +9878,7 @@ window.App = {
     // 既に開いている（＝登録直後の再読み込み等）ときは入力中の値を保ったまま履歴だけ更新する
     const keep=(S.modal&&S.modal.type==='costTransfer')?S.modal:{};
     S.modal=Object.assign({}, keep, {type:'costTransfer', loading:true}); render();
+    fetchStaffDir_().then(r=>{ if(r&&S.modal&&S.modal.type==='costTransfer'&&!S.modal.loading) render(); });   // 名簿は裏で取得（取れたら申請者欄が出る）
     try{
       const d=await api({action:'costTransferList', token:S.auth.token});
       if(!S.modal||S.modal.type!=='costTransfer') return; // 取得中にモーダルが閉じられていたら何もしない
@@ -9811,21 +9905,47 @@ window.App = {
     }
     S.modal=m;
   },
+  ctLineChanged(i,field,value){
+    const lines=((S.modal.lines&&S.modal.lines.length)?S.modal.lines:[{item:'',amount:''}]).map((l,idx)=>idx===i?Object.assign({},l,{[field]:value}):l);
+    S.modal=Object.assign({},S.modal,{lines});
+  },
+  ctLineAdd(){
+    const lines=((S.modal.lines&&S.modal.lines.length)?S.modal.lines:[{item:'',amount:''}]).concat([{item:'',amount:''}]);
+    S.modal=Object.assign({},S.modal,{lines}); render();
+  },
+  ctLineRemove(i){
+    let lines=((S.modal.lines&&S.modal.lines.length)?S.modal.lines:[{item:'',amount:''}]).filter((_,idx)=>idx!==i);
+    if(!lines.length) lines=[{item:'',amount:''}];
+    S.modal=Object.assign({},S.modal,{lines}); render();
+  },
   async saveCostTransfer(){
     const msg=$('ct-msg'); msg.style.color='#b5502f'; msg.textContent='';
-    const date=$('ct-date').value, fromStore=$('ct-from').value, toStore=$('ct-to').value,
-          item=$('ct-item').value.trim(), amount=Number($('ct-amount').value);
+    const date=$('ct-date').value, fromStore=$('ct-from').value, toStore=$('ct-to').value;
+    const lines=((S.modal.lines&&S.modal.lines.length)?S.modal.lines:[{item:'',amount:''}])
+      .map(l=>({item:String(l.item||'').trim(), amount:Number(l.amount)})).filter(l=>l.item||l.amount);
     if(!date){ msg.textContent='移動日を入力してください'; return; }
     if(fromStore===toStore){ msg.textContent='移動元と移動先は別の店舗にしてください'; return; }
-    if(!item){ msg.textContent='品名を入力してください'; return; }
-    if(!(amount>0)){ msg.textContent='金額を正しく入力してください'; return; }
+    if(!lines.length){ msg.textContent='品名と金額を入力してください'; return; }
+    for(const l of lines){
+      if(!l.item){ msg.textContent='品名が空の行があります'; return; }
+      if(!(l.amount>0)){ msg.textContent='「'+l.item+'」の金額を正しく入力してください'; return; }
+    }
+    // 申請者（任意）：名簿に1件だけ一致した名前なら記録する
+    let requesterId='', requesterName=String(S.modal.requesterName||'').trim();
+    if(requesterName&&Array.isArray(D.staffDir)){
+      const hit=D.staffDir.filter(u=>u.name===requesterName);
+      if(hit.length===1) requesterId=hit[0].id; else { msg.textContent=hit.length?'同じ名前の人が複数います':'申請者が名簿にありません。候補から選ぶか、空欄にしてください'; return; }
+    }
     msg.style.color='#8c8375'; msg.textContent='登録中…';
     try{
-      const d=await api({action:'costTransferAdd', token:S.auth.token, date, fromStore, toStore, item, amount});
+      const total=lines.reduce((t,l)=>t+l.amount,0);
+      const d=await api({action:'costTransferAdd', token:S.auth.token, date, fromStore, toStore, items:JSON.stringify(lines), requesterName, requesterId});
       if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'登録に失敗しました'; return; }
-      toast('登録しました（'+fromStore+'→'+toStore+'／'+yen(amount)+'）');
-      // 品名・金額だけクリアし、日付・店舗は残す（続けて同じ組み合わせで複数登録しやすいように）
-      S.modal=Object.assign({}, S.modal, {date, fromStore, toStore, item:'', amount:''});
+      toast('登録しました（'+fromStore+'→'+toStore+'／'+lines.length+'品目 '+yen(total)+'）');
+      logRequestEvent_({ kind:'cost_transfer_direct', requesterName, requesterId, store:fromStore, amount:total, action:'create', refId:(d.ids||[d.id]).join(','),
+        summary:fromStore+'→'+toStore+'／'+lines.map(l=>l.item).join('・')+'（'+date+'）' });
+      // 品名・金額だけクリアし、日付・店舗・申請者は残す（続けて同じ組み合わせで登録しやすいように）
+      S.modal=Object.assign({}, S.modal, {date, fromStore, toStore, lines:[{item:'',amount:''}]});
       await fetchData(true,{ only:['pl','PL'], partial:true });
       if(S.useBqDaily) await fetchPlBQ();
       await App.openCostTransfer();
@@ -9838,6 +9958,8 @@ window.App = {
       const d=await api({action:'costTransferCancel', token:S.auth.token, id});
       if(!d.ok){ toast(d.error||'取り消しに失敗しました'); return; }
       toast('取り消しました');
+      { const r0=(S.modal&&S.modal.rows||[]).find(r=>r.id===id); logRequestEvent_({ kind:'cost_transfer_direct', store:r0?r0.fromStore:'', amount:r0?r0.amount:null, action:'delete', refId:id,
+          summary:r0?(r0.fromStore+'→'+r0.toStore+'／'+r0.item+'（'+r0.date+'）の取り消し'):'仕入れ移動の取り消し' }); }
       await fetchData(true,{ only:['pl','PL'], partial:true });
       if(S.useBqDaily) await fetchPlBQ();
       await App.openCostTransfer();
@@ -9886,13 +10008,22 @@ window.App = {
     if(!fromStore||!toStore||fromStore===toStore){ if(msg) msg.textContent='移動元と移動先は別の店舗を選んでください'; return; }
     const itemsRaw=(m.rows||[]).filter(r=>r.name&&Number(r.qty)>0).map(r=>({name:r.name,qty:Number(r.qty)}));
     if(!itemsRaw.length){ if(msg) msg.textContent='商品と数量を1つ以上入力してください'; return; }
+    // 申請者（名簿が取れている場合は必須。入力した名前が名簿に1件だけ一致する場合に確定する）
+    let requesterId='';
+    if(Array.isArray(m.staff)&&m.staff.length){
+      const nm=String(m.requesterName||'').trim();
+      if(!nm){ if(msg) msg.textContent='申請者（あなたの名前）を選んでください'; return; }
+      const hit=m.staff.filter(u=>u.name===nm);
+      if(hit.length!==1){ if(msg) msg.textContent=hit.length?'同じ名前の人が複数います。管理者に連絡してください':'申請者が名簿にありません。候補から名前を選んでください'; return; }
+      requesterId=hit[0].id;
+    }
     const btn=$('ctf-submit');
     if(btn){ btn.disabled=true; btn.textContent='送信中…'; }
     try{
       // 2026-10-05修正（スプレッドシート/GAS経由をやめるSupabase直結化）: GASのcostTransferPublicSubmit
       // ではなく、Edge Function（cost-transfer-submit）へ直接POSTする。2026-10-03に付けた
       // 「1回20秒・再試行中はボタン文言で表示」というUXはそのまま踏襲（ctfPost_参照）。
-      const d=await ctfPost_(SSO_SUPA_URL+'/functions/v1/cost-transfer-submit', {token:m.token, date, fromStore, toStore, items:itemsRaw, note:m.note||''}, 20000, (attempt)=>{
+      const d=await ctfPost_(SSO_SUPA_URL+'/functions/v1/cost-transfer-submit', {token:m.token, date, fromStore, toStore, items:itemsRaw, note:m.note||'', requesterId}, 20000, (attempt)=>{
         if(btn) btn.textContent='送信できませんでした。再試行中…（'+attempt+'回目）';
       });
       if(!d.ok){
@@ -9908,8 +10039,8 @@ window.App = {
     }
   },
   ctfReset(){
-    const {token,stores,items}=S.transferForm;
-    S.transferForm={ token, loading:false, stores, items, rows:[{name:'',qty:''}], note:'' };
+    const {token,stores,items,staff}=S.transferForm;
+    S.transferForm={ token, loading:false, stores, items, staff, rows:[{name:'',qty:''}], note:'' };
     render();
   },
   /* ---- 店舗間の仕入れ移動：現場フォーム管理（承認・品目マスタ・公開リンク。2026-10-02追加） ---- */
@@ -10118,14 +10249,22 @@ window.App = {
     const id=$('sp-edit-id').value;
     if(!date){ msg.textContent='日付を入力してください'; return; }
     if(amount<=0){ msg.textContent='金額を入力してください'; return; }
+    // 申請者（任意）: 名簿に1件だけ一致した名前なら履歴に記録する
+    let requesterName=($('sp-requester')&&$('sp-requester').value||'').trim(), requesterId='';
+    if(requesterName&&Array.isArray(D.staffDir)){
+      const hit=D.staffDir.filter(u=>u.name===requesterName);
+      if(hit.length===1) requesterId=hit[0].id; else { msg.textContent=hit.length?'同じ名前の人が複数います':'申請者が名簿にありません。候補から選ぶか、空欄にしてください'; return; }
+    }
     msg.style.color='#8c8375'; msg.textContent='保存中…';
     try{
-      const d=await api({ action:'saveSpotEntry', token:S.auth.token, id, store, date, kind, amount, headcount, memo });
+      const d=await api({ action:'saveSpotEntry', token:S.auth.token, id, store, date, kind, amount, headcount, memo, requesterName, requesterId });
       if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'保存に失敗しました'; return; }
       // 2026-08-26修正（担当F実機報告・担当Aへの依頼）: 保存・削除直後のBigQuery即時ミラー
       // （bqSyncSpotNow_）が失敗しても従来は画面に一切伝わらず「保存しました」のまま古いBQデータが
       // 残り続けた。GAS側でbqWarnを返すようにしたので、失敗時は成功トーストとは別に警告も出す。
       toast(d.bqWarn?'保存しました。ただし '+d.bqWarn:'スポット人件費を保存しました');
+      logRequestEvent_({ kind:'spot_labor', requesterName, requesterId, store, amount, action:id?'update':'create', refId:d.id||id||'',
+        summary:store+'／'+date+'／'+kind+(headcount!==''?'／'+headcount+'人':'') });
       S.modal=Object.assign({}, S.modal, { edit:null });
       await fetchData(true,{ only:['スポット人件費'], partial:true });
       if(S.useBqDaily && !d.bqWarn) fetchSpotBQ();   // BQモードの画面にも即座に反映（キャッシュ世代はGAS側で既に更新済み）
@@ -10139,6 +10278,8 @@ window.App = {
       const d=await api({ action:'deleteSpotEntry', token:S.auth.token, id });
       if(!d.ok){ toast(d.error||'削除に失敗しました'); return; }
       toast(d.bqWarn?'削除しました。ただし '+d.bqWarn:'削除しました');
+      { const e0=(D.spot||[]).find(r=>r.id===id); logRequestEvent_({ kind:'spot_labor', store:e0?e0.store:'', amount:e0?e0.amount:null, action:'delete', refId:id,
+          summary:e0?(e0.store+'／'+ymdStr(e0.t)+'／'+(e0.kind||'')):'スポット人件費の削除' }); }
       await fetchData(true,{ only:['スポット人件費'], partial:true });
       if(S.useBqDaily && !d.bqWarn) fetchSpotBQ();
       render();
@@ -10524,16 +10665,16 @@ window.App = {
       let cached=null;
       try{ const raw=localStorage.getItem(cacheKey); if(raw){ const d=JSON.parse(raw); if(d&&Array.isArray(d.stores)&&Array.isArray(d.items)) cached=d; } }catch(e){}
       S.transferForm = cached
-        ? { token:tq, loading:false, stores:cached.stores, items:cached.items, rows:[{name:'',qty:''}], note:'' }
+        ? { token:tq, loading:false, stores:cached.stores, items:cached.items, staff:cached.staff||null, rows:[{name:'',qty:''}], note:'' }
         : { token:tq, loading:true, rows:[{name:'',qty:''}], note:'' };
       const slowTimer=cached?null:setTimeout(()=>{ if(S.transferForm){ S.transferForm=Object.assign({},S.transferForm,{loadingSlow:true}); render(); } }, 4000);
-      ctfFetchInfo_().then(d=>{
+      Promise.all([ctfFetchInfo_(), ctfFetchStaff_(tq)]).then(([d,staff])=>{
         clearTimeout(slowTimer);
         if(!S.transferForm) return; // 読み込み中に離脱していたら何もしない
         const stores=d.stores||[], items=d.items||[];
-        try{ localStorage.setItem(cacheKey, JSON.stringify({stores,items})); }catch(e){}
-        const changed=!cached || JSON.stringify(stores)!==JSON.stringify(cached.stores) || JSON.stringify(items)!==JSON.stringify(cached.items);
-        S.transferForm=Object.assign({}, S.transferForm, { loading:false, loadingSlow:false, stores, items });
+        try{ localStorage.setItem(cacheKey, JSON.stringify({stores,items,staff})); }catch(e){}
+        const changed=!cached || JSON.stringify(stores)!==JSON.stringify(cached.stores) || JSON.stringify(items)!==JSON.stringify(cached.items) || JSON.stringify(staff)!==JSON.stringify(cached.staff||null);
+        S.transferForm=Object.assign({}, S.transferForm, { loading:false, loadingSlow:false, stores, items, staff });
         if(changed&&!ctfDirty_(S.transferForm)) render(); // キャッシュと同一内容・入力が始まっている場合は再描画しない（入力途中を勝手にリセットさせない）
       }).catch(e=>{
         clearTimeout(slowTimer);

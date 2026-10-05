@@ -3253,7 +3253,6 @@ function deleteSpotEntry(p, session) {
       if (String(vals[i][8]).trim() === id) {
         var store = String(vals[i][1]).trim();
         if (store && !scopeAllows_(session, store)) return { ok: false, error: 'この店舗の削除権限がありません' };
-        sh.deleteRow(i + 2);
         var bqRes = bqSyncSpotNow_();
         var out = { ok: true };
         if (!bqRes || !bqRes.ok) out.bqWarn = 'BigQueryへの反映に失敗した可能性があります（' + ((bqRes && bqRes.error) || '不明') + '）。数分後にもう一度確認してください';
@@ -5849,17 +5848,30 @@ function costTransferAdd(p, session) {
   var fromStore = String(p.fromStore || '').trim(), toStore = String(p.toStore || '').trim();
   if (!fromStore || !toStore) return { ok: false, error: '移動元・移動先の店舗を選んでください' };
   if (fromStore === toStore) return { ok: false, error: '移動元と移動先は別の店舗にしてください' };
-  var item = String(p.item || '').trim().slice(0, 60);
-  if (!item) return { ok: false, error: '品名を入力してください' };
-  var amount = Number(p.amount);
-  if (!isFinite(amount) || amount <= 0) return { ok: false, error: '金額を正しく入力してください' };
-  var res = costTransferWriteRow_(date, fromStore, toStore, item, amount);
-  if (!res.ok) return res;
+  // 2026-10-05: 同じ店舗間の移動を複数商品まとめて登録できるように（items=[{item,amount}]のJSON）。従来の単品(item/amount)も受け付ける。
+  var list = [];
+  if (p.items) { try { list = JSON.parse(p.items) || []; } catch (e) { return { ok: false, error: '商品の形式が不正です' }; } }
+  else list = [{ item: p.item, amount: p.amount }];
+  if (!list.length) return { ok: false, error: '商品を入力してください' };
+  var clean = [];
+  for (var i = 0; i < list.length; i++) {
+    var item = String(list[i].item || '').trim().slice(0, 60);
+    var amount = Number(list[i].amount);
+    if (!item) return { ok: false, error: '品名を入力してください' };
+    if (!isFinite(amount) || amount <= 0) return { ok: false, error: '「' + item + '」の金額を正しく入力してください' };
+    clean.push({ item: item, amount: amount });
+  }
+  var ids = [], total = 0, names = [];
+  for (var j = 0; j < clean.length; j++) {
+    var res = costTransferWriteRow_(date, fromStore, toStore, clean[j].item, clean[j].amount);
+    if (!res.ok) return { ok: false, error: (ids.length ? '一部（' + ids.length + '品目）は登録済みです。' : '') + (res.error || '登録に失敗しました') };
+    ids.push(res.id); total += clean[j].amount; names.push(clean[j].item);
+  }
   try {
     var tkPlT = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
     if (tkPlT) bqSyncPL({ token: tkPlT });
   } catch (eSyncT) { /* BQ同期に失敗してもシート保存自体は成功として扱う（次回同期で追いつく） */ }
-  return res;
+  return { ok: true, id: ids[0], ids: ids, count: ids.length, total: total, date: date, fromStore: fromStore, toStore: toStore };
 }
 function costTransferCancel(p, session) {
   if (!isAdmin(session)) return { ok: false, error: '店舗間の仕入れ移動の取り消しは社長・本部のみ行えます' };
@@ -5879,6 +5891,7 @@ function costTransferCancel(p, session) {
   if (!toDelete.length) return { ok: false, error: '対象の移動が見つかりません（既に取り消し済みの可能性があります）' };
   // 行番号の大きい順に消す（先に消すと後ろの行番号がずれるため）
   toDelete.sort(function (a, b) { return b - a; }).forEach(function (r) { dp.deleteRow(r); });
+
   try {
     var tkPlC = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
     if (tkPlC) bqSyncPL({ token: tkPlC });
