@@ -6673,6 +6673,7 @@ async function fetchReqPending_(){
     o.total=o.cost_transfer+o.spot_labor_request+o.retirement;
     const changed=!D.reqPending||D.reqPending.total!==o.total;
     D.reqPending=o;
+    if(changed){ try{ if(window.parent&&window.parent!==window) window.parent.postMessage({ type:'nsReqPendingChanged' }, 'https://mirai-oss.github.io'); }catch(e){} }   // ポータルの左メニューのバッジも更新させる
     if(changed&&!targetModalOpen_()){ const nav=document.querySelector('nav.tabs'); if(nav) nav.outerHTML=viewNav(); }
   }catch(e){ /* SQL未適用・通信失敗はバッジなしのまま */ }
 }
