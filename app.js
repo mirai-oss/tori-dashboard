@@ -4162,9 +4162,9 @@ function fetchDetailKey_(){
 }
 // ===== 明細タブのkd直読み（F2・2026-10-05・レーンP回答書 §3 kind:'detail'）=====
 // 日次分解(kd_detail_item_daily/hour_daily)をサーバー側RPCで期間集計して返す。GAS(BigQuery)を通さない。
-// 既定OFF（localStorage.detail_kd='1' で有効）。旧bqDetail経路と並べて突合（🧪新旧突合）して合えば既定ONにする。
+// 既定ON（2026-10-05 全体/ランチ/ディナー×9月・10月で旧bqDetailと完全一致を確認）。
 // 対象外（従来経路のみ）: 集計基準 order/arrival、時間帯×商品(hourItem)。
-const DETAIL_KD_=(()=>{ try{ return localStorage.getItem('detail_kd')==='1'; }catch(e){ return false; } })();
+const DETAIL_KD_=(()=>{ try{ return localStorage.getItem('detail_kd')!=='0'; }catch(e){ return true; } })();   // 既定ON（突合一致を確認済み 2026-10-05）。旧(GAS)へ戻す: localStorage.setItem('detail_kd','0')
 function storeIdByName_(name){
   if(!D.home||!D.home.stores) return null;
   const hit=D.home.stores.find(s=>s.storeName===name); return hit?hit.storeId:null;
