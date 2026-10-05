@@ -6567,6 +6567,44 @@ function plStorePanelsHtml_(stores, mS,mE,pS,pE,yS,yE, prevName, showYoY, mLabel
   });
   return h;
 }
+/* ---- 申請の編集・削除（申請履歴から・2026-10-05）----
+ * スポット人件費の申請(承認待ち/承認済み)・仕入れ移動の現場申請(承認待ち)を編集、削除できる。
+ * 承認済みのスポット人件費は、記録済みのスプレッドシートの行(entry_id)もGASで一緒に直す・消す。 */
+function reqEditModal(){
+  const m=S.modal, f=m.f||{}, isSpot=m.kind==='spot';
+  const staffOpts=Array.isArray(D.staffDir)&&D.staffDir.length?`<div style="grid-column:1/-1"><label>申請者（名前を入力して候補から選択）</label><input list="re-staff-list" id="re-requester" value="${esc(f.requesterName||'')}" oninput="App.reqEditField('requesterName',this.value)" autocomplete="off"><datalist id="re-staff-list">${D.staffDir.map(u=>`<option value="${esc(u.name)}"></option>`).join('')}</datalist></div>`:'';
+  const stores=allStores();
+  let body='';
+  if(isSpot){
+    body=`<div class="form-grid">
+      <div><label>店舗</label><select oninput="App.reqEditField('store',this.value)">${[...new Set([f.store].concat(stores))].filter(Boolean).map(x=>`<option ${f.store===x?'selected':''}>${esc(x)}</option>`).join('')}</select></div>
+      <div><label>勤務日</label><input type="date" value="${esc(f.date||'')}" oninput="App.reqEditField('date',this.value)"></div>
+      <div><label>区分</label><select oninput="App.reqEditField('kind',this.value)"><option ${f.kind==='タイミー'?'selected':''}>タイミー</option><option ${f.kind==='その他'?'selected':''}>その他</option></select></div>
+      <div><label>金額（円）</label><input type="number" style="text-align:right" value="${esc(f.amount||'')}" oninput="App.reqEditField('amount',this.value)"></div>
+      <div><label>人数（任意）</label><input type="number" value="${esc(f.headcount||'')}" oninput="App.reqEditField('headcount',this.value)"></div>
+      ${staffOpts}<div style="grid-column:1/-1"><label>メモ（任意）</label><input value="${esc(f.note||'')}" oninput="App.reqEditField('note',this.value)"></div></div>`;
+  } else {
+    const items=m.itemMaster||[];
+    const rows=(f.rows&&f.rows.length?f.rows:[{name:'',qty:''}]);
+    body=`<div class="form-grid">
+      <div><label>移動日</label><input type="date" value="${esc(f.date||'')}" oninput="App.reqEditField('date',this.value)"></div>
+      <div><label>移動元店舗</label><select oninput="App.reqEditField('from',this.value)">${[...new Set([f.from].concat(stores))].filter(Boolean).map(x=>`<option ${f.from===x?'selected':''}>${esc(x)}</option>`).join('')}</select></div>
+      <div><label>移動先店舗</label><select oninput="App.reqEditField('to',this.value)">${[...new Set([f.to].concat(stores))].filter(Boolean).map(x=>`<option ${f.to===x?'selected':''}>${esc(x)}</option>`).join('')}</select></div>
+      ${staffOpts}</div>
+      <div style="margin-top:10px"><label style="font-size:12px;color:#8c8375">商品（金額は品目マスタの単価×数量で自動計算されます）</label>
+        ${rows.map((r,i)=>`<div style="display:flex;gap:6px;align-items:center;margin-top:6px"><select style="flex:1" oninput="App.reqEditRow(${i},'name',this.value)"><option value="">商品を選ぶ</option>${items.map(it=>`<option ${r.name===it.name?'selected':''}>${esc(it.name)}</option>`).join('')}</select>
+          <input type="number" min="1" style="width:80px;text-align:right" placeholder="数量" value="${esc(r.qty||'')}" oninput="App.reqEditRow(${i},'qty',this.value)"><button class="icon-btn" style="padding:2px 8px" onclick="App.reqEditRowDel(${i})">🗑</button></div>`).join('')}
+        <button class="icon-btn" style="margin-top:6px" onclick="App.reqEditRowAdd()">＋ 商品を追加</button></div>
+      <div style="margin-top:10px"><label style="font-size:12px;color:#8c8375">メモ（任意）</label><input style="width:100%" value="${esc(f.note||'')}" oninput="App.reqEditField('note',this.value)"></div>`;
+  }
+  return `<div class="modal-bg" onclick="if(event.target===this)App.closeModal()"><div class="modal" style="max-width:600px">
+    <h3>✎ ${isSpot?'スポット人件費':'仕入れ移動'}の申請を編集</h3>
+    <div class="sub">状態: ${esc(REQLOG_STATUS_[m.status]||m.status)}${isSpot&&m.status==='approved'?'（承認済み：スポット人件費に記録済みの行も一緒に修正します）':''}</div>
+    ${m.loading?`<div class="empty">読み込み中…</div>`:body}
+    <div id="re-msg" style="font-size:12px;color:#b5502f;margin:8px 0">${esc(m.msg||'')}</div>
+    <div class="modal-btns"><button class="icon-btn primary" onclick="App.reqEditSave()" ${m.loading?'disabled':''}>保存</button><button class="icon-btn" onclick="App.closeModal()">キャンセル</button></div>
+  </div></div>`;
+}
 /* ---- 申請フォームURL（2026-10-05・社長/本部のみ）----
  * 退職申請・仕入れ移動・スポット人件費の「ログイン不要の申請フォーム」のURLを1か所にまとめる（何のURLか・誰が使うか・送信後どうなるか付き）。
  * URLの合言葉はSupabase RPCで取得/再発行（再発行すると古いURLは即無効）。 */
@@ -6620,7 +6658,7 @@ function viewRequestForms(){
 /* ---- 申請履歴（2026-10-05・社長/本部のみ）----
  * 退職申請・スポット人件費・仕入れ移動（現場申請/管理者登録）の「いつ・誰が申請し、いつ・誰が承認したか」を月ごとに見る。
  * データはSupabaseのRPC request_history(月)から直接取得（GASを通さない・社長/本部/マスターのみ許可）。 */
-const REQLOG_KIND_={ cost_transfer:'仕入れ移動（現場申請）', cost_transfer_direct:'仕入れ移動（管理者登録）', spot_labor:'スポット人件費（入力）', spot_labor_request:'スポット人件費（申請）', retirement:'退職申請' };
+const REQLOG_KIND_={ cost_transfer:'仕入れ移動（現場申請）', cost_transfer_direct:'仕入れ移動（管理者登録）', spot_labor:'スポット人件費（入力）', spot_labor_request:'スポット人件費（申請）', spot_labor_edit:'スポット人件費（申請の編集・削除）', cost_transfer_edit:'仕入れ移動（申請の編集・削除）', retirement:'退職申請' };
 const NIPPO_RETIRE_URL_='https://mirai-oss.github.io/nippo/?page=admin&m=retire';   // 退職申請の承認・却下はnippoの画面（アカウント管理内）
 const REQLOG_STATUS_={ pending:'承認待ち', approved:'承認済み', rejected:'却下', direct:'直接登録（承認なし）' };
 function reqLogMonth_(){ return S.reqLogYm||(()=>{ const d=new Date(Date.now()+9*3600000); return d.getUTCFullYear()+'-'+String(d.getUTCMonth()+1).padStart(2,'0'); })(); }
@@ -6668,7 +6706,7 @@ function viewRequestLogList_(){
   const L=D.reqLog||{ loading:true, rows:[] };
   const ym=reqLogMonth_();
   const kf=S.reqLogKind||'';
-  const rows=(L.rows||[]).filter(r=>!kf||r.kind===kf||(kf==='cost_transfer'&&r.kind==='cost_transfer_direct')||(kf==='spot_labor'&&r.kind==='spot_labor_request'));
+  const rows=(L.rows||[]).filter(r=>!kf||r.kind===kf||(kf==='cost_transfer'&&(r.kind==='cost_transfer_direct'||r.kind==='cost_transfer_edit'))||(kf==='spot_labor'&&(r.kind==='spot_labor_request'||r.kind==='spot_labor_edit')));
   const kinds=[['','すべて'],['retirement','退職申請'],['spot_labor','スポット人件費'],['cost_transfer','仕入れ移動']];
   const chip=([k,l])=>`<button class="icon-btn ${kf===k?'primary':''}" style="margin-right:6px" onclick="App.reqLogKind('${k}')">${l}</button>`;
   const stCls=(st)=>st==='approved'?'color:#4c7d5c':st==='rejected'?'color:#b5502f':st==='pending'?'color:#a2803f':'color:#8c8375';
@@ -6682,7 +6720,7 @@ function viewRequestLogList_(){
     h+=`<div class="mut" style="font-size:12px;margin-bottom:6px">${rows.length}件</div><div class="scroll-x"><table class="tbl"><thead><tr><th>申請日時</th><th>種類</th><th>申請者</th><th>内容</th><th style="text-align:right">金額</th><th>状態</th><th>承認・却下日時</th><th>承認者</th></tr></thead><tbody>`;
     rows.forEach(r=>{
       h+=`<tr><td style="white-space:nowrap">${esc(fmtJst_(r.occurred_at))}</td><td>${esc(REQLOG_KIND_[r.kind]||r.kind)}</td><td>${esc(r.requester||'')}</td><td>${esc(r.summary||'')}</td><td style="text-align:right">${r.amount!=null?yen(r.amount):''}</td>
-        <td style="${stCls(r.status)};white-space:nowrap">${esc(REQLOG_STATUS_[r.status]||r.status)}</td><td style="white-space:nowrap">${esc(r.decided_at?fmtJst_(r.decided_at):'')}</td><td>${esc(r.decided_by||'')}${(r.kind==='spot_labor_request'&&r.status==='pending')?`<div style="margin-top:4px;white-space:nowrap"><button class="icon-btn primary" style="padding:2px 8px;font-size:11px" data-id="${esc(r.ref_id)}" onclick="App.spotReqDecide(this.dataset.id,'approved')">承認</button> <button class="icon-btn" style="padding:2px 8px;font-size:11px" data-id="${esc(r.ref_id)}" onclick="App.spotReqDecide(this.dataset.id,'rejected')">却下</button></div>`:''}${(r.kind==='retirement'&&r.status==='pending')?`<div style="margin-top:4px"><a href="${NIPPO_RETIRE_URL_}" target="_blank" rel="noopener" style="font-size:11px">承認・却下はこちら ↗</a></div>`:''}</td></tr>`;
+        <td style="${stCls(r.status)};white-space:nowrap">${esc(REQLOG_STATUS_[r.status]||r.status)}</td><td style="white-space:nowrap">${esc(r.decided_at?fmtJst_(r.decided_at):'')}</td><td>${esc(r.decided_by||'')}${(r.kind==='spot_labor_request'&&r.status==='pending')?`<div style="margin-top:4px;white-space:nowrap"><button class="icon-btn primary" style="padding:2px 8px;font-size:11px" data-id="${esc(r.ref_id)}" onclick="App.spotReqDecide(this.dataset.id,'approved')">承認</button> <button class="icon-btn" style="padding:2px 8px;font-size:11px" data-id="${esc(r.ref_id)}" onclick="App.spotReqDecide(this.dataset.id,'rejected')">却下</button></div>`:''}${(r.kind==='spot_labor_request'||(r.kind==='cost_transfer'&&r.status!=='approved'))?`<div style="margin-top:4px;white-space:nowrap">${(r.kind==='spot_labor_request'||r.status==='pending')?`<button class="icon-btn" style="padding:2px 8px;font-size:11px" data-id="${esc(r.ref_id)}" data-k="${r.kind==='spot_labor_request'?'spot':'transfer'}" onclick="App.reqEditOpen(this.dataset.k,this.dataset.id)">編集</button> `:''}<button class="icon-btn" style="padding:2px 8px;font-size:11px;color:#b5502f" data-id="${esc(r.ref_id)}" data-k="${r.kind==='spot_labor_request'?'spot':'transfer'}" onclick="App.reqDelete(this.dataset.k,this.dataset.id)">削除</button></div>`:''}${(r.kind==='cost_transfer'&&r.status==='approved')?`<div class="mut" style="margin-top:4px;font-size:10.5px">取り消しは「🔀仕入れ移動」の履歴から</div>`:''}${(r.kind==='retirement'&&r.status==='pending')?`<div style="margin-top:4px"><a href="${NIPPO_RETIRE_URL_}" target="_blank" rel="noopener" style="font-size:11px">承認・却下はこちら ↗</a></div>`:''}</td></tr>`;
     });
     h+=`</tbody></table></div>`;
     EXPORT.push({ title:'申請履歴('+ym+')', headers:['申請日時','種類','申請者','内容','金額','状態','承認・却下日時','承認者'],
@@ -8064,6 +8102,7 @@ function viewModal(){
   if(S.modal&&S.modal.type==='rsvDetail') return rsvDetailModal();
   if(S.modal&&S.modal.type==='plStorePick') return plStorePickModal();
   if(S.modal&&S.modal.type==='spotInput') return spotInputModal();
+  if(S.modal&&S.modal.type==='reqEdit') return reqEditModal();
   if(S.modal&&S.modal.type==='costTransfer') return costTransferModal();
   if(S.modal&&S.modal.type==='costTransferAdmin') return costTransferAdminModal();
   if(S.modal&&S.modal.type==='tanka') return tankaModal();
@@ -9458,6 +9497,73 @@ window.App = {
   reqLogKind(k){ S.reqLogKind=k; render(); },
   reqLogReload(){ loadRequestLog_(true); },
   reqSub(k){ S.reqSub=k; render(); if(k==='forms') loadRequestForms_(); },
+  async reqEditOpen(kind,id){
+    S.modal={ type:'reqEdit', kind, id, loading:true, f:{}, status:'' }; render();
+    fetchStaffDir_().then(()=>{ if(S.modal&&S.modal.type==='reqEdit'&&!S.modal.loading) render(); });
+    try{
+      if(kind==='spot'){
+        const g=await reqFormRpc_('spot_request_get',{ p_id:id }); const q=Array.isArray(g)?g[0]:g;
+        if(!q) throw new Error('申請が見つかりません');
+        S.modal=Object.assign({},S.modal,{ loading:false, status:q.status, entryId:q.entry_id||'', f:{ store:q.store_name, date:q.work_date, kind:q.kind, amount:q.amount, headcount:q.headcount==null?'':q.headcount, note:q.note||'', requesterName:q.requester_name||'' } });
+      } else {
+        const [g,im]=await Promise.all([reqFormRpc_('cost_transfer_request_get',{ p_id:id }),
+          fetch(SSO_SUPA_URL+'/rest/v1/cost_transfer_items_v?select=name,unit_price',{ headers:{ apikey:SSO_SUPA_KEY, Authorization:'Bearer '+SSO_SUPA_KEY } }).then(r=>r.json())]);
+        const q=Array.isArray(g)?g[0]:g;
+        if(!q) throw new Error('申請が見つかりません');
+        if(q.status!=='pending') throw new Error('承認待ちの申請だけ修正できます');
+        S.modal=Object.assign({},S.modal,{ loading:false, status:q.status, itemMaster:(im||[]).map(i=>({name:i.name,unitPrice:Number(i.unit_price)||0})),
+          f:{ date:q.transfer_date, from:q.from_store, to:q.to_store, note:q.note||'', requesterName:q.requester_name||'', rows:(q.items||[]).map(i=>({name:i.name,qty:i.qty})) } });
+      }
+    }catch(e){ toast('開けませんでした: '+(e&&e.message||e)); S.modal=null; }
+    render();
+  },
+  reqEditField(k,v){ S.modal=Object.assign({},S.modal,{ f:Object.assign({},S.modal.f,{[k]:v}) }); },
+  reqEditRow(i,k,v){ const rows=((S.modal.f.rows&&S.modal.f.rows.length)?S.modal.f.rows:[{name:'',qty:''}]).map((r,idx)=>idx===i?Object.assign({},r,{[k]:v}):r); S.modal=Object.assign({},S.modal,{ f:Object.assign({},S.modal.f,{rows}) }); },
+  reqEditRowAdd(){ const rows=((S.modal.f.rows&&S.modal.f.rows.length)?S.modal.f.rows:[{name:'',qty:''}]).concat([{name:'',qty:''}]); S.modal=Object.assign({},S.modal,{ f:Object.assign({},S.modal.f,{rows}) }); render(); },
+  reqEditRowDel(i){ let rows=((S.modal.f.rows&&S.modal.f.rows.length)?S.modal.f.rows:[{name:'',qty:''}]).filter((_,idx)=>idx!==i); if(!rows.length) rows=[{name:'',qty:''}]; S.modal=Object.assign({},S.modal,{ f:Object.assign({},S.modal.f,{rows}) }); render(); },
+  async reqEditSave(){
+    const m=S.modal, f=m.f, msg=$('re-msg'); const fail=(t)=>{ if(msg) msg.textContent=t; };
+    let reqId=null; const nm=String(f.requesterName||'').trim();
+    if(nm){ const hit=(D.staffDir||[]).filter(u=>u.name===nm); if(hit.length===1) reqId=hit[0].id; else if(hit.length>1) return fail('同じ名前の人が複数います'); else if(Array.isArray(D.staffDir)&&D.staffDir.length) return fail('申請者が名簿にありません。候補から選ぶか、空欄にしてください'); }
+    try{
+      if(m.kind==='spot'){
+        const amount=Number(f.amount); if(!f.store||!f.date) return fail('店舗と勤務日を入力してください'); if(!(amount>0)) return fail('金額を正しく入力してください');
+        const hc=String(f.headcount==null?'':f.headcount).trim();
+        if(msg){ msg.style.color='#8c8375'; msg.textContent='保存中…'; }
+        if(m.status==='approved'&&m.entryId){
+          if(!S.auth||!S.auth.token) return fail('入力系は準備中です（数秒後にもう一度お試しください）');
+          const d=await api({ action:'saveSpotEntry', token:S.auth.token, id:m.entryId, store:f.store, date:f.date, kind:f.kind, amount, headcount:hc, memo:f.note||'' });
+          if(!d.ok) return fail(d.error||'スポット人件費の記録の修正に失敗しました（申請は変更していません）');
+        }
+        await reqFormRpc_('spot_request_update',{ p_id:m.id, p_store:f.store, p_date:f.date, p_kind:f.kind, p_amount:amount, p_headcount:hc===''?null:Math.round(Number(hc)), p_note:f.note||'', p_requester_id:reqId });
+        if(m.status==='approved') fetchData(true,{ only:['スポット人件費'], partial:true }).then(()=>{ if(S.useBqDaily) fetchSpotBQ(); });
+      } else {
+        const list=(f.rows||[]).filter(r=>r.name&&Number(r.qty)>0).map(r=>({ name:r.name, qty:Number(r.qty) }));
+        if(!f.date||!f.from||!f.to) return fail('移動日と店舗を入力してください'); if(f.from===f.to) return fail('移動元と移動先は別の店舗にしてください'); if(!list.length) return fail('商品と数量を1つ以上入力してください');
+        if(msg){ msg.style.color='#8c8375'; msg.textContent='保存中…'; }
+        await reqFormRpc_('cost_transfer_request_update',{ p_id:m.id, p_date:f.date, p_from:f.from, p_to:f.to, p_items:list, p_note:f.note||'', p_requester_id:reqId });
+      }
+      toast('修正しました'); S.modal=null; render(); await loadRequestLog_(true);
+    }catch(e){ fail('保存できませんでした: '+(e&&e.message||e)); }
+  },
+  async reqDelete(kind,id){
+    try{
+      let status='', entryId='', label='';
+      if(kind==='spot'){ const g=await reqFormRpc_('spot_request_get',{ p_id:id }); const q=Array.isArray(g)?g[0]:g; if(!q){ toast('申請が見つかりません'); return; } status=q.status; entryId=q.entry_id||''; label=q.store_name+'／'+q.work_date+'／'+q.kind+'／'+yen(q.amount); }
+      else { const g=await reqFormRpc_('cost_transfer_request_get',{ p_id:id }); const q=Array.isArray(g)?g[0]:g; if(!q){ toast('申請が見つかりません'); return; } status=q.status; label=q.from_store+'→'+q.to_store+'（'+q.transfer_date+'）'+yen(q.total); }
+      let note='';
+      if(kind==='spot'&&status==='approved') note=entryId?'\n\n承認済みのため、スポット人件費に記録した行も一緒に削除します（日別の人件費率・月次PLから外れます）。':'\n\n承認済みですが、記録した行との紐づけが残っていないため、スポット人件費の行は自動では消えません。必要なら「スポット人件費」画面から別に削除してください。';
+      if(!confirm('次の申請を削除します。\n'+label+'（状態: '+(REQLOG_STATUS_[status]||status)+'）'+note+'\n\nよろしいですか？（削除の記録は履歴に残ります）')) return;
+      if(kind==='spot'&&status==='approved'&&entryId){
+        if(!S.auth||!S.auth.token){ toast('入力系は準備中です（数秒後にもう一度お試しください）'); return; }
+        const d=await api({ action:'deleteSpotEntry', token:S.auth.token, id:entryId });
+        if(!d.ok&&!/見つかりません/.test(d.error||'')){ toast(d.error||'スポット人件費の行を削除できませんでした（申請は削除していません）'); return; }
+        fetchData(true,{ only:['スポット人件費'], partial:true }).then(()=>{ if(S.useBqDaily) fetchSpotBQ(); });
+      }
+      await reqFormRpc_(kind==='spot'?'spot_request_delete':'cost_transfer_request_delete',{ p_id:id });
+      toast('削除しました'); await loadRequestLog_(true);
+    }catch(e){ toast('削除できませんでした: '+(e&&e.message||e)); }
+  },
   reqFormsReload(){ loadRequestForms_(); },
   reqFormCopy(key){
     const el=$('rf-'+key); if(!el) return; el.select();
@@ -9489,7 +9595,7 @@ window.App = {
       toast('承認中…');
       const d=await api({ action:'saveSpotEntry', token:S.auth.token, id:'', store:q.store_name, date:q.work_date, kind:q.kind, amount:q.amount, headcount:q.headcount==null?'':q.headcount, memo:q.note||'' });
       if(!d.ok){ toast(d.error||'記録に失敗しました（承認はしていません）'); return; }
-      try{ await reqFormRpc_('spot_request_decide',{ p_id:id, p_decision:'approved', p_reason:'' }); }
+      try{ await reqFormRpc_('spot_request_decide',{ p_id:id, p_decision:'approved', p_reason:'', p_entry_id:String(d.id||'') }); }
       catch(e){ toast('記録は済みましたが、承認済みへの更新に失敗しました。履歴を更新して確認してください（二重承認に注意）: '+(e&&e.message||e)); return; }
       toast('承認しました（スポット人件費に記録）');
       fetchData(true,{ only:['スポット人件費'], partial:true }).then(()=>{ if(S.useBqDaily&&!d.bqWarn) fetchSpotBQ(); });
