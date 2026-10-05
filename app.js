@@ -8503,7 +8503,7 @@ function plInputModal(){
   const [y,mo]=(m.ym||'').split('-').map(Number);
   const t0=new Date(y,mo-1,1).getTime();
   // この月×店舗の既存手入力行（媒体販促費（自動）はPL側トリガー管理のため除外）
-  const rows=D.pl.filter(r=>r.t===t0 && (isCommon? !String(r.store).trim() : normStore(r.store)===normStore(st)) && r.memo!=='媒体販促費（自動計上）' && r.item!=='媒体販促費（自動）');
+  const rows=D.pl.filter(r=>r.t===t0 && (isCommon? !String(r.store).trim() : normStore(r.store)===normStore(st)) && r.memo!=='媒体販促費（自動計上）' && r.item!=='媒体販促費（自動）' && String(r.memo||'').indexOf('店舗間移動:')!==0);   // 店舗間の仕入れ移動の行はここでは編集しない（移動元の行はマイナス金額で、保存時に消える不具合の原因だった）
   const items=[...new Set(Object.keys(PL_ITEM_CAT).concat(D.pl.map(r=>r.item)))];
   return `<div class="modal-bg" onclick="if(event.target===this)App.closeModal()"><div class="modal" style="max-width:640px">
     <h3>経費の入力・修正（${y}年${mo}月）</h3>

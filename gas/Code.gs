@@ -5262,7 +5262,10 @@ function savePlEntries(p, session) {
     dp.getRange(2, 1, dlast - 1, dlastCol).getValues().forEach(function (r) {
       if (r[0] === '' && r[1] === '' && r[2] === '') return;
       var same = ymOf_(r[0]) === ymSlash && String(r[1]).trim() === store;
-      if (same && String(r[5]) !== PL_AUTO_MEMO) return;   // 差し替え対象は捨てる
+      // 2026-10-05修正（ユーザー報告「仕入れ移動の承認済みが消えた」）: 店舗間の仕入れ移動の行（メモが「店舗間移動:…」）は
+      // 経費の入力・修正の対象外。移動元の行は金額がマイナスのため、この「丸ごと差し替え」で捨てられて、
+      // 移動先の行だけが残り、履歴から消える（片方しか無い移動は履歴に出さない）不具合だった。常に残す。
+      if (same && String(r[5]) !== PL_AUTO_MEMO && String(r[5]).indexOf('店舗間移動:') !== 0) return;   // 差し替え対象は捨てる
       keep.push(r);
     });
   }
@@ -5918,6 +5921,43 @@ function costTransferList(p, session) {
   return res;
 }
 
+// 仕入れ移動の復元（2026-10-05）: 承認済みの申請(Supabase)のうち、DB_PLに対応する2行が無いものを書き戻す。
+// 照合キー=移動日・移動元・移動先・品名・金額。execute=falseなら書き込まず一覧だけ出す。
+// 画面の「直近の移動履歴」から登録した移動（申請を経由しないもの）は申請の記録が無いので対象外。
+function costTransferRestoreCore_(execute) {
+  var out = [];
+  var dp = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_PL');
+  var last = dp.getLastRow(), cols = Math.max(dp.getLastColumn(), 7);
+  var vals = last >= 2 ? dp.getRange(2, 1, last - 1, cols).getValues() : [];
+  var byId = {};
+  vals.forEach(function (r) {
+    var m = String(r[5] || '').match(/^店舗間移動:([^:]+):(\d{4}-\d{2}-\d{2})$/);
+    if (!m) return;
+    var rec = byId[m[1]] || (byId[m[1]] = { date: m[2] });
+    var amt = Number(r[4]) || 0, item = String(r[2] || '').replace(/（店舗間移動[→←][^）]*）$/, '');
+    rec.item = item;
+    if (amt < 0) { rec.from = String(r[1]).trim(); rec.amount = Math.abs(amt); } else { rec.to = String(r[1]).trim(); if (!rec.amount) rec.amount = amt; }
+  });
+  var have = {};
+  Object.keys(byId).forEach(function (id) { var x = byId[id]; if (x.from && x.to) have[[x.date, x.from, x.to, x.item, Math.round(x.amount)].join('|')] = 1; });
+  var reqs = costTransferRequestsRaw_('approved'), missing = 0, wrote = 0;
+  reqs.forEach(function (rq) {
+    (rq.items || []).forEach(function (it) {
+      var amt = Math.round(Number(it.unitPrice || 0) * Number(it.qty || 0)) || Math.round(Number(it.amount) || 0);
+      if (!it.name || !(amt > 0)) return;
+      var name = String(it.name).slice(0, 60), key = [rq.date, rq.fromStore, rq.toStore, name, amt].join('|');
+      if (have[key]) return;
+      missing++;
+      out.push('  ' + (execute ? '書き戻し: ' : '欠けている: ') + rq.date + ' ' + rq.fromStore + '→' + rq.toStore + ' ' + name + ' ' + amt.toLocaleString() + '円');
+      if (execute) { var w = costTransferWriteRow_(rq.date, rq.fromStore, rq.toStore, name, amt); if (w.ok) { wrote++; have[key] = 1; } }
+    });
+  });
+  if (execute && wrote) { try { bqSyncPL({ token: PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN') }); } catch (e) {} }
+  out.unshift('承認済み申請 ' + reqs.length + '件 / DB_PLの移動 ' + Object.keys(byId).length + '件 / 欠けている明細 ' + missing + '件' + (execute ? ' / 書き戻し ' + wrote + '件' : '（確認のみ・まだ書き込んでいません）'));
+  Logger.log(out.join('\n'));
+}
+function costTransferRestorePreview() { costTransferRestoreCore_(false); }
+function costTransferRestoreRun() { costTransferRestoreCore_(true); }
 /* ================== 仕入れ移動：品目マスタ・申請キュー（2026-10-05・Supabase直結化） ==================
  * 2026-10-02に追加した現場向け公開フォームは、読み込み・送信のたびにGASが巨大なスプレッドシート
  * 全体を開くコストを払っていた（数秒〜十数秒）。ユーザー要望「今後スプレッドシートを使わないように
