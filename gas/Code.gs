@@ -106,6 +106,7 @@ function handle(p) {
     if (action === 'data')     return out(getData(p, session));
     if (action === 'depositCarry') return out(depositCarry(p, session)); // 入金の繰越（開始残高）だけ全期間で計算
     if (action === 'bqDetail') return out(bqDetail(p, session)); // 明細分析：期間・店舗で絞ってBQ集計
+    if (action === 'bqDetailItemDailyForSync') return out(bqDetailItemDailyForSync(p)); // 明細(商品・時間帯)の日次分解を返す読み取り専用（BQ_LOAD_TOKEN認証・レーンPのkd_detail_*用）。2026-10-05追加
     if (action === 'bqDailyStore') return out(bqDailyStore(p, session)); // 推移分析：分析_日別店舗のBQミラーを読む（データソース切替フラグ用）
     if (action === 'bqGetPL') return out(bqGetPL(p, session)); // PLタブ：DB_PLのBQミラーを読む（データソース切替フラグ用）
     if (action === 'bqGetSpot') return out(bqGetSpot(p, session)); // スポット人件費：DB_スポット人件費のBQミラーを読む（2026-08-23追加）
@@ -7166,4 +7167,92 @@ function smbcRemoveDupLines(p) {
     }
   });
   return { ok: true, results: results };
+}
+
+// ===== 明細の日次分解（レーンP kd_detail_item_daily / kd_detail_hour_daily 用・2026-10-05追加・担当A） =====
+// 入力 {token(BQ_LOAD_TOKEN), from, to, part?('item'|'hour'|'both'既定), store?(店舗名・省略=全店)} ※1回=最大1か月
+// 出力 {ok, logic_ver, from, to, sheets:{item:[ヘッダ+行], hour:[ヘッダ+行]}}
+//   item: 店舗, 営業日, daypart(lunch/dinner), 商品(menu), カテゴリ, 数量, 売上税込, 売上税抜
+//   hour: 店舗, 営業日, daypart, 時(会計時刻), 売上税込, 売上税抜, 会計数, お通し数, 数量, ドリンク税抜, フード税抜, カラオケ税抜
+// daypartはbqDetailと同じ lunchCutoffMatrix_ の店舗×曜日ルール（会計時刻基準）。計算式を変えたら BQ_DETAIL_LOGIC_VER を増やす。
+function bqLunchExprForSync_() {
+  var defaultCutoff = 16;
+  var matrix = lunchCutoffMatrix_();
+  var sidMap = bqStoreMap_();
+  var hourDecExpr = "(EXTRACT(HOUR FROM checkout_at) + EXTRACT(MINUTE FROM checkout_at)/60.0)";
+  var dowExpr = "EXTRACT(DAYOFWEEK FROM business_date)";
+  var storeParts = [];
+  for (var sid in sidMap) {
+    var days = matrix[sidMap[sid]];
+    var e;
+    if (!days) e = hourDecExpr + " < " + defaultCutoff;
+    else {
+      var dowParts = [];
+      for (var dow = 0; dow <= 6; dow++) {
+        var info = days[dow];
+        dowParts.push("WHEN " + (dow + 1) + " THEN " + ((info && info.lunchOk) ? (hourDecExpr + " < " + info.cutoff) : 'FALSE'));
+      }
+      e = "(CASE " + dowExpr + " " + dowParts.join(' ') + " ELSE FALSE END)";
+    }
+    storeParts.push("WHEN store_id='" + String(sid).replace(/'/g, "''") + "' THEN " + e);
+  }
+  return storeParts.length ? "(CASE " + storeParts.join(' ') + " ELSE " + hourDecExpr + " < " + defaultCutoff + " END)" : (hourDecExpr + " < " + defaultCutoff);
+}
+function bqDetailItemDailyForSync(p) {
+  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+  if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
+  var from = String(p.from || '').slice(0, 10), to = String(p.to || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) return { ok: false, error: 'bad date range' };
+  if ((new Date(to) - new Date(from)) / 86400000 > 31) return { ok: false, error: '期間は最大1か月（32日未満）にしてください' };
+  var part = (p.part === 'item' || p.part === 'hour') ? p.part : 'both';
+  var where = "WHERE business_date BETWEEN DATE('" + from + "') AND DATE('" + to + "')";
+  if (p.store && p.store !== 'all') {
+    var id = reverseStoreId_(p.store);
+    if (!id) return { ok: false, error: 'store_id未対応: ' + p.store };
+    where += " AND store_id = '" + String(id).replace(/'/g, '') + "'";
+  }
+  var T = BQ_TABLE;
+  var isLunch = bqLunchExprForSync_();
+  var DP = "IF(" + isLunch + ", 'lunch', 'dinner')";
+  var L = 'price_excl*qty';
+  var CAT = "CONCAT(IFNULL(category,''),'|',IFNULL(menu,''))";
+  var IS_KARA = "menu LIKE '%カラオケ%'", IS_SVC = "menu LIKE '%サービス料%'";
+  var IS_COURSE = "(category LIKE '%コース%' OR category LIKE '%プラン%' OR menu LIKE '%コース%')";
+  var DRINK_RE = "r'ビール|サワー|ハイボール|酎ハイ|チューハイ|ソフトドリンク|ドリンク|ワイン|日本酒|焼酎|カクテル|ウイスキー|ウィスキー|梅酒|レモン|ホッピー|果実酒|スパークリング|シャンパン|ノンアル|茶割|ハイ|飲み放題|飲放|生ビール|瓶ビール|グラス|ボトル|日本酒|酒'";
+  var IS_DRINK = "REGEXP_CONTAINS(" + CAT + ", " + DRINK_RE + ")";
+  var KARA = "SUM(CASE WHEN " + IS_KARA + " THEN " + L + " ELSE 0 END)";
+  var DRINK = "SUM(CASE WHEN " + IS_KARA + " THEN 0 WHEN " + IS_SVC + " THEN (" + L + ")*0.5 WHEN " + IS_COURSE + " THEN LEAST(1800,price_excl)*qty WHEN " + IS_DRINK + " THEN " + L + " ELSE 0 END)";
+  var FOOD = "SUM(CASE WHEN " + IS_KARA + " THEN 0 WHEN " + IS_SVC + " THEN (" + L + ")*0.5 WHEN " + IS_COURSE + " THEN GREATEST(price_excl-1800,0)*qty WHEN " + IS_DRINK + " THEN 0 ELSE " + L + " END)";
+  var m = bqStoreMap_(), idx = bqStoreNameIndex_();
+  var nm = function (sid) { var n = m[sid] || sid; return bqResolveStoreName_(idx, n); };
+  var sheets = {};
+  try {
+    if (part !== 'hour') {
+      var it = bqRows_("SELECT store_id, CAST(business_date AS STRING) AS d, " + DP + " AS dp, menu, ANY_VALUE(category) AS category, SUM(qty) AS qty, SUM(sales_incl) AS sales_incl, SUM(" + L + ") AS sales_excl FROM " + T + " " + where + " GROUP BY store_id, d, dp, menu");
+      if (!it) return { ok: false, error: 'BigQueryクエリ失敗(item)' };
+      var oi = [['店舗', '営業日', 'daypart', '商品', 'カテゴリ', '数量', '売上税込', '売上税抜']];
+      for (var i = 1; i < it.length; i++) { var r = it[i]; oi.push([nm(r[0]), r[1], r[2], r[3], r[4] || '', Number(r[5] || 0), Number(r[6] || 0), Number(r[7] || 0)]); }
+      sheets.item = oi;
+    }
+    if (part !== 'item') {
+      var hr = bqRows_("SELECT store_id, CAST(business_date AS STRING) AS d, " + DP + " AS dp, EXTRACT(HOUR FROM checkout_at) AS hr, SUM(sales_incl) AS sales_incl, SUM(" + L + ") AS sales_excl, COUNT(DISTINCT check_id) AS checks, SUM(IF(menu LIKE '%お通し%', qty, 0)) AS guests_otoshi, SUM(qty) AS qty, " + DRINK + " AS drink_excl, " + FOOD + " AS food_excl, " + KARA + " AS karaoke_excl FROM " + T + " " + where + " GROUP BY store_id, d, dp, hr");
+      if (!hr) return { ok: false, error: 'BigQueryクエリ失敗(hour)' };
+      var oh = [['店舗', '営業日', 'daypart', '時', '売上税込', '売上税抜', '会計数', 'お通し数', '数量', 'ドリンク税抜', 'フード税抜', 'カラオケ税抜']];
+      for (var k = 1; k < hr.length; k++) { var q = hr[k]; oh.push([nm(q[0]), q[1], q[2], Number(q[3] || 0), Number(q[4] || 0), Number(q[5] || 0), Number(q[6] || 0), Number(q[7] || 0), Number(q[8] || 0), Number(q[9] || 0), Number(q[10] || 0), Number(q[11] || 0)]); }
+      sheets.hour = oh;
+    }
+  } catch (e) { return { ok: false, error: String(e && e.message || e) }; }
+  return { ok: true, logic_ver: BQ_DETAIL_LOGIC_VER, from: from, to: to, sheets: sheets };
+}
+// エディタから実行する規模確認（読み取り専用）。直近1か月の item/hour の行数をログに出す（レーンPの容量見積り用）。
+function bqDetailItemDailySizeCheck() {
+  var tk = PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN');
+  var to = new Date(); to.setDate(to.getDate() - 1);
+  var from = new Date(to); from.setDate(from.getDate() - 29);
+  var f = function (d) { return Utilities.formatDate(d, 'Asia/Tokyo', 'yyyy-MM-dd'); };
+  var t0 = new Date().getTime();
+  var r = bqDetailItemDailyForSync({ token: tk, from: f(from), to: f(to), part: 'both' });
+  var msg = r.ok ? ('期間 ' + f(from) + '〜' + f(to) + ' / item ' + (r.sheets.item.length - 1) + '行 / hour ' + (r.sheets.hour.length - 1) + '行 / ' + (new Date().getTime() - t0) + 'ms / logic_ver ' + r.logic_ver) : ('失敗: ' + r.error);
+  Logger.log(msg);
+  return msg;
 }
