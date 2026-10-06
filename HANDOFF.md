@@ -156,7 +156,7 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 ### 2026-10-06 明細分析に「営業区分：デリバリー」を追加（時間帯別売上・時間帯×商品。app.js v=251・delivery-analysis.js 新規・**gas/Code.gs変更(a6p31)・ユーザーの貼替＋再デプロイ待ち**）
 ユーザー要望「ロケットナウの商品別売上の分析。時間帯別売上と、時間帯ごとにどの商品が注文されているか」。
 - データ: BQ `sales.stg_delivery_order`（1注文1行。`items_text`=「商品名x数量, 商品名, …」の1文字列・商品ごとの金額は無い）。**取込側(ns-daily-import)は変更なし**。
-- GAS: `bqGetDeliveryOrders`追加（読み取り専用・bqGetDeliveryと同じ店舗スコープ制限・キャッシュ10分）。ping ver=**a6p32**（a6p31は別セッションのbqDetailItemDailyForSync修正と重複して名乗っていたため、本番にデリバリー取得が入っているか判別できず「unknown action: bqGetDeliveryOrders」になった）。**貼替前は「取得に失敗しました」と出る**（フロントは先に出して安全）。
+- GAS: `bqGetDeliveryOrders`追加（読み取り専用・bqGetDeliveryと同じ店舗スコープ制限・キャッシュ10分）。ping ver=**a6p33**（a6p32→33でSQLの予約語AT誤用を修正）（a6p31は別セッションのbqDetailItemDailyForSync修正と重複して名乗っていたため、本番にデリバリー取得が入っているか判別できず「unknown action: bqGetDeliveryOrders」になった）。**貼替前は「取得に失敗しました」と出る**（フロントは先に出して安全）。
 - フロント: 新規`delivery-analysis.js`（`window.DlvAn`）。当初は独立タブで作ったが、ユーザー要望で**明細分析の営業区分プルダウンに「デリバリー」を追加**する形へ変更（独立タブは廃止）。選ぶとPOS明細の代わりに同じ店舗・期間でデリバリー分析を表示。app.jsはviewDetail内の3か所のみ。表示=KPI・時間帯別注文数/売上・曜日×時間帯ヒートマップ・時間帯区分別(ランチ/午後/ディナー/夜)人気商品・商品別表(時間帯内訳)・CSV出力。
 - **商品別売上は推定**: 単品注文から商品の単価(中央値)を学習し、複数品の注文は単価×数量の比で注文売上を按分（合計は必ず一致）。数量・注文数は正確。CANCELは負符号で相殺。
 - 明細分析を見られる人（店舗ロール含む）が見られる。GAS側で店舗スコープ制限済み。
