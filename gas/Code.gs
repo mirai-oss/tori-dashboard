@@ -117,6 +117,7 @@ function handle(p) {
     if (action === 'bqGetDeposit') return out(bqGetDeposit(p, session)); // 入金管理タブ：入金DBのBQミラーを読む（データソース切替フラグ用）
     if (action === 'bqGetMedia') return out(bqGetMedia(p, session)); // 媒体別日次：媒体別DBのBQミラーを読む（ログイン直後の同期エラー対策・2026-08-23追加）
     if (action === 'bqGetDelivery') return out(bqGetDelivery(p, session)); // デリバリー売上(ロケットナウ等)をstg_delivery_orderから店舗×日で集計・媒体名'ロケットナウ'として返す（2026-09-14追加・指示書_デリバリー売上取込_担当別）
+    if (action === 'bqGetDeliveryOrders') return out(bqGetDeliveryOrders(p, session)); // デリバリー分析タブ用: stg_delivery_orderの注文明細（時刻・注文内容つき）を返す。bqGetDeliveryと同じ店舗スコープ制限（2026-10-06追加）
     if (action === 'diagDeliverySettlementBreakdown') return out(diagDeliverySettlementBreakdown(p, session)); // 一時診断: 精算内訳(クーポン/消費税/手数料割引込み)の差異調査（2026-09-15・読み取り専用）
     if (action === 'bqGetReservation') return out(bqGetReservation(p, session)); // 予約タブ：stg_reservationのBQミラーを読む（2026-08-28追加・A-6）
     if (action === 'bqGetReservationNames') return out(bqGetReservationNames(p, session)); // 予約詳細：お客様名を都度Supabaseから取得（ログイン必須・店舗スコープ制限。2026-08-31追加・A-6 Phase2）
@@ -4032,6 +4033,51 @@ function bqGetDelivery(p, session) {
     var filtered = [rowsAll[0]];
     for (var j = 1; j < rowsAll.length; j++) { if (allowSet[rowsAll[j][0]]) filtered.push(rowsAll[j]); }
     return { ok: true, sheets: { delivery: filtered } };
+  } catch (e) {
+    return { ok: false, error: String(e && e.message || e) };
+  }
+}
+
+// デリバリー分析タブ（2026-10-06追加）: stg_delivery_orderの注文明細を、時刻・注文内容つきで返す（読み取り専用）。
+// bqGetDeliveryは店舗×日の集計だけで時間帯・商品が分からないため、別アクションとして追加した。
+// 商品名の分解・時間帯集計・按分はクライアント(delivery-analysis.js)側で行う（注文数は日に数十件規模で軽い）。
+// CANCELはマイナス行（売上がマイナス）で入っているため、そのまま返してクライアントで符号を扱う。
+function bqGetDeliveryOrders(p, session) {
+  try {
+    var months = Number((p || {}).months) || 0;
+    var where = 'WHERE store_id IS NOT NULL';
+    if (months > 0) {
+      var cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - months);
+      where += " AND txn_date >= DATE('" + Utilities.formatDate(cutoff, 'Asia/Tokyo', 'yyyy-MM-dd') + "')";
+    }
+    var ck = bqCacheKey_('deliveryOrders', [months]);
+    var cached = bqCacheGet_(ck);
+    if (!cached) {
+      var sql = "SELECT FORMAT_DATETIME('%Y-%m-%d %H:%M:%S', txn_at) AS at, store_id, txn_type, order_no, items_text, sales FROM `" +
+        BQ_PROJECT + '.' + BQ_SALES_DATASET + '.stg_delivery_order` ' + where + ' ORDER BY txn_at';
+      var rows = bqRows_(sql);
+      if (!rows) return { ok: false, error: 'BigQueryクエリ失敗' };
+      var dir = fetchStoreDirectory_();
+      var idToName = {};
+      if (dir) for (var i = 0; i < dir.length; i++) idToName[dir[i].id] = dir[i].name;
+      var out = [['店舗名', '日時', '取引タイプ', '注文番号', '注文内容', '売上']];
+      for (var r = 1; r < rows.length; r++) {
+        var row = rows[r];
+        var storeName = idToName[row[1]];
+        if (!storeName) continue; // 店舗マスタに無いidはスキップ（bqGetDeliveryと同じ安全側）
+        out.push([storeName, String(row[0]), String(row[2]), String(row[3]), String(row[4] == null ? '' : row[4]), Number(row[5] || 0)]);
+      }
+      cached = { ok: true, sheets: { deliveryOrders: out } };
+      bqCachePut_(ck, cached);
+    }
+    var sessStores = String(session && session.stores || '').trim();
+    if (!sessStores || sessStores === '全店') return cached;
+    var allowSet = {};
+    sessStores.split(/[,、]/).forEach(function (s) { var t = s.trim(); if (t) allowSet[t] = true; });
+    var all = (cached.sheets && cached.sheets.deliveryOrders) || [];
+    var filtered = [all[0]];
+    for (var j = 1; j < all.length; j++) { if (allowSet[all[j][0]]) filtered.push(all[j]); }
+    return { ok: true, sheets: { deliveryOrders: filtered } };
   } catch (e) {
     return { ok: false, error: String(e && e.message || e) };
   }

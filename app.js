@@ -67,16 +67,16 @@ const PALETTE = ['#3d5163','#b5502f','#5f7052','#c9a86a','#7d8b6f','#2a6f8f','#9
 const C_NOW='#3d5163', C_PREV='#c9b7a0', C_MID='#7d8b6f';
 const LS = { api:'toriApiUrl', sess:'toriSession', acc:'toriDemoAccounts', poll:'toriPollSec', months:'toriMonths', dailyBq:'toriDailySourceBq' };
 const ROLE_TABS = {
-  '社長':       ['dash','target','analysis','detail','pl','deposit','ad','reservation','review','weekly','weeklyAdmin','ai','accounts','requestLog'],
-  '本部':       ['dash','target','analysis','detail','pl','deposit','ad','reservation','review','weekly','weeklyAdmin','ai','accounts','requestLog'],
-  'マネージャー':['dash','target','analysis','detail','pl','deposit','ad','reservation','review','weekly','weeklyAdmin','ai'],
+  '社長':       ['dash','target','analysis','detail','delivery','pl','deposit','ad','reservation','review','weekly','weeklyAdmin','ai','accounts','requestLog'],
+  '本部':       ['dash','target','analysis','detail','delivery','pl','deposit','ad','reservation','review','weekly','weeklyAdmin','ai','accounts','requestLog'],
+  'マネージャー':['dash','target','analysis','detail','delivery','pl','deposit','ad','reservation','review','weekly','weeklyAdmin','ai'],
   '店舗':       ['dash','target','analysis','detail','deposit','reservation','review','weekly','ai'],   // PL・広告管理は既定で非表示（アカウントごとの「表示タブ」で変更可）
   // 外販先（Ring-style・いちご屋など）に売上を確認してもらうためのアカウント。
   // 自分の担当媒体の売上だけを見せ、他の数字は一切見せない。担当媒体はアカウントシートのK列。
   '外販':       ['partner'],
 };
 // reservation='予約'（2026-08-28追加・A-6。Sync4後。stg_reservationのBQミラーを表示）
-const TAB_LABELS = { partner:'媒体売上', dash:'ダッシュボード', target:'目標管理', analysis:'推移分析', detail:'明細分析', pl:'PL（損益）', deposit:'入金管理', ad:'広告管理', reservation:'予約', review:'口コミ', weekly:'週報', weeklyAdmin:'週報管理', ai:'AI検索', accounts:'アカウント管理', requestLog:'申請履歴' };
+const TAB_LABELS = { partner:'媒体売上', dash:'ダッシュボード', target:'目標管理', analysis:'推移分析', detail:'明細分析', delivery:'デリバリー分析', pl:'PL（損益）', deposit:'入金管理', ad:'広告管理', reservation:'予約', review:'口コミ', weekly:'週報', weeklyAdmin:'週報管理', ai:'AI検索', accounts:'アカウント管理', requestLog:'申請履歴' };
 // 入力・取込系の機能権限。閲覧は「表示タブ」で、データを書き込む操作はこちらで制御する。
 // 既定は権限ごとの ROLE_FEATURES、アカウントごとに上書きしたい場合は「アカウント」シートのI列に保存する。
 const FEATURE_LABELS = {
@@ -3027,6 +3027,7 @@ function renderInner_(){
   else if(S.tab==='dash') body=viewDash();
   else if(S.tab==='target') body=viewTarget();
   else if(S.tab==='detail') body=viewDetail();
+  else if(S.tab==='delivery') body=(window.DlvAn?DlvAn.view():'<div class="panel"><div class="empty">読み込み中…</div></div>');   // デリバリー分析（delivery-analysis.js・2026-10-06追加）
   else if(S.tab==='analysis') body=viewAnalysis();
   else if(S.tab==='deposit') body=viewDeposit();
   else if(S.tab==='pl') body=viewPL();
