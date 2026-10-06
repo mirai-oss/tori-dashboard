@@ -1337,8 +1337,10 @@ function ingestSheets(sheets, partial, scope){
   // リセットせず引き継ぐ（他の並行取得の結果を消さない）。
   const preservedDiag={};
   if(!partial){ known.forEach(k=>{ if(checkable.indexOf(k)<0 && D.diag[k]) preservedDiag[k]=D.diag[k]; }); }
+  const kdKeep_=(!partial)?kdSnapshotAdTarget_():null;
   if(!partial){ D.extra={}; D.diag=preservedDiag; D.receivedKeys=Object.keys(sheets); D.ad=[]; D.adSrc=''; D.adfx=[]; D.tanka={}; D.tankaRows=[]; D.tankaAvg={}; D.tankaCv={}; D.rsv=[]; D.pl=[]; D.spot=[]; D.loanPrincipal=[]; D.dinii=[]; D.targets=[]; D.targetsM=[]; D.events=[]; D.storeAlias={}; D.storeParent={}; D.adMediaMaster=[]; D.adPlanMaster={}; D.adStoreMaster=[]; D.subItemMaster={}; D.mfCategoryMap={}; D.mediaFeeRows=[]; D.adPlExclude=new Set(); }  // 広告・PL・スポット人件費・借入返済元金・ダイニー・目標・対応表・親子・補助科目/MF科目対応マスタ・広告費PL除外設定はフル受信のたびに入れ替え
   else { D.receivedKeys=(D.receivedKeys||[]).concat(Object.keys(sheets)); }
+  if(kdKeep_) kdRestoreAdTarget_(kdKeep_, sheets);
   if(!partial){ checkable.forEach(k=>{ if(!(k in sheets)) D.diag[k]='シート未受信（接続設定のシート名を確認）'; }); }
   for(const key in sheets){
     const rows=sheets[key];
@@ -2361,6 +2363,30 @@ async function dashSummaryPaged_(kind, months, extra){
 // F1-b/c（2026-10-05・レーンP回答 kind:'pl_entries'|'spot'|'loan'|'media_daily'）: PL(行レベル)・スポット人件費・借入返済・媒体日次をkd直読みで組み立てる。
 // 取得できたものだけ gasLoaded_ を立て、GASの該当読込を省く。失敗時は何もしない（従来どおりGASが読む）。旧経路へ: localStorage.kd_entries=0。
 const KD_ENTRIES_=(()=>{ try{ return localStorage.getItem('kd_entries')!=='0'; }catch(e){ return true; } })();
+
+// F1-b/c 広告・目標（2026-10-06）: kdで読んだ広告・目標を、後から届くGASのフル受信（reset）で消さないための退避/復元。
+// kdで読めた分だけ(D.kdAdOk_/D.kdTargetOk_)対象。GASがそのシートを実際に返してきた時はGASの値を優先する。
+function kdSnapshotAdTarget_(){
+  const k={};
+  if(D.kdAdOk_){ k.ad={ ad:D.ad, adfx:D.adfx, adSrc:D.adSrc, ex:D.adPlExclude }; }
+  if(D.kdTargetOk_){ k.tg={ targets:D.targets, targetsM:D.targetsM }; }
+  return k;
+}
+function kdRestoreAdTarget_(k, sheets){
+  const has=(n)=>Object.prototype.hasOwnProperty.call(sheets||{},n);
+  if(k.ad){
+    if(!has('広告')&&!has('ad')){ D.ad=k.ad.ad; D.adSrc=k.ad.adSrc; }
+    if(!has('広告効果')) D.adfx=k.ad.adfx;
+    if(!has('広告除外設定')) D.adPlExclude=k.ad.ex;
+  }
+  if(k.tg){
+    if(!has('目標')) D.targets=k.tg.targets;
+    if(!has('目標月次')) D.targetsM=k.tg.targetsM;
+  }
+}
+// 画面で入力した直後は、kd側の反映待ち（広告=約1時間／目標=日次）の間だけGAS経路を使う（再読込で古い値に戻らないように）
+function kdEditMark_(kind){ try{ localStorage.setItem('kd_edit_'+kind, String(Date.now())); }catch(e){} }
+function kdEditFresh_(kind, ms){ try{ const t=Number(localStorage.getItem('kd_edit_'+kind)||0); return t>0&&Date.now()-t<ms; }catch(e){ return false; } }
 async function fetchKdEntries_(){
   if(!KD_ENTRIES_||!authed_()||!BOOT_GASLESS_) return;
   const loaded=(D.gasLoaded_||(D.gasLoaded_={})); const at=(D.gasLoadedAt_||(D.gasLoadedAt_={})); const nm=(r)=>String(r.store_name||storeNameById_(r.store_id)||'').trim();
@@ -2383,6 +2409,36 @@ async function fetchKdEntries_(){
     job('loan',0,{ from:'2023-01', to:'2029-12' },(rows)=>{
       const sh=[['年月','店舗','法人','元金額','メモ']].concat(rows.map(r=>[r.year_month, nm(r), r.corp_name||'', Number(r.principal||0), r.memo||'']));
       ingestSheets({ '借入返済元金':sh }, true); D.loanBqErr=''; D.bqFallback['借入返済元金']=false; D.loanBqLoading=false; mark('loan'); }),
+    ...(kdEditFresh_('ad',90*60000)?[]:[
+      job('ad',36,null,(rows)=>{
+        const adR=[], fxR=[], ex=new Set();
+        rows.forEach(r=>{
+          const st=nm(r); const ym=String(r.year_month||''); if(!st||!/^\d{4}-\d{2}$/.test(ym)) return;
+          const t=parseYm(ym.replace('-','/')); if(!t) return;
+          const media=String(r.media_name||'').trim();
+          if(r.ad_cost!=null&&Number(r.ad_cost)) adR.push({ store:st, t, media, cost:Number(r.ad_cost) });
+          const access=Number(r.access_count||0), grp=Number(r.net_groups||0), ppl=Number(r.net_people||0), tel=Number(r.tel_count||0);
+          const tGrp=Number(r.total_groups||0), tPpl=Number(r.total_people||0), tSales=Number(r.total_sales||0), fee=Number(r.acquisition_fee||0);
+          if(access||grp||ppl||tel||tGrp||tPpl||tSales||fee) fxR.push({ store:st, t, media, access, grp, ppl, tel, telCnt:0, telPpl:0, tGrp, tPpl, tSales, fee });
+          if(r.pl_excluded) ex.add(st+'|'+ym);
+        });
+        D.ad=adR; D.adSrc='kd'; D.adfx=fxR; D.adPlExclude=ex; D.diag['広告']='OK kd '+adR.length+'件'; D.diag['広告効果']='OK kd '+fxR.length+'件';
+        D.kdAdOk_=true; mark('ad'); })
+    ]),
+    ...(kdEditFresh_('target',26*3600000)?[]:[
+      (async()=>{
+        const jst=(k)=>{ const n=new Date(Date.now()+9*3600000); const d=new Date(Date.UTC(n.getUTCFullYear(),n.getUTCMonth()+k,1)); return d.getUTCFullYear()+'-'+String(d.getUTCMonth()+1).padStart(2,'0'); };
+        const rng={ from:jst(-26), to:jst(12) };
+        try{
+          const [tm,td]=await Promise.all([ dashSummaryPaged_('target',0,rng), dashSummaryPaged_('target_daily',0,rng) ]);
+          if(!tm||!td) return false;
+          D.targetsM=tm.map(r=>{ const st=nm(r); const t=parseYm(String(r.year_month||'').replace('-','/')); return (st&&t)?{ store:st, t, pa:Number(r.pa_rate||0), emp:Number(r.emp_rate||0), cost:Number(r.cost_rate||0), dinii:Number(r.dinii_target||0), review:Number(r.review_target||0) }:null; }).filter(Boolean);
+          D.targets=td.map(r=>{ const st=nm(r); const t=parseDateStr(String(r.biz_date||'').slice(0,10)); return (st&&t&&r.sales_target!=null)?{ store:st, t, goal:Number(r.sales_target||0) }:null; }).filter(Boolean);
+          D.diag['目標']='OK kd '+D.targets.length+'件'; D.diag['目標月次']='OK kd '+D.targetsM.length+'件';
+          D.kdTargetOk_=true; mark('target'); logApiPerf_('kd_entries:target', nowMs_()-t0, true, ''); return true;
+        }catch(e){ logApiPerf_('kd_entries:target', nowMs_()-t0, false, 'exception'); return false; }
+      })()
+    ]),
     job('media_daily',24,null,(rows)=>{
       const sh=[['店舗名','営業日','媒体名','客数','客組数','純売上']].concat(rows.map(r=>[nm(r), String(r.biz_date||'').slice(0,10).replace(/-/g,'/'), r.media_raw||r.media_name||'', Number(r.guests||0), Number(r.parties||0), Number(r.net_sales||0)]));
       ingestSheets({ media:sh }, true); D.bqFallback.media=false; D.mediaMonthsLoaded=24; D.mediaPending=false; D.kdMediaOk_=true; })
@@ -2466,7 +2522,7 @@ async function fetchDataFast(opts){
   await ensureTabData_(S.tab, false, myRun, must);
   // PLタブは開く人が多く待たされやすいので、重い action:data(約20秒)より先にPL用(pl・loan)を読んでおく
   if(S.tab!=='pl'&&myTabs().includes('pl')) await ensureTabData_('pl', false, myRun, k=>k==='pl'||k==='loan'||k==='spot');
-  await gasRun_(async()=>{ if(myRun!==prefetchRun||!S.auth||!S.auth.token) return; if(!(opts&&opts.force)&&Date.now()-(D.dataAt_||0)<120000) return; await fetchData(true,{ exclude:excl }); D.dataAt_=Date.now(); });
+  await gasRun_(async()=>{ if(myRun!==prefetchRun||!S.auth||!S.auth.token) return; if(!(opts&&opts.force)&&Date.now()-(D.dataAt_||0)<120000) return; const ex2=excl.slice(); if(D.kdAdOk_) ex2.push('広告','広告効果','広告除外設定'); if(D.kdTargetOk_) ex2.push('目標','目標月次'); await fetchData(true,{ exclude:ex2 }); D.dataAt_=Date.now(); });
   await ensureTabData_(S.tab, false, myRun, k=>!must(k));
   if(myRun!==prefetchRun) return;
   if(!freshOk) await gasRun_(async()=>{ if(!S.gasSessionLost&&myRun===prefetchRun) await fetchFreshness(); });
@@ -3141,7 +3197,7 @@ function headerActionsHtml_(){
   return `<div class="sync-info">${connBadge()}</div>
     <button class="icon-btn" onclick="App.refresh()" title="手動更新">↻ 更新</button>
     <button class="icon-btn" onclick="App.csv()">⬇ CSV</button>
-    <button class="icon-btn" onclick="App.pdf()">🖨 PDF</button>${isAdminRole()?`<button class="icon-btn" onclick="App.perfReport()" title="起動が遅い時の原因調査用（管理者のみ）">⏱ 計測</button>`:''}`;
+    <button class="icon-btn" onclick="App.pdf()">🖨 PDF</button>${isAdminRole()?`<button class="icon-btn" onclick="App.perfReport()" title="起動が遅い時の原因調査用（管理者のみ）">⏱ 計測</button><button class="icon-btn" onclick="App.adTargetCompare()" title="広告・目標の旧(GAS)と新(kd)を並べて比べます（管理者のみ）">🧪広告・目標突合</button>`:''}`;
 }
 function viewHeader(){
   const acc=S.auth.account;
@@ -4269,6 +4325,44 @@ function showTextReport_(title, text){
   d.innerHTML='<div style="font-weight:700"></div><textarea readonly style="flex:1;font:12px/1.5 monospace;width:100%"></textarea><div><button class="icon-btn" id="perfRepClose">閉じる</button></div>';
   d.firstChild.textContent=title; d.querySelector('textarea').value=text;
   document.body.appendChild(d); d.querySelector('#perfRepClose').onclick=()=>d.remove();
+}
+
+// 🧪広告・目標突合（管理者のみ）: 旧(GAS シート)と新(kd)の 月×店舗 合計を並べ、差のある行だけ出す。全文を共有してください。
+async function adTargetCompare_(){
+  if(!S.auth||!S.auth.token){ toast('GAS未接続のため突合できません'); return; }
+  toast('突合中…（GASを呼びます。しばらくお待ちください）');
+  const L=[]; L.push('【広告・目標 新旧突合】'+new Date().toLocaleString('ja-JP')+' app.js '+((document.querySelector('script[src*="app.js"]')||{}).src||'').replace(/^.*\//,''));
+  const snap={ ad:D.ad, adfx:D.adfx, adSrc:D.adSrc, ex:D.adPlExclude, targets:D.targets, targetsM:D.targetsM, diag:Object.assign({},D.diag), rk:D.receivedKeys };
+  const kd={ ad:D.ad, ex:D.adPlExclude, targets:D.targets, targetsM:D.targetsM, fx:D.adfx };
+  let old=null;
+  try{
+    const d=await api({ action:'data', token:S.auth.token, months:monthsWindow(), keys:'広告,広告効果,広告除外設定,目標,目標月次' }, 90000);
+    if(!d||!d.ok){ L.push('GAS取得失敗: '+((d&&d.error)||'')); showTextReport_('🧪広告・目標突合（取得できず）', L.join('\n')); return; }
+    ingestSheets(d.sheets||{}, true);
+    old={ ad:D.ad, ex:D.adPlExclude, targets:D.targets, targetsM:D.targetsM, fx:D.adfx };
+  }catch(e){ L.push('例外: '+e.message); }
+  finally{ D.ad=snap.ad; D.adfx=snap.adfx; D.adSrc=snap.adSrc; D.adPlExclude=snap.ex; D.targets=snap.targets; D.targetsM=snap.targetsM; D.diag=snap.diag; D.receivedKeys=snap.rk; }
+  if(!old){ showTextReport_('🧪広告・目標突合', L.join('\n')); return; }
+  const ym=(t)=>ymdStr(t).slice(0,7);
+  const agg=(rows,keyf,valf)=>{ const m={}; (rows||[]).forEach(r=>{ const k=keyf(r); m[k]=(m[k]||0)+valf(r); }); return m; };
+  const cmp=(title,a,b)=>{
+    const keys=[...new Set(Object.keys(a).concat(Object.keys(b)))].sort(); let diff=0; const out=[];
+    keys.forEach(k=>{ const x=Math.round(a[k]||0), y=Math.round(b[k]||0); if(Math.abs(x-y)>0){ diff++; out.push('  '+k+'  旧(GAS)='+x+'  新(kd)='+y+'  差='+(y-x)); } });
+    L.push(''); L.push('■'+title+'  行数 旧='+Object.keys(a).length+' 新='+Object.keys(b).length+'  差のある行='+diff); out.slice(0,60).forEach(x=>L.push(x)); if(out.length>60) L.push('  …ほか'+(out.length-60)+'行');
+  };
+  cmp('広告費 月×店舗', agg(old.ad,r=>ym(r.t)+' '+r.store,r=>r.cost), agg(kd.ad,r=>ym(r.t)+' '+r.store,r=>r.cost));
+  cmp('広告費 月×店舗×媒体', agg(old.ad,r=>ym(r.t)+' '+r.store+' '+r.media,r=>r.cost), agg(kd.ad,r=>ym(r.t)+' '+r.store+' '+r.media,r=>r.cost));
+  cmp('広告効果 ネット予約組数 月×店舗', agg(old.fx,r=>ym(r.t)+' '+r.store,r=>r.grp), agg(kd.fx,r=>ym(r.t)+' '+r.store,r=>r.grp));
+  const exSet=(x)=>{ const o={}; (x?[...x]:[]).forEach(k=>{ o[k]=1; }); return o; };
+  cmp('広告除外設定(店舗×月の数)', exSet(old.ex), exSet(kd.ex));
+  cmp('売上目標 月×店舗(日別目標の合計)', agg(old.targets,r=>ym(r.t)+' '+r.store,r=>r.goal), agg(kd.targets,r=>ym(r.t)+' '+r.store,r=>r.goal));
+  cmp('目標月次 PA率', agg(old.targetsM,r=>ym(r.t)+' '+r.store,r=>r.pa*1000), agg(kd.targetsM,r=>ym(r.t)+' '+r.store,r=>r.pa*1000));
+  cmp('目標月次 社員率', agg(old.targetsM,r=>ym(r.t)+' '+r.store,r=>r.emp*1000), agg(kd.targetsM,r=>ym(r.t)+' '+r.store,r=>r.emp*1000));
+  cmp('目標月次 原価率', agg(old.targetsM,r=>ym(r.t)+' '+r.store,r=>r.cost*1000), agg(kd.targetsM,r=>ym(r.t)+' '+r.store,r=>r.cost*1000));
+  cmp('目標月次 ダイニー点数', agg(old.targetsM,r=>ym(r.t)+' '+r.store,r=>r.dinii), agg(kd.targetsM,r=>ym(r.t)+' '+r.store,r=>r.dinii));
+  cmp('目標月次 口コミ件数', agg(old.targetsM,r=>ym(r.t)+' '+r.store,r=>r.review), agg(kd.targetsM,r=>ym(r.t)+' '+r.store,r=>r.review));
+  L.push(''); L.push('kd側: 広告='+(D.kdAdOk_?'読込済':'未')+' 目標='+(D.kdTargetOk_?'読込済':'未')+'  ／ 差が0の項目は一致です');
+  showTextReport_('🧪広告・目標 新旧突合（全文コピーして共有してください）', L.join('\n'));
 }
 // 🧪新旧突合: 今の条件（期間・店舗・区分）で 旧bqDetail(GAS) と 新kd を並べて差を出す。全文をそのまま共有してください。
 async function detailCompare_(){
@@ -9849,6 +9943,7 @@ window.App = {
   ssoToggle(){ S.ssoOpen=!S.ssoOpen; S.loginErr=''; render(); },
   logout(){ if(confirm('ログアウトしますか？')) doLogout(); },
   perfReport(){ showPerfReport_(); },
+  adTargetCompare(){ adTargetCompare_(); },
   detailCompare(){ detailCompare_(); },
   tab(t){ S.tab=t; render(); if(t==='requestLog') loadRequestLog_(false); if(BOOT_GASLESS_&&S.auth&&S.auth.token) ensureTabData_(t,false,null,null,true); },
   reqLogSetMonth(v){ if(/^\d{4}-\d{2}$/.test(v||'')){ S.reqLogYm=v; loadRequestLog_(true); } },
@@ -10076,6 +10171,7 @@ window.App = {
         daily:JSON.stringify(daily), pa:g('tg-pa'), emp:g('tg-emp'), cost:g('tg-cost'), dinii:g('tg-dinii'), review:g('tg-review') });
       if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'保存に失敗しました'; return; }
       S.modal=null; S.tMonth=month; render(); toast('目標を保存しました');
+      kdEditMark_('target');
       fetchData(true,{ only:['目標','目標月次'], partial:true });
     }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
   },
@@ -10089,6 +10185,7 @@ window.App = {
       const d=await api({ action:'saveTargetDay', token:S.auth.token, store:m.store, date:m.date, goal:v });
       if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'保存に失敗しました'; return; }
       S.modal=null; render(); toast(v===''?'この日の目標を削除しました':'目標を更新しました');
+      kdEditMark_('target');
       fetchData(true,{ only:['目標'], partial:true });
     }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
   },
@@ -10870,6 +10967,7 @@ window.App = {
       const d=await api({ action:'setAdExclude', token:S.auth.token, store, ym, exclude:exclude?'true':'false' });
       if(!d.ok){ toast(d.error||'設定に失敗しました'); return; }
       toast(exclude?'PLから除外しました':'除外を解除しました');
+      kdEditMark_('ad');
       await fetchData(true,{ only:['広告除外設定'], partial:true });
       render();
     }catch(e){ toast('通信エラー: '+e.message); }
@@ -10990,6 +11088,7 @@ window.App = {
       msg.textContent=d.deleted?('✓ 削除しました（'+media+(plan?'・'+plan:'')+(period?'・'+period:'')+'）')
         :('✓ 保存しました（'+media+(plan?'・'+plan:'')+' '+yen(Number(costRaw)||0)+(period?' × '+period:'')+'）。続けて入力できます');
       $('adi-cost').value=''; $('adi-memo').value='';
+      kdEditMark_('ad');
       fetchData(true,{ only:['広告'], partial:true }).then(()=>{ if(S.modal&&S.modal.type!=='adInput') render(); });
     }catch(e){ if(btn)btn.disabled=false; msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
   },
@@ -11020,6 +11119,7 @@ window.App = {
       if(btn)btn.disabled=false;
       if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'保存に失敗しました'; return; }
       msg.style.color='#4c7d5c'; msg.textContent='✓ '+(d.updated?'上書き保存':'追加')+'しました（'+esc(media)+'）。続けて別の媒体も入力できます';
+      kdEditMark_('ad');
       fetchData(true,{ only:['広告効果'], partial:true }).then(()=>{ if(S.modal&&S.modal.type==='adSales') render(); });
     }catch(e){ if(btn)btn.disabled=false; msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
   },
