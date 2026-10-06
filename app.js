@@ -8366,7 +8366,7 @@ async function plRpc_(name, body){
 // ===== PL入力のSupabase正本化 切替スイッチ（2026-10-05）=====
 // true: 旧入力(MF取込・期間一括)の保存先を pl_entries(Supabase)へ付け替え、旧「経費を入力」ボタンは出さない（表形式の「PL入力（表）」を使う）。
 // 切替当日に true にして公開する（それまではGAS/シート経路のまま。pl_entries への試し入力は切替時に再取込で上書きされる）。
-const PL_ENTRIES_INPUT_=false;
+const PL_ENTRIES_INPUT_=true;
 // 手入力を保存した直後: kd_pl_monthly_summary を更新（Edge keiei-api-pl-refresh・約5秒・GAS非経由）→数秒後にkdを再取得して画面を最新化。
 async function plAfterSave_(tries){
   try{
