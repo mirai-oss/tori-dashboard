@@ -94,6 +94,7 @@
         items += q;
         const p = prod[it.name] || (prod[it.name] = { name: it.name, qty: 0, orders: 0, sales: 0, band: {}, known: !!price[e.ch + '|' + it.name] });
         p.qty += q; p.orders += e.sign; p.sales += s;
+        const pr = price[e.ch + '|' + it.name]; if (pr) { p.uw = (p.uw || 0) + it.qty * pr; p.uq = (p.uq || 0) + it.qty; }   // 単価＝単品注文から学習した価格の数量加重平均（学習できない商品は推定売上÷数量で代用）
         const pb = p.band[b.key] || (p.band[b.key] = { qty: 0, sales: 0 }); pb.qty += q; pb.sales += s;
         const bp = band[b.key].prod[it.name] || (band[b.key].prod[it.name] = { name: it.name, qty: 0, sales: 0 });
         bp.qty += q; bp.sales += s;
@@ -178,13 +179,14 @@
     }).join('') + '</div>';
   }
 
+  const unitOf = (p) => (p.uq ? p.uw / p.uq : (p.qty ? p.sales / p.qty : 0));
   function prodTable(A) {
     const tot = A.prod.reduce((a, c) => a + metricVal(c), 0);
     const bmx = {}; BANDS.forEach((b) => { bmx[b.key] = 0; });
     A.prod.forEach((p) => BANDS.forEach((b) => { const v = p.band[b.key] ? metricVal(p.band[b.key]) : 0; if (v > bmx[b.key]) bmx[b.key] = v; }));
-    let h = `<div style="overflow-x:auto"><table class="tbl" style="min-width:760px"><thead><tr><th>商品</th><th style="text-align:right">数量</th><th style="text-align:right">注文数</th><th style="text-align:right">推定売上</th><th style="text-align:right">構成比</th>${BANDS.map((b) => `<th style="text-align:center">${b.label.split(' ')[0]}</th>`).join('')}</tr></thead><tbody>`;
+    let h = `<div style="overflow-x:auto"><table class="tbl" style="min-width:760px"><thead><tr><th>商品</th><th style="text-align:right">数量</th><th style="text-align:right">注文数</th><th style="text-align:right">推定売上</th><th style="text-align:right" title="単品注文から割り出した1個あたりの価格。※は単品注文が無く推定売上÷数量で代用">単価</th><th style="text-align:right">構成比</th>${BANDS.map((b) => `<th style="text-align:center">${b.label.split(' ')[0]}</th>`).join('')}</tr></thead><tbody>`;
     A.prod.forEach((p) => {
-      h += `<tr><td>${esc(p.name)}${p.known ? '' : ' <span class="sub" title="単品注文が無く単価を学習できていないため、売上は平均単価での按分です">※</span>'}</td><td style="text-align:right">${num(p.qty)}</td><td style="text-align:right">${num(p.orders)}</td><td style="text-align:right">${yen(p.sales)}</td><td style="text-align:right">${pct(metricVal(p), tot)}</td>` +
+      h += `<tr><td>${esc(p.name)}${p.known ? '' : ' <span class="sub" title="単品注文が無く単価を学習できていないため、売上は平均単価での按分です">※</span>'}</td><td style="text-align:right">${num(p.qty)}</td><td style="text-align:right">${num(p.orders)}</td><td style="text-align:right">${yen(p.sales)}</td><td style="text-align:right">${yen(unitOf(p))}${p.uq ? '' : ' <span class="sub">※</span>'}</td><td style="text-align:right">${pct(metricVal(p), tot)}</td>` +
         BANDS.map((b) => {
           const v = p.band[b.key] ? metricVal(p.band[b.key]) : 0; const a = bmx[b.key] > 0 ? Math.max(0, v) / bmx[b.key] : 0;
           return `<td style="text-align:center;background:rgba(61,81,99,${(a * 0.55).toFixed(2)});color:${a > 0.5 ? '#fff' : 'inherit'}">${v ? (st.metric === 'sales' ? compact(v) : num(v)) : ''}</td>`;
@@ -218,9 +220,9 @@
     h += `<div class="panel"><div class="panel-head"><div><h3>時間帯別 売上</h3></div></div>${barChart(cat, [{ color: '#b5502f', data: hrs.map((x) => A.hour[x].sales) }])}</div>`;
     h += `<div class="panel"><div class="panel-head"><div><h3>曜日×時間帯（注文数）</h3></div></div>${heatTable(A)}</div>`;
     h += `<div class="panel"><div class="panel-head"><div><h3>時間帯ごとの人気商品</h3><div class="sub">上位8商品・${st.metric === 'sales' ? '推定売上' : '数量'}順</div></div></div>${bandCards(A)}</div>`;
-    h += `<div class="panel"><div class="panel-head"><div><h3>商品別（時間帯の内訳つき）</h3><div class="sub">右側の時間帯列＝その商品が各時間帯でどれだけ注文されたか（列ごとに濃淡）。<b>売上は推定</b>：注文の売上を商品の単価比で按分しています（※＝単品注文が無く平均単価で代用）。数量・注文数は正確です。</div></div></div>${prodTable(A)}</div>`;
+    h += `<div class="panel"><div class="panel-head"><div><h3>商品別（時間帯の内訳つき）</h3><div class="sub">右側の時間帯列＝その商品が各時間帯でどれだけ注文されたか（列ごとに濃淡）。<b>売上は推定</b>：注文の売上を商品の単価比で按分しています（※＝単品注文が無く平均単価で代用）。<b>単価</b>は単品注文から割り出した1個あたりの価格です。数量・注文数は正確です。</div></div></div>${prodTable(A)}</div>`;
     try {
-      EXPORT.push({ title: 'デリバリー商品別（' + label + '・' + storeLb + '・' + (st.channel === 'all' ? '全媒体' : chLabel(st.channel)) + '）', headers: ['商品', '数量', '注文数', '推定売上'].concat(BANDS.map((b) => b.label + '(数量)')), rows: A.prod.map((p) => [p.name, p.qty, p.orders, Math.round(p.sales)].concat(BANDS.map((b) => (p.band[b.key] ? p.band[b.key].qty : 0)))) });
+      EXPORT.push({ title: 'デリバリー商品別（' + label + '・' + storeLb + '・' + (st.channel === 'all' ? '全媒体' : chLabel(st.channel)) + '）', headers: ['商品', '数量', '注文数', '推定売上', '単価'].concat(BANDS.map((b) => b.label + '(数量)')), rows: A.prod.map((p) => [p.name, p.qty, p.orders, Math.round(p.sales), Math.round(unitOf(p))].concat(BANDS.map((b) => (p.band[b.key] ? p.band[b.key].qty : 0)))) });
       EXPORT.push({ title: 'デリバリー時間帯別', headers: ['時', '注文数', '売上'], rows: hrs.map((x) => [x, A.hour[x].orders, A.hour[x].sales]) });
     } catch (e) { /* エクスポート登録の失敗は表示に影響させない */ }
     return h;
