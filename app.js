@@ -8367,6 +8367,18 @@ async function plRpc_(name, body){
 // true: 旧入力(MF取込・期間一括)の保存先を pl_entries(Supabase)へ付け替え、旧「経費を入力」ボタンは出さない（表形式の「PL入力（表）」を使う）。
 // 切替当日に true にして公開する（それまではGAS/シート経路のまま。pl_entries への試し入力は切替時に再取込で上書きされる）。
 const PL_ENTRIES_INPUT_=false;
+// 手入力を保存した直後: kd_pl_monthly_summary を更新（Edge keiei-api-pl-refresh・約5秒・GAS非経由）→数秒後にkdを再取得して画面を最新化。
+async function plAfterSave_(tries){
+  try{
+    const jwt=await portalAccessToken().catch(()=>null);
+    if(jwt){
+      const r=await fetch(SSO_SUPA_URL+'/functions/v1/keiei-api-pl-refresh',{ method:'POST', headers:{ apikey:SSO_SUPA_KEY, Authorization:'Bearer '+jwt } });
+      const d=await r.json().catch(()=>null);
+      if(d&&d.started===false&&(tries||0)<3){ setTimeout(()=>plAfterSave_((tries||0)+1),4000); return; }   // 「更新中」なら数秒後にもう一度
+    }
+  }catch(e){}
+  setTimeout(()=>{ if(S.auth){ fetchKdEntries_(); fetchPlKd_(true); } },7000);
+}
 async function plEntriesReplaceKeys_(storeName, entries, memoTag){
   // entries=[[ym,item,cat,amount,sub]...]。同じ（年月×科目×補助科目）の手入力行を消してから入れ直す（旧GASの差し替えと同じ挙動）。
   const yms=[...new Set(entries.map(e=>e[0]))].sort(); if(!yms.length) return { inserted:0, deleted:0 };
@@ -10338,7 +10350,7 @@ window.App = {
         const tag='[MF取込 '+new Date(Date.now()+9*3600000).toISOString().slice(0,10)+']';
         const r=await plEntriesReplaceKeys_(m.store==='__common__'?'':m.store, entries, tag);
         S.modal=null; render(); toast(`MF取込が完了しました（${r.inserted}件）。PLへは数十秒で反映されます`);
-        setTimeout(()=>{ if(S.auth) fetchKdEntries_(); },25000);
+        plAfterSave_();
       }catch(e){ m.msg='取込できませんでした: '+(e.message||e); render(); }
       return;
     }
@@ -10401,7 +10413,7 @@ window.App = {
       if(dry){ msg('検証OK（'+pl.rows.length+' 行）。保存すると書き込まれます'+(pl.dels.length?'／削除 '+pl.dels.length+' 行':''),false); return; }
       if(pl.dels.length) await plRpc_('pl_entries_delete',{ p_ids:pl.dels, p_actor:null });
       msg('保存しました（追加 '+(res.inserted||0)+'／更新 '+(res.updated||0)+'／削除 '+((res.deleted||0)+pl.dels.length)+'）。PLへは数十秒で反映されます',false);
-      toast('PLを保存しました'); setTimeout(()=>{ if(S.auth) fetchKdEntries_(); },25000);
+      toast('PLを保存しました'); plAfterSave_();
       await App.plgLoad();
     }catch(e){ msg('保存できませんでした: '+(e.message||e),true); }
   },
@@ -10462,7 +10474,7 @@ window.App = {
         const sName=(store==='__common__')?'':store;
         await plEntriesReplaceKeys_(sName, list.map(ym=>[ym,item,cat,amt,sub]), memo);
         S.modal=null; render(); toast(amtRaw===''?`「${item}」を${n}ヶ月分削除しました`:`「${item}」を${n}ヶ月分一括計上しました`);
-        setTimeout(()=>{ if(S.auth) fetchKdEntries_(); },25000);
+        plAfterSave_();
       }catch(e){ msg.style.color='#b5502f'; msg.textContent='保存できませんでした: '+(e.message||e); }
       return;
     }
