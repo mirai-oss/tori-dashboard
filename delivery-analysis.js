@@ -1,4 +1,4 @@
-/* デリバリー分析タブ（2026-10-06追加）
+/* デリバリー分析（2026-10-06追加。明細分析の「営業区分：デリバリー」として表示）
  * ロケットナウ等のデリバリー注文明細（BQ sales.stg_delivery_order）を、
  *   ・時間帯別の注文数／売上
  *   ・曜日×時間帯のヒートマップ
@@ -15,7 +15,7 @@
  *  ・CANCELは売上がマイナスの別行として入っている → 同じ符号を数量・注文数にも掛けて相殺する。
  */
 (function () {
-  const st = { loading: false, loaded: false, err: '', rows: [], period: '30', store: 'all', metric: 'qty', at: 0 };
+  const st = { loading: false, loaded: false, err: '', rows: [], metric: 'qty', at: 0, ext: { store: 'all', from: '', to: '', label: '' } };
 
   // 時間帯区分（ユーザー要望: 時間帯別の売上と、時間帯ごとに何が注文されているか）
   const BANDS = [
@@ -37,20 +37,11 @@
   }
   const median = (a) => { const s = a.slice().sort((x, y) => x - y); const n = s.length; return n ? (n % 2 ? s[(n - 1) / 2] : (s[n / 2 - 1] + s[n / 2]) / 2) : 0; };
 
-  function inPeriod(dateStr, ref) {
-    if (st.period === 'all') return true;
-    const d = new Date(dateStr.slice(0, 10) + 'T00:00:00');
-    const days = Number(st.period);
-    return (ref - d) / 86400000 < days;
-  }
-
   // rows: [[店舗名, 日時, 取引タイプ, 注文番号, 注文内容, 売上], ...(先頭はヘッダー)]
   function analyze() {
     const all = st.rows.slice(1).map((r) => ({ store: r[0], at: String(r[1]).replace('T', ' '), type: r[2], no: r[3], items: parseItems(r[4]), sales: Number(r[5]) || 0 }));
-    const stores = Array.from(new Set(all.map((x) => x.store))).sort();
-    let ref = new Date(0);
-    all.forEach((x) => { const d = new Date(x.at.slice(0, 10) + 'T00:00:00'); if (d > ref) ref = d; });
-    const evs = all.filter((x) => (st.store === 'all' || x.store === st.store) && inPeriod(x.at, ref));
+    const X = st.ext;
+    const evs = all.filter((x) => (X.store === 'all' || x.store === X.store) && (!X.from || x.at.slice(0, 10) >= X.from) && (!X.to || x.at.slice(0, 10) <= X.to));
     evs.forEach((e) => {
       e.sign = (e.type === 'CANCEL' || e.sales < 0) ? -1 : 1;
       e.hour = Number(e.at.slice(11, 13));
@@ -94,7 +85,7 @@
         bp.qty += q; bp.sales += s;
       });
     });
-    return { stores, orders, sales, items, days: days.size, hour, heat, band, prod: Object.values(prod).sort((a, b) => b.qty - a.qty), ref, count: evs.length };
+    return { orders, sales, items, days: days.size, hour, heat, band, prod: Object.values(prod).sort((a, b) => b.qty - a.qty), count: evs.length };
   }
 
   function load(force) {
@@ -104,7 +95,7 @@
     api({ action: 'bqGetDeliveryOrders', token: S.auth.token }, 60000).then((d) => {
       if (d && d.ok && d.sheets && d.sheets.deliveryOrders) { st.rows = d.sheets.deliveryOrders; st.loaded = true; st.at = Date.now(); }
       else st.err = (d && d.error) || '取得に失敗しました（GASの更新が未反映の可能性があります）';
-    }).catch((e) => { st.err = String((e && e.message) || e); }).finally(() => { st.loading = false; if (S.tab === 'delivery' && !targetModalOpen_()) render(); });
+    }).catch((e) => { st.err = String((e && e.message) || e); }).finally(() => { st.loading = false; if (S.tab === 'detail' && S.dSegment === 'delivery' && !targetModalOpen_()) render(); });
   }
 
   const num = (v) => Math.round(v).toLocaleString('ja-JP');
@@ -112,15 +103,12 @@
   const metricVal = (o) => (st.metric === 'sales' ? o.sales : o.qty);
   const metricFmt = (v) => (st.metric === 'sales' ? yen(v) : num(v));
 
-  function ctrl(stores) {
-    const per = [['7', '直近7日'], ['30', '直近30日'], ['90', '直近90日'], ['all', '全期間']];
+  function ctrl() {
     return `<div class="ctrl-bar no-print">
-      <select onchange="DlvAn.set('store',this.value)"><option value="all">全店舗</option>${stores.map((s) => `<option value="${esc(s)}"${st.store === s ? ' selected' : ''}>${esc(s)}</option>`).join('')}</select>
-      ${per.map(([k, l]) => `<button class="icon-btn${st.period === k ? ' primary' : ''}" onclick="DlvAn.set('period','${k}')">${l}</button>`).join('')}
-      <span style="width:10px"></span>
       <button class="icon-btn${st.metric === 'qty' ? ' primary' : ''}" onclick="DlvAn.set('metric','qty')">商品：数量</button>
       <button class="icon-btn${st.metric === 'sales' ? ' primary' : ''}" onclick="DlvAn.set('metric','sales')">商品：推定売上</button>
       <button class="icon-btn" onclick="DlvAn.reload()" title="最新のデータを取り直す">↻ 更新</button>
+      <span class="period-label">店舗・期間は上の選択に連動します</span>
     </div>`;
   }
 
@@ -168,30 +156,33 @@
     return h + '</tbody></table></div>';
   }
 
-  function view() {
+  // 明細分析の「営業区分：デリバリー」から呼ばれる。店舗・期間は明細分析側の選択をそのまま使う。
+  function view(ext) {
+    st.ext = Object.assign({ store: 'all', from: '', to: '', label: '' }, ext || {});
     if (!st.loaded && !st.loading && !st.err) setTimeout(() => load(false), 0);
     if (st.loading && !st.loaded) return `<div class="panel"><div class="empty">デリバリー注文データを読み込み中…</div></div>`;
     if (st.err && !st.loaded) return `<div class="panel"><div class="empty">${esc(st.err)}<br><button class="icon-btn" onclick="DlvAn.reload()">再読み込み</button></div></div>`;
     if (!st.loaded) return `<div class="panel"><div class="empty">読み込み中…</div></div>`;
     const A = analyze();
-    const label = ({ '7': '直近7日', '30': '直近30日', '90': '直近90日', all: '全期間' })[st.period];
+    const label = st.ext.label || ((st.ext.from || '') + '〜' + (st.ext.to || ''));
+    const storeLb = st.ext.store === 'all' ? '全店舗' : st.ext.store;
     const hrs = []; for (let h = 10; h <= 23; h++) hrs.push(h);
     const cat = hrs.map((h) => h + '時');
-    let h = ctrl(A.stores);
-    if (!A.count) return h + `<div class="panel"><div class="empty">この条件のデリバリー注文はありません</div></div>`;
+    let h = ctrl();
+    if (!A.count) return h + `<div class="panel"><div class="empty">この店舗・期間のデリバリー注文はありません（ロケットナウ取込済みの期間・店舗のみ）</div></div>`;
     h += `<div class="kpi-grid" style="margin:10px 0">
-      <div class="kpi"><div class="lb">注文数</div><div class="vl">${num(A.orders)}件</div><div class="yy">${label}・${A.days}日分</div></div>
+      <div class="kpi"><div class="lb">注文数</div><div class="vl">${num(A.orders)}件</div><div class="yy">${esc(label)}・${A.days}日分</div></div>
       <div class="kpi"><div class="lb">売上</div><div class="vl">${yen(A.sales)}</div><div class="yy">1日平均 ${yen(A.days ? A.sales / A.days : 0)}</div></div>
       <div class="kpi"><div class="lb">平均注文単価</div><div class="vl">${yen(A.orders ? A.sales / A.orders : 0)}</div><div class="yy">1注文あたり</div></div>
       <div class="kpi"><div class="lb">1注文の点数</div><div class="vl">${A.orders ? (A.items / A.orders).toFixed(2) : '—'}点</div><div class="yy">数量ベース</div></div>
     </div>`;
-    h += `<div class="panel"><div class="panel-head"><div><h3>時間帯別 注文数</h3><div class="sub">注文時刻の1時間ごと（${esc(st.store === 'all' ? '全店舗' : st.store)}・${label}）</div></div></div>${barChart(cat, [{ color: '#3d5163', data: hrs.map((x) => A.hour[x].orders) }])}</div>`;
+    h += `<div class="panel"><div class="panel-head"><div><h3>時間帯別 注文数</h3><div class="sub">注文時刻の1時間ごと（${esc(storeLb)}・${esc(label)}）</div></div></div>${barChart(cat, [{ color: '#3d5163', data: hrs.map((x) => A.hour[x].orders) }])}</div>`;
     h += `<div class="panel"><div class="panel-head"><div><h3>時間帯別 売上</h3></div></div>${barChart(cat, [{ color: '#b5502f', data: hrs.map((x) => A.hour[x].sales) }])}</div>`;
     h += `<div class="panel"><div class="panel-head"><div><h3>曜日×時間帯（注文数）</h3></div></div>${heatTable(A)}</div>`;
     h += `<div class="panel"><div class="panel-head"><div><h3>時間帯ごとの人気商品</h3><div class="sub">上位8商品・${st.metric === 'sales' ? '推定売上' : '数量'}順</div></div></div>${bandCards(A)}</div>`;
     h += `<div class="panel"><div class="panel-head"><div><h3>商品別（時間帯の内訳つき）</h3><div class="sub">右側の時間帯列＝その商品が各時間帯でどれだけ注文されたか（列ごとに濃淡）。<b>売上は推定</b>：注文の売上を商品の単価比で按分しています（※＝単品注文が無く平均単価で代用）。数量・注文数は正確です。</div></div></div>${prodTable(A)}</div>`;
     try {
-      EXPORT.push({ title: 'デリバリー商品別（' + label + '・' + (st.store === 'all' ? '全店舗' : st.store) + '）', headers: ['商品', '数量', '注文数', '推定売上'].concat(BANDS.map((b) => b.label + '(数量)')), rows: A.prod.map((p) => [p.name, p.qty, p.orders, Math.round(p.sales)].concat(BANDS.map((b) => (p.band[b.key] ? p.band[b.key].qty : 0)))) });
+      EXPORT.push({ title: 'デリバリー商品別（' + label + '・' + storeLb + '）', headers: ['商品', '数量', '注文数', '推定売上'].concat(BANDS.map((b) => b.label + '(数量)')), rows: A.prod.map((p) => [p.name, p.qty, p.orders, Math.round(p.sales)].concat(BANDS.map((b) => (p.band[b.key] ? p.band[b.key].qty : 0)))) });
       EXPORT.push({ title: 'デリバリー時間帯別', headers: ['時', '注文数', '売上'], rows: hrs.map((x) => [x, A.hour[x].orders, A.hour[x].sales]) });
     } catch (e) { /* エクスポート登録の失敗は表示に影響させない */ }
     return h;
