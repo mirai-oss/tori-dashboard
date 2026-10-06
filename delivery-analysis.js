@@ -15,7 +15,7 @@
  *  ・CANCELは売上がマイナスの別行として入っている → 同じ符号を数量・注文数にも掛けて相殺する。
  */
 (function () {
-  const st = { loading: false, loaded: false, err: '', rows: [], metric: 'qty', at: 0, ext: { store: 'all', from: '', to: '', label: '' } };
+  const st = { loading: false, loaded: false, err: '', rows: [], metric: 'qty', channel: 'all', at: 0, ext: { store: 'all', from: '', to: '', label: '' } };
 
   // 時間帯区分（ユーザー要望: 時間帯別の売上と、時間帯ごとに何が注文されているか）
   const BANDS = [
@@ -26,6 +26,10 @@
     { key: 'ngt', label: '夜 22時〜',        from: 22, to: 24 },
   ];
   const bandOf = (h) => (BANDS.find((b) => h >= b.from && h < b.to) || BANDS[BANDS.length - 1]);
+  // 媒体（チャネル）。BQ stg_delivery_order.channel の値 → 表示名。未知の値はそのまま表示（Uber Eats等の追加に自動追随）
+  const CH_LABEL = { rocketnow: 'ロケットナウ', ubereats: 'Uber Eats', uber_eats: 'Uber Eats', demaecan: '出前館', wolt: 'Wolt', menu: 'menu' };
+  const CH_COLOR = ['#b5502f', '#3d5163', '#5f7052', '#c9a86a', '#6a5f8f', '#2a6f8f'];
+  const chLabel = (c) => CH_LABEL[c] || c;
   const WD = ['日', '月', '火', '水', '木', '金', '土'];
 
   // "キジ焼丼 ゆずこしょう付きx2, 砂肝串 2本" → [{name, qty}]。区切りは「カンマ＋空白」、数量は末尾の「x数字」。
@@ -37,11 +41,21 @@
   }
   const median = (a) => { const s = a.slice().sort((x, y) => x - y); const n = s.length; return n ? (n % 2 ? s[(n - 1) / 2] : (s[n / 2 - 1] + s[n / 2]) / 2) : 0; };
 
-  // rows: [[店舗名, 日時, 取引タイプ, 注文番号, 注文内容, 売上], ...(先頭はヘッダー)]
+  // rows: [[店舗名, 日時, 取引タイプ, 注文番号, 注文内容, 売上, 媒体(channel)], ...(先頭はヘッダー)]。媒体列が無い旧GAS応答はロケットナウ扱い
   function analyze() {
-    const all = st.rows.slice(1).map((r) => ({ store: r[0], at: String(r[1]).replace('T', ' '), type: r[2], no: r[3], items: parseItems(r[4]), sales: Number(r[5]) || 0 }));
+    const all = st.rows.slice(1).map((r) => ({ store: r[0], at: String(r[1]).replace('T', ' '), type: r[2], no: r[3], items: parseItems(r[4]), sales: Number(r[5]) || 0, ch: r[6] || 'rocketnow' }));
     const X = st.ext;
-    const evs = all.filter((x) => (X.store === 'all' || x.store === X.store) && (!X.from || x.at.slice(0, 10) >= X.from) && (!X.to || x.at.slice(0, 10) <= X.to));
+    // 店舗・期間で絞った注文（媒体の絞り込み前）。媒体別比較はこれを使う
+    const inScope = all.filter((x) => (X.store === 'all' || x.store === X.store) && (!X.from || x.at.slice(0, 10) >= X.from) && (!X.to || x.at.slice(0, 10) <= X.to));
+    const channels = Array.from(new Set(all.map((x) => x.ch))).sort();
+    const byCh = {};
+    channels.forEach((c) => { byCh[c] = { ch: c, orders: 0, sales: 0, items: 0, days: new Set(), hour: Array.from({ length: 24 }, () => 0), daily: {} }; });
+    inScope.forEach((x) => {
+      const sg = (x.type === 'CANCEL' || x.sales < 0) ? -1 : 1, c = byCh[x.ch], hr = Number(x.at.slice(11, 13)), d = x.at.slice(0, 10);
+      c.orders += sg; c.sales += x.sales; c.days.add(d); c.hour[hr] += sg; c.daily[d] = (c.daily[d] || 0) + x.sales;
+      x.items.forEach((it) => { c.items += it.qty * sg; });
+    });
+    const evs = inScope.filter((x) => st.channel === 'all' || x.ch === st.channel);
     evs.forEach((e) => {
       e.sign = (e.type === 'CANCEL' || e.sales < 0) ? -1 : 1;
       e.hour = Number(e.at.slice(11, 13));
@@ -52,7 +66,7 @@
     const priceSamples = {};
     all.forEach((x) => {
       if (x.sales > 0 && x.type !== 'CANCEL' && x.items.length === 1 && x.items[0].qty > 0) {
-        (priceSamples[x.items[0].name] = priceSamples[x.items[0].name] || []).push(x.sales / x.items[0].qty);
+        (priceSamples[x.ch + '|' + x.items[0].name] = priceSamples[x.ch + '|' + x.items[0].name] || []).push(x.sales / x.items[0].qty);
       }
     });
     const price = {}; let sumP = 0, nP = 0;
@@ -73,19 +87,19 @@
       heat[e.dow][e.hour] += e.sign;
       band[b.key].orders += e.sign; band[b.key].sales += e.sales;
       // 按分
-      const ws = e.items.map((it) => it.qty * (price[it.name] || avgPrice || 1));
+      const ws = e.items.map((it) => it.qty * (price[e.ch + '|' + it.name] || avgPrice || 1));
       const wsum = ws.reduce((a, c) => a + c, 0) || 1;
       e.items.forEach((it, i) => {
         const q = it.qty * e.sign, s = e.sales * (ws[i] / wsum);
         items += q;
-        const p = prod[it.name] || (prod[it.name] = { name: it.name, qty: 0, orders: 0, sales: 0, band: {}, known: !!price[it.name] });
+        const p = prod[it.name] || (prod[it.name] = { name: it.name, qty: 0, orders: 0, sales: 0, band: {}, known: !!price[e.ch + '|' + it.name] });
         p.qty += q; p.orders += e.sign; p.sales += s;
         const pb = p.band[b.key] || (p.band[b.key] = { qty: 0, sales: 0 }); pb.qty += q; pb.sales += s;
         const bp = band[b.key].prod[it.name] || (band[b.key].prod[it.name] = { name: it.name, qty: 0, sales: 0 });
         bp.qty += q; bp.sales += s;
       });
     });
-    return { orders, sales, items, days: days.size, hour, heat, band, prod: Object.values(prod).sort((a, b) => b.qty - a.qty), count: evs.length };
+    return { channels, byCh, orders, sales, items, days: days.size, hour, heat, band, prod: Object.values(prod).sort((a, b) => b.qty - a.qty), count: evs.length };
   }
 
   function load(force) {
@@ -103,13 +117,36 @@
   const metricVal = (o) => (st.metric === 'sales' ? o.sales : o.qty);
   const metricFmt = (v) => (st.metric === 'sales' ? yen(v) : num(v));
 
-  function ctrl() {
+  function ctrl(A) {
+    const opts = ['<option value="all">媒体：全デリバリー（比較）</option>'].concat(A.channels.map((c) => `<option value="${esc(c)}"${st.channel === c ? ' selected' : ''}>媒体：${esc(chLabel(c))}</option>`)).join('');
     return `<div class="ctrl-bar no-print">
+      <select onchange="DlvAn.set('channel',this.value)" style="font-weight:700">${opts}</select>
       <button class="icon-btn${st.metric === 'qty' ? ' primary' : ''}" onclick="DlvAn.set('metric','qty')">商品：数量</button>
       <button class="icon-btn${st.metric === 'sales' ? ' primary' : ''}" onclick="DlvAn.set('metric','sales')">商品：推定売上</button>
       <button class="icon-btn" onclick="DlvAn.reload()" title="最新のデータを取り直す">↻ 更新</button>
       <span class="period-label">店舗・期間は上の選択に連動します</span>
     </div>`;
+  }
+
+  // 媒体別比較（全デリバリー選択時）: 媒体ごとの注文数・売上・単価・時間帯・日別の並べ表示
+  function compare(A, label) {
+    const cs = A.channels.map((c, i) => ({ c, i, o: A.byCh[c] }));
+    const tot = cs.reduce((a, x) => a + x.o.sales, 0), totO = cs.reduce((a, x) => a + x.o.orders, 0);
+    const legend = cs.map((x) => `<span style="display:inline-flex;align-items:center;gap:5px;margin-right:14px;font-size:12px"><i style="width:11px;height:11px;border-radius:3px;background:${CH_COLOR[x.i % CH_COLOR.length]};display:inline-block"></i>${esc(chLabel(x.c))}</span>`).join('');
+    let h = `<div class="panel"><div class="panel-head"><div><h3>媒体別 比較</h3><div class="sub">${esc(label)}・売上は媒体ごとの実績（推定ではありません）</div></div></div>
+      <div style="overflow-x:auto"><table class="tbl"><thead><tr><th>媒体</th><th style="text-align:right">注文数</th><th style="text-align:right">売上</th><th style="text-align:right">売上構成比</th><th style="text-align:right">平均注文単価</th><th style="text-align:right">1日平均売上</th><th style="text-align:right">1注文の点数</th></tr></thead><tbody>`;
+    cs.forEach((x) => {
+      const o = x.o;
+      h += `<tr><td><b style="color:${CH_COLOR[x.i % CH_COLOR.length]}">●</b> ${esc(chLabel(x.c))}</td><td style="text-align:right">${num(o.orders)}</td><td style="text-align:right">${yen(o.sales)}</td><td style="text-align:right">${pct(o.sales, tot)}</td><td style="text-align:right">${yen(o.orders ? o.sales / o.orders : 0)}</td><td style="text-align:right">${yen(o.days.size ? o.sales / o.days.size : 0)}</td><td style="text-align:right">${o.orders ? (o.items / o.orders).toFixed(2) : '—'}</td></tr>`;
+    });
+    if (cs.length > 1) h += `<tr class="total"><td>合計</td><td style="text-align:right">${num(totO)}</td><td style="text-align:right">${yen(tot)}</td><td style="text-align:right">100%</td><td style="text-align:right">${yen(totO ? tot / totO : 0)}</td><td></td><td></td></tr>`;
+    h += '</tbody></table></div>';
+    if (cs.length < 2) h += '<div class="note-box" style="margin-top:10px">ℹ️ 現在取り込まれているデリバリー媒体は1つだけです。Uber Eatsなど他の媒体のデータが取り込まれると、このプルダウンと比較表に自動で追加されます。</div>';
+    const hrs = []; for (let k = 10; k <= 23; k++) hrs.push(k);
+    h += `<div style="margin:14px 0 4px">${legend}</div><div class="sub">時間帯別 注文数（媒体ごと）</div>${barChart(hrs.map((k) => k + '時'), cs.map((x) => ({ color: CH_COLOR[x.i % CH_COLOR.length], data: hrs.map((k) => x.o.hour[k]) })))}`;
+    const days = Array.from(new Set(cs.flatMap((x) => Object.keys(x.o.daily)))).sort();
+    if (days.length > 1 && days.length <= 62) h += `<div class="sub" style="margin-top:12px">日別 売上（媒体ごと）</div>${barChart(days.map((d) => d.slice(5).replace('-', '/')), cs.map((x) => ({ color: CH_COLOR[x.i % CH_COLOR.length], data: days.map((d) => x.o.daily[d] || 0) })))}`;
+    return h + '</div>';
   }
 
   function heatTable(A) {
@@ -168,21 +205,22 @@
     const storeLb = st.ext.store === 'all' ? '全店舗' : st.ext.store;
     const hrs = []; for (let h = 10; h <= 23; h++) hrs.push(h);
     const cat = hrs.map((h) => h + '時');
-    let h = ctrl();
-    if (!A.count) return h + `<div class="panel"><div class="empty">この店舗・期間のデリバリー注文はありません（ロケットナウ取込済みの期間・店舗のみ）</div></div>`;
+    let h = ctrl(A);
+    if (!A.count) return h + `<div class="panel"><div class="empty">この店舗・期間・媒体のデリバリー注文はありません（取込済みの期間・店舗のみ）</div></div>`;
     h += `<div class="kpi-grid" style="margin:10px 0">
       <div class="kpi"><div class="lb">注文数</div><div class="vl">${num(A.orders)}件</div><div class="yy">${esc(label)}・${A.days}日分</div></div>
       <div class="kpi"><div class="lb">売上</div><div class="vl">${yen(A.sales)}</div><div class="yy">1日平均 ${yen(A.days ? A.sales / A.days : 0)}</div></div>
       <div class="kpi"><div class="lb">平均注文単価</div><div class="vl">${yen(A.orders ? A.sales / A.orders : 0)}</div><div class="yy">1注文あたり</div></div>
       <div class="kpi"><div class="lb">1注文の点数</div><div class="vl">${A.orders ? (A.items / A.orders).toFixed(2) : '—'}点</div><div class="yy">数量ベース</div></div>
     </div>`;
-    h += `<div class="panel"><div class="panel-head"><div><h3>時間帯別 注文数</h3><div class="sub">注文時刻の1時間ごと（${esc(storeLb)}・${esc(label)}）</div></div></div>${barChart(cat, [{ color: '#3d5163', data: hrs.map((x) => A.hour[x].orders) }])}</div>`;
+    if (st.channel === 'all') h += compare(A, label);
+    h += `<div class="panel"><div class="panel-head"><div><h3>時間帯別 注文数</h3><div class="sub">注文時刻の1時間ごと（${esc(storeLb)}・${esc(st.channel === 'all' ? '全デリバリー合算' : chLabel(st.channel))}・${esc(label)}）</div></div></div>${barChart(cat, [{ color: '#3d5163', data: hrs.map((x) => A.hour[x].orders) }])}</div>`;
     h += `<div class="panel"><div class="panel-head"><div><h3>時間帯別 売上</h3></div></div>${barChart(cat, [{ color: '#b5502f', data: hrs.map((x) => A.hour[x].sales) }])}</div>`;
     h += `<div class="panel"><div class="panel-head"><div><h3>曜日×時間帯（注文数）</h3></div></div>${heatTable(A)}</div>`;
     h += `<div class="panel"><div class="panel-head"><div><h3>時間帯ごとの人気商品</h3><div class="sub">上位8商品・${st.metric === 'sales' ? '推定売上' : '数量'}順</div></div></div>${bandCards(A)}</div>`;
     h += `<div class="panel"><div class="panel-head"><div><h3>商品別（時間帯の内訳つき）</h3><div class="sub">右側の時間帯列＝その商品が各時間帯でどれだけ注文されたか（列ごとに濃淡）。<b>売上は推定</b>：注文の売上を商品の単価比で按分しています（※＝単品注文が無く平均単価で代用）。数量・注文数は正確です。</div></div></div>${prodTable(A)}</div>`;
     try {
-      EXPORT.push({ title: 'デリバリー商品別（' + label + '・' + storeLb + '）', headers: ['商品', '数量', '注文数', '推定売上'].concat(BANDS.map((b) => b.label + '(数量)')), rows: A.prod.map((p) => [p.name, p.qty, p.orders, Math.round(p.sales)].concat(BANDS.map((b) => (p.band[b.key] ? p.band[b.key].qty : 0)))) });
+      EXPORT.push({ title: 'デリバリー商品別（' + label + '・' + storeLb + '・' + (st.channel === 'all' ? '全媒体' : chLabel(st.channel)) + '）', headers: ['商品', '数量', '注文数', '推定売上'].concat(BANDS.map((b) => b.label + '(数量)')), rows: A.prod.map((p) => [p.name, p.qty, p.orders, Math.round(p.sales)].concat(BANDS.map((b) => (p.band[b.key] ? p.band[b.key].qty : 0)))) });
       EXPORT.push({ title: 'デリバリー時間帯別', headers: ['時', '注文数', '売上'], rows: hrs.map((x) => [x, A.hour[x].orders, A.hour[x].sales]) });
     } catch (e) { /* エクスポート登録の失敗は表示に影響させない */ }
     return h;
