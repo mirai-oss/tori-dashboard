@@ -7101,9 +7101,9 @@ function viewPL(){
   let h=`<div class="ctrl-bar no-print">
     <div class="seg">${[['month','月次'],['year','年間'],['custom','期間指定']].map(([k,l])=>`<button class="${P===k?'on':''}" onclick="App.set('plPeriod','${k}')">${l}</button>`).join('')}</div>
     ${ctrlHtml}
-    ${canUse('plInput')?`<button class="icon-btn primary" onclick="App.openPlInput()">✎ 経費を入力</button>`:''}
+    ${canUse('plInput')&&!PL_ENTRIES_INPUT_?`<button class="icon-btn primary" onclick="App.openPlInput()">✎ 経費を入力</button>`:''}
     ${isAdminRole()?`<button class="icon-btn primary" onclick="App.openPlGrid()" title="Supabaseに直接保存する表形式の入力画面（年月が空の行は保存できません）">📝 PL入力（表）</button>`:''}
-    ${canUse('plInput')?`<button class="icon-btn" onclick="App.openMfImport()">📥 MF取込</button>`:''}
+    ${canUse('plInput')&&(!PL_ENTRIES_INPUT_||isAdminRole())?`<button class="icon-btn" onclick="App.openMfImport()">📥 MF取込</button>`:''}
     ${canUse('spot')?`<button class="icon-btn" onclick="App.openSpotInput()">＋ スポット人件費</button>`:''}
     ${canUse('spot')?`<button class="icon-btn" onclick="App.syncSpotPl()" title="スポット人件費の入力・削除をPLへ今すぐ反映します（普段は毎日AM5:00に自動実行）">🔄 スポット人件費をPLへ反映</button>`:''}
     ${isAdminRole()?`<button class="icon-btn" onclick="App.openCostTransfer()" title="店舗間で仕入れ（原価）を移動し、両店の原価率に反映します">🔀 仕入れ移動</button>`:''}
@@ -8361,6 +8361,26 @@ async function plRpc_(name, body){
   const d=await res.json().catch(()=>null);
   if(!res.ok) throw new Error((d&&(d.message||d.error))||('HTTP '+res.status));
   return d;
+}
+
+// ===== PL入力のSupabase正本化 切替スイッチ（2026-10-05）=====
+// true: 旧入力(MF取込・期間一括)の保存先を pl_entries(Supabase)へ付け替え、旧「経費を入力」ボタンは出さない（表形式の「PL入力（表）」を使う）。
+// 切替当日に true にして公開する（それまではGAS/シート経路のまま。pl_entries への試し入力は切替時に再取込で上書きされる）。
+const PL_ENTRIES_INPUT_=false;
+async function plEntriesReplaceKeys_(storeName, entries, memoTag){
+  // entries=[[ym,item,cat,amount,sub]...]。同じ（年月×科目×補助科目）の手入力行を消してから入れ直す（旧GASの差し替えと同じ挙動）。
+  const yms=[...new Set(entries.map(e=>e[0]))].sort(); if(!yms.length) return { inserted:0, deleted:0 };
+  const body={ p_from:yms[0], p_to:yms[yms.length-1], p_store:null, p_include_deleted:false };
+  if(storeName){ const id=storeIdByName_(storeName); if(!id) throw new Error('店舗IDが不明: '+storeName); body.p_store=id; }
+  const ex=await plRpc_('pl_entries_export', body);
+  const keys=new Set(entries.map(e=>e[0]+'\t'+String(e[1]).trim()+'\t'+String(e[4]||'').trim()));
+  const del=(ex.rows||[]).filter(r=>(r.source||'手入力')==='手入力'&&String(r.store_name||'')===String(storeName||'')&&keys.has(r.year_month+'\t'+String(r.item).trim()+'\t'+String(r.sub_item||'').trim())).map(r=>r.id);
+  const rows=entries.filter(e=>Number(e[3])>0).map(e=>({ year_month:e[0], store_name:storeName||'', item:String(e[1]).trim(), category:String(e[2]||'O').toUpperCase(), amount:String(e[3]), memo:memoTag||'', sub_item:String(e[4]||''), source:'手入力' }));
+  // 先に検証だけ（不正なら何も消さない）
+  if(rows.length){ const v=await plRpc_('pl_entries_bulk_upsert',{ p_rows:rows, p_mode:'upsert', p_dry_run:true, p_actor:null, p_scope:[] }); if(!v||v.ok===false) throw new Error('入力に不正な行があります: '+JSON.stringify((v&&v.errors||[]).slice(0,3))); }
+  if(del.length) await plRpc_('pl_entries_delete',{ p_ids:del, p_actor:null });
+  let ins=0; if(rows.length){ const r=await plRpc_('pl_entries_bulk_upsert',{ p_rows:rows, p_mode:'upsert', p_dry_run:false, p_actor:null, p_scope:[] }); if(!r||r.ok===false) throw new Error('保存に失敗しました'); ins=r.inserted||0; }
+  return { inserted:ins, deleted:del.length };
 }
 function plgRowHtml_(r,i){
   const err=(S.modal.errs||{})[i]; const st='width:100%;box-sizing:border-box;padding:3px 4px;font-size:12px';
@@ -10313,6 +10333,15 @@ window.App = {
       newSubItems.push([item,sub]);
     });
     m.msg='取込中…'; render();
+    if(PL_ENTRIES_INPUT_){
+      try{
+        const tag='[MF取込 '+new Date(Date.now()+9*3600000).toISOString().slice(0,10)+']';
+        const r=await plEntriesReplaceKeys_(m.store==='__common__'?'':m.store, entries, tag);
+        S.modal=null; render(); toast(`MF取込が完了しました（${r.inserted}件）。PLへは数十秒で反映されます`);
+        setTimeout(()=>{ if(S.auth) fetchKdEntries_(); },25000);
+      }catch(e){ m.msg='取込できませんでした: '+(e.message||e); render(); }
+      return;
+    }
     try{
       const d=await api({ action:'mfConfirmImport', token:S.auth.token, store:m.store,
         entries:JSON.stringify(entries), newMappings:JSON.stringify(newMappings), newSubItems:JSON.stringify(newSubItems) });
@@ -10424,6 +10453,19 @@ window.App = {
     if(!ym1||!ym2){ msg.textContent='開始月と終了月を指定してください'; return; }
     if(!item){ msg.textContent='勘定科目を入力してください'; return; }
     msg.style.color='#8c8375'; msg.textContent='一括計上中…（PL管理システムにも反映しています）';
+    if(PL_ENTRIES_INPUT_){
+      try{
+        const a=ym1.split('-').map(Number), b=ym2.split('-').map(Number); const n=(b[0]-a[0])*12+(b[1]-a[1])+1;
+        if(n<1||n>36){ msg.style.color='#b5502f'; msg.textContent='期間は1〜36か月で指定してください'; return; }
+        const list=[]; for(let i=0;i<n;i++){ const y=a[0]+Math.floor((a[1]-1+i)/12), mo=(a[1]-1+i)%12+1; list.push(y+'-'+String(mo).padStart(2,'0')); }
+        const amt=Number(String(amtRaw).replace(/[,¥\s]/g,''))||0;
+        const sName=(store==='__common__')?'':store;
+        await plEntriesReplaceKeys_(sName, list.map(ym=>[ym,item,cat,amt,sub]), memo);
+        S.modal=null; render(); toast(amtRaw===''?`「${item}」を${n}ヶ月分削除しました`:`「${item}」を${n}ヶ月分一括計上しました`);
+        setTimeout(()=>{ if(S.auth) fetchKdEntries_(); },25000);
+      }catch(e){ msg.style.color='#b5502f'; msg.textContent='保存できませんでした: '+(e.message||e); }
+      return;
+    }
     try{
       const d=await api({ action:'savePlBulk', token:S.auth.token, ym1, ym2, store, item, cat, sub, amount:amtRaw, memo });
       if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'一括計上に失敗しました'; return; }
