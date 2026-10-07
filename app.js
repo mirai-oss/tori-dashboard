@@ -4344,6 +4344,10 @@ function showTextReport_(title, text){
 async function adTargetCompare_(){
   if(!S.auth||!S.auth.token){ toast('GAS未接続のため突合できません'); return; }
   toast('突合中…（GASを呼びます。しばらくお待ちください）');
+  if(!Object.keys(D.storeAlias||{}).length){   // 店舗対応表(DB_店舗対応)がまだ読めていない＝画面と同じ店名解決ができないので、先に通常の読み込みを済ませる
+    try{ await fetchData(true,{ exclude:HEAVY_KEYS.concat(['daily','PL','スポット人件費','借入返済元金','明細時間帯','明細商品','明細店舗','明細カバレッジ']) }); }catch(e){}
+    if(!Object.keys(D.storeAlias||{}).length){ showTextReport_('🧪広告・目標突合（店舗対応表が読めません）', '店舗対応表(DB_店舗対応)を読み込めませんでした。画面を再読み込みして、数字が出そろってから（1〜2分後）もう一度押してください。'); return; }
+  }
   const L=[]; L.push('【広告・目標 新旧突合】'+new Date().toLocaleString('ja-JP')+' app.js '+((document.querySelector('script[src*="app.js"]')||{}).src||'').replace(/^.*\//,''));
   const snap={ ad:D.ad, adfx:D.adfx, adSrc:D.adSrc, ex:D.adPlExclude, targets:D.targets, targetsM:D.targetsM, diag:Object.assign({},D.diag), rk:D.receivedKeys };
   let old=null;
