@@ -2367,7 +2367,7 @@ const KD_ENTRIES_=(()=>{ try{ return localStorage.getItem('kd_entries')!=='0'; }
 
 // 広告・目標のkd直読みは「突合OK」まで既定OFF（2026-10-07 突合で 目標月次の率が0・看板別/芝の差を確認）。
 // 突合OK後に既定ONにする。個別に試す時: localStorage.kd_ad=1 / kd_target=1
-const KD_AD_=(()=>{ try{ return localStorage.getItem('kd_ad')==='1'; }catch(e){ return false; } })();
+const KD_AD_=(()=>{ try{ return localStorage.getItem('kd_ad')!=='0'; }catch(e){ return true; } })();   // 広告: 2026-10-07 突合で全項目差0 → 既定ON（localStorage.kd_ad=0で旧経路）
 const KD_TARGET_=(()=>{ try{ return localStorage.getItem('kd_target')!=='0'; }catch(e){ return true; } })();   // 目標: 2026-10-07 突合で全項目差0 → 既定ON（localStorage.kd_target=0で旧経路）
 function kdBuildAd_(rows, nm){
   const adR=[], fxR=[], ex=new Set();
