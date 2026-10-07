@@ -4372,6 +4372,9 @@ async function adTargetCompare_(){
   // 店舗名は画面と同じ解決(resolveStoreEx)で「表示名」にそろえてから比べる（（本店）/ 本店 などの表記ゆれを吸収）
   const own=(n)=>{ const r=resolveStoreEx(n); return r?r.own:'?'+n; };
   [old,kd].forEach(x=>{ x.ad=x.ad.map(r=>Object.assign({},r,{store:own(r.store)})); x.fx=x.fx.map(r=>Object.assign({},r,{store:own(r.store)})); x.targets=x.targets.map(r=>Object.assign({},r,{store:own(r.store)})); x.targetsM=x.targetsM.map(r=>Object.assign({},r,{store:own(r.store)})); });
+  { const sa=D.storeAlias||{}, sp=D.storeParent||{}; const hit=(o)=>Object.keys(o).filter(k=>/匠味|彩|鶏武者|黒霧屋|新横浜/.test(k+o[k])).map(k=>'  '+k+' → '+o[k]);
+    L.push('【画面が使う店舗対応表(DB_店舗対応)】'); hit(sa).forEach(x=>L.push(x)); L.push('【店舗親子(DB_店舗親子)】'); hit(sp).forEach(x=>L.push(x));
+    const samp=['鶏武者（新横浜）','匠味（新横浜）','黒霧屋（新横浜）','彩（新横浜）']; L.push('【旧GASの店名→画面の表示名】'); samp.forEach(n=>{ const r=resolveStoreEx(n); L.push('  '+n+' → '+(r?r.own+'（親:'+r.parent+'）':'解決できず')); }); }
   L.push('kd行数: 広告='+kAd.length+' 目標月次='+kTm.length+' 日別目標='+kTd.length);
 
   const ym=(t)=>ymdStr(t).slice(0,7);
