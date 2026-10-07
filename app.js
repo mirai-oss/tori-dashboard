@@ -4336,7 +4336,15 @@ async function adTargetCompare_(){
   const kd={ ad:D.ad, ex:D.adPlExclude, targets:D.targets, targetsM:D.targetsM, fx:D.adfx };
   let old=null;
   try{
-    const d=await api({ action:'data', token:S.auth.token, months:monthsWindow(), keys:'広告,広告効果,広告除外設定,目標,目標月次' }, 90000);
+    const callData=()=>api({ action:'data', token:S.auth.token, months:monthsWindow(), keys:'広告,広告効果,広告除外設定,目標,目標月次' }, 90000);
+    let d=await callData();
+    if(d&&!d.ok&&String(d.error||'').includes('unauthorized')){   // 裏のGASセッション切れ: 統合ログインから取り直して1回だけ再試行
+      try{
+        const at=await portalAccessToken().catch(()=>null);
+        const r=at?await api({ action:'supalogin', stoken:at }):null;
+        if(r&&r.ok&&r.token){ S.auth={ token:r.token, account:r.account, sso:true }; try{ localStorage.setItem(LS.sess, JSON.stringify(S.auth)); }catch(e){} S.gasSessionLost=false; d=await callData(); }
+      }catch(e){}
+    }
     if(!d||!d.ok){ L.push('GAS取得失敗: '+((d&&d.error)||'')); showTextReport_('🧪広告・目標突合（取得できず）', L.join('\n')); return; }
     ingestSheets(d.sheets||{}, true);
     old={ ad:D.ad, ex:D.adPlExclude, targets:D.targets, targetsM:D.targetsM, fx:D.adfx };
