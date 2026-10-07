@@ -2364,6 +2364,30 @@ async function dashSummaryPaged_(kind, months, extra){
 // 取得できたものだけ gasLoaded_ を立て、GASの該当読込を省く。失敗時は何もしない（従来どおりGASが読む）。旧経路へ: localStorage.kd_entries=0。
 const KD_ENTRIES_=(()=>{ try{ return localStorage.getItem('kd_entries')!=='0'; }catch(e){ return true; } })();
 
+
+// 広告・目標のkd直読みは「突合OK」まで既定OFF（2026-10-07 突合で 目標月次の率が0・看板別/芝の差を確認）。
+// 突合OK後に既定ONにする。個別に試す時: localStorage.kd_ad=1 / kd_target=1
+const KD_AD_=(()=>{ try{ return localStorage.getItem('kd_ad')==='1'; }catch(e){ return false; } })();
+const KD_TARGET_=(()=>{ try{ return localStorage.getItem('kd_target')==='1'; }catch(e){ return false; } })();
+function kdBuildAd_(rows, nm){
+  const adR=[], fxR=[], ex=new Set();
+  rows.forEach(r=>{
+    const st=String(r.brand_name||'').trim()||nm(r); const ym=String(r.year_month||''); if(!st||!/^\d{4}-\d{2}$/.test(ym)) return;   // 2枚看板は看板名(brand_name)で持つ（親店舗の下に別行で出す既存仕様）
+    const t=parseYm(ym); if(!t) return;
+    const media=String(r.media_name||'').trim();
+    if(r.ad_cost!=null&&Number(r.ad_cost)) adR.push({ store:st, t, media, cost:Number(r.ad_cost) });
+    const access=Number(r.access_count||0), grp=Number(r.net_groups||0), ppl=Number(r.net_people||0), tel=Number(r.tel_count||0);
+    const tGrp=Number(r.total_groups||0), tPpl=Number(r.total_people||0), tSales=Number(r.total_sales||0), fee=Number(r.acquisition_fee||0);
+    if(access||grp||ppl||tel||tGrp||tPpl||tSales||fee) fxR.push({ store:st, t, media, access, grp, ppl, tel, telCnt:0, telPpl:0, tGrp, tPpl, tSales, fee });
+    if(r.pl_excluded) ex.add(nm(r)+'|'+ym);
+  });
+  return { ad:adR, fx:fxR, ex };
+}
+function kdBuildTarget_(tm, td, nm){
+  const m=tm.map(r=>{ const st=nm(r); const t=parseYm(String(r.year_month||'')); return (st&&t)?{ store:st, t, pa:Number(r.pa_rate||0), emp:Number(r.emp_rate||0), cost:Number(r.cost_rate||0), dinii:Number(r.dinii_target||0), review:Number(r.review_target||0) }:null; }).filter(Boolean);
+  const d=td.map(r=>{ const st=nm(r); const t=parseDateStr(String(r.biz_date||'').slice(0,10)); return (st&&t&&r.sales_target!=null)?{ store:st, t, goal:Number(r.sales_target||0) }:null; }).filter(Boolean);
+  return { m, d };
+}
 // F1-b/c 広告・目標（2026-10-06）: kdで読んだ広告・目標を、後から届くGASのフル受信（reset）で消さないための退避/復元。
 // kdで読めた分だけ(D.kdAdOk_/D.kdTargetOk_)対象。GASがそのシートを実際に返してきた時はGASの値を優先する。
 function kdSnapshotAdTarget_(){
@@ -2409,31 +2433,20 @@ async function fetchKdEntries_(){
     job('loan',0,{ from:'2023-01', to:'2029-12' },(rows)=>{
       const sh=[['年月','店舗','法人','元金額','メモ']].concat(rows.map(r=>[r.year_month, nm(r), r.corp_name||'', Number(r.principal||0), r.memo||'']));
       ingestSheets({ '借入返済元金':sh }, true); D.loanBqErr=''; D.bqFallback['借入返済元金']=false; D.loanBqLoading=false; mark('loan'); }),
-    ...(kdEditFresh_('ad',90*60000)?[]:[
+    ...((!KD_AD_||kdEditFresh_('ad',90*60000))?[]:[
       job('ad',36,null,(rows)=>{
-        const adR=[], fxR=[], ex=new Set();
-        rows.forEach(r=>{
-          const st=nm(r); const ym=String(r.year_month||''); if(!st||!/^\d{4}-\d{2}$/.test(ym)) return;
-          const t=parseYm(ym.replace('-','/')); if(!t) return;
-          const media=String(r.media_name||'').trim();
-          if(r.ad_cost!=null&&Number(r.ad_cost)) adR.push({ store:st, t, media, cost:Number(r.ad_cost) });
-          const access=Number(r.access_count||0), grp=Number(r.net_groups||0), ppl=Number(r.net_people||0), tel=Number(r.tel_count||0);
-          const tGrp=Number(r.total_groups||0), tPpl=Number(r.total_people||0), tSales=Number(r.total_sales||0), fee=Number(r.acquisition_fee||0);
-          if(access||grp||ppl||tel||tGrp||tPpl||tSales||fee) fxR.push({ store:st, t, media, access, grp, ppl, tel, telCnt:0, telPpl:0, tGrp, tPpl, tSales, fee });
-          if(r.pl_excluded) ex.add(st+'|'+ym);
-        });
-        D.ad=adR; D.adSrc='kd'; D.adfx=fxR; D.adPlExclude=ex; D.diag['広告']='OK kd '+adR.length+'件'; D.diag['広告効果']='OK kd '+fxR.length+'件';
+        const b=kdBuildAd_(rows,nm);
+        D.ad=b.ad; D.adSrc='kd'; D.adfx=b.fx; D.adPlExclude=b.ex; D.diag['広告']='OK kd '+b.ad.length+'件'; D.diag['広告効果']='OK kd '+b.fx.length+'件';
         D.kdAdOk_=true; mark('ad'); })
     ]),
-    ...(kdEditFresh_('target',26*3600000)?[]:[
+    ...((!KD_TARGET_||kdEditFresh_('target',26*3600000))?[]:[
       (async()=>{
         const jst=(k)=>{ const n=new Date(Date.now()+9*3600000); const d=new Date(Date.UTC(n.getUTCFullYear(),n.getUTCMonth()+k,1)); return d.getUTCFullYear()+'-'+String(d.getUTCMonth()+1).padStart(2,'0'); };
         const rng={ from:jst(-26), to:jst(12) };
         try{
           const [tm,td]=await Promise.all([ dashSummaryPaged_('target',0,rng), dashSummaryPaged_('target_daily',0,rng) ]);
           if(!tm||!td) return false;
-          D.targetsM=tm.map(r=>{ const st=nm(r); const t=parseYm(String(r.year_month||'').replace('-','/')); return (st&&t)?{ store:st, t, pa:Number(r.pa_rate||0), emp:Number(r.emp_rate||0), cost:Number(r.cost_rate||0), dinii:Number(r.dinii_target||0), review:Number(r.review_target||0) }:null; }).filter(Boolean);
-          D.targets=td.map(r=>{ const st=nm(r); const t=parseDateStr(String(r.biz_date||'').slice(0,10)); return (st&&t&&r.sales_target!=null)?{ store:st, t, goal:Number(r.sales_target||0) }:null; }).filter(Boolean);
+          const b=kdBuildTarget_(tm,td,nm); D.targetsM=b.m; D.targets=b.d;
           D.diag['目標']='OK kd '+D.targets.length+'件'; D.diag['目標月次']='OK kd '+D.targetsM.length+'件';
           D.kdTargetOk_=true; mark('target'); logApiPerf_('kd_entries:target', nowMs_()-t0, true, ''); return true;
         }catch(e){ logApiPerf_('kd_entries:target', nowMs_()-t0, false, 'exception'); return false; }
@@ -4333,7 +4346,6 @@ async function adTargetCompare_(){
   toast('突合中…（GASを呼びます。しばらくお待ちください）');
   const L=[]; L.push('【広告・目標 新旧突合】'+new Date().toLocaleString('ja-JP')+' app.js '+((document.querySelector('script[src*="app.js"]')||{}).src||'').replace(/^.*\//,''));
   const snap={ ad:D.ad, adfx:D.adfx, adSrc:D.adSrc, ex:D.adPlExclude, targets:D.targets, targetsM:D.targetsM, diag:Object.assign({},D.diag), rk:D.receivedKeys };
-  const kd={ ad:D.ad, ex:D.adPlExclude, targets:D.targets, targetsM:D.targetsM, fx:D.adfx };
   let old=null;
   try{
     const callData=()=>api({ action:'data', token:S.auth.token, months:monthsWindow(), keys:'広告,広告効果,広告除外設定,目標,目標月次' }, 90000);
@@ -4351,6 +4363,17 @@ async function adTargetCompare_(){
   }catch(e){ L.push('例外: '+e.message); }
   finally{ D.ad=snap.ad; D.adfx=snap.adfx; D.adSrc=snap.adSrc; D.adPlExclude=snap.ex; D.targets=snap.targets; D.targetsM=snap.targetsM; D.diag=snap.diag; D.receivedKeys=snap.rk; }
   if(!old){ showTextReport_('🧪広告・目標突合', L.join('\n')); return; }
+  const nmK=(r)=>String(r.store_name||storeNameById_(r.store_id)||'').trim();
+  const rng={ from:ymdStr(Date.now()-800*86400000).slice(0,7), to:ymdStr(Date.now()+370*86400000).slice(0,7) };
+  const [kAd,kTm,kTd]=await Promise.all([ dashSummaryPaged_('ad',0,rng), dashSummaryPaged_('target',0,rng), dashSummaryPaged_('target_daily',0,rng) ]);
+  if(!kAd||!kTm||!kTd){ L.push('kd取得失敗'); showTextReport_('🧪広告・目標突合（kd取得失敗）', L.join('\n')); return; }
+  const ba=kdBuildAd_(kAd,nmK), bt=kdBuildTarget_(kTm,kTd,nmK);
+  const kd={ ad:ba.ad, fx:ba.fx, ex:ba.ex, targets:bt.d, targetsM:bt.m };
+  // 店舗名は画面と同じ解決(resolveStoreEx)で「表示名」にそろえてから比べる（（本店）/ 本店 などの表記ゆれを吸収）
+  const own=(n)=>{ const r=resolveStoreEx(n); return r?r.own:'?'+n; };
+  [old,kd].forEach(x=>{ x.ad=x.ad.map(r=>Object.assign({},r,{store:own(r.store)})); x.fx=x.fx.map(r=>Object.assign({},r,{store:own(r.store)})); x.targets=x.targets.map(r=>Object.assign({},r,{store:own(r.store)})); x.targetsM=x.targetsM.map(r=>Object.assign({},r,{store:own(r.store)})); });
+  L.push('kd行数: 広告='+kAd.length+' 目標月次='+kTm.length+' 日別目標='+kTd.length);
+
   const ym=(t)=>ymdStr(t).slice(0,7);
   const agg=(rows,keyf,valf)=>{ const m={}; (rows||[]).forEach(r=>{ const k=keyf(r); m[k]=(m[k]||0)+valf(r); }); return m; };
   const cmp=(title,a,b)=>{
@@ -4369,7 +4392,7 @@ async function adTargetCompare_(){
   cmp('目標月次 原価率', agg(old.targetsM,r=>ym(r.t)+' '+r.store,r=>r.cost*1000), agg(kd.targetsM,r=>ym(r.t)+' '+r.store,r=>r.cost*1000));
   cmp('目標月次 ダイニー点数', agg(old.targetsM,r=>ym(r.t)+' '+r.store,r=>r.dinii), agg(kd.targetsM,r=>ym(r.t)+' '+r.store,r=>r.dinii));
   cmp('目標月次 口コミ件数', agg(old.targetsM,r=>ym(r.t)+' '+r.store,r=>r.review), agg(kd.targetsM,r=>ym(r.t)+' '+r.store,r=>r.review));
-  L.push(''); L.push('kd側: 広告='+(D.kdAdOk_?'読込済':'未')+' 目標='+(D.kdTargetOk_?'読込済':'未')+'  ／ 差が0の項目は一致です');
+  L.push(''); L.push('差が0の項目は一致です。kd直読みの既定: 広告='+(KD_AD_?'ON':'OFF')+' 目標='+(KD_TARGET_?'ON':'OFF'));
   showTextReport_('🧪広告・目標 新旧突合（全文コピーして共有してください）', L.join('\n'));
 }
 // 🧪新旧突合: 今の条件（期間・店舗・区分）で 旧bqDetail(GAS) と 新kd を並べて差を出す。全文をそのまま共有してください。
