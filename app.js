@@ -5526,7 +5526,11 @@ function plAgg(scopeSet, selN, a, b, excludeSet){
   const bySub={F:{},L:{},A:{},R:{},O:{}};
   let total=0, common=0;
   const rc={};
-  const add=(r)=>{
+  const add=(r0)=>{
+    // 2026-10-13（ユーザー指示）: 店舗間の仕入れ移動は、品名・移動先ごとに分けず「店舗間移動」1行に合算して表示する
+    // （補助科目も出さない。データ側の補助科目欄に別の連携の名前が混ざって内訳が崩れていた）。金額の合計は変わらない。
+    const isTr=/店舗間移動/.test(String(r0.memo||''))||/店舗間移動/.test(String(r0.item||''));
+    const r=isTr?Object.assign({},r0,{ item:'店舗間移動', sub:'' }):r0;
     const k=r.cat||'O';
     byCat[k][r.item]=(byCat[k][r.item]||0)+r.amount; catTotal[k]+=r.amount; total+=r.amount;
     const sub=r.sub||'';
