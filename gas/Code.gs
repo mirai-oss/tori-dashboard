@@ -3998,16 +3998,20 @@ function bqGetDelivery(p, session) {
     if (months > 0) {
       var cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - months);
       var cutoffStr = Utilities.formatDate(cutoff, 'Asia/Tokyo', 'yyyy-MM-dd');
-      where = "WHERE txn_date >= DATE('" + cutoffStr + "')";
+      where = "WHERE T.txn_date >= DATE('" + cutoffStr + "')";
     }
-    where += (where ? ' AND ' : 'WHERE ') + 'store_id IS NOT NULL';
+    where += (where ? ' AND ' : 'WHERE ') + 'T.store_id IS NOT NULL';
+    // 2026-10-13（ユーザー指示）: 月次精算（確定・is_settled=TRUE）を取り込んだ「店舗×月」は、その月の日次速報（is_settled=FALSE）を使わず
+    // 確定の行だけで集計する（速報と確定の両方が入って二重計上になるのを防ぐ。確定が無い月は従来どおり速報を使う）。
+    var tbl = '`' + BQ_PROJECT + '.' + BQ_SALES_DATASET + '.stg_delivery_order`';
+    where += ' AND (IFNULL(T.is_settled, FALSE) OR NOT EXISTS (SELECT 1 FROM ' + tbl + ' S2 WHERE IFNULL(S2.is_settled, FALSE) AND S2.store_id = T.store_id AND FORMAT_DATE(\'%Y-%m\', S2.txn_date) = FORMAT_DATE(\'%Y-%m\', T.txn_date)))';
     // 全店ぶんを1つのキャッシュ（店舗数が少なく軽いため）に持ち、店舗権限スコープの絞り込みは
     // 他のbqGet系と同じくキャッシュ取得後・応答直前に毎回適用する（bqGetMedia等と同じ安全側の設計）。
-    var ck = bqCacheKey_('delivery', [months]);
+    var ck = bqCacheKey_('delivery', [months, 'settled-v1']);
     var cached = bqCacheGet_(ck);
     if (!cached) {
-      var sql = 'SELECT txn_date, store_id, COUNT(DISTINCT order_no) AS orders, SUM(sales) AS net_sales FROM `' +
-        BQ_PROJECT + '.' + BQ_SALES_DATASET + '.stg_delivery_order` ' + where + ' GROUP BY txn_date, store_id ORDER BY txn_date';
+      var sql = 'SELECT T.txn_date, T.store_id, COUNT(DISTINCT T.order_no) AS orders, SUM(T.sales) AS net_sales FROM ' + tbl + ' T ' +
+        where + ' GROUP BY T.txn_date, T.store_id ORDER BY T.txn_date';
       var rows = bqRows_(sql);
       if (!rows) return { ok: false, error: 'BigQueryクエリ失敗' };
       var dir = fetchStoreDirectory_();
