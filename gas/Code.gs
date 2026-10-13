@@ -3273,6 +3273,7 @@ function deleteSpotEntry(p, session) {
       if (String(vals[i][8]).trim() === id) {
         var store = String(vals[i][1]).trim();
         if (store && !scopeAllows_(session, store)) return { ok: false, error: 'この店舗の削除権限がありません' };
+        sh.deleteRow(i + 2);   // 2026-10-13 復旧: 10/5の編集で消えていた行削除（これが無く「削除完了」と出るのに残り続けた）
         var bqRes = bqSyncSpotNow_();
         var out = { ok: true };
         if (!bqRes || !bqRes.ok) out.bqWarn = 'BigQueryへの反映に失敗した可能性があります（' + ((bqRes && bqRes.error) || '不明') + '）。数分後にもう一度確認してください';
