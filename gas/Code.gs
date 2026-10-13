@@ -4050,16 +4050,19 @@ function bqGetDelivery(p, session) {
 function bqGetDeliveryOrders(p, session) {
   try {
     var months = Number((p || {}).months) || 0;
-    var where = 'WHERE store_id IS NOT NULL';
+    var where = 'WHERE T.store_id IS NOT NULL';
     if (months > 0) {
       var cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - months);
-      where += " AND txn_date >= DATE('" + Utilities.formatDate(cutoff, 'Asia/Tokyo', 'yyyy-MM-dd') + "')";
+      where += " AND T.txn_date >= DATE('" + Utilities.formatDate(cutoff, 'Asia/Tokyo', 'yyyy-MM-dd') + "')";
     }
-    var ck = bqCacheKey_('deliveryOrders', [months]);
+    // 2026-10-13（ユーザー指示）: bqGetDeliveryと同じ。月次精算（確定・is_settled=TRUE）を取り込んだ「店舗×月」は、その月の日次速報を使わず確定の行だけ返す（二重計上防止）。
+    var tbl = '`' + BQ_PROJECT + '.' + BQ_SALES_DATASET + '.stg_delivery_order`';
+    where += ' AND (IFNULL(T.is_settled, FALSE) OR NOT EXISTS (SELECT 1 FROM ' + tbl + ' S2 WHERE IFNULL(S2.is_settled, FALSE) AND S2.store_id = T.store_id AND FORMAT_DATE(\'%Y-%m\', S2.txn_date) = FORMAT_DATE(\'%Y-%m\', T.txn_date)))';
+    var ck = bqCacheKey_('deliveryOrders', [months, 'settled-v1']);
     var cached = bqCacheGet_(ck);
     if (!cached) {
-      var sql = "SELECT FORMAT_DATETIME('%Y-%m-%d %H:%M:%S', txn_at) AS txn_at_str, store_id, txn_type, order_no, items_text, sales, channel FROM `" +
-        BQ_PROJECT + '.' + BQ_SALES_DATASET + '.stg_delivery_order` ' + where + ' ORDER BY txn_at';
+      var sql = "SELECT FORMAT_DATETIME('%Y-%m-%d %H:%M:%S', T.txn_at) AS txn_at_str, T.store_id, T.txn_type, T.order_no, T.items_text, T.sales, T.channel FROM " +
+        tbl + ' T ' + where + ' ORDER BY T.txn_at';
       var rows = bqRows_(sql);
       if (!rows) return { ok: false, error: 'BigQueryクエリ失敗' };
       var dir = fetchStoreDirectory_();
