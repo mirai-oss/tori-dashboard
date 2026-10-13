@@ -1735,6 +1735,10 @@ function perfReportText_(){
   out.push('フラグ: BOOT_GASLESS_='+BOOT_GASLESS_+' / LOGIN_2STAGE_='+LOGIN_2STAGE_+' / データ元='+(S.useBqDaily?'BigQuery':'シート'));
   out.push('最初の数字が出るまで(boot_first_paint): '+(S.bootMs!=null?(S.bootMs/1000).toFixed(1)+'秒（'+(D.homeFromCache?'前回値キャッシュ':'キャッシュなし')+'）':'まだ出ていない')+' / 仮ログイン='+(S.auth&&S.auth.provisional||'なし')+' / 接続状態='+S.connState);
   if(nav) out.push('ページ読み込み: HTML到着 '+Math.round(nav.responseEnd)+'ms / DOM完成 '+Math.round(nav.domContentLoadedEventEnd)+'ms / 読み込み完了 '+Math.round(nav.loadEventEnd||0)+'ms');
+  { // デリバリー(PLの売上高の補助科目)の診断
+    const dv=(D.media||[]).filter(r=>mediaClassOf(r.media).seg==='デリバリー'); const by={}; dv.forEach(r=>{ const m=ymdStr(r.t).slice(0,7); const k=r.store+' '+m; by[k]=(by[k]||0)+r.net; });
+    out.push('デリバリー: kd読込='+(D.kdDeliveryOk_?'済':'未')+' / 診断='+(D.diag&&D.diag['delivery']||'なし')+' / 件数='+dv.length+' / '+(Object.keys(by).sort().slice(-8).map(k=>k+'='+Math.round(by[k])).join(' ; ')||'データなし'));
+  }
   out.push('現在 '+(nowMs_()/1000).toFixed(1)+'秒経過。以下は 開始時刻 / 所要 / 通信先（0.3秒以上かかったもの＋ログイン・データ系を表示）');
   const rs=(performance.getEntriesByType('resource')||[]).filter(r=>{
     const n=r.name; const gas=n.indexOf('script.google.com')>=0||n.indexOf('googleusercontent.com')>=0;
@@ -2458,11 +2462,12 @@ async function fetchKdEntries_(){
       // デリバリー(ロケットナウ等)の日次もkdから（GAS bqGetDeliveryを待たない）。媒体本体の取込の後に追記する（ingestMediaが丸ごと上書きするため順序が大事）
       try{
         const dv=await dashSummaryPaged_('delivery_daily',24);
+        if(!dv) D.diag['delivery']='kd取得に失敗';
         if(dv){
           const dsh=[['店舗名','営業日','媒体名','客数','客組数','純売上']].concat(dv.map(r=>[storeNameById_(r.store_id)||'', String(r.biz_date||'').slice(0,10).replace(/-/g,'/'), 'ロケットナウ', Number(r.orders||0), Number(r.orders||0), Number(r.net_sales||0)]).filter(x=>x[0]));
           if(dsh.length>1){ ingestDeliveryMedia(dsh); } D.kdDeliveryOk_=true; mark('delivery');
         }
-      }catch(e){} })
+      }catch(e){ D.diag['delivery']='kd例外: '+(e&&e.message||e); } })
   ]);
   if(!targetModalOpen_()) render();
 }
