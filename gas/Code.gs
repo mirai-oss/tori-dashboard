@@ -4058,11 +4058,14 @@ function bqGetDeliveryOrders(p, session) {
     // 2026-10-13（ユーザー指示）: bqGetDeliveryと同じ。月次精算（確定・is_settled=TRUE）を取り込んだ「店舗×月」は、その月の日次速報を使わず確定の行だけ返す（二重計上防止）。
     var tbl = '`' + BQ_PROJECT + '.' + BQ_SALES_DATASET + '.stg_delivery_order`';
     where += ' AND (IFNULL(T.is_settled, FALSE) OR NOT EXISTS (SELECT 1 FROM ' + tbl + ' S2 WHERE IFNULL(S2.is_settled, FALSE) AND S2.store_id = T.store_id AND FORMAT_DATE(\'%Y-%m\', S2.txn_date) = FORMAT_DATE(\'%Y-%m\', T.txn_date)))';
-    var ck = bqCacheKey_('deliveryOrders', [months, 'settled-v1']);
+    var ck = bqCacheKey_('deliveryOrders', [months, 'settled-v2']);
     var cached = bqCacheGet_(ck);
     if (!cached) {
-      var sql = "SELECT FORMAT_DATETIME('%Y-%m-%d %H:%M:%S', T.txn_at) AS txn_at_str, T.store_id, T.txn_type, T.order_no, T.items_text, T.sales, T.channel FROM " +
-        tbl + ' T ' + where + ' ORDER BY T.txn_at';
+      // 2026-10-13（ユーザー指示）: 確定行を使う月は、金額は確定のまま、注文の時刻だけ「同じ注文番号の日次速報」の取引日時を使う
+      // （月次精算の取引日時は時刻が正しくなく、時間帯別が崩れるため）。同じ注文番号の速報が無い注文は、確定の時刻のまま。
+      var sql = "SELECT FORMAT_DATETIME('%Y-%m-%d %H:%M:%S', COALESCE(D.txn_at, T.txn_at)) AS txn_at_str, T.store_id, T.txn_type, T.order_no, T.items_text, T.sales, T.channel FROM " +
+        tbl + ' T LEFT JOIN (SELECT channel, order_no, MIN(txn_at) AS txn_at FROM ' + tbl + ' WHERE NOT IFNULL(is_settled, FALSE) GROUP BY channel, order_no) D ' +
+        'ON IFNULL(T.is_settled, FALSE) AND D.channel = T.channel AND D.order_no = T.order_no ' + where + ' ORDER BY COALESCE(D.txn_at, T.txn_at)';
       var rows = bqRows_(sql);
       if (!rows) return { ok: false, error: 'BigQueryクエリ失敗' };
       var dir = fetchStoreDirectory_();
