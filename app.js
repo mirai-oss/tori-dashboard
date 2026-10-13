@@ -2757,7 +2757,7 @@ function touchSyncBadge(){ S.lastSync=stampNow(); const el=document.querySelecto
 async function fetchCtPendingCount_(){
   if(!isAdminRole()||!S.auth||!S.auth.token) return;
   try{
-    const d=await api({action:'costTransferPendingList', token:S.auth.token}, 20000);
+    const d=await ctApi_('costTransferPendingList',{});
     if(d.ok){ D.ctPendingCount=d.rows.length; if(!S.modal) render(); }
   }catch(e){ /* 失敗時は直前の値を維持（バッジが誤って消えないように） */ }
 }
@@ -8557,6 +8557,29 @@ async function spotAfterSave_(){
   if(SPOT_SUPA_){ await fetchKdEntries_(); plAfterSave_(); return; }
   await fetchData(true,{ only:['スポット人件費'], partial:true }); if(S.useBqDaily) fetchSpotBQ();
 }
+// ===== 店舗間の仕入れ移動のSupabase化 切替スイッチ（2026-10-13・GASなし）=====
+// true: 登録/取消/一覧/承認待ち/承認/却下をSupabase RPC(cost_transfer_*)で直接行う。移動の行は正本pl_entriesに書く（DB_PL/GASは使わない）。
+const CT_SUPA_=true;
+async function ctApi_(action, p){
+  p=p||{};
+  if(!CT_SUPA_){ return await api(Object.assign({ action, token:S.auth&&S.auth.token }, p)); }
+  try{
+    switch(action){
+      case 'costTransferList': return await plRpc_('cost_transfer_list',{});
+      case 'costTransferPendingList': return await plRpc_('cost_transfer_pending_list',{});
+      case 'costTransferAdd': return await plRpc_('cost_transfer_add',{ p_date:p.date, p_from:p.fromStore, p_to:p.toStore, p_items:JSON.parse(p.items||'[]'), p_actor:null });
+      case 'costTransferCancel': return await plRpc_('cost_transfer_cancel',{ p_id:p.id, p_actor:null });
+      case 'costTransferApprove': return await plRpc_('cost_transfer_approve',{ p_request:p.id, p_actor:null });
+      case 'costTransferReject': return await plRpc_('cost_transfer_reject',{ p_request:p.id, p_reason:p.reason||'', p_actor:null });
+    }
+  }catch(e){ return { ok:false, error:String(e&&e.message||e) }; }
+  return { ok:false, error:'未対応の操作です: '+action };
+}
+// 変更後の後始末: PLの集計(kd)を作り直して読み直す（GASは使わない）
+async function ctAfterChange_(){
+  if(CT_SUPA_){ plAfterSave_(); return; }
+  await fetchData(true,{ only:['pl','PL'], partial:true }); if(S.useBqDaily) await fetchPlBQ();
+}
 async function plEntriesReplaceKeys_(storeName, entries, memoTag){
   // entries=[[ym,item,cat,amount,sub]...]。同じ（年月×科目×補助科目）の手入力行を消してから入れ直す（旧GASの差し替えと同じ挙動）。
   const yms=[...new Set(entries.map(e=>e[0]))].sort(); if(!yms.length) return { inserted:0, deleted:0 };
@@ -10105,15 +10128,15 @@ window.App = {
     try{
       if(decision==='reject'){
         const reason=prompt('却下理由（任意・現場への共有メモとして記録されます）'); if(reason===null) return;
-        toast('処理中…'); const d=await api({ action:'costTransferReject', token:S.auth.token, id, reason:reason||'' });
+        toast('処理中…'); const d=await ctApi_('costTransferReject',{id, reason:reason||''});
         if(!d.ok){ toast(d.error||'却下に失敗しました'); return; }
         toast('却下しました'); await loadRequestLog_(true); return;
       }
       if(!confirm('この申請を承認してPLへ反映しますか？')) return;
-      toast('承認中…'); const d=await api({ action:'costTransferApprove', token:S.auth.token, id });
+      toast('承認中…'); const d=await ctApi_('costTransferApprove',{id});
       if(!d.ok){ toast(d.error||'承認に失敗しました'); return; }
       toast('承認しました（PLへ反映）'); await loadRequestLog_(true);
-      fetchData(true,{ only:['pl','PL'], partial:true }).then(()=>{ if(S.useBqDaily) fetchPlBQ(); });
+      ctAfterChange_();
     }catch(e){ toast('処理できませんでした: '+(e&&e.message||e)); }
   },
   reqFormsReload(){ loadRequestForms_(); },
@@ -10733,7 +10756,7 @@ window.App = {
     S.modal=Object.assign({}, keep, {type:'costTransfer', loading:true}); render();
     fetchStaffDir_().then(r=>{ if(r&&S.modal&&S.modal.type==='costTransfer'&&!S.modal.loading) render(); });   // 名簿は裏で取得（取れたら申請者欄が出る）
     try{
-      const d=await api({action:'costTransferList', token:S.auth.token});
+      const d=await ctApi_('costTransferList',{});
       if(!S.modal||S.modal.type!=='costTransfer') return; // 取得中にモーダルが閉じられていたら何もしない
       S.modal=Object.assign({}, S.modal, {rows:d.ok?d.rows:[], loading:false, err:d.ok?'':(d.error||'取得に失敗しました')});
     }catch(e){
@@ -10792,29 +10815,27 @@ window.App = {
     msg.style.color='#8c8375'; msg.textContent='登録中…';
     try{
       const total=lines.reduce((t,l)=>t+l.amount,0);
-      const d=await api({action:'costTransferAdd', token:S.auth.token, date, fromStore, toStore, items:JSON.stringify(lines), requesterName, requesterId});
+      const d=await ctApi_('costTransferAdd',{date, fromStore, toStore, items:JSON.stringify(lines), requesterName, requesterId});
       if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'登録に失敗しました'; return; }
       toast('登録しました（'+fromStore+'→'+toStore+'／'+lines.length+'品目 '+yen(total)+'）');
       logRequestEvent_({ kind:'cost_transfer_direct', requesterName, requesterId, store:fromStore, amount:total, action:'create', refId:(d.ids||[d.id]).join(','),
         summary:fromStore+'→'+toStore+'／'+lines.map(l=>l.item).join('・')+'（'+date+'）' });
       // 品名・金額だけクリアし、日付・店舗・申請者は残す（続けて同じ組み合わせで登録しやすいように）
       S.modal=Object.assign({}, S.modal, {date, fromStore, toStore, lines:[{item:'',amount:''}]});
-      await fetchData(true,{ only:['pl','PL'], partial:true });
-      if(S.useBqDaily) await fetchPlBQ();
+      await ctAfterChange_();
       await App.openCostTransfer();
     }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
   },
   async cancelCostTransfer(id){
-    if(!confirm('この移動を取り消しますか？（DB_PLの該当2行を削除します）')) return;
+    if(!confirm('この移動を取り消しますか？（PLの該当2行を取り消します）')) return;
     toast('取り消し中…');
     try{
-      const d=await api({action:'costTransferCancel', token:S.auth.token, id});
+      const d=await ctApi_('costTransferCancel',{id});
       if(!d.ok){ toast(d.error||'取り消しに失敗しました'); return; }
       toast('取り消しました');
       { const r0=(S.modal&&S.modal.rows||[]).find(r=>r.id===id); logRequestEvent_({ kind:'cost_transfer_direct', store:r0?r0.fromStore:'', amount:r0?r0.amount:null, action:'delete', refId:id,
           summary:r0?(r0.fromStore+'→'+r0.toStore+'／'+r0.item+'（'+r0.date+'）の取り消し'):'仕入れ移動の取り消し' }); }
-      await fetchData(true,{ only:['pl','PL'], partial:true });
-      if(S.useBqDaily) await fetchPlBQ();
+      await ctAfterChange_();
       await App.openCostTransfer();
     }catch(e){ toast('通信エラー: '+e.message); }
   },
@@ -10908,7 +10929,7 @@ window.App = {
     if(!S.modal||S.modal.type!=='costTransferAdmin') return;
     S.modal=Object.assign({},S.modal,{pending:{loading:true}}); render();
     try{
-      const d=await api({action:'costTransferPendingList', token:S.auth.token});
+      const d=await ctApi_('costTransferPendingList',{});
       if(d.ok) D.ctPendingCount=d.rows.length;   // 2026-10-03追加: モーダル内の一覧と「📋」ボタンのバッジを常に一致させる
       if(!S.modal||S.modal.type!=='costTransferAdmin') return;
       S.modal=Object.assign({},S.modal,{pending:{loading:false, rows:d.ok?d.rows:[], err:d.ok?'':(d.error||'取得に失敗しました')}});
@@ -10948,11 +10969,10 @@ window.App = {
     if(!confirm('この申請を承認してPLへ反映しますか？')) return;
     toast('承認中…');
     try{
-      const d=await api({action:'costTransferApprove', token:S.auth.token, id});
+      const d=await ctApi_('costTransferApprove',{id});
       if(!d.ok){ toast(d.error||'承認に失敗しました'); return; }
       toast('承認しました');
-      await fetchData(true,{ only:['pl','PL'], partial:true });
-      if(S.useBqDaily) await fetchPlBQ();
+      await ctAfterChange_();
       await App.ctAdminLoadPending();
     }catch(e){ toast('通信エラー: '+e.message); }
   },
@@ -10961,7 +10981,7 @@ window.App = {
     if(reason===null) return; // キャンセル
     toast('処理中…');
     try{
-      const d=await api({action:'costTransferReject', token:S.auth.token, id, reason:reason||''});
+      const d=await ctApi_('costTransferReject',{id, reason:reason||''});
       if(!d.ok){ toast(d.error||'却下に失敗しました'); return; }
       toast('却下しました');
       await App.ctAdminLoadPending();
