@@ -8517,7 +8517,7 @@ async function plAfterSave_(tries){
 // ===== スポット人件費のSupabase正本化 切替スイッチ（2026-10-13・GASなし）=====
 // true: スポット人件費の保存/修正/削除を Supabase RPC(spot_entry_save/spot_entry_delete)で直接行う（GAS・スプレッドシートは使わない）。
 // DB側の切替(app_secrets.spot_source='entries')とセットで公開する。false=従来のGAS経路。
-const SPOT_SUPA_=false;
+const SPOT_SUPA_=true;
 async function spotSave_(a){   // a={id,store,date,kind,amount,headcount,memo,requesterName,requesterId} → {ok,id,error}
   if(SPOT_SUPA_){
     const hc=String(a.headcount==null?'':a.headcount).trim();
