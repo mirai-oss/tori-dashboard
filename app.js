@@ -2302,7 +2302,7 @@ function gasLoaderForKey_(key){
   const m={
     daily:()=>fetchDailyBQ(), pl:()=>fetchPlBQ(), spot:()=>fetchSpotBQ(), loan:()=>fetchLoanBQ(),
     deposit: bq?()=>fetchDepositBQ():part(['deposit']),
-    media: bq?(()=>D.kdMediaOk_?fetchDeliveryMedia_():fetchMediaBQ()):(async()=>{ await fetchData(true,{ only:['media'], partial:true }); D.mediaPending=false; if(!targetModalOpen_()) render(); await fetchDeliveryMedia_(); }),
+    media: bq?(()=>D.kdMediaOk_?(D.kdDeliveryOk_?Promise.resolve():fetchDeliveryMedia_()):fetchMediaBQ()):(async()=>{ await fetchData(true,{ only:['media'], partial:true }); D.mediaPending=false; if(!targetModalOpen_()) render(); await fetchDeliveryMedia_(); }),
     dinii: part(['dinii']), rsv: part(['予約']), cov: part(['明細カバレッジ'])
   };
   return m[key]||null;
@@ -2419,7 +2419,7 @@ async function fetchKdEntries_(){
   const job=async(kind,months,extra,build)=>{
     try{
       const rows=await dashSummaryPaged_(kind,months,extra); if(!rows) return false;
-      build(rows); logApiPerf_('kd_entries:'+kind, nowMs_()-t0, true, ''); return true;
+      await build(rows); logApiPerf_('kd_entries:'+kind, nowMs_()-t0, true, ''); return true;
     }catch(e){ logApiPerf_('kd_entries:'+kind, nowMs_()-t0, false, 'exception'); return false; }
   };
   const ymSlash=(v)=>String(v||'').replace('-','/');
@@ -2452,9 +2452,17 @@ async function fetchKdEntries_(){
         }catch(e){ logApiPerf_('kd_entries:target', nowMs_()-t0, false, 'exception'); return false; }
       })()
     ]),
-    job('media_daily',24,null,(rows)=>{
+    job('media_daily',24,null,async (rows)=>{
       const sh=[['店舗名','営業日','媒体名','客数','客組数','純売上']].concat(rows.map(r=>[nm(r), String(r.biz_date||'').slice(0,10).replace(/-/g,'/'), r.media_raw||r.media_name||'', Number(r.guests||0), Number(r.parties||0), Number(r.net_sales||0)]));
-      ingestSheets({ media:sh }, true); D.bqFallback.media=false; D.mediaMonthsLoaded=24; D.mediaPending=false; D.kdMediaOk_=true; })
+      ingestSheets({ media:sh }, true); D.bqFallback.media=false; D.mediaMonthsLoaded=24; D.mediaPending=false; D.kdMediaOk_=true;
+      // デリバリー(ロケットナウ等)の日次もkdから（GAS bqGetDeliveryを待たない）。媒体本体の取込の後に追記する（ingestMediaが丸ごと上書きするため順序が大事）
+      try{
+        const dv=await dashSummaryPaged_('delivery_daily',24);
+        if(dv){
+          const dsh=[['店舗名','営業日','媒体名','客数','客組数','純売上']].concat(dv.map(r=>[storeNameById_(r.store_id)||'', String(r.biz_date||'').slice(0,10).replace(/-/g,'/'), 'ロケットナウ', Number(r.orders||0), Number(r.orders||0), Number(r.net_sales||0)]).filter(x=>x[0]));
+          if(dsh.length>1){ ingestDeliveryMedia(dsh); } D.kdDeliveryOk_=true; mark('delivery');
+        }
+      }catch(e){} })
   ]);
   if(!targetModalOpen_()) render();
 }
@@ -7380,12 +7388,12 @@ function viewPL(){
   const catHasManual=(cat)=>Object.keys(exCur.byCat[cat]).length>0||Object.keys(exPrv.byCat[cat]).length>0||Object.keys(exLyr.byCat[cat]).length>0;
 
   { // ---- 売上高（2026-09-17追加: デリバリー=ロケットナウ等を合算しつつ内訳を別行で表示） ----
-    const key='CAT:SALES', hasDv=!!(dvC||dvP||dvL), open=hasDv&&(plExpAll||plExpSet.has(key));
+    const key='CAT:SALES', hasDv=!!(dvC||dvP||dvL), open=hasDv;   // 2026-10-13: デリバリーがある店舗は売上高の内訳（補助科目：デリバリー売上）を常に表示
     if(hasDv) plAnyHasSub=true;
     rows.push({name:'売上高', c:salesC, p:salesP, l:salesL, bold:true, hasSub:hasDv, subKey:key, isOpen:open});
     if(open){
       rows.push({name:'店舗売上（レジ実績）', c:cur.sales, p:prv.sales, l:lyr.sales, indent:true});
-      rows.push({name:'デリバリー（ロケットナウ等・自動連携）', c:dvC, p:dvP, l:dvL, indent:true});
+      rows.push({name:'デリバリー売上（補助科目・ロケットナウ等）', c:dvC, p:dvP, l:dvL, indent:true});
     }
   }
 
