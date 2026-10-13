@@ -7121,7 +7121,7 @@ function viewRequestLogList_(){
     h+=`<div class="mut" style="font-size:12px;margin-bottom:6px">${rows.length}件</div><div class="scroll-x"><table class="tbl"><thead><tr><th>申請日時</th><th>種類</th><th>申請者</th><th>内容</th><th style="text-align:right">金額</th><th>状態</th><th>承認・却下日時</th><th>承認者</th></tr></thead><tbody>`;
     rows.forEach(r=>{
       h+=`<tr><td style="white-space:nowrap">${esc(fmtJst_(r.occurred_at))}</td><td>${esc(REQLOG_KIND_[r.kind]||r.kind)}</td><td>${esc(r.requester||'')}</td><td>${esc(r.summary||'')}</td><td style="text-align:right">${r.amount!=null?yen(r.amount):''}</td>
-        <td style="${stCls(r.status)};white-space:nowrap">${esc(REQLOG_STATUS_[r.status]||r.status)}</td><td style="white-space:nowrap">${esc(r.decided_at?fmtJst_(r.decided_at):'')}</td><td>${esc(r.decided_by||'')}${(r.kind==='spot_labor_request'&&r.status==='pending')?`<div style="margin-top:4px;white-space:nowrap"><button class="icon-btn primary" style="padding:2px 8px;font-size:11px" data-id="${esc(r.ref_id)}" onclick="App.spotReqDecide(this.dataset.id,'approved')">承認</button> <button class="icon-btn" style="padding:2px 8px;font-size:11px" data-id="${esc(r.ref_id)}" onclick="App.spotReqDecide(this.dataset.id,'rejected')">却下</button></div>`:''}${(r.kind==='spot_labor_request'||(r.kind==='cost_transfer'&&r.status!=='approved'))?`<div style="margin-top:4px;white-space:nowrap">${(r.kind==='spot_labor_request'||r.status==='pending')?`<button class="icon-btn" style="padding:2px 8px;font-size:11px" data-id="${esc(r.ref_id)}" data-k="${r.kind==='spot_labor_request'?'spot':'transfer'}" onclick="App.reqEditOpen(this.dataset.k,this.dataset.id)">編集</button> `:''}<button class="icon-btn" style="padding:2px 8px;font-size:11px;color:#b5502f" data-id="${esc(r.ref_id)}" data-k="${r.kind==='spot_labor_request'?'spot':'transfer'}" onclick="App.reqDelete(this.dataset.k,this.dataset.id)">削除</button></div>`:''}${(r.kind==='cost_transfer'&&r.status==='approved')?`<div class="mut" style="margin-top:4px;font-size:10.5px">取り消しは「🔀仕入れ移動」の履歴から</div>`:''}${(r.kind==='retirement'&&r.status==='pending')?`<div style="margin-top:4px"><a href="${NIPPO_RETIRE_URL_}" target="_blank" rel="noopener" style="font-size:11px">承認・却下はこちら ↗</a></div>`:''}</td></tr>`;
+        <td style="${stCls(r.status)};white-space:nowrap">${esc(REQLOG_STATUS_[r.status]||r.status)}</td><td style="white-space:nowrap">${esc(r.decided_at?fmtJst_(r.decided_at):'')}</td><td>${esc(r.decided_by||'')}${(r.kind==='spot_labor_request'&&r.status==='pending')?`<div style="margin-top:4px;white-space:nowrap"><button class="icon-btn primary" style="padding:2px 8px;font-size:11px" data-id="${esc(r.ref_id)}" onclick="App.spotReqDecide(this.dataset.id,'approved')">承認</button> <button class="icon-btn" style="padding:2px 8px;font-size:11px" data-id="${esc(r.ref_id)}" onclick="App.spotReqDecide(this.dataset.id,'rejected')">却下</button></div>`:''}${(r.kind==='spot_labor_request'||(r.kind==='cost_transfer'&&r.status!=='approved'))?`<div style="margin-top:4px;white-space:nowrap">${(r.kind==='spot_labor_request'||r.status==='pending')?`<button class="icon-btn" style="padding:2px 8px;font-size:11px" data-id="${esc(r.ref_id)}" data-k="${r.kind==='spot_labor_request'?'spot':'transfer'}" onclick="App.reqEditOpen(this.dataset.k,this.dataset.id)">編集</button> `:''}<button class="icon-btn" style="padding:2px 8px;font-size:11px;color:#b5502f" data-id="${esc(r.ref_id)}" data-k="${r.kind==='spot_labor_request'?'spot':'transfer'}" onclick="App.reqDelete(this.dataset.k,this.dataset.id)">削除</button></div>`:''}${(r.kind==='cost_transfer'&&r.status==='approved')?`<div class="mut" style="margin-top:4px;font-size:10.5px">取り消しは「🔀仕入れ移動」の履歴から</div>`:''}${(r.kind==='cost_transfer'&&r.status==='pending')?`<div style="margin-top:4px;white-space:nowrap"><button class="icon-btn primary" style="padding:2px 8px;font-size:11px" data-id="${esc(r.ref_id)}" onclick="App.reqCtDecide(this.dataset.id,'approve')">承認してPLへ反映</button> <button class="icon-btn" style="padding:2px 8px;font-size:11px" data-id="${esc(r.ref_id)}" onclick="App.reqCtDecide(this.dataset.id,'reject')">却下</button></div>`:''}${(r.kind==='retirement'&&r.status==='pending')?`<div style="margin-top:4px"><a href="${NIPPO_RETIRE_URL_}" target="_blank" rel="noopener" style="font-size:11px">承認・却下はこちら ↗</a></div>`:''}</td></tr>`;
     });
     h+=`</tbody></table></div>`;
     EXPORT.push({ title:'申請履歴('+ym+')', headers:['申請日時','種類','申請者','内容','金額','状態','承認・却下日時','承認者'],
@@ -8513,6 +8513,32 @@ async function plAfterSave_(tries){
     }
   }catch(e){}
   setTimeout(()=>{ if(S.auth){ fetchKdEntries_(); fetchPlKd_(true); } },7000);
+}
+// ===== スポット人件費のSupabase正本化 切替スイッチ（2026-10-13・GASなし）=====
+// true: スポット人件費の保存/修正/削除を Supabase RPC(spot_entry_save/spot_entry_delete)で直接行う（GAS・スプレッドシートは使わない）。
+// DB側の切替(app_secrets.spot_source='entries')とセットで公開する。false=従来のGAS経路。
+const SPOT_SUPA_=false;
+async function spotSave_(a){   // a={id,store,date,kind,amount,headcount,memo,requesterName,requesterId} → {ok,id,error}
+  if(SPOT_SUPA_){
+    const hc=String(a.headcount==null?'':a.headcount).trim();
+    try{
+      const d=await plRpc_('spot_entry_save',{ p_id:a.id||null, p_store_name:a.store, p_date:a.date, p_kind:a.kind, p_amount:Number(a.amount),
+        p_headcount:hc===''?null:Number(hc), p_memo:a.memo||'', p_requester:a.requesterName||'', p_actor:null });
+      return d||{ ok:false, error:'応答がありません' };
+    }catch(e){ return { ok:false, error:String(e&&e.message||e) }; }
+  }
+  if(!S.auth||!S.auth.token) return { ok:false, error:noGasMsg_('スプレッドシート接続時のみ保存できます') };
+  return await api({ action:'saveSpotEntry', token:S.auth.token, id:a.id||'', store:a.store, date:a.date, kind:a.kind, amount:a.amount, headcount:a.headcount==null?'':a.headcount, memo:a.memo||'', requesterName:a.requesterName, requesterId:a.requesterId });
+}
+async function spotDelete_(id){
+  if(SPOT_SUPA_){ try{ return (await plRpc_('spot_entry_delete',{ p_id:id, p_actor:null }))||{ ok:false, error:'応答がありません' }; }catch(e){ return { ok:false, error:String(e&&e.message||e) }; } }
+  if(!S.auth||!S.auth.token) return { ok:false, error:noGasMsg_('スプレッドシート接続時のみ削除できます') };
+  return await api({ action:'deleteSpotEntry', token:S.auth.token, id });
+}
+// 保存/削除の後始末: 一覧(kd_spot_entriesはDBトリガで即時更新済み)を読み直し、月次PLの自動行(正本から再計算済み)をkdへ反映
+async function spotAfterSave_(){
+  if(SPOT_SUPA_){ await fetchKdEntries_(); plAfterSave_(); return; }
+  await fetchData(true,{ only:['スポット人件費'], partial:true }); if(S.useBqDaily) fetchSpotBQ();
 }
 async function plEntriesReplaceKeys_(storeName, entries, memoTag){
   // entries=[[ym,item,cat,amount,sub]...]。同じ（年月×科目×補助科目）の手入力行を消してから入れ直す（旧GASの差し替えと同じ挙動）。
@@ -10022,12 +10048,12 @@ window.App = {
         const hc=String(f.headcount==null?'':f.headcount).trim();
         if(msg){ msg.style.color='#8c8375'; msg.textContent='保存中…'; }
         if(m.status==='approved'&&m.entryId){
-          if(!S.auth||!S.auth.token) return fail('入力系は準備中です（数秒後にもう一度お試しください）');
-          const d=await api({ action:'saveSpotEntry', token:S.auth.token, id:m.entryId, store:f.store, date:f.date, kind:f.kind, amount, headcount:hc, memo:f.note||'' });
+          if(!SPOT_SUPA_&&(!S.auth||!S.auth.token)) return fail('入力系は準備中です（数秒後にもう一度お試しください）');
+          const d=await spotSave_({ id:m.entryId, store:f.store, date:f.date, kind:f.kind, amount, headcount:hc, memo:f.note||'' });
           if(!d.ok) return fail(d.error||'スポット人件費の記録の修正に失敗しました（申請は変更していません）');
         }
         await reqFormRpc_('spot_request_update',{ p_id:m.id, p_store:f.store, p_date:f.date, p_kind:f.kind, p_amount:amount, p_headcount:hc===''?null:Math.round(Number(hc)), p_note:f.note||'', p_requester_id:reqId });
-        if(m.status==='approved') fetchData(true,{ only:['スポット人件費'], partial:true }).then(()=>{ if(S.useBqDaily) fetchSpotBQ(); });
+        if(m.status==='approved') spotAfterSave_();
       } else {
         const list=(f.rows||[]).filter(r=>r.name&&Number(r.qty)>0).map(r=>({ name:r.name, qty:Number(r.qty) }));
         if(!f.date||!f.from||!f.to) return fail('移動日と店舗を入力してください'); if(f.from===f.to) return fail('移動元と移動先は別の店舗にしてください'); if(!list.length) return fail('商品と数量を1つ以上入力してください');
@@ -10046,14 +10072,32 @@ window.App = {
       if(kind==='spot'&&status==='approved') note=entryId?'\n\n承認済みのため、スポット人件費に記録した行も一緒に削除します（日別の人件費率・月次PLから外れます）。':'\n\n承認済みですが、記録した行との紐づけが残っていないため、スポット人件費の行は自動では消えません。必要なら「スポット人件費」画面から別に削除してください。';
       if(!confirm('次の申請を削除します。\n'+label+'（状態: '+(REQLOG_STATUS_[status]||status)+'）'+note+'\n\nよろしいですか？（削除の記録は履歴に残ります）')) return;
       if(kind==='spot'&&status==='approved'&&entryId){
-        if(!S.auth||!S.auth.token){ toast('入力系は準備中です（数秒後にもう一度お試しください）'); return; }
-        const d=await api({ action:'deleteSpotEntry', token:S.auth.token, id:entryId });
+        if(!SPOT_SUPA_&&(!S.auth||!S.auth.token)){ toast('入力系は準備中です（数秒後にもう一度お試しください）'); return; }
+        const d=await spotDelete_(entryId);
         if(!d.ok&&!/見つかりません/.test(d.error||'')){ toast(d.error||'スポット人件費の行を削除できませんでした（申請は削除していません）'); return; }
-        fetchData(true,{ only:['スポット人件費'], partial:true }).then(()=>{ if(S.useBqDaily) fetchSpotBQ(); });
+        spotAfterSave_();
       }
       await reqFormRpc_(kind==='spot'?'spot_request_delete':'cost_transfer_request_delete',{ p_id:id });
       toast('削除しました'); await loadRequestLog_(true);
     }catch(e){ toast('削除できませんでした: '+(e&&e.message||e)); }
+  },
+  // 申請履歴から仕入れ移動の申請を承認/却下（承認＝PLへ反映。「🔀仕入れ移動」の承認と同じ処理）
+  async reqCtDecide(id, decision){
+    if(!id) return;
+    if(!S.auth||!S.auth.token){ toast('入力系は準備中です（数秒後にもう一度お試しください）'); return; }
+    try{
+      if(decision==='reject'){
+        const reason=prompt('却下理由（任意・現場への共有メモとして記録されます）'); if(reason===null) return;
+        toast('処理中…'); const d=await api({ action:'costTransferReject', token:S.auth.token, id, reason:reason||'' });
+        if(!d.ok){ toast(d.error||'却下に失敗しました'); return; }
+        toast('却下しました'); await loadRequestLog_(true); return;
+      }
+      if(!confirm('この申請を承認してPLへ反映しますか？')) return;
+      toast('承認中…'); const d=await api({ action:'costTransferApprove', token:S.auth.token, id });
+      if(!d.ok){ toast(d.error||'承認に失敗しました'); return; }
+      toast('承認しました（PLへ反映）'); await loadRequestLog_(true);
+      fetchData(true,{ only:['pl','PL'], partial:true }).then(()=>{ if(S.useBqDaily) fetchPlBQ(); });
+    }catch(e){ toast('処理できませんでした: '+(e&&e.message||e)); }
   },
   reqFormsReload(){ loadRequestForms_(); },
   reqFormCopy(key){
@@ -10078,18 +10122,18 @@ window.App = {
         await reqFormRpc_('spot_request_decide',{ p_id:id, p_decision:'rejected', p_reason:reason||'' });
         toast('却下しました'); await loadRequestLog_(true); return;
       }
-      if(!S.auth||!S.auth.token){ toast('入力系は準備中です（数秒後にもう一度お試しください）'); return; }
+      if(!SPOT_SUPA_&&(!S.auth||!S.auth.token)){ toast('入力系は準備中です（数秒後にもう一度お試しください）'); return; }
       const g=await reqFormRpc_('spot_request_get',{ p_id:id }); const q=Array.isArray(g)?g[0]:g;
       if(!q){ toast('申請が見つかりません'); return; }
       if(q.status!=='pending'){ toast('既に処理済みです'); await loadRequestLog_(true); return; }
       if(!confirm(q.store_name+'／'+q.work_date+'／'+q.kind+'／'+yen(q.amount)+(q.headcount!=null?'／'+q.headcount+'人':'')+'\n申請者: '+(q.requester_name||'')+'\n\nこの内容で承認し、スポット人件費に記録します。よろしいですか？')) return;
       toast('承認中…');
-      const d=await api({ action:'saveSpotEntry', token:S.auth.token, id:'', store:q.store_name, date:q.work_date, kind:q.kind, amount:q.amount, headcount:q.headcount==null?'':q.headcount, memo:q.note||'' });
+      const d=await spotSave_({ id:'', store:q.store_name, date:q.work_date, kind:q.kind, amount:q.amount, headcount:q.headcount==null?'':q.headcount, memo:q.note||'' });
       if(!d.ok){ toast(d.error||'記録に失敗しました（承認はしていません）'); return; }
       try{ await reqFormRpc_('spot_request_decide',{ p_id:id, p_decision:'approved', p_reason:'', p_entry_id:String(d.id||'') }); }
       catch(e){ toast('記録は済みましたが、承認済みへの更新に失敗しました。履歴を更新して確認してください（二重承認に注意）: '+(e&&e.message||e)); return; }
       toast('承認しました（スポット人件費に記録）');
-      fetchData(true,{ only:['スポット人件費'], partial:true }).then(()=>{ if(S.useBqDaily&&!d.bqWarn) fetchSpotBQ(); });
+      spotAfterSave_();
       await loadRequestLog_(true);
     }catch(e){ toast('処理できませんでした: '+(e&&e.message||e)); }
   },
@@ -10981,6 +11025,7 @@ window.App = {
   // スポット人件費→月次PLへ今すぐ反映（2026-08-24追加）。普段は毎日AM5:00に自動実行されるが、
   // 「今すぐ見たい」ときに画面から手動で叩けるようにしたもの。
   async syncSpotPl(){
+    if(SPOT_SUPA_){ toast('PLへ反映しています（数秒）'); plAfterSave_(); return; }   // 正本から常に最新を計算済み。表示用の集計だけ更新
     if(!S.auth||!S.auth.token) return;
     toast('スポット人件費をPLへ反映中…');
     try{
@@ -11038,7 +11083,7 @@ window.App = {
   },
   async saveSpotInput(){
     const msg=$('sp-msg');
-    if(!S.auth||!S.auth.token){ msg.textContent=noGasMsg_('スプレッドシート接続時のみ保存できます'); return; }
+    if(!SPOT_SUPA_&&(!S.auth||!S.auth.token)){ msg.textContent=noGasMsg_('スプレッドシート接続時のみ保存できます'); return; }
     const store=$('sp-store').value, date=$('sp-date').value, kind=$('sp-kind').value;
     const amount=Number($('sp-amt').value)||0, headcount=$('sp-headcount').value, memo=$('sp-memo').value.trim();
     const id=$('sp-edit-id').value;
@@ -11052,7 +11097,7 @@ window.App = {
     }
     msg.style.color='#8c8375'; msg.textContent='保存中…';
     try{
-      const d=await api({ action:'saveSpotEntry', token:S.auth.token, id, store, date, kind, amount, headcount, memo, requesterName, requesterId });
+      const d=await spotSave_({ id, store, date, kind, amount, headcount, memo, requesterName, requesterId });
       if(!d.ok){ msg.style.color='#b5502f'; msg.textContent=d.error||'保存に失敗しました'; return; }
       // 2026-08-26修正（担当F実機報告・担当Aへの依頼）: 保存・削除直後のBigQuery即時ミラー
       // （bqSyncSpotNow_）が失敗しても従来は画面に一切伝わらず「保存しました」のまま古いBQデータが
@@ -11061,22 +11106,20 @@ window.App = {
       logRequestEvent_({ kind:'spot_labor', requesterName, requesterId, store, amount, action:id?'update':'create', refId:d.id||id||'',
         summary:store+'／'+date+'／'+kind+(headcount!==''?'／'+headcount+'人':'') });
       S.modal=Object.assign({}, S.modal, { edit:null, draft:null });
-      await fetchData(true,{ only:['スポット人件費'], partial:true });
-      if(S.useBqDaily && !d.bqWarn) fetchSpotBQ();   // BQモードの画面にも即座に反映（キャッシュ世代はGAS側で既に更新済み）
+      await spotAfterSave_();
       render();
     }catch(e){ msg.style.color='#b5502f'; msg.textContent='通信エラー: '+e.message; }
   },
   async deleteSpotRow(id){
     if(!confirm('この行を削除しますか？')) return;
-    if(!S.auth||!S.auth.token) return;
+    if(!SPOT_SUPA_&&(!S.auth||!S.auth.token)) return;
     try{
-      const d=await api({ action:'deleteSpotEntry', token:S.auth.token, id });
+      const d=await spotDelete_(id);
       if(!d.ok){ toast(d.error||'削除に失敗しました'); return; }
       toast(d.bqWarn?'削除しました。ただし '+d.bqWarn:'削除しました');
       { const e0=(D.spot||[]).find(r=>r.id===id); logRequestEvent_({ kind:'spot_labor', store:e0?e0.store:'', amount:e0?e0.amount:null, action:'delete', refId:id,
           summary:e0?(e0.store+'／'+ymdStr(e0.t)+'／'+(e0.kind||'')):'スポット人件費の削除' }); }
-      await fetchData(true,{ only:['スポット人件費'], partial:true });
-      if(S.useBqDaily && !d.bqWarn) fetchSpotBQ();
+      await spotAfterSave_();
       render();
     }catch(e){ toast('通信エラー: '+e.message); }
   },
