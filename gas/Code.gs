@@ -5770,36 +5770,45 @@ function repairPlAutoRows(p) {
   var months = (Array.isArray(p.months) ? p.months : []).map(String);
   var ids = {}; (Array.isArray(p.invoice_ids) ? p.invoice_ids : []).forEach(function (x) { ids[String(x)] = true; });
   var want = Array.isArray(p.rows) ? p.rows : [];
-  if (!months.length || !Object.keys(ids).length) return { ok: false, error: 'months と invoice_ids は必須です' };
+  if (!months.length) return { ok: false, error: 'months は必須です' };
   var monthSet = {}; months.forEach(function (m) { monthSet[m.slice(0, 4) + '/' + m.slice(5, 7)] = true; });
   var tagOf = function (cell) { var m = String(cell || '').match(/外部連携:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/); return m ? m[1] : ''; };
-  var isTarget = function (ymCell, memo, subCell) {
-    return !!monthSet[bqPlYm_(ymCell)] && String(memo).indexOf('自動｜') === 0 && !!ids[tagOf(subCell)];
-  };
+  var keyOf = function (ym, store, account, amount) { return [ym, String(store).trim(), String(account).trim(), Math.round(Number(amount) || 0)].join('|'); };
+  // 取り除く行の決め方: 対象月×メモが「自動｜」で始まる行のうち、(年月・店舗・科目・金額)が請求書側の正しい行と同じものを、1対1で外す。
+  // 補助科目や請求書IDがずれている行・請求書IDが欠けた行も、金額・店舗・科目が合えば外して入れ直す。どれにも当たらない行は触らない（レポートだけ返す）
+  var left = {};
+  want.forEach(function (w) { var k = keyOf(String(w.ym).slice(0, 4) + '/' + String(w.ym).slice(5, 7), w.store, w.account, w.amount); left[k] = (left[k] || 0) + 1; });
+  var isAuto = function (ymCell, memo) { return !!monthSet[bqPlYm_(ymCell)] && String(memo).indexOf('自動｜') === 0; };
   var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_PL');
   if (!sh) return { ok: false, error: 'DB_PLシートがありません' };
   var lastRow = sh.getLastRow(), lastCol = Math.max(sh.getLastColumn(), 7);
   var all = lastRow >= 2 ? sh.getRange(2, 1, lastRow - 1, lastCol).getValues() : [];
-  var keep = [], removed = [];
+  var keep = [], removed = [], unknown = [];
   all.forEach(function (r) {
     if (r[0] === '' && r[1] === '' && r[2] === '') return;
-    if (isTarget(r[0], r[5], r[6])) removed.push({ ym: bqPlYm_(r[0]), store: r[1], account: r[2], amount: r[4], sub: String(r[6]) });
-    else keep.push(r);
+    if (isAuto(r[0], r[5])) {
+      var k = keyOf(bqPlYm_(r[0]), r[1], r[2], r[4]);
+      if (left[k] > 0) { left[k]--; removed.push({ ym: bqPlYm_(r[0]), store: r[1], account: r[2], amount: r[4], sub: String(r[6]) }); return; }
+      if (ids[tagOf(r[6])] && Number(r[4]) !== 0) unknown.push({ ym: bqPlYm_(r[0]), store: r[1], account: r[2], amount: r[4], sub: String(r[6]) });
+    }
+    keep.push(r);
   });
   var added = want.map(function (w) {
     var y = Number(String(w.ym).slice(0, 4)), mo = Number(String(w.ym).slice(5, 7));
     var tag = '外部連携:' + w.source;
     return [new Date(y, mo - 1, 1), String(w.store), String(w.account), plSeisanGuessCat_(String(w.account)), Number(w.amount), '自動｜' + w.account, w.sub ? (String(w.sub) + '　' + tag) : tag];
   });
-  if (p.dry) return { ok: true, dry: true, removed: removed.length, added: added.length, removed_rows: removed.slice(0, 400), added_rows: added.slice(0, 400).map(function (a) { return { ym: bqPlYm_(a[0]), store: a[1], account: a[2], amount: a[4], sub: a[6] }; }) };
+  if (p.dry) return { ok: true, dry: true, removed: removed.length, added: added.length, unknown: unknown.length, unknown_rows: unknown.slice(0, 100), removed_rows: removed.slice(0, 400), added_rows: added.slice(0, 400).map(function (a) { return { ym: bqPlYm_(a[0]), store: a[1], account: a[2], amount: a[4], sub: a[6] }; }) };
   var out = keep.concat(added);
   if (lastRow >= 2) sh.getRange(2, 1, lastRow - 1, lastCol).clearContent();
   if (out.length) { sh.getRange(2, 1, out.length, 7).setValues(out); sh.getRange(2, 1, out.length, 1).setNumberFormat('yyyy/m/d'); }
-  // PL管理システム（✍販管費入力）も同じ条件で入れ直す
+  // PL管理システム（✍販管費入力）も同じ決め方で入れ直す
   var plsys = '';
   try {
     var pshS = SpreadsheetApp.openById(PL_SYSTEM_ID).getSheetByName(PL_INPUT_SHEET);
     if (pshS) {
+      var left2 = {};
+      want.forEach(function (w) { var k2 = keyOf(String(w.ym).slice(0, 4) + '/' + String(w.ym).slice(5, 7), w.store, w.account, w.amount); left2[k2] = (left2[k2] || 0) + 1; });
       var lastRS = pshS.getLastRow(), nRS = Math.max(lastRS - 2, 0);
       var AS = nRS > 0 ? pshS.getRange(3, 1, nRS, 3).getValues() : [];
       var ES = nRS > 0 ? pshS.getRange(3, 5, nRS, 2).getValues() : [];
@@ -5807,10 +5816,13 @@ function repairPlAutoRows(p) {
       var keepPS = [];
       for (var iS = 0; iS < nRS; iS++) {
         if (String(AS[iS][0]) === '' && String(AS[iS][2]) === '') continue;
-        if (isTarget(AS[iS][0], ES[iS][1], GS[iS][0])) continue;
+        if (isAuto(AS[iS][0], ES[iS][1])) {
+          var k3 = keyOf(bqPlYm_(AS[iS][0]), AS[iS][1], AS[iS][2], ES[iS][0]);
+          if (left2[k3] > 0) { left2[k3]--; continue; }
+        }
         keepPS.push([AS[iS][0], AS[iS][1], AS[iS][2], ES[iS][0], ES[iS][1], GS[iS][0]]);
       }
-      added.forEach(function (a) { var ymS = bqPlYm_(a[0]); keepPS.push([ymS, a[1], a[2], a[4], a[5], a[6]]); });
+      added.forEach(function (a) { keepPS.push([bqPlYm_(a[0]), a[1], a[2], a[4], a[5], a[6]]); });
       if (nRS > 0) { pshS.getRange(3, 1, nRS, 3).clearContent(); pshS.getRange(3, 5, nRS, 2).clearContent(); pshS.getRange(3, 7, nRS, 1).clearContent(); }
       if (keepPS.length) {
         pshS.getRange(3, 1, keepPS.length, 3).setValues(keepPS.map(function (r3) { return [r3[0], r3[1], r3[2]]; }));
@@ -5822,7 +5834,7 @@ function repairPlAutoRows(p) {
   } catch (eP) { plsys = 'PL管理システムへの反映に失敗（DB_PLのみ反映）: ' + String(eP && eP.message || eP); }
   var bq = null;
   try { bq = bqSyncPL({ token: PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN') }); } catch (eB) { bq = { ok: false, error: String(eB && eB.message || eB) }; }
-  return { ok: true, removed: removed.length, added: added.length, plsys: plsys, bq: bq };
+  return { ok: true, removed: removed.length, added: added.length, unknown: unknown.length, plsys: plsys, bq: bq };
 }
 
 // 💾広告費DBシート全体を stg_ad_cost へミラー（WRITE_TRUNCATE。bqSyncPLと同じ方式）。
