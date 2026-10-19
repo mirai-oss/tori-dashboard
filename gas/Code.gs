@@ -36,6 +36,16 @@ var SSO_SUPA_KEY = 'sb_publishable_MrwPJAx_Ws_fdRutprKCiQ_dg3wCiTr';
 
 // ================== エントリポイント ==================
 
+/* 2026-10-19: DB_PL / PL管理システム（✍販管費入力）へ書き込む処理を、同時に1つしか動かさないための鍵。
+ * これらは「シート全体を読む→書き換える→全部消して書き戻す」方式で、特にPL管理システム側は列(A-C / E-F / G)を3回に分けて書き戻すため、
+ * 一括承認などで書き込みが重なると、金額は正しいのに補助科目(G列)だけが別の行のものになる不具合の原因になっていた。
+ * 取れなかった場合は、呼び出し側が再試行できるようエラーを返す（invoices側 pl-fee-reflect は sheet_sync_error に残し、retry_sheet_sync でやり直せる）。 */
+function withPlLock_(fn) {
+  var lock = LockService.getDocumentLock();
+  try { lock.waitLock(240000); } catch (e) { return { ok: false, error: '他のPL書き込みが実行中です。少し待って再実行してください' }; }
+  try { return fn(); } finally { try { lock.releaseLock(); } catch (e2) { /* 解放済み */ } }
+}
+
 function doGet(e) {
   return handle(e && e.parameter ? e.parameter : {});
 }
@@ -53,7 +63,7 @@ function doPost(e) {
 function handle(p) {
   var action = p.action || 'data';
   try {
-    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-a6p34', time: new Date().toISOString() }); // a6p34=bqGetDeliveryOrdersに媒体(channel)列を追加（デリバリーの媒体別比較用・Uber Eats追加に備える・2026-10-06）。 a6p33=bqGetDeliveryOrdersのSQLで予約語ATをエイリアスに使っていたためBigQuery構文エラーになっていたのを修正（2026-10-06）。 a6p32=バージョン重複の解消（別セッションのbqDetailItemDailyForSync修正とデリバリー注文取得bqGetDeliveryOrdersが両方ともa6p31を名乗っていたため、本番がどちらを含むか判別できなくなっていた。両方を含む版・2026-10-06）。 a6p31=bqDetailItemDailyForSync追加（明細の日次分解・トークン認証・レーンP用・2026-10-05）。a6p30=costTransferList（🔀仕入れ移動モーダルの直近の移動履歴）にPLキャッシュ世代(bqCacheGen_('pl'))を使った10分キャッシュを追加（ユーザー報告「毎回読み込みが遅い」。DB_PLを変更する処理は全てbqSyncPL経由で既にこの世代を進めているため安全に流用できる・2026-10-05）。a6p29=仕入れ移動公開フォームのSupabase直結化（担当: Supabase化・2026-10-05）: costTransferPublicInfo/Submit/TokenOk_/notifyOrderLine_を削除（公開フォームはブラウザから直接Supabase/Edge Function cost-transfer-submitを叩くようになったためGAS側のこの経路は不要に）。costTransferItemsRaw_/ItemSave/ItemDelete/LinkInfo/LinkRegenerate/RequestsRaw_/PendingList/Approve/Rejectは中身をスプレッドシート読み書きからSUPABASE_URL/SUPABASE_SERVICE_KEY直読み書き（cost_transfer_items/cost_transfer_requests/app_secrets）に差し替え（ds_sessions向けsessionSupaPut_等と同じ既存パターン）。管理画面側のaction名・戻り値の形・ログイン/isAdmin認証は変更なし。品目の識別子がスプレッドシート行番号(row)からSupabaseのUUID(id)に変わったためapp.js側の対応箇所も合わせて変更（HANDOFF.md参照）。a6p28=smbcRemoveDupLines追加（smbcCardSeisanSyncの精算書二重計上を解消した際、2026-09以前に自動取込経路で既に入ってしまったsmbc-card:…sourceKeyの明細を削除するための一時運用関数。専用トークン認証・精算GAS sd_apiRemoveExternalLineへ中継・2026-10-01）。a6p4=bqGetReservationNamesにUser-Agent追加(2026-09-04)+bqFetchReservationRows_のORDER BY削除(92000行超でstatement timeout・2026-09-05)。a6p5=syncSeisanCategoriesToPlが店舗×月の同期結果を精算書側(sd_apiMarkPlSynced)へ書き戻すように追加（2026-09-05・業務委託精算書自動連携）。a6p6=dbPlDiag追加（実機E2E不一致の一時調査用）。a6p7=syncSeisanCategoriesToPlの対象店舗判定をseisan_target→seisan_pl_categories_targetに変更（運営委託費と経費PL反映を別々にON/OFFできるように・黒霧屋 新横浜対応）。a6p8=diagDepositsPerf追加（PayPay銀行取込46分化の原因切り分け用一時診断・2026-09-07）。a6p9=apiSetAdExclude追加（媒体販促費を手入力で確定させたあとPL画面だけ自動連携分を除外できるように・DB_広告除外設定シート新設・2026-09-07）。a6p10=importDepositsにLockServiceを追加（並行実行による入金二重計上バグを修正・2026-09-08）。a6p11=diagDepositDupScan追加（入金DBの重複行を行番号付きで列挙する読み取り専用診断・2026-09-08）。a6p12=cleanupDepositDuplicates追加（特定済み重複11件をユーザー承認のうえ削除・2026-09-08）。a6p13=cleanupDepositDuplicatesの認証をトークン→セッションに変更（トークン認証で原因不明のunauthorized・実行して重複11件×2シートの削除完了確認済み・2026-09-08）。a6p14=bqFetchReservationRows_をOFFSET(Rangeヘッダー)ページングからid（主キー・索引あり）によるkeysetページングに変更（rsv_reservationsが93000行超に増えOFFSET方式でも再度statement timeoutが発生したため・2026-09-05のORDER BY削除とは別問題＝あの時は無索引3列複合ソートが原因、今回はidという主キー＝索引ありの列でORDER BYするので同じ罠には当たらない。実測でOFFSET方式の同条件比1039ms→keyset方式299msを確認済み・2026-09-09）。a6p15=writeAccountCostToPl_の補助科目消失バグを修正（担当CからPL内訳UUID表示バグの申し送り。G列に冪等キー(noteTag)だけを書いていてsubAccountを一切保存していなかったため、補助科目の代わりにsourceKeyがそのまま表示されていた。列を増やすと他のPL自動連携が壊れるため増やさず、G列の値を「<subAccount>　<noteTag>」の複合形式にしてapp.js側で表示時に分離する方式に変更・2026-09-10）。a6p16=担当Cからの申し送り（続き83）対応の一時action追加・詳細は関数コメント参照・2026-09-10。a6p17=cleanupPlLegacyCombined_の結果をalert()ではなくスプレッドシートの新タブへ書き出すよう変更（コピーしづらいとのユーザー指摘対応・行番号つき）・2026-09-10。a6p18=fetchStoreDirectory_を実行内メモ化（PayPay銀行取込が2026-09-10に全店舗連鎖失敗した件の真因修正。importDeposits_locked_が入金DB既存行ごとにnormStoreName_→fetchStoreDirectory_→CacheService往復を繰り返し、入金DBが4800行超に増えた結果1回の取込で実測345秒かかりNode側5分タイムアウトで連鎖失敗していた。実行スコープ変数で1回だけ取得するよう変更・2026-09-11）。a6p19=判定_高速化検証と実装GO §2-1対応（担当A）: dataFreshness()をBigQuery全件スキャン＋スプレッドシート走査からkd_sync_status_v（新設ビュー）直読みへ置換（軽量化・D提案）。bqGetAdCost追加（stg_ad_cost読み取り・BQ_LOAD_TOKEN認証・レーンPのkd_pl広告費充填用）・2026-09-11。a6p20=bqLoadDeliveryOrders追加（デリバリー売上=ロケットナウ等の明細をBQ sales.stg_delivery_orderへMERGE投入。担当D・設計書_デリバリー売上取込_ロケットナウ_2026-09-11.md §3-1・実データ2本で検証済みのns-daily-import/tasks/delivery-sales.jsから呼ばれる想定）・2026-09-11。a6p21=a6p20で追加したbqLoadDeliveryOrders一式が、その後の別セッション経由のユーザー手動貼替（診断ボタン追加のための全文貼替）で編集画面から消失していたのをMac miniセッションが検知・再挿入（本番デプロイのアクティブバージョンには残っていたため実害は限定的だったが、次に貼替が起きると再度失われる状態だった）・2026-09-11。詳細はHANDOFF.md参照。a6p23=supaLoginを拡張（担当D・ユーザー要望「ポータルでアカウント発行したら役職ごとにダッシュボードにも自動で入れるようにしたい」）: アカウント管理シートに個別登録が無い統合アカウントは、ポータル側Supabase（users.role・user_stores→stores.name。SUPABASE_SERVICE_KEY使用）を正本にrole/storesを自動組み立てするportalAutoAccount_を追加。役職対応=CEO→社長・HQ→本部（全店固定）・TEAM→マネージャー・TENCHO/SHAIN→店舗（いずれもuser_stores基準の担当店舗のみ。0件なら非対応）・AL→非対応（従来どおり個別登録が必要）。シート個別登録がある場合はそちらを最優先（無変更）。PL等の機密タブは既存のROLE_TABS/ROLE_FEATURESが役職別に絞るため、この変換だけで店舗ロールはPL非表示のまま・2026-09-17 a6p24=cashReconRead/paymentDailyReplace/seisanCashSync追加（現金売上の月次照合＝レジ再取得との突合用の読み取りと、レジの正しい値へ店舗×日の売上（支払いDB1行）を書き換える修正用。専用トークン認証・書き換えは修正ログ付き・LockService・2026-09-26）。a6p25=smbcCardSeisanSync追加（SMBC GMO PAYMENT・N-Style分のカード売上/手数料を精算対象店舗の精算書へ明細追加。専用トークン認証・精算GAS sd_apiAddExternalLineへ中継・DB_PLへは書かない。振込明細書が月2回（前半1-15日・後半16日-末）発行されるためlines[].halfLabelで区別しsourceKey衝突を回避・2026-09-30）。a6p26=smbcCardSeisanSyncの対象店舗判定をseisan_target→seisan_pl_categories_targetに変更（ユーザー指摘「黒霧屋 新横浜もこれは対象」・a6p7と同じ理由で黒霧屋 新横浜を含める・2026-09-30）。a6p27=smbcCardSeisanSyncが精算GASへ渡すsd_apiAddExternalLineの引数にkubunを追加（ユーザー指摘「カード売上が変動費で入っている」。精算GAS側(v5.23)がkubun未指定時に常に'変動費'固定だったバグとセットで修正。カード売上='売上'・カード手数料='変動費'・2026-09-30）。
+    if (action === 'ping')   return out({ ok: true, ping: 'pong', ver: 'token-336h-v1-c19-pllock', time: new Date().toISOString() }); // a6p34=bqGetDeliveryOrdersに媒体(channel)列を追加（デリバリーの媒体別比較用・Uber Eats追加に備える・2026-10-06）。 a6p33=bqGetDeliveryOrdersのSQLで予約語ATをエイリアスに使っていたためBigQuery構文エラーになっていたのを修正（2026-10-06）。 a6p32=バージョン重複の解消（別セッションのbqDetailItemDailyForSync修正とデリバリー注文取得bqGetDeliveryOrdersが両方ともa6p31を名乗っていたため、本番がどちらを含むか判別できなくなっていた。両方を含む版・2026-10-06）。 a6p31=bqDetailItemDailyForSync追加（明細の日次分解・トークン認証・レーンP用・2026-10-05）。a6p30=costTransferList（🔀仕入れ移動モーダルの直近の移動履歴）にPLキャッシュ世代(bqCacheGen_('pl'))を使った10分キャッシュを追加（ユーザー報告「毎回読み込みが遅い」。DB_PLを変更する処理は全てbqSyncPL経由で既にこの世代を進めているため安全に流用できる・2026-10-05）。a6p29=仕入れ移動公開フォームのSupabase直結化（担当: Supabase化・2026-10-05）: costTransferPublicInfo/Submit/TokenOk_/notifyOrderLine_を削除（公開フォームはブラウザから直接Supabase/Edge Function cost-transfer-submitを叩くようになったためGAS側のこの経路は不要に）。costTransferItemsRaw_/ItemSave/ItemDelete/LinkInfo/LinkRegenerate/RequestsRaw_/PendingList/Approve/Rejectは中身をスプレッドシート読み書きからSUPABASE_URL/SUPABASE_SERVICE_KEY直読み書き（cost_transfer_items/cost_transfer_requests/app_secrets）に差し替え（ds_sessions向けsessionSupaPut_等と同じ既存パターン）。管理画面側のaction名・戻り値の形・ログイン/isAdmin認証は変更なし。品目の識別子がスプレッドシート行番号(row)からSupabaseのUUID(id)に変わったためapp.js側の対応箇所も合わせて変更（HANDOFF.md参照）。a6p28=smbcRemoveDupLines追加（smbcCardSeisanSyncの精算書二重計上を解消した際、2026-09以前に自動取込経路で既に入ってしまったsmbc-card:…sourceKeyの明細を削除するための一時運用関数。専用トークン認証・精算GAS sd_apiRemoveExternalLineへ中継・2026-10-01）。a6p4=bqGetReservationNamesにUser-Agent追加(2026-09-04)+bqFetchReservationRows_のORDER BY削除(92000行超でstatement timeout・2026-09-05)。a6p5=syncSeisanCategoriesToPlが店舗×月の同期結果を精算書側(sd_apiMarkPlSynced)へ書き戻すように追加（2026-09-05・業務委託精算書自動連携）。a6p6=dbPlDiag追加（実機E2E不一致の一時調査用）。a6p7=syncSeisanCategoriesToPlの対象店舗判定をseisan_target→seisan_pl_categories_targetに変更（運営委託費と経費PL反映を別々にON/OFFできるように・黒霧屋 新横浜対応）。a6p8=diagDepositsPerf追加（PayPay銀行取込46分化の原因切り分け用一時診断・2026-09-07）。a6p9=apiSetAdExclude追加（媒体販促費を手入力で確定させたあとPL画面だけ自動連携分を除外できるように・DB_広告除外設定シート新設・2026-09-07）。a6p10=importDepositsにLockServiceを追加（並行実行による入金二重計上バグを修正・2026-09-08）。a6p11=diagDepositDupScan追加（入金DBの重複行を行番号付きで列挙する読み取り専用診断・2026-09-08）。a6p12=cleanupDepositDuplicates追加（特定済み重複11件をユーザー承認のうえ削除・2026-09-08）。a6p13=cleanupDepositDuplicatesの認証をトークン→セッションに変更（トークン認証で原因不明のunauthorized・実行して重複11件×2シートの削除完了確認済み・2026-09-08）。a6p14=bqFetchReservationRows_をOFFSET(Rangeヘッダー)ページングからid（主キー・索引あり）によるkeysetページングに変更（rsv_reservationsが93000行超に増えOFFSET方式でも再度statement timeoutが発生したため・2026-09-05のORDER BY削除とは別問題＝あの時は無索引3列複合ソートが原因、今回はidという主キー＝索引ありの列でORDER BYするので同じ罠には当たらない。実測でOFFSET方式の同条件比1039ms→keyset方式299msを確認済み・2026-09-09）。a6p15=writeAccountCostToPl_の補助科目消失バグを修正（担当CからPL内訳UUID表示バグの申し送り。G列に冪等キー(noteTag)だけを書いていてsubAccountを一切保存していなかったため、補助科目の代わりにsourceKeyがそのまま表示されていた。列を増やすと他のPL自動連携が壊れるため増やさず、G列の値を「<subAccount>　<noteTag>」の複合形式にしてapp.js側で表示時に分離する方式に変更・2026-09-10）。a6p16=担当Cからの申し送り（続き83）対応の一時action追加・詳細は関数コメント参照・2026-09-10。a6p17=cleanupPlLegacyCombined_の結果をalert()ではなくスプレッドシートの新タブへ書き出すよう変更（コピーしづらいとのユーザー指摘対応・行番号つき）・2026-09-10。a6p18=fetchStoreDirectory_を実行内メモ化（PayPay銀行取込が2026-09-10に全店舗連鎖失敗した件の真因修正。importDeposits_locked_が入金DB既存行ごとにnormStoreName_→fetchStoreDirectory_→CacheService往復を繰り返し、入金DBが4800行超に増えた結果1回の取込で実測345秒かかりNode側5分タイムアウトで連鎖失敗していた。実行スコープ変数で1回だけ取得するよう変更・2026-09-11）。a6p19=判定_高速化検証と実装GO §2-1対応（担当A）: dataFreshness()をBigQuery全件スキャン＋スプレッドシート走査からkd_sync_status_v（新設ビュー）直読みへ置換（軽量化・D提案）。bqGetAdCost追加（stg_ad_cost読み取り・BQ_LOAD_TOKEN認証・レーンPのkd_pl広告費充填用）・2026-09-11。a6p20=bqLoadDeliveryOrders追加（デリバリー売上=ロケットナウ等の明細をBQ sales.stg_delivery_orderへMERGE投入。担当D・設計書_デリバリー売上取込_ロケットナウ_2026-09-11.md §3-1・実データ2本で検証済みのns-daily-import/tasks/delivery-sales.jsから呼ばれる想定）・2026-09-11。a6p21=a6p20で追加したbqLoadDeliveryOrders一式が、その後の別セッション経由のユーザー手動貼替（診断ボタン追加のための全文貼替）で編集画面から消失していたのをMac miniセッションが検知・再挿入（本番デプロイのアクティブバージョンには残っていたため実害は限定的だったが、次に貼替が起きると再度失われる状態だった）・2026-09-11。詳細はHANDOFF.md参照。a6p23=supaLoginを拡張（担当D・ユーザー要望「ポータルでアカウント発行したら役職ごとにダッシュボードにも自動で入れるようにしたい」）: アカウント管理シートに個別登録が無い統合アカウントは、ポータル側Supabase（users.role・user_stores→stores.name。SUPABASE_SERVICE_KEY使用）を正本にrole/storesを自動組み立てするportalAutoAccount_を追加。役職対応=CEO→社長・HQ→本部（全店固定）・TEAM→マネージャー・TENCHO/SHAIN→店舗（いずれもuser_stores基準の担当店舗のみ。0件なら非対応）・AL→非対応（従来どおり個別登録が必要）。シート個別登録がある場合はそちらを最優先（無変更）。PL等の機密タブは既存のROLE_TABS/ROLE_FEATURESが役職別に絞るため、この変換だけで店舗ロールはPL非表示のまま・2026-09-17 a6p24=cashReconRead/paymentDailyReplace/seisanCashSync追加（現金売上の月次照合＝レジ再取得との突合用の読み取りと、レジの正しい値へ店舗×日の売上（支払いDB1行）を書き換える修正用。専用トークン認証・書き換えは修正ログ付き・LockService・2026-09-26）。a6p25=smbcCardSeisanSync追加（SMBC GMO PAYMENT・N-Style分のカード売上/手数料を精算対象店舗の精算書へ明細追加。専用トークン認証・精算GAS sd_apiAddExternalLineへ中継・DB_PLへは書かない。振込明細書が月2回（前半1-15日・後半16日-末）発行されるためlines[].halfLabelで区別しsourceKey衝突を回避・2026-09-30）。a6p26=smbcCardSeisanSyncの対象店舗判定をseisan_target→seisan_pl_categories_targetに変更（ユーザー指摘「黒霧屋 新横浜もこれは対象」・a6p7と同じ理由で黒霧屋 新横浜を含める・2026-09-30）。a6p27=smbcCardSeisanSyncが精算GASへ渡すsd_apiAddExternalLineの引数にkubunを追加（ユーザー指摘「カード売上が変動費で入っている」。精算GAS側(v5.23)がkubun未指定時に常に'変動費'固定だったバグとセットで修正。カード売上='売上'・カード手数料='変動費'・2026-09-30）。
     if (action === 'plSeisanDiag') return out(plSeisanDiag(p)); // 運営委託費の二重計上診断（専用トークン認証・読み取り専用・一時的）
     if (action === 'dbPlDiag') return out(dbPlDiag(p)); // 2026-09-05一時追加: DB_PLシートの生データを店舗×月で確認（読み取り専用・原因特定でき次第削除）
     if (action === 'storeMapDiag') return out(storeMapDiag(p)); // DB_店舗ID対応とfact_daily_storeの店舗名突合診断（専用トークン認証・読み取り専用・一時的）
@@ -64,8 +74,8 @@ function handle(p) {
     if (action === 'dataKeysDiag') return out(dataKeysDiag(p)); // getData()が実際にどのキーを返すか確認（専用トークン認証・読み取り専用・一時的）
     if (action === 'mediaDateRangeDiag') return out(mediaDateRangeDiag(p)); // stg_media（媒体別日次）の最古/最新日付を確認（担当D依頼の前年比調査用・専用トークン認証・読み取り専用・一時的）
     if (action === 'rsvDateRangeDiag') return out(rsvDateRangeDiag_(p)); // stg_reservation（予約）の店舗別最新日付・件数を確認（専用トークン認証・読み取り専用。2026-08-31追加）
-    if (action === 'syncSeisanFeeToPl') return out(syncSeisanFeeToPl(p)); // 運営委託費のPL自動連携（専用トークン認証・ログイン不要。2026-08-23追加）
-    if (action === 'syncSeisanCategoriesToPl') return out(syncSeisanCategoriesToPl(p)); // 精算書の勘定科目→PL自動連携（専用トークン認証・ログイン不要。2026-08-31追加・A-9）
+    if (action === 'syncSeisanFeeToPl') return out(withPlLock_(function () { return syncSeisanFeeToPl(p); })); // 運営委託費のPL自動連携（専用トークン認証・ログイン不要。2026-08-23追加）
+    if (action === 'syncSeisanCategoriesToPl') return out(withPlLock_(function () { return syncSeisanCategoriesToPl(p); })); // 精算書の勘定科目→PL自動連携（専用トークン認証・ログイン不要。2026-08-31追加・A-9）
     if (action === 'syncSpotLaborToPl') return out(syncSpotLaborToPl(p)); // スポット人件費の月次PL自動連携（専用トークン認証・ログイン不要。2026-08-23追加）
     if (action === 'syncBankLoanToPl') return out(syncBankLoanToPl(p)); // 銀行借入 利息・元金のPL自動連携（専用トークン認証・ログイン不要。2026-08-26追加・A-5）
     if (action === 'bqLoadOrders') return out(bqLoadOrders(p)); // 明細のBQ投入（専用トークン認証・ログイン不要）
@@ -81,8 +91,9 @@ function handle(p) {
     if (action === 'smbcCardSeisanSync') return out(smbcCardSeisanSync(p)); // SMBC GMO PAYMENTのカード売上・手数料を精算対象店舗の精算書へ追加（専用トークン認証・精算GAS sd_apiAddExternalLineへ中継。2026-09-30）
     if (action === 'smbcRemoveDupLines') return out(smbcRemoveDupLines(p)); // smbc-card:…sourceKeyの精算書二重計上明細を削除する一時運用関数（専用トークン認証・精算GAS sd_apiRemoveExternalLineへ中継。2026-10-01）
     if (action === 'bqSyncPL') return out(bqSyncPL(p)); // PL経費(DB_PL)のBQミラー同期（専用トークン認証・ログイン不要）
-    if (action === 'writeAdCost') return out(writeAdCost(p)); // A-8: 広告費書き込み（invoices側ad-cost-reflectから・AD_COST_WRITE_TOKEN認証・ログイン不要。2026-08-31追加）
-    if (action === 'writePlFee') return out(writePlFee(p)); // A-8拡張: 勘定科目汎用のPL自動計上（invoices側pl-fee-reflectから・AD_COST_WRITE_TOKEN認証・ログイン不要。2026-09-01追加・設計書§5）
+    if (action === 'writeAdCost') return out(withPlLock_(function () { return writeAdCost(p); })); // A-8: 広告費書き込み（invoices側ad-cost-reflectから・AD_COST_WRITE_TOKEN認証・ログイン不要。2026-08-31追加）
+    if (action === 'writePlFee') return out(withPlLock_(function () { return writePlFee(p); }));
+    if (action === 'repairPlAutoRows') return out(withPlLock_(function () { return repairPlAutoRows(p); })); // 2026-10-19: 請求書由来の自動行の作り直し（G列ずれの修復。AD_COST_WRITE_TOKEN認証） // A-8拡張: 勘定科目汎用のPL自動計上（invoices側pl-fee-reflectから・AD_COST_WRITE_TOKEN認証・ログイン不要。2026-09-01追加・設計書§5）
     if (action === 'bqSyncAdCost') return out(bqSyncAdCost(p)); // 💾広告費DBのBQミラー同期（専用トークン認証・ログイン不要。writeAdCostから毎回自動で呼ばれるほか単独でも可。2026-08-31追加・A-8）
     if (action === 'bqGetAdCost') return out(bqGetAdCost(p)); // stg_ad_costの読み取り（専用トークン認証・ログイン不要・サーバー間呼び出し専用）。レーンPのkd_pl広告費充填用。2026-09-11追加
     if (action === 'bqDetailItemDailyForSync') return out(bqDetailItemDailyForSync(p)); // 明細(商品・時間帯)の日次分解を返す読み取り専用（BQ_LOAD_TOKEN認証・レーンPのkd_detail_*用）。2026-10-05追加
@@ -137,9 +148,9 @@ function handle(p) {
     if (action === 'diagDailyRange') return out(diagDailyRange_(p, session)); // 一時診断: 推移分析「年初来でも3ヶ月分しか出ない」の原因切り分け。dailyシートの最古/最新日付・件数のみ返す（2026-09-11・読み取り専用）
     if (action === 'cleanupDepositDuplicates') return out(cleanupDepositDuplicates_(p, session)); // 2026-09-08一時対応: 特定済みの重複11件をユーザー承認のうえ削除（セッション認証・1回きりの想定。当初トークン認証で原因不明のunauthorizedが出たためセッション認証に変更）
     if (action === 'cleanupPlLegacyCombined') return out(cleanupPlLegacyCombined_(p, session)); // 2026-09-10一時対応: 勘定科目/補助科目が分離される前の結合形式のまま計上されていた9件をユーザー承認のうえ削除（担当Cからの申し送り・続き83。dryRun既定true・読み取りのみ）
-    if (action === 'savePlEntries') return out(savePlEntries(p, session)); // PL経費の手入力（PL管理システム＋DB_PL両反映）
+    if (action === 'savePlEntries') return out(withPlLock_(function () { return savePlEntries(p, session); })); // PL経費の手入力（PL管理システム＋DB_PL両反映）
     if (action === 'setAdExclude') return out(apiSetAdExclude(p, session)); // 広告費（自動連携）をPL表示だけから除外する設定（2026-09-07追加）
-    if (action === 'savePlBulk') return out(savePlBulk(p, session)); // PL経費の期間一括計上（例: 家賃を12ヶ月分）
+    if (action === 'savePlBulk') return out(withPlLock_(function () { return savePlBulk(p, session); })); // PL経費の期間一括計上（例: 家賃を12ヶ月分）
     if (action === 'costTransferList') return out(costTransferList(p, session)); // 店舗間仕入れ移動：一覧取得（2026-09-23追加）
     if (action === 'costTransferAdd') return out(costTransferAdd(p, session)); // 店舗間仕入れ移動：登録
     if (action === 'costTransferCancel') return out(costTransferCancel(p, session)); // 店舗間仕入れ移動：取り消し
@@ -5747,6 +5758,71 @@ function writeAccountCostToPl_(p) {
   catch (eBq2) { bqRes2 = { ok: false, error: String(eBq2 && eBq2.message || eBq2) }; }
 
   return { ok: true, account: account, year_month: ym, results: results, plsys: plsysNote, seisan: seisanResults, bq: bqRes2 };
+}
+
+/* 2026-10-19新設: 請求書由来の自動計上行（メモ「自動｜<科目>」＋補助科目セルの「外部連携:<請求書ID>」）の作り直し。
+ * 書き込みの重なりで補助科目(G列)＋請求書IDが別の行のものになった行を、請求書側の正しい記録（ns-portal invoice_pl_reflections）から入れ直す。
+ * 入力: { token(AD_COST_WRITE_TOKEN), months:['2026-08',...], invoice_ids:[...], rows:[{ym,store,account,sub,amount,source}], dry? }
+ * 動き: 対象月×メモが「自動｜」で始まる×G列に invoice_ids のどれかの外部連携タグがある行を全て外し、rows を入れ直す。dry=true なら書き込まず差分だけ返す。 */
+function repairPlAutoRows(p) {
+  var tk = PropertiesService.getScriptProperties().getProperty('AD_COST_WRITE_TOKEN');
+  if (!tk || String((p || {}).token || '').trim() !== String(tk).trim()) return { ok: false, error: 'unauthorized' };
+  var months = (Array.isArray(p.months) ? p.months : []).map(String);
+  var ids = {}; (Array.isArray(p.invoice_ids) ? p.invoice_ids : []).forEach(function (x) { ids[String(x)] = true; });
+  var want = Array.isArray(p.rows) ? p.rows : [];
+  if (!months.length || !Object.keys(ids).length) return { ok: false, error: 'months と invoice_ids は必須です' };
+  var monthSet = {}; months.forEach(function (m) { monthSet[m.slice(0, 4) + '/' + m.slice(5, 7)] = true; });
+  var tagOf = function (cell) { var m = String(cell || '').match(/外部連携:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/); return m ? m[1] : ''; };
+  var isTarget = function (ymCell, memo, subCell) {
+    return !!monthSet[bqPlYm_(ymCell)] && String(memo).indexOf('自動｜') === 0 && !!ids[tagOf(subCell)];
+  };
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('DB_PL');
+  if (!sh) return { ok: false, error: 'DB_PLシートがありません' };
+  var lastRow = sh.getLastRow(), lastCol = Math.max(sh.getLastColumn(), 7);
+  var all = lastRow >= 2 ? sh.getRange(2, 1, lastRow - 1, lastCol).getValues() : [];
+  var keep = [], removed = [];
+  all.forEach(function (r) {
+    if (r[0] === '' && r[1] === '' && r[2] === '') return;
+    if (isTarget(r[0], r[5], r[6])) removed.push({ ym: bqPlYm_(r[0]), store: r[1], account: r[2], amount: r[4], sub: String(r[6]) });
+    else keep.push(r);
+  });
+  var added = want.map(function (w) {
+    var y = Number(String(w.ym).slice(0, 4)), mo = Number(String(w.ym).slice(5, 7));
+    var tag = '外部連携:' + w.source;
+    return [new Date(y, mo - 1, 1), String(w.store), String(w.account), plSeisanGuessCat_(String(w.account)), Number(w.amount), '自動｜' + w.account, w.sub ? (String(w.sub) + '　' + tag) : tag];
+  });
+  if (p.dry) return { ok: true, dry: true, removed: removed.length, added: added.length, removed_rows: removed.slice(0, 400), added_rows: added.slice(0, 400).map(function (a) { return { ym: bqPlYm_(a[0]), store: a[1], account: a[2], amount: a[4], sub: a[6] }; }) };
+  var out = keep.concat(added);
+  if (lastRow >= 2) sh.getRange(2, 1, lastRow - 1, lastCol).clearContent();
+  if (out.length) { sh.getRange(2, 1, out.length, 7).setValues(out); sh.getRange(2, 1, out.length, 1).setNumberFormat('yyyy/m/d'); }
+  // PL管理システム（✍販管費入力）も同じ条件で入れ直す
+  var plsys = '';
+  try {
+    var pshS = SpreadsheetApp.openById(PL_SYSTEM_ID).getSheetByName(PL_INPUT_SHEET);
+    if (pshS) {
+      var lastRS = pshS.getLastRow(), nRS = Math.max(lastRS - 2, 0);
+      var AS = nRS > 0 ? pshS.getRange(3, 1, nRS, 3).getValues() : [];
+      var ES = nRS > 0 ? pshS.getRange(3, 5, nRS, 2).getValues() : [];
+      var GS = nRS > 0 ? pshS.getRange(3, 7, nRS, 1).getValues() : [];
+      var keepPS = [];
+      for (var iS = 0; iS < nRS; iS++) {
+        if (String(AS[iS][0]) === '' && String(AS[iS][2]) === '') continue;
+        if (isTarget(AS[iS][0], ES[iS][1], GS[iS][0])) continue;
+        keepPS.push([AS[iS][0], AS[iS][1], AS[iS][2], ES[iS][0], ES[iS][1], GS[iS][0]]);
+      }
+      added.forEach(function (a) { var ymS = bqPlYm_(a[0]); keepPS.push([ymS, a[1], a[2], a[4], a[5], a[6]]); });
+      if (nRS > 0) { pshS.getRange(3, 1, nRS, 3).clearContent(); pshS.getRange(3, 5, nRS, 2).clearContent(); pshS.getRange(3, 7, nRS, 1).clearContent(); }
+      if (keepPS.length) {
+        pshS.getRange(3, 1, keepPS.length, 3).setValues(keepPS.map(function (r3) { return [r3[0], r3[1], r3[2]]; }));
+        pshS.getRange(3, 5, keepPS.length, 2).setValues(keepPS.map(function (r3) { return [r3[3], r3[4]]; }));
+        pshS.getRange(3, 7, keepPS.length, 1).setValues(keepPS.map(function (r3) { return [r3[5]]; }));
+      }
+      plsys = 'PL管理システムにも反映しました';
+    } else plsys = 'PL管理システムに「' + PL_INPUT_SHEET + '」シートが見つかりません（DB_PLのみ反映）';
+  } catch (eP) { plsys = 'PL管理システムへの反映に失敗（DB_PLのみ反映）: ' + String(eP && eP.message || eP); }
+  var bq = null;
+  try { bq = bqSyncPL({ token: PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN') }); } catch (eB) { bq = { ok: false, error: String(eB && eB.message || eB) }; }
+  return { ok: true, removed: removed.length, added: added.length, plsys: plsys, bq: bq };
 }
 
 // 💾広告費DBシート全体を stg_ad_cost へミラー（WRITE_TRUNCATE。bqSyncPLと同じ方式）。
