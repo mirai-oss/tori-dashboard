@@ -5793,12 +5793,20 @@ function repairPlAutoRows(p) {
     }
     keep.push(r);
   });
+  // 区分（D列）の正規化: 対象月の「自動｜」の行は、勘定科目から決まる区分（PL_ITEM_CATと同じ）にそろえる（同じ科目に A と O など複数の区分が混ざっていたため）
+  var normalized = 0;
+  keep.forEach(function (r) {
+    if (isAuto(r[0], r[5]) && String(r[2]).trim()) {
+      var c = plSeisanGuessCat_(String(r[2]).trim());
+      if (c && r[3] !== c) { r[3] = c; normalized++; }
+    }
+  });
   var added = want.map(function (w) {
     var y = Number(String(w.ym).slice(0, 4)), mo = Number(String(w.ym).slice(5, 7));
     var tag = '外部連携:' + w.source;
     return [new Date(y, mo - 1, 1), String(w.store), String(w.account), plSeisanGuessCat_(String(w.account)), Number(w.amount), '自動｜' + w.account, w.sub ? (String(w.sub) + '　' + tag) : tag];
   });
-  if (p.dry) return { ok: true, dry: true, removed: removed.length, added: added.length, unknown: unknown.length, unknown_rows: unknown.slice(0, 100), removed_rows: removed.slice(0, 400), added_rows: added.slice(0, 400).map(function (a) { return { ym: bqPlYm_(a[0]), store: a[1], account: a[2], amount: a[4], sub: a[6] }; }) };
+  if (p.dry) return { ok: true, dry: true, removed: removed.length, added: added.length, normalized: normalized, unknown: unknown.length, unknown_rows: unknown.slice(0, 100), removed_rows: removed.slice(0, 400), added_rows: added.slice(0, 400).map(function (a) { return { ym: bqPlYm_(a[0]), store: a[1], account: a[2], amount: a[4], sub: a[6] }; }) };
   var out = keep.concat(added);
   if (lastRow >= 2) sh.getRange(2, 1, lastRow - 1, lastCol).clearContent();
   if (out.length) { sh.getRange(2, 1, out.length, 7).setValues(out); sh.getRange(2, 1, out.length, 1).setNumberFormat('yyyy/m/d'); }
@@ -5834,7 +5842,7 @@ function repairPlAutoRows(p) {
   } catch (eP) { plsys = 'PL管理システムへの反映に失敗（DB_PLのみ反映）: ' + String(eP && eP.message || eP); }
   var bq = null;
   try { bq = bqSyncPL({ token: PropertiesService.getScriptProperties().getProperty('BQ_LOAD_TOKEN') }); } catch (eB) { bq = { ok: false, error: String(eB && eB.message || eB) }; }
-  return { ok: true, removed: removed.length, added: added.length, unknown: unknown.length, plsys: plsys, bq: bq };
+  return { ok: true, removed: removed.length, added: added.length, normalized: normalized, unknown: unknown.length, plsys: plsys, bq: bq };
 }
 
 // 💾広告費DBシート全体を stg_ad_cost へミラー（WRITE_TRUNCATE。bqSyncPLと同じ方式）。
