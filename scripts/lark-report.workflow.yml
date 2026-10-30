@@ -147,8 +147,10 @@ jobs:
           MATRIX=$(node -e '
             const rows = JSON.parse(process.argv[1]);
             const include = rows.map(r => ({
-              group: r.group, kind: r.kind, secret: r.secret_name,
+              id: r.id, group: r.group, kind: r.kind, secret: r.secret_name,
               room: r.chatwork_room_id || "", stores: r.stores, useBq: "1",
+              // kind=slack のとき: secret_name 列には GitHub Secret 名ではなく channel_key が入っている（2026-10-30）
+              channel_key: r.channel_key || "",
             }));
             console.log(JSON.stringify({ include }));
           ' "$RES")
@@ -182,12 +184,25 @@ jobs:
         env:
           HOOK: ${{ secrets[matrix.secret] }}
           BQT: ${{ secrets.BQ_LOAD_TOKEN }}
+          NSS: ${{ secrets.NOTIFY_SLACK_SECRET }}
           ONLY_GROUP: ${{ github.event.inputs.only_group }}
           ONLY_STORES: ${{ github.event.inputs.only_stores }}
         run: |
           if [ -n "$ONLY_GROUP" ] && [ "$ONLY_GROUP" != "${{ matrix.group }}" ]; then
             echo "::notice::only_group=$ONLY_GROUP のため ${{ matrix.group }} はスキップ"
             echo "SKIP=1" >> "$GITHUB_ENV"
+          elif [ "${{ matrix.kind }}" = "slack" ]; then
+            # Slack は Webhook/トークンを持たず、ns-portal の notify-slack（合言葉 NOTIFY_SLACK_SECRET）経由で送る（2026-10-30）
+            if [ -z "$NSS" ]; then
+              echo "::notice::NOTIFY_SLACK_SECRET が未登録のため ${{ matrix.group }}(slack) はスキップ"
+              echo "SKIP=1" >> "$GITHUB_ENV"
+            elif [ -z "${{ matrix.channel_key }}" ]; then
+              echo "::notice::${{ matrix.group }} は channel_key が未設定のためスキップ"
+              echo "SKIP=1" >> "$GITHUB_ENV"
+            elif [ -z "$BQT" ]; then
+              echo "::notice::BQ_LOAD_TOKEN が未設定のためスキップ"
+              echo "SKIP=1" >> "$GITHUB_ENV"
+            fi
           elif [ -z "$HOOK" ]; then
             echo "::notice::${{ matrix.secret }} が未登録のため ${{ matrix.group }} はスキップ"
             echo "SKIP=1" >> "$GITHUB_ENV"
@@ -220,6 +235,9 @@ jobs:
           LARK_WEBHOOK: ${{ secrets[matrix.secret] }}
           CHATWORK_TOKEN: ${{ secrets[matrix.secret] }}
           CHATWORK_ROOM_ID: ${{ matrix.room }}
+          SLACK_CHANNEL_KEY: ${{ matrix.channel_key }}
+          NOTIFY_SLACK_SECRET: ${{ secrets.NOTIFY_SLACK_SECRET }}
+          REPORT_CHANNEL_ID: ${{ matrix.id }}
           STORES: ${{ matrix.stores }}
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -228,6 +246,21 @@ jobs:
           OK=0; FAIL=0; FAILED=""
           # only_stores 指定があればそちらを優先（1店舗だけ再送する時に使う）
           [ -n "${STORES_OVERRIDE:-}" ] && STORES="$STORES_OVERRIDE"
+
+          # Slack グループは、店舗別カードの前に「グループ全店の比較サマリ」を1通送る
+          # （Lark の「第2レポート（鳥一代8店舗）」相当。only_stores で1店舗だけ再送する時は送らない）
+          if [ "$CHANNEL_KIND" = "slack" ] && [ -z "${STORES_OVERRIDE:-}" ]; then
+            echo "::group::グループ全店サマリ"
+            NAMES=$(node -e 'console.log(process.env.STORES.split(",").map((e) => e.split("|")[0]).join(","))')
+            rm -f report.png report-meta.json
+            if REPORT_STORES="$NAMES" REPORT_GROUP="${{ matrix.group }}" node scripts/lark-report.mjs capture-bq && node scripts/lark-report.mjs send; then
+              echo "全店サマリ ✓ 送信完了"
+            else
+              echo "::warning::グループ全店サマリの送信に失敗"
+              FAIL=$((FAIL+1)); FAILED="$FAILED [全店サマリ]"
+            fi
+            echo "::endgroup::"
+          fi
           IFS=',' read -ra ENTRIES <<< "$STORES"
           for entry in "${ENTRIES[@]}"; do
             STORE="${entry%%|*}"
@@ -265,8 +298,9 @@ jobs:
               FAIL=$((FAIL+1)); FAILED="$FAILED $STORE"; echo "::endgroup::"; continue
             fi
 
-            if [ "$CHANNEL_KIND" = "chatwork" ]; then
+            if [ "$CHANNEL_KIND" = "chatwork" ] || [ "$CHANNEL_KIND" = "slack" ]; then
               # Chatworkはreport.pngがあればそのまま添付する（無ければテキストのみ。Day6③）
+              # Slack はテキストのみ（notify-slack 経由・画像アップロード無し。2026-10-30）
               if node scripts/lark-report.mjs send; then
                 echo "$STORE ✓ 送信完了"; OK=$((OK+1))
               else

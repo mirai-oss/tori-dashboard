@@ -153,6 +153,12 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 
 ## 5. 作業ログ
 
+### 2026-10-30 経営レポートを Slack にも配信（Slack通知基盤 Phase 1-b・TK-245・14日間は Lark と並行）
+- `scripts/lark-report.mjs` に `sendSlack()` を追加（`CHANNEL_KIND=slack`）。Slack の Bot Token はこのリポジトリにも GitHub Secrets にも置かず、ns-portal の Edge Function `notify-slack` に合言葉 `NOTIFY_SLACK_SECRET`（GitHub Secret）で `channel_key`＋本文を渡す。1通ごとに台帳 `notification_deliveries` に残り、`dedupe_key=report_<kind>:<期間>:<channel_key>:<店舗>` で同じ期間の再実行は 2 通目が送られない（再送したい時は `REPORT_DEDUPE_SUFFIX`）。
+- `.github/workflows/lark-report.yml`（`scripts/lark-report.workflow.yml` も同内容）: matrix に `id`/`channel_key` を追加、`kind=slack` の設定チェック分岐、Slack グループは店舗別カードの前に「グループ全店サマリ」を 1 通送る（Lark の第2レポート相当）。lark/chatwork の経路は無変更。
+- 配信グループ（Supabase `report_channels`）: `slack_tori`（channel_key `keiei.report`・鳥一代G 8 店）と `slack_nstyle`（`keiei.report.nstyle`・じんべぇ新横浜/川崎・エース本厚木・秋葉原肉寿司）を追加。N-Style 4 店はこれまでどの配信グループにも入っておらず、Slack で初めてレポートが届く。nippo の配信グループ管理画面にも Slack 種別を追加（v2.6.86）。
+- 全体像・停止ルール・台帳の見方は ns-portal `docs/設計書_Slack通知基盤_Phase1_2026-10-29.md` §11。
+
 ### 2026-10-06（続き）デリバリーの媒体別比較（プルダウン）を追加（delivery-analysis.js v=4・**gas a6p34・要貼替**）
 ユーザー要望「Uber Eatsも増えるので、営業区分はデリバリーのまま媒体を選べて比較もしたい」。GAS bqGetDeliveryOrdersに7列目=媒体(channel)を追加（旧応答はロケットナウ扱いで後方互換）。画面: プルダウン「媒体：全デリバリー（比較）／ロケットナウ／Uber Eats…」（データに現れた媒体が自動で並ぶ）。全デリバリー選択時は媒体別比較（注文数・売上・構成比・単価・1日平均・時間帯別・日別）を表示、媒体選択時はその媒体だけで従来の分析。商品単価の学習は媒体ごと。**Uber Eatsの取込自体は未実装**（BQのchannel='ubereats'で入れば自動で現れる）。
 

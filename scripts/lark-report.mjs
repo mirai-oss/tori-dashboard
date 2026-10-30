@@ -24,7 +24,12 @@
  *   GAS_URL            : GASウェブアプリのURL（capture-bqのみ。省略時は本番URLを既定値として使用）
  *   REPORT_KIND        : daily | weekly | monthly
  *   SITE_URL           : 省略時 https://mirai-oss.github.io/tori-dashboard/
- *   CHANNEL_KIND        : lark（既定） | chatwork
+ *   CHANNEL_KIND        : lark（既定） | chatwork | slack
+ *   SLACK_CHANNEL_KEY   : kind=slackのとき。送信先の channel_key（例 keiei.report）。Slack のトークンはこのリポジトリに置かない
+ *   NOTIFY_SLACK_SECRET : kind=slackのとき。ns-portal の Edge Function notify-slack を呼ぶ合言葉（GitHub Secret）
+ *   NOTIFY_SLACK_URL    : 省略可。notify-slack の URL（既定: ハブSupabase）
+ *   REPORT_CHANNEL_ID   : 省略可。report_channels.id（台帳の ref に残す）
+ *   REPORT_DEDUPE_SUFFIX: 省略可。同じ期間・店舗をもう一度 Slack に送りたい時に付ける（例 :resend1）
  *   LARK_WEBHOOK        : kind=larkのとき。Larkカスタムボットの Webhook URL
  *   IMAGE_URL           : kind=larkのsend時、公開された日報画像のURL（capture後にActionsが渡す）
  *   CHATWORK_TOKEN       : kind=chatworkのとき。Chatwork APIトークン（X-ChatWorkToken）
@@ -289,9 +294,41 @@ async function sendChatwork(d) {
   }
 }
 
+// ---------- send: Slack（2026-10-30・Slack通知基盤 Phase 1） ----------
+// Bot Token はこのリポジトリ（public）にも GitHub Secrets にも置かず、ns-portal の Edge Function notify-slack
+// （合言葉 NOTIFY_SLACK_SECRET で認証）に channel_key＋本文を渡す。1通ごとに台帳 notification_deliveries に
+// notification_id → channel_key → slack_channel_id → slack_ts → delivery_status が残る。
+// Lark の markdown（**太字**・<font>）は Slack の mrkdwn（*太字*）へ直す。
+const toMrkdwn = (s) => String(s || '').replace(/\*\*(.+?)\*\*/g, '*$1*').replace(/<font[^>]*>/g, '').replace(/<\/font>/g, '');
+async function sendSlack(d) {
+  const url = process.env.NOTIFY_SLACK_URL || 'https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/notify-slack';
+  const secret = process.env.NOTIFY_SLACK_SECRET || '';
+  const channelKey = (process.env.SLACK_CHANNEL_KEY || '').trim();
+  if (!secret || !channelKey) { console.error('NOTIFY_SLACK_SECRET / SLACK_CHANNEL_KEY が未設定です'); process.exit(1); }
+  const { headline, summary, detailBlock, mediaBlock, single } = buildText(d);
+  const text = [`*${headline}*`, '', toMrkdwn(summary),
+    detailBlock ? '' : null, detailBlock ? toMrkdwn(detailBlock) : null,
+    mediaBlock ? toMrkdwn(mediaBlock) : null,
+    '', `自動日報Bot ／ <${SITE_URL}|ダッシュボード> ／ 生成 ${d.gen}`].filter((s) => s !== null).join('\n');
+  // 二重送信防止キー（種別:期間:channel_key:店舗）。同じ期間を再実行しても 2 通目は送られない（notify-slack が duplicate を返す）
+  const period = String(d.sub || '').replace(/\s+/g, '');
+  const dedupe = ['report_' + (d.kind || KIND), period, channelKey, single || 'all'].join(':') + (process.env.REPORT_DEDUPE_SUFFIX || '');
+  const body = {
+    action: 'send', channel_key: channelKey, text,
+    source: 'tori-dashboard', event: 'report_' + (d.kind || KIND), dedupe_key: dedupe,
+    username: '経営日報', icon_emoji: d.kind === 'monthly' ? ':bar_chart:' : ':chart_with_upwards_trend:',
+    ref: process.env.REPORT_CHANNEL_ID ? { table: 'report_channels', id: process.env.REPORT_CHANNEL_ID } : undefined,
+  };
+  const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-notify-secret': secret }, body: JSON.stringify(body) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || !j.ok) throw new Error('Slack送信失敗: HTTP ' + r.status + ' ' + JSON.stringify(j).slice(0, 300));
+  log(`✓ Slackへ送信しました（${channelKey} / ${j.status} / notification_id=${j.notification_id}）`);
+}
+
 async function send() {
   const d = JSON.parse(fs.readFileSync(META, 'utf8'));
-  if (CHANNEL_KIND === 'chatwork') await sendChatwork(d);
+  if (CHANNEL_KIND === 'slack') await sendSlack(d);
+  else if (CHANNEL_KIND === 'chatwork') await sendChatwork(d);
   else await sendLark(d);
 }
 
