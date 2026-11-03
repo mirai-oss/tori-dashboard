@@ -7075,7 +7075,7 @@ function viewRequestForms(){
 /* ---- 申請履歴（2026-10-05・社長/本部のみ）----
  * 退職申請・スポット人件費・仕入れ移動（現場申請/管理者登録）の「いつ・誰が申請し、いつ・誰が承認したか」を月ごとに見る。
  * データはSupabaseのRPC request_history(月)から直接取得（GASを通さない・社長/本部/マスターのみ許可）。 */
-const REQLOG_KIND_={ cost_transfer:'仕入れ移動（現場申請）', cost_transfer_direct:'仕入れ移動（管理者登録）', spot_labor:'スポット人件費（入力）', spot_labor_request:'スポット人件費（申請）', spot_labor_edit:'スポット人件費（申請の編集・削除）', cost_transfer_edit:'仕入れ移動（申請の編集・削除）', retirement:'退職申請' };
+const REQLOG_KIND_={ expense:'経費申請', cost_transfer:'仕入れ移動（現場申請）', cost_transfer_direct:'仕入れ移動（管理者登録）', spot_labor:'スポット人件費（入力）', spot_labor_request:'スポット人件費（申請）', spot_labor_edit:'スポット人件費（申請の編集・削除）', cost_transfer_edit:'仕入れ移動（申請の編集・削除）', retirement:'退職申請' };
 const NIPPO_RETIRE_URL_='https://mirai-oss.github.io/nippo/?page=admin&m=retire';   // 退職申請の承認・却下はnippoの画面（アカウント管理内）
 const REQLOG_STATUS_={ pending:'承認待ち', approved:'承認済み', rejected:'却下', direct:'直接登録（承認なし）' };
 function reqLogMonth_(){ return S.reqLogYm||(()=>{ const d=new Date(Date.now()+9*3600000); return d.getUTCFullYear()+'-'+String(d.getUTCMonth()+1).padStart(2,'0'); })(); }
@@ -7085,9 +7085,9 @@ async function fetchReqPending_(){
   try{
     const r=await reqFormRpc_('request_pending_counts');
     if(!Array.isArray(r)) return;
-    const o={ cost_transfer:0, spot_labor_request:0, retirement:0 };
+    const o={ cost_transfer:0, spot_labor_request:0, retirement:0, expense:0 };
     r.forEach(x=>{ o[x.kind]=Number(x.n)||0; });
-    o.total=o.cost_transfer+o.spot_labor_request+o.retirement;
+    o.total=o.cost_transfer+o.spot_labor_request+o.retirement+o.expense;
     const changed=!D.reqPending||D.reqPending.total!==o.total;
     D.reqPending=o;
     if(changed){ try{ if(window.parent&&window.parent!==window) window.parent.postMessage({ type:'nsReqPendingChanged' }, 'https://mirai-oss.github.io'); }catch(e){} }   // ポータルの左メニューのバッジも更新させる
@@ -7117,6 +7117,61 @@ function viewRequestLog(){
   if(sub==='forms') return subBar+viewRequestForms();
   return subBar+viewRequestLogList_();
 }
+function reqLogParseTransfer_(r){   // 仕入れ移動の内容『移動元→移動先／品名（日付）』から店舗を取り出す
+  if(!/^cost_transfer/.test(r.kind)) return { from:'', to:'' };
+  const m=String(r.summary||'').match(/^(.+?)→(.+?)／/); return m?{ from:m[1].trim(), to:m[2].trim() }:{ from:'', to:'' };
+}
+function reqLogRows_(){   // 種類・申請者・店舗・移動元・移動先・検索語で絞り込んだ行（画面とCSVで共通）
+  const L=D.reqLog||{ rows:[] }; const kf=S.reqLogKind||'';
+  const q=String(S.reqLogQ||'').trim().toLowerCase();
+  return (L.rows||[]).filter(r=>{
+    if(kf&&!(r.kind===kf||(kf==='cost_transfer'&&(r.kind==='cost_transfer_direct'||r.kind==='cost_transfer_edit'))||(kf==='spot_labor'&&(r.kind==='spot_labor_request'||r.kind==='spot_labor_edit')))) return false;
+    if(S.reqLogWho&&String(r.requester||'')!==S.reqLogWho) return false;
+    if(S.reqLogStore&&String(r.store||'')!==S.reqLogStore) return false;
+    const t=reqLogParseTransfer_(r);
+    if(S.reqLogFrom&&t.from!==S.reqLogFrom) return false;
+    if(S.reqLogTo&&t.to!==S.reqLogTo) return false;
+    if(q){ const hay=[REQLOG_KIND_[r.kind]||r.kind, r.requester, r.summary, r.store, REQLOG_STATUS_[r.status]||r.status, r.decided_by, r.amount!=null?String(Math.round(r.amount)):''].join(' ').toLowerCase(); if(hay.indexOf(q)<0) return false; }
+    return true;
+  });
+}
+function reqLogRowHtml_(r){
+  const stCls=(st)=>st==='approved'?'color:#4c7d5c':st==='rejected'?'color:#b5502f':st==='pending'?'color:#a2803f':'color:#8c8375';
+  return `<tr><td style="white-space:nowrap">${esc(fmtJst_(r.occurred_at))}</td><td>${esc(REQLOG_KIND_[r.kind]||r.kind)}</td><td>${esc(r.requester||'')}</td><td>${esc(r.summary||'')}</td><td style="text-align:right">${r.amount!=null?yen(r.amount):''}</td>
+        <td style="${stCls(r.status)};white-space:nowrap">${esc(REQLOG_STATUS_[r.status]||r.status)}</td><td style="white-space:nowrap">${esc(r.decided_at?fmtJst_(r.decided_at):'')}</td><td>${esc(r.decided_by||'')}${(r.kind==='spot_labor_request'&&r.status==='pending')?`<div style="margin-top:4px;white-space:nowrap"><button class="icon-btn primary" style="padding:2px 8px;font-size:11px" data-id="${esc(r.ref_id)}" onclick="App.spotReqDecide(this.dataset.id,'approved')">承認</button> <button class="icon-btn" style="padding:2px 8px;font-size:11px" data-id="${esc(r.ref_id)}" onclick="App.spotReqDecide(this.dataset.id,'rejected')">却下</button></div>`:''}${(r.kind==='spot_labor_request'||(r.kind==='cost_transfer'&&r.status!=='approved'))?`<div style="margin-top:4px;white-space:nowrap">${(r.kind==='spot_labor_request'||r.status==='pending')?`<button class="icon-btn" style="padding:2px 8px;font-size:11px" data-id="${esc(r.ref_id)}" data-k="${r.kind==='spot_labor_request'?'spot':'transfer'}" onclick="App.reqEditOpen(this.dataset.k,this.dataset.id)">編集</button> `:''}<button class="icon-btn" style="padding:2px 8px;font-size:11px;color:#b5502f" data-id="${esc(r.ref_id)}" data-k="${r.kind==='spot_labor_request'?'spot':'transfer'}" onclick="App.reqDelete(this.dataset.k,this.dataset.id)">削除</button></div>`:''}${(r.kind==='cost_transfer'&&r.status==='approved')?`<div class="mut" style="margin-top:4px;font-size:10.5px">取り消しは「🔀仕入れ移動」の履歴から</div>`:''}${(r.kind==='cost_transfer'&&r.status==='pending')?`<div style="margin-top:4px;white-space:nowrap"><button class="icon-btn primary" style="padding:2px 8px;font-size:11px" data-id="${esc(r.ref_id)}" onclick="App.reqCtDecide(this.dataset.id,'approve')">承認してPLへ反映</button> <button class="icon-btn" style="padding:2px 8px;font-size:11px" data-id="${esc(r.ref_id)}" onclick="App.reqCtDecide(this.dataset.id,'reject')">却下</button></div>`:''}${(r.kind==='retirement'&&r.status==='pending')?`<div style="margin-top:4px"><a href="${NIPPO_RETIRE_URL_}" target="_blank" rel="noopener" style="font-size:11px">承認・却下はこちら ↗</a></div>`:''}${(r.kind==='expense'&&r.status==='pending')?`<div style="margin-top:4px;white-space:nowrap"><button class="icon-btn primary" style="padding:2px 8px;font-size:11px" data-id="${esc(r.ref_id)}" onclick="App.reqExpDecide(this.dataset.id,'approve')">承認</button> <button class="icon-btn" style="padding:2px 8px;font-size:11px" data-id="${esc(r.ref_id)}" onclick="App.reqExpDecide(this.dataset.id,'reject')">差戻し</button></div>`:''}</td></tr>`;
+}
+function reqLogBodyHtml_(){   // 件数＋表（絞り込み入力のたびにここだけ描き直す＝入力欄を作り直さない）
+  const L=D.reqLog||{ loading:true, rows:[] };
+  if(L.loading) return `<div class="empty" style="padding:40px;text-align:center;color:#8c8375">⏳ 読み込み中…</div>`;
+  if(L.err) return `<div class="empty" style="color:#b5502f;padding:30px">${esc(L.err)}</div>`;
+  const rows=reqLogRows_();
+  if(!rows.length) return `<div class="empty" style="padding:30px">${(L.rows||[]).length?'条件に合う申請はありません':'この月の申請はありません'}</div>`;
+  let h=`<div class="mut" style="font-size:12px;margin-bottom:6px">${rows.length}件${rows.length!==(L.rows||[]).length?'（全'+(L.rows||[]).length+'件中）':''}</div><div class="scroll-x"><table class="tbl"><thead><tr><th>申請日時</th><th>種類</th><th>申請者</th><th>内容</th><th style="text-align:right">金額</th><th>状態</th><th>承認・却下日時</th><th>承認者</th></tr></thead><tbody>`;
+  rows.forEach(r=>{ h+=reqLogRowHtml_(r); });
+  return h+`</tbody></table></div>`;
+}
+function reqLogRefreshBody_(){ const el=document.getElementById('reqlog-body'); if(el) el.innerHTML=reqLogBodyHtml_(); }
+function reqLogCsv_(){
+  const rows=reqLogRows_(); if(!rows.length){ toast('出力する行がありません'); return; }
+  const cell=(v)=>{ const t=String(v==null?'':v); return /[",\n\r]/.test(t)?'"'+t.replace(/"/g,'""')+'"':t; };
+  const head=['申請日時','種類','申請者','内容','移動元','移動先','店舗','金額','状態','承認・却下日時','承認者','参照ID'];
+  const lines=[head.map(cell).join(',')].concat(rows.map(r=>{ const t=reqLogParseTransfer_(r);
+    return [fmtJst_(r.occurred_at),REQLOG_KIND_[r.kind]||r.kind,r.requester||'',r.summary||'',t.from,t.to,r.store||'',r.amount!=null?Math.round(r.amount):'',REQLOG_STATUS_[r.status]||r.status,r.decided_at?fmtJst_(r.decided_at):'',r.decided_by||'',r.ref_id||''].map(cell).join(','); }));
+  const blob=new Blob(['\ufeff'+lines.join('\r\n')],{ type:'text/csv;charset=utf-8' });
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+  const kl={ '':'すべて', retirement:'退職申請', spot_labor:'スポット人件費', cost_transfer:'仕入れ移動', expense:'経費申請' }[S.reqLogKind||'']||'';
+  a.download='申請履歴_'+reqLogMonth_()+'_'+kl+'.csv'; document.body.appendChild(a); a.click(); setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); },500);
+}
+async function expSendNotifications_(items){   // expenses.htmlのsendNotificationsと同じ（承認・差戻しの通知をChatwork/Larkへ）
+  for(const it of (Array.isArray(items)?items:[])){
+    if(!it||!it.channel_kind||!it.target) continue;
+    const text=(it.keyword?`[${it.keyword}] `:'')+it.title+(it.body?`\n${it.body}`:'');
+    try{
+      if(it.channel_kind==='chatwork'){ const jwt=await portalAccessToken().catch(()=>null); await fetch(SSO_SUPA_URL+'/functions/v1/notify-chatwork',{ method:'POST', headers:{ 'Content-Type':'application/json', Authorization:'Bearer '+(jwt||'') }, body:JSON.stringify({ room_id:it.target, body:text }) }); }
+      else if(it.channel_kind==='lark_webhook'){ await fetch(it.target,{ method:'POST', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({ msg_type:'text', content:{ text } }) }); }
+    }catch(e){ /* 通知の失敗は握りつぶす（アプリ内通知は記録済み） */ }
+  }
+}
 function viewRequestLogList_(){
   if(!isAdminRole()) return `<div class="panel"><div class="empty">この画面は社長・本部のみ見られます</div></div>`;
   // ポータル経由(?tab=・nsPortalSetTab)や初期表示ではApp.tab()を通らないため、データ未取得ならここで取りに行く（読み込み中のまま止まる不具合の修正）
@@ -7124,26 +7179,27 @@ function viewRequestLogList_(){
   const L=D.reqLog||{ loading:true, rows:[] };
   const ym=reqLogMonth_();
   const kf=S.reqLogKind||'';
-  const rows=(L.rows||[]).filter(r=>!kf||r.kind===kf||(kf==='cost_transfer'&&(r.kind==='cost_transfer_direct'||r.kind==='cost_transfer_edit'))||(kf==='spot_labor'&&(r.kind==='spot_labor_request'||r.kind==='spot_labor_edit')));
-  const kinds=[['','すべて'],['retirement','退職申請'],['spot_labor','スポット人件費'],['cost_transfer','仕入れ移動']];
+  const kinds=[['','すべて'],['expense','経費申請'],['cost_transfer','仕入れ移動'],['spot_labor','スポット人件費'],['retirement','退職申請']];
   const chip=([k,l])=>`<button class="icon-btn ${kf===k?'primary':''}" style="margin-right:6px" onclick="App.reqLogKind('${k}')">${l}</button>`;
-  const stCls=(st)=>st==='approved'?'color:#4c7d5c':st==='rejected'?'color:#b5502f':st==='pending'?'color:#a2803f':'color:#8c8375';
-  let h=`<div class="panel"><div class="panel-head"><div><h3>申請履歴</h3><div class="sub">退職申請・スポット人件費・仕入れ移動の「いつ・誰が申請し、いつ・誰が承認したか」を月ごとに表示します（社長・本部のみ）</div></div>
-    <div><input type="month" value="${esc(ym)}" onchange="App.reqLogSetMonth(this.value)"> <button class="icon-btn" onclick="App.reqLogReload()">↻ 更新</button></div></div>
-    <div style="margin:8px 0">${kinds.map(chip).join('')}</div>`;
-  if(L.loading) h+=`<div class="empty" style="padding:40px;text-align:center;color:#8c8375">⏳ 読み込み中…</div>`;
-  else if(L.err) h+=`<div class="empty" style="color:#b5502f;padding:30px">${esc(L.err)}</div>`;
-  else if(!rows.length) h+=`<div class="empty" style="padding:30px">この月の申請はありません</div>`;
-  else{
-    h+=`<div class="mut" style="font-size:12px;margin-bottom:6px">${rows.length}件</div><div class="scroll-x"><table class="tbl"><thead><tr><th>申請日時</th><th>種類</th><th>申請者</th><th>内容</th><th style="text-align:right">金額</th><th>状態</th><th>承認・却下日時</th><th>承認者</th></tr></thead><tbody>`;
-    rows.forEach(r=>{
-      h+=`<tr><td style="white-space:nowrap">${esc(fmtJst_(r.occurred_at))}</td><td>${esc(REQLOG_KIND_[r.kind]||r.kind)}</td><td>${esc(r.requester||'')}</td><td>${esc(r.summary||'')}</td><td style="text-align:right">${r.amount!=null?yen(r.amount):''}</td>
-        <td style="${stCls(r.status)};white-space:nowrap">${esc(REQLOG_STATUS_[r.status]||r.status)}</td><td style="white-space:nowrap">${esc(r.decided_at?fmtJst_(r.decided_at):'')}</td><td>${esc(r.decided_by||'')}${(r.kind==='spot_labor_request'&&r.status==='pending')?`<div style="margin-top:4px;white-space:nowrap"><button class="icon-btn primary" style="padding:2px 8px;font-size:11px" data-id="${esc(r.ref_id)}" onclick="App.spotReqDecide(this.dataset.id,'approved')">承認</button> <button class="icon-btn" style="padding:2px 8px;font-size:11px" data-id="${esc(r.ref_id)}" onclick="App.spotReqDecide(this.dataset.id,'rejected')">却下</button></div>`:''}${(r.kind==='spot_labor_request'||(r.kind==='cost_transfer'&&r.status!=='approved'))?`<div style="margin-top:4px;white-space:nowrap">${(r.kind==='spot_labor_request'||r.status==='pending')?`<button class="icon-btn" style="padding:2px 8px;font-size:11px" data-id="${esc(r.ref_id)}" data-k="${r.kind==='spot_labor_request'?'spot':'transfer'}" onclick="App.reqEditOpen(this.dataset.k,this.dataset.id)">編集</button> `:''}<button class="icon-btn" style="padding:2px 8px;font-size:11px;color:#b5502f" data-id="${esc(r.ref_id)}" data-k="${r.kind==='spot_labor_request'?'spot':'transfer'}" onclick="App.reqDelete(this.dataset.k,this.dataset.id)">削除</button></div>`:''}${(r.kind==='cost_transfer'&&r.status==='approved')?`<div class="mut" style="margin-top:4px;font-size:10.5px">取り消しは「🔀仕入れ移動」の履歴から</div>`:''}${(r.kind==='cost_transfer'&&r.status==='pending')?`<div style="margin-top:4px;white-space:nowrap"><button class="icon-btn primary" style="padding:2px 8px;font-size:11px" data-id="${esc(r.ref_id)}" onclick="App.reqCtDecide(this.dataset.id,'approve')">承認してPLへ反映</button> <button class="icon-btn" style="padding:2px 8px;font-size:11px" data-id="${esc(r.ref_id)}" onclick="App.reqCtDecide(this.dataset.id,'reject')">却下</button></div>`:''}${(r.kind==='retirement'&&r.status==='pending')?`<div style="margin-top:4px"><a href="${NIPPO_RETIRE_URL_}" target="_blank" rel="noopener" style="font-size:11px">承認・却下はこちら ↗</a></div>`:''}</td></tr>`;
-    });
-    h+=`</tbody></table></div>`;
-    EXPORT.push({ title:'申請履歴('+ym+')', headers:['申請日時','種類','申請者','内容','金額','状態','承認・却下日時','承認者'],
-      rows:rows.map(r=>[fmtJst_(r.occurred_at),REQLOG_KIND_[r.kind]||r.kind,r.requester||'',r.summary||'',r.amount!=null?Math.round(r.amount):'',REQLOG_STATUS_[r.status]||r.status,r.decided_at?fmtJst_(r.decided_at):'',r.decided_by||'']) });
-  }
+  const all=(L.rows||[]);
+  const uniq=(arr)=>[...new Set(arr.filter(x=>x))].sort((a,b)=>String(a).localeCompare(String(b),'ja'));
+  const who=uniq(all.filter(r=>!kf||r.kind===kf||(kf==='cost_transfer'&&/^cost_transfer/.test(r.kind))||(kf==='spot_labor'&&/^spot_labor/.test(r.kind))).map(r=>r.requester));
+  const stores=uniq(all.map(r=>r.store));
+  const tr=all.map(reqLogParseTransfer_); const froms=uniq(tr.map(t=>t.from)), tos=uniq(tr.map(t=>t.to));
+  const sel=(id,label,opts,cur,fn)=>`<label class="mut" style="font-size:12px;margin-right:10px">${label} <select id="${id}" onchange="App.${fn}(this.value)" style="max-width:180px"><option value="">すべて</option>${opts.map(o=>`<option value="${esc(o)}" ${cur===o?'selected':''}>${esc(o)}</option>`).join('')}</select></label>`;
+  let h=`<div class="panel"><div class="panel-head"><div><h3>申請履歴</h3><div class="sub">経費申請・仕入れ移動・スポット人件費・退職申請の「いつ・誰が申請し、いつ・誰が承認したか」を月ごとに表示します（社長・本部のみ）。経費申請はここで承認・差戻しもできます</div></div>
+    <div><input type="month" value="${esc(ym)}" onchange="App.reqLogSetMonth(this.value)"> <button class="icon-btn" onclick="App.reqLogReload()">↻ 更新</button> <button class="icon-btn" onclick="App.reqLogCsv()" title="いま絞り込んでいる内容をCSVで保存">⬇ CSV出力</button></div></div>
+    <div style="margin:8px 0">${kinds.map(chip).join('')}</div>
+    <div style="margin:6px 0 10px;display:flex;flex-wrap:wrap;gap:6px 0;align-items:center">
+      <label class="mut" style="font-size:12px;margin-right:10px">🔎 検索 <input type="search" id="reqlog-q" value="${esc(S.reqLogQ||'')}" placeholder="名前・内容・金額など" oninput="App.reqLogQ(this.value)" style="width:200px"></label>
+      ${sel('reqlog-who', kf==='expense'?'従業員':'申請者', who, S.reqLogWho||'', 'reqLogWho')}
+      ${sel('reqlog-store','店舗', stores, S.reqLogStore||'', 'reqLogStore')}
+      ${kf==='cost_transfer'?sel('reqlog-from','移動元（出した店舗）', froms, S.reqLogFrom||'', 'reqLogFrom')+sel('reqlog-to','移動先（受け入れた店舗）', tos, S.reqLogTo||'', 'reqLogTo'):''}
+      <button class="icon-btn" onclick="App.reqLogClear()" style="font-size:11px">絞り込みを解除</button>
+    </div>
+    <div id="reqlog-body">${reqLogBodyHtml_()}</div>`;
+  { const rows=reqLogRows_(); if(!L.loading&&!L.err&&rows.length) EXPORT.push({ title:'申請履歴('+ym+')', headers:['申請日時','種類','申請者','内容','金額','状態','承認・却下日時','承認者'],
+      rows:rows.map(r=>[fmtJst_(r.occurred_at),REQLOG_KIND_[r.kind]||r.kind,r.requester||'',r.summary||'',r.amount!=null?Math.round(r.amount):'',REQLOG_STATUS_[r.status]||r.status,r.decided_at?fmtJst_(r.decided_at):'',r.decided_by||'']) }); }
   return h+`</div>`;
 }
 // 速報PL（F1-b・2026-10-03）: GASの確定データ(DB_PL等)が届く前に、Supabaseの集計済み月次PL(kd_pl_monthly_summary)で
@@ -10051,7 +10107,29 @@ window.App = {
   detailCompare(){ detailCompare_(); },
   tab(t){ S.tab=t; render(); if(t==='requestLog') loadRequestLog_(false); if(BOOT_GASLESS_&&S.auth&&S.auth.token) ensureTabData_(t,false,null,null,true); },
   reqLogSetMonth(v){ if(/^\d{4}-\d{2}$/.test(v||'')){ S.reqLogYm=v; loadRequestLog_(true); } },
-  reqLogKind(k){ S.reqLogKind=k; render(); },
+  reqLogKind(k){ S.reqLogKind=k; if(k!=='cost_transfer'){ S.reqLogFrom=''; S.reqLogTo=''; } render(); },
+  reqLogQ(v){ S.reqLogQ=v; clearTimeout(App._rlq); App._rlq=setTimeout(reqLogRefreshBody_,200); },
+  reqLogWho(v){ S.reqLogWho=v; reqLogRefreshBody_(); },
+  reqLogStore(v){ S.reqLogStore=v; reqLogRefreshBody_(); },
+  reqLogFrom(v){ S.reqLogFrom=v; reqLogRefreshBody_(); },
+  reqLogTo(v){ S.reqLogTo=v; reqLogRefreshBody_(); },
+  reqLogClear(){ S.reqLogQ=''; S.reqLogWho=''; S.reqLogStore=''; S.reqLogFrom=''; S.reqLogTo=''; render(); },
+  reqLogCsv(){ reqLogCsv_(); },
+  // 経費申請の承認/差戻し（expenses.htmlと同じRPC expense_approve / expense_reject。承認・差戻しの通知も同じ経路）
+  async reqExpDecide(id, decision){
+    if(!id) return;
+    try{
+      if(decision==='reject'){
+        const reason=prompt('差戻しの理由（必須・申請した人に通知されます）',''); if(reason===null) return;
+        if(!String(reason).trim()){ toast('理由を入力してください'); return; }
+        const r=await plRpc_('expense_reject',{ p_request_id:id, p_reason:String(reason).trim() }); await expSendNotifications_(r); toast('差し戻しました');
+      } else {
+        if(!confirm('この経費申請を承認しますか？')) return;
+        const r=await plRpc_('expense_approve',{ p_request_id:id }); await expSendNotifications_(r); toast('承認しました');
+      }
+      await loadRequestLog_(true);
+    }catch(e){ toast('処理できませんでした: '+(e&&e.message||e)); }
+  },
   reqLogReload(){ loadRequestLog_(true); },
   reqSub(k){ S.reqSub=k; render(); if(k==='forms') loadRequestForms_(); },
   async reqEditOpen(kind,id){
