@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>経費申請フォーム</title>
+<style>
+:root{--bg:#faf8f4;--card:#fff;--ink:#2b2f36;--muted:#8a8f98;--line:#dfe2e6;--btn:#48586a;--err:#c0392b;--ok:#2e7d4f}
+@media (prefers-color-scheme:dark){:root{--bg:#1b1d21;--card:#25282d;--ink:#eceef1;--muted:#9aa0a8;--line:#3a3e45;--btn:#5d7186;--err:#ff8a7a;--ok:#6fcf97}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif;padding:16px}
+.wrap{max-width:460px;margin:24px auto}
+.card{background:var(--card);border-radius:16px;box-shadow:0 1px 8px rgba(0,0,0,.08);padding:18px}
+h1{font-size:16px;margin:0 0 6px}
+.sub{font-size:11.5px;color:var(--muted);margin:0 0 14px;line-height:1.6}
+label{display:block;font-size:11.5px;color:var(--muted);margin:12px 0 4px}
+input,select,textarea{width:100%;font-size:16px;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--ink);font-family:inherit}
+textarea{min-height:64px;resize:vertical}
+button{width:100%;margin-top:18px;padding:11px;border:0;border-radius:8px;background:var(--btn);color:#fff;font-size:15px;cursor:pointer;font-family:inherit}
+button:disabled{opacity:.5;cursor:default}
+button.ghost{background:transparent;color:var(--btn);border:1px solid var(--btn)}
+.msg{font-size:13px;margin-top:10px;min-height:18px}
+.msg.err{color:var(--err)}
+.done{text-align:center;padding:10px 0}
+.done b{display:block;font-size:17px;color:var(--ok);margin-bottom:8px}
+.cand{width:100%;font-size:15px;padding:4px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--ink);font-family:inherit;margin-top:6px}
+.cand option{padding:7px 8px;border-radius:6px}
+.pick{font-size:12.5px;color:var(--ok);margin-top:6px;min-height:16px}
+.note{font-size:11.5px;color:var(--muted);margin-top:4px;line-height:1.6}
+.row{display:flex;gap:6px;align-items:center;margin-top:8px}.row select{flex:1}.row input{width:78px;text-align:right}.row .sub2{width:78px;text-align:right;font-size:12px;color:var(--muted)}.row button{width:auto;margin:0;padding:6px 10px;background:transparent;color:var(--err);border:1px solid var(--line)}
+.total{text-align:right;margin-top:10px;font-weight:700;font-size:14px}
+.ph{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}.ph .t{position:relative;width:64px;height:64px}.ph img{width:64px;height:64px;object-fit:cover;border-radius:8px;border:1px solid var(--line)}.ph .t b{position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:10px;background:var(--err);color:#fff;font-size:13px;line-height:20px;text-align:center;cursor:pointer}
+.photobtn{display:block;margin-top:6px;padding:9px;border:1px dashed var(--line);border-radius:8px;text-align:center;font-size:13px;color:var(--btn);cursor:pointer}.photobtn input{display:none}
+.opt{border:1px solid var(--line);border-radius:12px;padding:4px 12px 12px;margin-top:14px}.opt h2{font-size:13px;margin:10px 0 0;color:var(--btn)}
+</style>
+</head>
+<body>
+<div class="wrap"><div class="card" id="app"><p class="sub">読み込み中…</p></div></div>
+<script>
+const FORM="expense";
+const SUPA_URL="https://uuvsxzhpxtghojoubjcc.supabase.co";
+const SUPA_KEY="sb_publishable_MrwPJAx_Ws_fdRutprKCiQ_dg3wCiTr"; // 公開用キー。権限は合言葉つきのEdge Function側で守る
+const TOKEN=new URLSearchParams(location.search).get("k")||"";
+const $=id=>document.getElementById(id);
+const esc=s=>String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const todayJst=()=>new Date(Date.now()+9*3600e3).toISOString().slice(0,10);
+const norm=x=>String(x||"").normalize("NFKC").replace(/[\s　]+/g,"").toLowerCase();
+const yen=n=>"¥"+Math.round(n||0).toLocaleString("ja-JP");
+async function post(payload){
+  const r=await fetch(SUPA_URL+"/functions/v1/form-submit",{method:"POST",headers:{apikey:SUPA_KEY,Authorization:"Bearer "+SUPA_KEY,"Content-Type":"application/json"},body:JSON.stringify(Object.assign({form:FORM,token:TOKEN},payload))});
+  let b=null;try{b=await r.json()}catch(e){}
+  if(!b)throw new Error("通信に失敗しました（HTTP "+r.status+"）。写真が多い・大きい場合は枚数を減らしてください");
+  return b;
+}
+// 写真を縮小してJPEGにする（スマホの写真は重いので、長辺1400pxに小さくしてから送る）
+function readData(file){return new Promise((res,rej)=>{const fr=new FileReader();fr.onerror=()=>rej(new Error("ファイルを読み込めませんでした"));fr.onload=()=>res(fr.result);fr.readAsDataURL(file)})}
+function shrink(file){ // 写真は長辺1400pxに縮小してJPEGにする。PDF・Excel・Wordはそのまま（1つ4MBまで）
+  if(!/^image\//.test(file.type)){ if(file.size>4*1024*1024) return Promise.reject(new Error("「"+file.name+"」は大きすぎます（1つ4MBまで）")); return readData(file).then(d=>d.replace(/^data:[^;]*;/,"data:"+(file.type||guessType(file.name))+";")); }
+  return new Promise((res,rej)=>{const fr=new FileReader();fr.onerror=()=>rej(new Error("写真を読み込めませんでした"));fr.onload=()=>{const im=new Image();im.onerror=()=>rej(new Error("写真を読み込めませんでした"));im.onload=()=>{const k=Math.min(1,1400/Math.max(im.width,im.height)),c=document.createElement("canvas");c.width=Math.round(im.width*k);c.height=Math.round(im.height*k);c.getContext("2d").drawImage(im,0,0,c.width,c.height);res(c.toDataURL("image/jpeg",0.8))};im.src=fr.result};fr.readAsDataURL(file)})}
+function guessType(n){n=String(n).toLowerCase();return n.endsWith(".pdf")?"application/pdf":n.endsWith(".xlsx")?"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":n.endsWith(".docx")?"application/vnd.openxmlformats-officedocument.wordprocessingml.document":n.endsWith(".xls")?"application/vnd.ms-excel":n.endsWith(".doc")?"application/msword":"application/octet-stream"}
+const thumb=p=>/^data:image\//.test(p)?`<img src="${p}">`:`<div style="width:64px;height:64px;border-radius:8px;border:1px solid var(--line);display:flex;align-items:center;justify-content:center;font-size:11px;text-align:center;color:var(--muted)">📄<br>${/pdf/.test(p.slice(0,30))?"PDF":"書類"}</div>`;
+function photoWidget(id,list,onChange){
+  const draw=()=>{$(id+"-list").innerHTML=list.map((p,i)=>`<div class="t">${thumb(p)}<b data-i="${i}">×</b></div>`).join("");$(id+"-list").querySelectorAll("b").forEach(b=>b.onclick=()=>{list.splice(+b.dataset.i,1);draw();onChange&&onChange()})};
+  $(id+"-in").onchange=async e=>{for(const f of [...e.target.files]){if(list.length>=4)break;try{list.push(await shrink(f))}catch(x){alert(x.message)}}e.target.value="";draw();onChange&&onChange()};draw();
+}
+const photoHtml=(id,label)=>`<label class="photobtn">📷 ${label}<input type="file" accept="image/*,application/pdf,.pdf,.xlsx,.xls,.docx,.doc" id="${id}-in" multiple></label><div class="ph" id="${id}-list"></div>`;
+let staff=[],pickId="";
+function pickerHtml(){return `<label>申請者（あなたの名前を入力して検索）</label><input id="f-q" placeholder="例: 山田" autocomplete="off">
+  <select id="f-cand" class="cand" size="4" style="display:none"></select><div class="pick" id="f-pick"></div>`}
+function pickerInit(){
+  const draw=()=>{const q=norm($("f-q").value),box=$("f-cand");
+    if(!q){box.style.display="none";box.innerHTML="";return}
+    const list=staff.filter(m=>norm(m.name).includes(q)).slice(0,50);
+    box.style.display="";box.size=Math.max(2,Math.min(6,list.length||2));
+    box.innerHTML=list.length?list.map(m=>`<option value="${esc(m.id)}" ${m.id===pickId?"selected":""}>${esc(m.name)}</option>`).join(""):`<option disabled>見つかりません</option>`};
+  $("f-q").oninput=()=>{pickId="";$("f-pick").textContent="";draw()};
+  $("f-cand").onchange=()=>{const v=$("f-cand").value;if(!v)return;pickId=v;const m=staff.find(x=>x.id===v);$("f-pick").textContent=m?"✔ 選択中: "+m.name:""};
+}
+const bad=m=>m==="unauthorized"?"このURLは無効です（再発行された可能性があります）。本部に確認してください":m;
+let stores=[],cats=[],photos=[];
+function render(){
+  pickId="";photos=[];
+  $("app").innerHTML=`<h1>🧾 経費申請</h1>
+  <p class="sub">立て替えた経費を入力して送信してください。送信後は承認者が確認します。</p>
+  <label>金額（円）</label><input type="number" id="f-amt" inputmode="numeric" placeholder="例 3200">
+  <label>何に使いましたか？</label><input id="f-purpose" maxlength="100" placeholder="例: 〇〇の買い出し">
+  <label>利用日</label><input type="date" id="f-date" value="${todayJst()}">
+  <label>店舗</label><select id="f-store"><option value="">（選んでください）</option>${stores.map(s=>`<option>${esc(s)}</option>`).join("")}</select>
+  <label>科目</label><select id="f-cat">${cats.map(c=>`<option value="${esc(c.id)}">${esc(c.name)}</option>`).join("")}</select>
+  <label>レシート・領収書（写真・PDF）</label>${photoHtml("ph","写真・PDFなどを選ぶ（4つまで）")}
+  ${pickerHtml()}
+  <label>備考（任意）</label><textarea id="f-note" maxlength="200"></textarea>
+  <div class="msg err" id="f-msg"></div><button id="f-send">送信</button>`;
+  pickerInit();photoWidget("ph",photos);$("f-send").onclick=send;
+}
+async function send(){
+  const g=id=>$(id).value.trim(),m=$("f-msg");m.textContent="";
+  const store=g("f-store"),date=g("f-date"),amount=Number(g("f-amt")),purpose=g("f-purpose");
+  if(!(amount>0)){m.textContent="金額を入力してください";return}
+  if(!purpose){m.textContent="何に使ったか入力してください";return}
+  if(!store){m.textContent="店舗を選んでください";return}
+  if(!date){m.textContent="利用日を選んでください";return}
+  if(!pickId){m.textContent="申請者を検索して、一覧から選んでください";return}
+  if(!photos.length&&!confirm("レシートの写真がありません。このまま送りますか？"))return;
+  const who=(staff.find(x=>x.id===pickId)||{}).name||"";
+  if(!confirm(`${yen(amount)}／${purpose}\n${store}／${date.replace(/-/g,"/")}\n申請者: ${who}\nこの内容で送信します。よろしいですか？`))return;
+  const b=$("f-send");b.disabled=true;b.textContent="送信中…";
+  try{
+    const res=await post({store,date,amount,purpose,categoryId:g("f-cat"),memo:g("f-note"),requesterId:pickId,photos});
+    if(!res.ok)throw new Error(bad(res.error||"送信に失敗しました"));
+    $("app").innerHTML=`<div class="done"><b>✅ 送信しました</b><p class="sub" style="margin:0 0 6px">${yen(amount)}／${esc(purpose)} を申請しました。<br>承認者が確認します。</p><button id="f-again" class="ghost">続けてもう1件申請する</button></div>`;
+    $("f-again").onclick=render;
+  }catch(e){b.disabled=false;b.textContent="送信";m.textContent=e.message}
+}
+(async()=>{
+  if(!TOKEN){$("app").innerHTML=`<h1>🧾 経費申請</h1><p class="sub">このURLでは開けません。本部から受け取ったURLをそのまま開いてください。</p>`;return}
+  try{const o=await post({action:"options"});if(!o.ok)throw new Error(bad(o.error||"読み込みに失敗しました"));
+    stores=o.stores||[];staff=o.staff||[];cats=o.categories||[];render();
+  }catch(e){$("app").innerHTML=`<h1>🧾 経費申請</h1><p class="sub" style="color:var(--err)">${esc(e.message)}</p>`}
+})();
+</script>
+</body>
+</html>

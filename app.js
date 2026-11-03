@@ -7032,6 +7032,10 @@ const REQFORMS_=[
     kind:'transfer', url:t=>'https://mirai-oss.github.io/tori-dashboard/transfer-form.html?k='+t },
   { key:'spot', ico:'⏱', name:'スポット人件費', who:'店長・現場のスタッフ（タイミー等を使った人）', what:'店舗・勤務日・金額・人数を申請します。', after:'社長・本部が「申請履歴」タブで承認すると、日別の人件費率と月次PLに反映されます。',
     kind:'spot', url:t=>'https://mirai-oss.github.io/tori-dashboard/spot-form.html?k='+t },
+  { key:'expense', ico:'🧾', name:'経費申請', who:'立て替えた人（店長・スタッフ・本部など誰でも）', what:'金額・用途・利用日・店舗・レシート写真を申請します（スマホで1分）。', after:'承認者（経費の承認ルールで自動決定）に通知が届き、社長・本部は「申請履歴」の経費申請タブで承認・差戻しできます。承認済みは月末に「N月分従業員経費」タスクへ集計されます。',
+    kind:'expense', url:t=>'https://mirai-oss.github.io/tori-dashboard/expense-form.html?k='+t },
+  { key:'quote', ico:'📋', name:'見積もり', who:'見積もりを取った人（店長・スタッフ・本部など）', what:'日付・店舗・申請者・何の見積もりか、見積書の写真を最大3社分まとめて送ります。', after:'「申請履歴」の見積もりタブで、業者ごとの金額と写真を並べて比較できます（承認の手続きはありません）。',
+    kind:'quote', url:t=>'https://mirai-oss.github.io/tori-dashboard/quote-form.html?k='+t },
 ];
 async function reqFormRpc_(name, args){
   const jwt=await portalAccessToken().catch(()=>null);
@@ -7141,6 +7145,7 @@ function reqLogRowHtml_(r){
         <td style="${stCls(r.status)};white-space:nowrap">${esc(REQLOG_STATUS_[r.status]||r.status)}</td><td style="white-space:nowrap">${esc(r.decided_at?fmtJst_(r.decided_at):'')}</td><td>${esc(r.decided_by||'')}${(r.kind==='spot_labor_request'&&r.status==='pending')?`<div style="margin-top:4px;white-space:nowrap"><button class="icon-btn primary" style="padding:2px 8px;font-size:11px" data-id="${esc(r.ref_id)}" onclick="App.spotReqDecide(this.dataset.id,'approved')">承認</button> <button class="icon-btn" style="padding:2px 8px;font-size:11px" data-id="${esc(r.ref_id)}" onclick="App.spotReqDecide(this.dataset.id,'rejected')">却下</button></div>`:''}${(r.kind==='spot_labor_request'||(r.kind==='cost_transfer'&&r.status!=='approved'))?`<div style="margin-top:4px;white-space:nowrap">${(r.kind==='spot_labor_request'||r.status==='pending')?`<button class="icon-btn" style="padding:2px 8px;font-size:11px" data-id="${esc(r.ref_id)}" data-k="${r.kind==='spot_labor_request'?'spot':'transfer'}" onclick="App.reqEditOpen(this.dataset.k,this.dataset.id)">編集</button> `:''}<button class="icon-btn" style="padding:2px 8px;font-size:11px;color:#b5502f" data-id="${esc(r.ref_id)}" data-k="${r.kind==='spot_labor_request'?'spot':'transfer'}" onclick="App.reqDelete(this.dataset.k,this.dataset.id)">削除</button></div>`:''}${(r.kind==='cost_transfer'&&r.status==='approved')?`<div class="mut" style="margin-top:4px;font-size:10.5px">取り消しは「🔀仕入れ移動」の履歴から</div>`:''}${(r.kind==='cost_transfer'&&r.status==='pending')?`<div style="margin-top:4px;white-space:nowrap"><button class="icon-btn primary" style="padding:2px 8px;font-size:11px" data-id="${esc(r.ref_id)}" onclick="App.reqCtDecide(this.dataset.id,'approve')">承認してPLへ反映</button> <button class="icon-btn" style="padding:2px 8px;font-size:11px" data-id="${esc(r.ref_id)}" onclick="App.reqCtDecide(this.dataset.id,'reject')">却下</button></div>`:''}${(r.kind==='retirement'&&r.status==='pending')?`<div style="margin-top:4px"><a href="${NIPPO_RETIRE_URL_}" target="_blank" rel="noopener" style="font-size:11px">承認・却下はこちら ↗</a></div>`:''}${(r.kind==='expense'&&r.status==='pending')?`<div style="margin-top:4px;white-space:nowrap"><button class="icon-btn primary" style="padding:2px 8px;font-size:11px" data-id="${esc(r.ref_id)}" onclick="App.reqExpDecide(this.dataset.id,'approve')">承認</button> <button class="icon-btn" style="padding:2px 8px;font-size:11px" data-id="${esc(r.ref_id)}" onclick="App.reqExpDecide(this.dataset.id,'reject')">差戻し</button></div>`:''}</td></tr>`;
 }
 function reqLogBodyHtml_(){   // 件数＋表（絞り込み入力のたびにここだけ描き直す＝入力欄を作り直さない）
+  if(S.reqLogKind==='quote') return quoteBodyHtml_();
   const L=D.reqLog||{ loading:true, rows:[] };
   if(L.loading) return `<div class="empty" style="padding:40px;text-align:center;color:#8c8375">⏳ 読み込み中…</div>`;
   if(L.err) return `<div class="empty" style="color:#b5502f;padding:30px">${esc(L.err)}</div>`;
@@ -7149,6 +7154,47 @@ function reqLogBodyHtml_(){   // 件数＋表（絞り込み入力のたびに�
   let h=`<div class="mut" style="font-size:12px;margin-bottom:6px">${rows.length}件${rows.length!==(L.rows||[]).length?'（全'+(L.rows||[]).length+'件中）':''}</div><div class="scroll-x"><table class="tbl"><thead><tr><th>申請日時</th><th>種類</th><th>申請者</th><th>内容</th><th style="text-align:right">金額</th><th>状態</th><th>承認・却下日時</th><th>承認者</th></tr></thead><tbody>`;
   rows.forEach(r=>{ h+=reqLogRowHtml_(r); });
   return h+`</tbody></table></div>`;
+}
+/* ---- 見積もり（比較表示）: RPC quote_list(月)。写真は非公開バケット quote-photos の署名URL ---- */
+async function loadQuotes_(force){
+  const ym=reqLogMonth_(); const Q=D.quotes;
+  if(!force&&Q&&Q.ym===ym&&!Q.err&&Date.now()-Q.at<60000) return;
+  D.quotes={ ym, loading:true, rows:[], err:'', at:Date.now(), urls:{} }; reqLogRefreshBody_();
+  try{
+    const rows=await plRpc_('quote_list',{ p_month:ym });
+    const paths=[]; (rows||[]).forEach(q=>(q.options||[]).forEach(o=>(o.photos||[]).forEach(x=>paths.push(x))));
+    const urls={};
+    if(paths.length){
+      const jwt=await portalAccessToken().catch(()=>null);
+      const r=await fetch(SSO_SUPA_URL+'/storage/v1/object/sign/quote-photos',{ method:'POST', headers:{ apikey:SSO_SUPA_KEY, Authorization:'Bearer '+jwt, 'Content-Type':'application/json' }, body:JSON.stringify({ expiresIn:3600, paths }) });
+      const d=await r.json().catch(()=>[]); (Array.isArray(d)?d:[]).forEach(x=>{ if(x.path&&x.signedURL) urls[x.path]=SSO_SUPA_URL+'/storage/v1'+x.signedURL; });
+    }
+    D.quotes={ ym, loading:false, rows:rows||[], err:'', at:Date.now(), urls };
+  }catch(e){
+    const m=String(e&&e.message||e);
+    D.quotes={ ym, loading:false, rows:[], err:/quote_list|schema cache|404/.test(m)?'見積もりのデータベース設定がまだ適用されていません':m, at:Date.now(), urls:{} };
+  }
+  reqLogRefreshBody_();
+}
+function quoteBodyHtml_(){
+  const Q=D.quotes;
+  if(!Q||Q.ym!==reqLogMonth_()){ setTimeout(()=>loadQuotes_(false),0); return `<div class="empty" style="padding:40px;text-align:center;color:#8c8375">⏳ 読み込み中…</div>`; }
+  if(Q.loading) return `<div class="empty" style="padding:40px;text-align:center;color:#8c8375">⏳ 読み込み中…</div>`;
+  if(Q.err) return `<div class="empty" style="color:#b5502f;padding:30px">${esc(Q.err)}</div>`;
+  const qq=String(S.reqLogQ||'').trim().toLowerCase();
+  const rows=Q.rows.filter(q=>(!S.reqLogWho||q.requester===S.reqLogWho)&&(!S.reqLogStore||q.store===S.reqLogStore)&&(!qq||[q.subject,q.requester,q.store,q.note].concat((q.options||[]).map(o=>(o.vendor||'')+' '+(o.amount||''))).join(' ').toLowerCase().indexOf(qq)>=0));
+  if(!rows.length) return `<div class="empty" style="padding:30px">${Q.rows.length?'条件に合う見積もりはありません':'この月の見積もりはありません'}</div>`;
+  const amts=(q)=>(q.options||[]).map(o=>Number(o.amount)).filter(x=>x>0), minOf=(q)=>{ const a=amts(q); return a.length>1?Math.min.apply(null,a):null; };
+  return `<div class="mut" style="font-size:12px;margin-bottom:6px">${rows.length}件</div>`+rows.map(q=>{ const mn=minOf(q);
+    return `<div style="border:1px solid var(--line2);border-radius:12px;padding:12px 14px;margin:10px 0">
+      <div style="font-weight:700;font-size:14px">${esc(q.subject)}</div>
+      <div class="mut" style="font-size:12px;margin:2px 0 8px">${esc(fmtJst_(q.submitted_at))}／${esc(q.store)}／申請者: ${esc(q.requester||'')}／見積日: ${esc(String(q.quote_date||'').replace(/-/g,'/'))}${q.note?'／'+esc(q.note):''}</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start">${(q.options||[]).map((o,i)=>`<div style="flex:1;min-width:200px;border:1px solid ${(mn!=null&&Number(o.amount)===mn)?'#4c7d5c':'var(--line2)'};border-radius:10px;padding:8px 10px">
+        <div style="font-size:12px" class="mut">${i+1}社目${(mn!=null&&Number(o.amount)===mn)?' <b style="color:#4c7d5c">最安</b>':''}</div>
+        <div style="font-weight:700">${esc(o.vendor||'（業者名なし）')}</div>
+        <div style="font-size:16px;font-weight:700">${o.amount!=null?yen(o.amount):'—'}</div>
+        ${o.note?`<div class="mut" style="font-size:12px">${esc(o.note)}</div>`:''}
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">${(o.photos||[]).map(p=>{ const u=Q.urls[p]; if(!u) return ''; if(!/\.(jpe?g|png|webp|gif)$/i.test(p)) return `<a href="${esc(u)}" target="_blank" rel="noopener" style="width:72px;height:72px;border-radius:8px;border:1px solid var(--line2);display:flex;align-items:center;justify-content:center;text-align:center;font-size:11px;text-decoration:none">📄<br>${/\.pdf$/i.test(p)?'PDF':'書類'}</a>`; return `<a href="${esc(u)}" target="_blank" rel="noopener"><img src="${esc(u)}" style="width:72px;height:72px;object-fit:cover;border-radius:8px;border:1px solid var(--line2)"></a>`; }).join('')}</div></div>`).join('')}</div></div>`; }).join('');
 }
 function reqLogRefreshBody_(){ const el=document.getElementById('reqlog-body'); if(el) el.innerHTML=reqLogBodyHtml_(); }
 function reqLogCsv_(){
@@ -7179,7 +7225,7 @@ function viewRequestLogList_(){
   const L=D.reqLog||{ loading:true, rows:[] };
   const ym=reqLogMonth_();
   const kf=S.reqLogKind||'';
-  const kinds=[['','すべて'],['expense','経費申請'],['cost_transfer','仕入れ移動'],['spot_labor','スポット人件費'],['retirement','退職申請']];
+  const kinds=[['','すべて'],['expense','経費申請'],['quote','見積もり'],['cost_transfer','仕入れ移動'],['spot_labor','スポット人件費'],['retirement','退職申請']];
   const chip=([k,l])=>`<button class="icon-btn ${kf===k?'primary':''}" style="margin-right:6px" onclick="App.reqLogKind('${k}')">${l}</button>`;
   const all=(L.rows||[]);
   const uniq=(arr)=>[...new Set(arr.filter(x=>x))].sort((a,b)=>String(a).localeCompare(String(b),'ja'));
@@ -10130,7 +10176,7 @@ window.App = {
       await loadRequestLog_(true);
     }catch(e){ toast('処理できませんでした: '+(e&&e.message||e)); }
   },
-  reqLogReload(){ loadRequestLog_(true); },
+  reqLogReload(){ loadRequestLog_(true); if(S.reqLogKind==='quote') loadQuotes_(true); },
   reqSub(k){ S.reqSub=k; render(); if(k==='forms') loadRequestForms_(); },
   async reqEditOpen(kind,id){
     S.modal={ type:'reqEdit', kind, id, loading:true, f:{}, status:'' }; render();
