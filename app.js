@@ -7089,9 +7089,9 @@ async function fetchReqPending_(){
   try{
     const r=await reqFormRpc_('request_pending_counts');
     if(!Array.isArray(r)) return;
-    const o={ cost_transfer:0, spot_labor_request:0, retirement:0, expense:0 };
+    const o={ cost_transfer:0, spot_labor_request:0, retirement:0, expense:0, quote:0 };
     r.forEach(x=>{ o[x.kind]=Number(x.n)||0; });
-    o.total=o.cost_transfer+o.spot_labor_request+o.retirement+o.expense;
+    o.total=o.cost_transfer+o.spot_labor_request+o.retirement+o.expense+o.quote;
     const changed=!D.reqPending||D.reqPending.total!==o.total;
     D.reqPending=o;
     if(changed){ try{ if(window.parent&&window.parent!==window) window.parent.postMessage({ type:'nsReqPendingChanged' }, 'https://mirai-oss.github.io'); }catch(e){} }   // ポータルの左メニューのバッジも更新させる
@@ -7185,16 +7185,26 @@ function quoteBodyHtml_(){
   const rows=Q.rows.filter(q=>(!S.reqLogWho||q.requester===S.reqLogWho)&&(!S.reqLogStore||q.store===S.reqLogStore)&&(!qq||[q.subject,q.requester,q.store,q.note].concat((q.options||[]).map(o=>(o.vendor||'')+' '+(o.amount||''))).join(' ').toLowerCase().indexOf(qq)>=0));
   if(!rows.length) return `<div class="empty" style="padding:30px">${Q.rows.length?'条件に合う見積もりはありません':'この月の見積もりはありません'}</div>`;
   const amts=(q)=>(q.options||[]).map(o=>Number(o.amount)).filter(x=>x>0), minOf=(q)=>{ const a=amts(q); return a.length>1?Math.min.apply(null,a):null; };
+  const stBadge=(q)=>{ const m={ pending:['承認待ち','#a2803f'], on_hold:['保留中','#b5502f'], selected:['決定済み','#4c7d5c'], rejected:['却下','#8c8375'] }[q.status]||['','#888']; return `<span style="font-size:11px;font-weight:700;color:${m[1]};border:1px solid ${m[1]};border-radius:10px;padding:1px 8px;margin-left:8px">${m[0]}</span>`; };
+  const open=(q)=>q.status==='pending'||q.status==='on_hold';
   return `<div class="mut" style="font-size:12px;margin-bottom:6px">${rows.length}件</div>`+rows.map(q=>{ const mn=minOf(q);
+    const steps=(q.steps||[]); const firstOpen=steps.findIndex(x=>!x.done);
     return `<div style="border:1px solid var(--line2);border-radius:12px;padding:12px 14px;margin:10px 0">
-      <div style="font-weight:700;font-size:14px">${esc(q.subject)}</div>
+      <div style="font-weight:700;font-size:14px">${esc(q.subject)}${stBadge(q)}</div>
       <div class="mut" style="font-size:12px;margin:2px 0 8px">${esc(fmtJst_(q.submitted_at))}／${esc(q.store)}／申請者: ${esc(q.requester||'')}／見積日: ${esc(String(q.quote_date||'').replace(/-/g,'/'))}${q.note?'／'+esc(q.note):''}</div>
-      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start">${(q.options||[]).map((o,i)=>`<div style="flex:1;min-width:200px;border:1px solid ${(mn!=null&&Number(o.amount)===mn)?'#4c7d5c':'var(--line2)'};border-radius:10px;padding:8px 10px">
-        <div style="font-size:12px" class="mut">${i+1}社目${(mn!=null&&Number(o.amount)===mn)?' <b style="color:#4c7d5c">最安</b>':''}</div>
+      ${q.status==='on_hold'?`<div style="font-size:12px;color:#b5502f;margin-bottom:6px">⏸ 保留中${q.hold_reason?'：'+esc(q.hold_reason):''}（${esc(q.decided_by||'')}）— 決めるまで未読バッジが残ります</div>`:''}
+      ${q.status==='selected'?`<div style="font-size:12px;color:#4c7d5c;margin-bottom:6px">✅ 決定: ${esc(((q.options||[]).find(o=>o.id===q.selected_option_id)||{}).vendor||'')}（${esc(q.decided_by||'')}・${esc(q.decided_at?fmtJst_(q.decided_at):'')}）</div>`:''}
+      ${q.status==='rejected'?`<div style="font-size:12px;color:#8c8375;margin-bottom:6px">却下${q.hold_reason?'：'+esc(q.hold_reason):''}（${esc(q.decided_by||'')}）</div>`:''}
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start">${(q.options||[]).map((o,i)=>{ const sel=q.selected_option_id===o.id, best=(mn!=null&&Number(o.amount)===mn); return `<div style="flex:1;min-width:200px;border:${sel?'2px':'1px'} solid ${sel?'#4c7d5c':best?'#8fb89d':'var(--line2)'};border-radius:10px;padding:8px 10px;${q.status==='selected'&&!sel?'opacity:.55':''}">
+        <div style="font-size:12px" class="mut">${i+1}社目${best?' <b style="color:#4c7d5c">最安</b>':''}${sel?' <b style="color:#4c7d5c">✅ 決定</b>':''}</div>
         <div style="font-weight:700">${esc(o.vendor||'（業者名なし）')}</div>
         <div style="font-size:16px;font-weight:700">${o.amount!=null?yen(o.amount):'—'}</div>
         ${o.note?`<div class="mut" style="font-size:12px">${esc(o.note)}</div>`:''}
-        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">${(o.photos||[]).map(p=>{ const u=Q.urls[p]; if(!u) return ''; if(!/\.(jpe?g|png|webp|gif)$/i.test(p)) return `<a href="${esc(u)}" target="_blank" rel="noopener" style="width:72px;height:72px;border-radius:8px;border:1px solid var(--line2);display:flex;align-items:center;justify-content:center;text-align:center;font-size:11px;text-decoration:none">📄<br>${/\.pdf$/i.test(p)?'PDF':'書類'}</a>`; return `<a href="${esc(u)}" target="_blank" rel="noopener"><img src="${esc(u)}" style="width:72px;height:72px;object-fit:cover;border-radius:8px;border:1px solid var(--line2)"></a>`; }).join('')}</div></div>`).join('')}</div></div>`; }).join('');
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">${(o.photos||[]).map(p=>{ const u=Q.urls[p]; if(!u) return ''; if(!/\.(jpe?g|png|webp|gif)$/i.test(p)) return `<a href="${esc(u)}" target="_blank" rel="noopener" style="width:72px;height:72px;border-radius:8px;border:1px solid var(--line2);display:flex;align-items:center;justify-content:center;text-align:center;font-size:11px;text-decoration:none">📄<br>${/\.pdf$/i.test(p)?'PDF':'書類'}</a>`; return `<a href="${esc(u)}" target="_blank" rel="noopener"><img src="${esc(u)}" style="width:72px;height:72px;object-fit:cover;border-radius:8px;border:1px solid var(--line2)"></a>`; }).join('')}</div>
+        ${open(q)?`<button class="icon-btn primary" style="margin-top:8px;width:100%" data-q="${esc(q.id)}" data-o="${esc(o.id)}" onclick="App.quoteDecide(this.dataset.q,'select',this.dataset.o)">この会社に決める</button>`:''}</div>`; }).join('')}</div>
+      ${open(q)?`<div style="margin-top:8px"><button class="icon-btn" data-q="${esc(q.id)}" onclick="App.quoteDecide(this.dataset.q,'hold')">⏸ 保留にする</button> <button class="icon-btn" data-q="${esc(q.id)}" onclick="App.quoteDecide(this.dataset.q,'reject')">却下する</button></div>`:''}
+      ${steps.length?`<div style="margin-top:10px;font-size:12px"><div class="mut" style="margin-bottom:3px">📌 進み具合（本部タスクと連動）</div>${steps.map((x,k)=>`<div style="${x.done?'color:#4c7d5c':k===firstOpen?'font-weight:700':'color:#8c8375'}">${x.done?'✅':k===firstOpen?'👉':'⬜'} ${esc(x.title)}${k===firstOpen?'　← いまここ':''}</div>`).join('')}</div>`:''}
+    </div>`; }).join('');
 }
 function reqLogRefreshBody_(){ const el=document.getElementById('reqlog-body'); if(el) el.innerHTML=reqLogBodyHtml_(); }
 function reqLogCsv_(){
@@ -10161,6 +10171,16 @@ window.App = {
   reqLogTo(v){ S.reqLogTo=v; reqLogRefreshBody_(); },
   reqLogClear(){ S.reqLogQ=''; S.reqLogWho=''; S.reqLogStore=''; S.reqLogFrom=''; S.reqLogTo=''; render(); },
   reqLogCsv(){ reqLogCsv_(); },
+  async quoteDecide(id, action, optId){
+    try{
+      let reason='';
+      if(action==='select'){ if(!confirm('この会社に決めますか？（本部タスクの工程も、この会社で進める形に更新されます）')) return; }
+      else { const r=prompt(action==='hold'?'保留の理由（任意）':'却下の理由（任意）',''); if(r===null) return; reason=String(r).trim(); }
+      await plRpc_('quote_decide',{ p_id:id, p_action:action, p_option:optId||null, p_reason:reason||null });
+      toast(action==='select'?'決定しました（本部タスクも更新）':action==='hold'?'保留にしました':'却下しました');
+      await loadQuotes_(true); fetchReqPending_();
+    }catch(e){ toast('処理できませんでした: '+(e&&e.message||e)); }
+  },
   // 経費申請の承認/差戻し（expenses.htmlと同じRPC expense_approve / expense_reject。承認・差戻しの通知も同じ経路）
   async reqExpDecide(id, decision){
     if(!id) return;
