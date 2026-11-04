@@ -123,6 +123,7 @@ jobs:
         if: steps.sales.outputs.missing == 'true' || steps.attendance.outputs.missing == 'true' || steps.unresolved.outputs.count != '0'
         env:
           LARK_WEBHOOK: ${{ secrets.LARK_WEBHOOK }}
+          NOTIFY_SLACK_SECRET: ${{ secrets.NOTIFY_SLACK_SECRET }}
         run: |
           if [ -z "$LARK_WEBHOOK" ]; then
             echo "::error::LARK_WEBHOOK未設定のため警告を送信できません"
@@ -148,4 +149,12 @@ jobs:
           if [ "$HTTP_CODE" != "200" ]; then
             echo "::error::Lark送信に失敗しました（HTTP $HTTP_CODE）"
             exit 1
+          fi
+          # 2026-11-04 Slack通知基盤 Phase 2: 同じ文面を Slack #本部-開発システム にも並行送信（ns-portal notify-slack 経由・台帳に残る）
+          if [ -n "$NOTIFY_SLACK_SECRET" ]; then
+            SBODY=$(TEXT="$TEXT" node -e "console.log(JSON.stringify({action:'send',channel_key:'hq.dev_system',text:process.env.TEXT,source:'tori-dashboard',event:'morning_watchdog',username:'監視'}))")
+            SRES=$(curl -s -X POST "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/notify-slack" -H "Content-Type: application/json" -H "x-notify-secret: $NOTIFY_SLACK_SECRET" -d "$SBODY")
+            echo "slack: $SRES"
+          else
+            echo "::notice::NOTIFY_SLACK_SECRET 未設定のため Slack へは送りません"
           fi

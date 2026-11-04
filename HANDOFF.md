@@ -153,6 +153,9 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 
 ## 5. 作業ログ
 
+### 2026-11-04 朝の監視・LINE送信数の警告を Slack にも配信（Slack通知基盤 Phase 2）
+- `morning-watchdog.yml`・`line-quota-watchdog.yml`: Lark への警告送信のあと、同じ文面を ns-portal の `notify-slack` 経由で Slack `#本部-開発システム`（channel_key `hq.dev_system`）にも送る。GitHub Secret `NOTIFY_SLACK_SECRET`（10/30 登録済み）が無い環境では Slack 送信をスキップ。Lark 側は無変更。
+
 ### 2026-10-30 経営レポートを Slack にも配信（Slack通知基盤 Phase 1-b・TK-245・14日間は Lark と並行）
 - `scripts/lark-report.mjs` に `sendSlack()` を追加（`CHANNEL_KIND=slack`）。Slack の Bot Token はこのリポジトリにも GitHub Secrets にも置かず、ns-portal の Edge Function `notify-slack` に合言葉 `NOTIFY_SLACK_SECRET`（GitHub Secret）で `channel_key`＋本文を渡す。1通ごとに台帳 `notification_deliveries` に残り、`dedupe_key=report_<kind>:<期間>:<channel_key>:<店舗>` で同じ期間の再実行は 2 通目が送られない（再送したい時は `REPORT_DEDUPE_SUFFIX`）。
 - `.github/workflows/lark-report.yml`（`scripts/lark-report.workflow.yml` も同内容）: matrix に `id`/`channel_key` を追加、`kind=slack` の設定チェック分岐、Slack グループは店舗別カードの前に「グループ全店サマリ」を 1 通送る（Lark の第2レポート相当）。lark/chatwork の経路は無変更。
