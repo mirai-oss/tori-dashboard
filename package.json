@@ -1,0 +1,8 @@
+{
+  "name": "tori-dashboard-scripts",
+  "private": true,
+  "description": "GitHub Actions / ローカルで使う補助スクリプトの依存（サイト本体は素のJSで依存なし）",
+  "devDependencies": {
+    "puppeteer-core": "24.9.0"
+  }
+}

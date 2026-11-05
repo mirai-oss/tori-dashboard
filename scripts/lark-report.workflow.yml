@@ -226,6 +226,13 @@ jobs:
           [ -z "$K" ] && K=daily
           echo "REPORT_KIND=$K" >> "$GITHUB_ENV"
 
+      - name: Slack 画像日報の準備（日本語フォントと Chromium 操作ライブラリ）
+        if: env.SKIP != '1' && matrix.kind == 'slack'
+        run: |
+          sudo apt-get update -qq >/dev/null && sudo apt-get install -y -qq fonts-noto-cjk >/dev/null
+          npm install --no-audit --no-fund --silent
+          echo "chrome: $(google-chrome --version 2>/dev/null || echo 'なし')"
+
       - name: 店舗ごとに生成して送信
         if: env.SKIP != '1'
         env:
@@ -238,6 +245,10 @@ jobs:
           SLACK_CHANNEL_KEY: ${{ matrix.channel_key }}
           NOTIFY_SLACK_SECRET: ${{ secrets.NOTIFY_SLACK_SECRET }}
           REPORT_CHANNEL_ID: ${{ matrix.id }}
+          # 2026-11-05 Slack の店舗別「日報」は画像カード（scripts/daily-report-card.mjs）。
+          #   image+text = 画像と従来の文章を両方送る（並行確認期間の既定）／ image = 画像だけ／ text = 従来どおり
+          #   リポジトリの Variables に DAILY_CARD_MODE を作れば yml を触らずに切り替えられる。週報・月報は従来の文章のまま。
+          DAILY_CARD_MODE: ${{ vars.DAILY_CARD_MODE || 'image+text' }}
           STORES: ${{ matrix.stores }}
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -296,6 +307,28 @@ jobs:
             "); then
               echo "::warning::$STORE のメタ検証に失敗"
               FAIL=$((FAIL+1)); FAILED="$FAILED $STORE"; echo "::endgroup::"; continue
+            fi
+
+            if [ "$CHANNEL_KIND" = "slack" ] && [ "$REPORT_KIND" = "daily" ] && [ "$DAILY_CARD_MODE" != "text" ]; then
+              # 2026-11-05: Slack の日報は画像カード。失敗したら従来の文章日報へフォールバック（通知を止めない）
+              CARD_DATE=$(node -e "const d=require('./report-meta.json');console.log(String(d.sub||'').replace(/\//g,'-'))")
+              CARD_OK=0
+              if node scripts/daily-report-card.mjs --store "$STORE" --date "$CARD_DATE" --channel "$SLACK_CHANNEL_KEY" --out /tmp/daily-cards; then
+                CARD_OK=1; echo "$STORE ✓ 画像日報 送信完了"
+              else
+                echo "::warning::$STORE の画像日報に失敗。従来の文章日報で送ります"
+              fi
+              if [ "$CARD_OK" = "1" ] && [ "$DAILY_CARD_MODE" = "image" ]; then
+                OK=$((OK+1)); echo "::endgroup::"; continue
+              fi
+              # image+text（並行）または画像失敗時: 従来の文章も送る
+              if node scripts/lark-report.mjs send; then
+                echo "$STORE ✓ 文章日報 送信完了"; OK=$((OK+1))
+              else
+                echo "::warning::$STORE の文章日報の送信に失敗"
+                FAIL=$((FAIL+1)); FAILED="$FAILED $STORE"
+              fi
+              echo "::endgroup::"; continue
             fi
 
             if [ "$CHANNEL_KIND" = "chatwork" ] || [ "$CHANNEL_KIND" = "slack" ]; then

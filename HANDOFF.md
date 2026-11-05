@@ -153,6 +153,12 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 
 ## 5. 作業ログ
 
+### 2026-11-05 Slack の日報を「画像 1 枚＋最小テキスト」に（店舗別日報カード・並行運用で開始）
+- 構成: ハブ kd_*（経営ダッシュボードの日次集計）→ RPC `daily_report_card_vm`（ns-portal `supabase/2026-11-05_daily_report_card.sql`）→ Edge Function `daily-report-card`（vm / upload）→ `scripts/daily-report-card.mjs`（検算・HTML テンプレート・puppeteer-core＋GitHub ランナーの Chrome で PNG 1080×約1500@2x）→ Storage `daily-report/<日付>/<店舗key>.png`（公開）→ `notify-slack` へ Block Kit（見出し＋画像ブロック＋「管理システムで詳細確認」ボタン）。台帳 `notification_deliveries` に `ref_table=daily_report_card`・`dedupe_key=report_daily_card:<日付>:<channel_key>:<店舗>`。
+- 数字の正本: `kd_daily_store_full`（売上・客数・仕入・人件費・前年同曜日）、`dash_sales_target_daily`／`kd_target_monthly_v`（予算・目標率）、`kd_detail_hour_daily`（ランチ/ディナー。両方そろい合計±1%のときだけ表示）、月累計は日次の積み上げ。画像側で独自計算はしない（検算のみ）。
+- 現行の文章日報との違い: 前年は「前年の同じ曜日（364日前）」（文章日報は「前年の同じ日付」）。口コミ件数・ダイニー点数はハブに無いため「—」（スプレッドシートのみ）。
+- workflow: `kind=slack` かつ `daily` のとき画像カード。失敗時は従来の文章へフォールバック。`DAILY_CARD_MODE`（Variables）= `image+text`（既定・並行）/`image`/`text`。週報・月報は文章のまま。`package.json`（puppeteer-core）と `fonts-noto-cjk` を slack グループの job だけで入れる。
+- ローカル確認: `node scripts/daily-report-card.mjs --vm-file vm.json --out ./out --no-upload --no-send`（HTML と PNG を書く）。
 ### 2026-11-04 朝の監視・LINE送信数の警告を Slack にも配信（Slack通知基盤 Phase 2）
 - `morning-watchdog.yml`・`line-quota-watchdog.yml`: Lark への警告送信のあと、同じ文面を ns-portal の `notify-slack` 経由で Slack `#本部-開発システム`（channel_key `hq.dev_system`）にも送る。GitHub Secret `NOTIFY_SLACK_SECRET`（10/30 登録済み）が無い環境では Slack 送信をスキップ。Lark 側は無変更。
 
