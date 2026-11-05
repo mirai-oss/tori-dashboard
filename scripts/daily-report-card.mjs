@@ -67,6 +67,8 @@ function normalize(vm) {
   // ランチ/ディナー（明細ベース）は、両方そろい・合計が当日売上の ±1% 以内のときだけ出す
   const L = v.lunch, D = v.dinner, S = num(v.sales_today);
   v.show_ld = !!(L && D && S > 0 && Math.abs(num(L.sales) + num(D.sales) - S) <= S * 0.01);
+  // 明細の「客数」はお通し数ベースでランチは 0 になる（レジの客数とも合わない）ため、ランチ/ディナーは 組数(伝票数) と 組単価 を出す
+  if (v.show_ld) for (const x of [L, D]) x.per_check = num(x.checks) > 0 ? Math.round(num(x.sales) / num(x.checks)) : null;
   v.ld_note = v.show_ld ? '' : (D && !L ? 'ランチ営業なし／内訳は明細未整備のため省略' : '');
   return v;
 }
@@ -75,7 +77,6 @@ function selfCheck(v) {
   const S = num(v.sales_today), G = num(v.guests_today);
   if (S !== null && G > 0 && num(v.avg_spend_today) !== null && Math.abs(S / G - num(v.avg_spend_today)) > 1) issues.push('客単価 ≠ 売上÷客数');
   if (v.show_ld && Math.abs(num(v.lunch.sales) + num(v.dinner.sales) - S) > S * 0.01) issues.push('ランチ+ディナー ≠ 当日売上');
-  if (v.show_ld && num(v.lunch.guests) + num(v.dinner.guests) !== G) issues.push('客数合計が一致しない（明細ベース）');
   if (num(v.budget_today) > 0 && num(v.budget_ratio_today) !== null && Math.abs(S / num(v.budget_today) - num(v.budget_ratio_today)) > 0.0005) issues.push('予算比の再計算が一致しない');
   if (num(v.mtd_budget) > 0 && num(v.mtd_budget_ratio) !== null && Math.abs(num(v.mtd_sales) / num(v.mtd_budget) - num(v.mtd_budget_ratio)) > 0.0005) issues.push('月累計予算比が一致しない');
   if (num(v.cogs_today) > 0 && num(v.food_cost_ratio_today) !== null && Math.abs(num(v.cogs_today) / S - num(v.food_cost_ratio_today)) > 0.0005) issues.push('原価率が一致しない');
@@ -116,10 +117,10 @@ function buildHtml(v) {
   <section class="row2">
     <div class="card lunch"><div class="ttl"><span class="ic sun">☀</span>ランチ</div>
       <div class="big">${yen(v.lunch.sales)}</div>
-      <div class="sub"><span>客数 <b>${cnt(v.lunch.guests)}名</b></span><span>客単価 <b>${yen(v.lunch.avg_spend)}</b></span></div></div>
+      <div class="sub"><span>組数 <b>${cnt(v.lunch.checks)}組</b></span><span>組単価 <b>${yen(v.lunch.per_check)}</b></span></div></div>
     <div class="card dinner"><div class="ttl"><span class="ic moon">☾</span>ディナー</div>
       <div class="big">${yen(v.dinner.sales)}</div>
-      <div class="sub"><span>客数 <b>${cnt(v.dinner.guests)}名</b></span><span>客単価 <b>${yen(v.dinner.avg_spend)}</b></span></div></div>
+      <div class="sub"><span>組数 <b>${cnt(v.dinner.checks)}組</b></span><span>組単価 <b>${yen(v.dinner.per_check)}</b></span></div></div>
   </section>` : (v.ld_note ? `<section class="note">${esc(v.ld_note)}</section>` : '');
   return `<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=1080">
 <title>${esc(v.store_name)} 日報 ${esc(v.date)}</title>
