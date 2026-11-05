@@ -155,6 +155,17 @@ jobs:
             console.log(JSON.stringify({ include }));
           ' "$RES")
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+      - name: 古い日報画像を削除（Storage daily-report、既定 400 日より前の日付フォルダ）
+        if: env.REPORT_KIND == 'daily'
+        continue-on-error: true
+        env:
+          NSS: ${{ secrets.NOTIFY_SLACK_SECRET }}
+        run: |
+          [ -z "$NSS" ] && { echo "NOTIFY_SLACK_SECRET 未設定のためスキップ"; exit 0; }
+          curl -s --max-time 60 -X POST "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/daily-report-card" \
+            -H "x-notify-secret: $NSS" -H "content-type: application/json" \
+            -d '{"action":"prune","days":400}' || true
+          echo
 
   # ================= グループ別レポート（配信グループごとに、担当店舗を1店舗ずつ送る） =================
   # 店舗を1つだけ渡すと、店舗比較表ではなく「直近推移＋ランチ/ディナー内訳＋媒体別売上」の
