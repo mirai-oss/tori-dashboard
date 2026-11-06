@@ -57,6 +57,9 @@ const { createRequire } = await import('node:module');
 const { getPreviousYearComparableDate } = createRequire(import.meta.url)('../shared/prev-year-date.js');
 const yen = (v) => (num(v) === null ? '—' : Math.round(num(v)).toLocaleString('ja-JP') + '円');
 const cnt = (v) => (num(v) === null ? '—' : Math.round(num(v)).toLocaleString('ja-JP'));
+// 'YYYY-MM-DD' を Date を経由せず分解（UTCランナーで1日ずれるのを防ぐ）
+const ymd = (s) => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(s || '')); return m ? { y: +m[1], m: +m[2], d: +m[3] } : null; };
+const md = (s) => { const t = ymd(s); return t ? `${t.m}/${t.d}` : ''; };
 const pct = (v, d = 1) => (num(v) === null ? '—' : (num(v) * 100).toFixed(d) + '%');
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
@@ -124,16 +127,15 @@ function diniiText(v) {
 }
 function reviewText(v) {
   const inc = num(v.mtd_review_count ?? v.google_review_month_increase), total = num(v.google_review_total);
-  const ud = v.google_review_updated_at ? new Date(v.google_review_updated_at + 'T00:00:00+09:00') : null;
-  const upd = ud ? `最終取得 ${ud.getMonth() + 1}/${ud.getDate()}` : '';
+  const upd = v.google_review_updated_at ? `最終取得 ${md(v.google_review_updated_at)}` : '';
   if (inc === null && total === null) return { main: '—', sub: '', na: true };
   return { main: inc === null ? '—' : (inc > 0 ? '+' : '') + cnt(inc) + '件', sub: [total === null ? '' : `累計 ${cnt(total)}件`, upd].filter(Boolean).join('・'), na: inc === null };
 }
 function buildHtml(v) {
-  const d = new Date(v.date + 'T00:00:00+09:00');
+  const d = ymd(v.date);
   const dn = diniiText(v), rv = reviewText(v);
   // 日付: 通常「11月4日（水）」／土日はそのまま「（土）」「（日）」／祝日は「（火・祝）」＋祝日名（祝日を日曜扱いにはしない）
-  const dateJa = `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日（${v.weekday_ja}${v.holiday_name ? '・祝' : ''}）`;
+  const dateJa = `${d.y}年${d.m}月${d.d}日（${v.weekday_ja}${v.holiday_name ? '・祝' : ''}）`;
   const holidayHtml = v.holiday_name ? `<div class="hol">${esc(v.holiday_name)}</div>` : '';
   // イベント: 対象店舗・対象日だけ。最大 2 件＋「ほかN件」。無ければブロック自体を出さない
   const evs = v.events.slice(0, 2);
@@ -145,8 +147,8 @@ function buildHtml(v) {
   const lr = num(v.labor_ratio_today), fr = num(v.food_cost_ratio_today), tl = num(v.target_labor_rate), tf = num(v.target_food_cost_rate);
   const rateCls = (r, t) => (r === null ? 'na' : t === null ? 'neutral' : r <= t ? 'good' : r - t < 0.03 ? 'warn' : 'bad');
   const al = alerts(v);
-  const mtdFrom = v.mtd_from ? `${new Date(v.mtd_from + 'T00:00:00+09:00').getMonth() + 1}/${new Date(v.mtd_from + 'T00:00:00+09:00').getDate()}` : '';
-  const mtdTo = `${d.getMonth() + 1}/${d.getDate()}`;
+  const mtdFrom = md(v.mtd_from);
+  const mtdTo = md(v.date);
   const ldBlock = v.show_ld ? `
   <section class="row2">
     <div class="card lunch"><div class="ttl"><span class="ic sun">☀</span>ランチ</div>
@@ -297,8 +299,7 @@ async function renderPng(html, outPng) {
 
 // ---------- 5. 保存と Slack 投稿 ----------
 function slackBlocks(v, imageUrl) {
-  const d = new Date(v.date + 'T00:00:00+09:00');
-  const title = `📊 ${d.getMonth() + 1}/${d.getDate()} ${v.store_name} 日報`;
+  const title = `📊 ${md(v.date)} ${v.store_name} 日報`;
   return {
     text: `${title}（画像が表示されない場合はこちら: ${imageUrl}）`,
     blocks: [

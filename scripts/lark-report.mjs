@@ -177,7 +177,7 @@ async function captureBQ() {
   if (!res.ok) throw new Error('GAS応答エラー: HTTP ' + res.status);
   const data = await res.json();
   if (!data || !data.ok) throw new Error('reportDataBQ失敗: ' + (data && data.error));
-  data.gen = new Date().toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  data.gen = new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
   fs.writeFileSync(META, JSON.stringify(data));
   log('保存: report-meta.json（画像なし・数値のみ）/ メタ:', data.title, data.sub, '/ fileKey:', data.fileKey);
 }
