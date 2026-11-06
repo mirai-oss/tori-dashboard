@@ -191,7 +191,7 @@ function buildText(d) {
   // 「日報」はWebhookのカスタムキーワード。ヘッダーにも入るが note でも必ず含める
   const frTxt = t.fr != null ? (t.fr * 100).toFixed(1) + '%' : '—';
   const lrTxt = t.lr != null ? (t.lr * 100).toFixed(1) + '%' : '—';
-  const dnTxt = t.dinii != null ? t.dinii.toFixed(2) : '—';
+  const dnTxt = t.dinii != null ? String(Math.round(t.dinii)) : '—';   // ダイニー点数は整数（四捨五入）・2026-11-06
   const headline = single ? `【${single} ${d.title}】${d.sub}` : `【${d.title}】${d.sub}`;
   const pctTxt = (v) => (v != null ? (v * 100).toFixed(1) + '%' : '—');
   // 日報の前年比は「前年同月の第N週・同曜日」（GAS reportDataBQ a7pb 以降は prevCmp が付く。画像日報と同じ定義）

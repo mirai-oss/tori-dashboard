@@ -889,6 +889,8 @@ function ingestDinii(rows){
   D.dinii=recs; D.diag['dinii']='OK '+recs.length+'件 ／ 設問'+qCols.length+'列'; return true;
 }
 // 対象店舗×期間のダイニー平均（期間内に回答が無ければ累計も返す）
+// ダイニー点数の表示は整数（四捨五入）。2026-11-06 ユーザー指示「ダッシュボードも整数に揃えて」（画像日報と同じ）
+const dnFmt=(v)=>String(Math.round(Number(v)));
 function diniiStats(storeNames, a, b){
   const set=new Set(storeNames); const rc={};
   let sum=0,n=0,allSum=0,allN=0;
@@ -3534,9 +3536,9 @@ function viewDash(){
     let dyy;
     if(ds.avg==null) dyy={t:'この期間の回答なし',cls:'mut'};   // 累計にはフォールバックしない
     else if(dsPrev.avg!=null){ const dd=ds.avg-dsPrev.avg;
-      dyy={ t:plb+' '+(dd>=0?'+':'▲')+Math.abs(dd).toFixed(2)+'点 ／ '+cnt(ds.count)+'件', cls:dd>0?'up':dd<0?'dn':'mut' }; }
+      dyy={ t:plb+' '+(dd>=0?'+':'▲')+Math.abs(Math.round(dd))+'点 ／ '+cnt(ds.count)+'件', cls:dd>0?'up':dd<0?'dn':'mut' }; }
     else dyy={t:'期間内 '+cnt(ds.count)+'件の平均（'+plb+'は回答なし）',cls:'mut'};
-    kpis.push({ lb:'ダイニー再来店意向', vl: ds.avg!=null?ds.avg.toFixed(2):'—', yy:dyy });
+    kpis.push({ lb:'ダイニー再来店意向', vl: ds.avg!=null?dnFmt(ds.avg):'—', yy:dyy });
   }
   let h=periodCtrlHtml()+storeSegHtml();
   // 2026-08-22追加: このタブもD.daily経由でBigQueryトグル(推移分析タブ)の影響を受けるため、
@@ -5427,7 +5429,7 @@ function viewTarget(){
     {lb:'アルバイト人件費率', pct:true, goalPct:tm.pa, actAmt:cur.pa, invert:true},
     {lb:'社員人件費率', pct:true, goalPct:tm.emp, actAmt:cur.emp, invert:true},
     {lb:'仕入原価率', pct:true, goalPct:tm.cost, actAmt:cur.cost, invert:true},
-    {lb:'ダイニー点数', goal:tm.dinii, act:ds.avg, fmt:(v)=>v==null?'—':Number(v).toFixed(2), invert:false, isScore:true},
+    {lb:'ダイニー点数', goal:tm.dinii, act:ds.avg, fmt:(v)=>v==null?'—':dnFmt(v), invert:false, isScore:true},
     {lb:'Google口コミ件数（月間増加）', goal:tm.review, act:revInc, fmt:(v)=>v==null?'—':cnt(v)+'件', invert:false},
   ];
   h+=`<div class="panel"><div class="panel-head"><div><h3>目標項目別 予実（${mLabel}）</h3><div class="sub">人件費・仕入は売上に対する％で設定（費用系は目標以下が◯）／ダイニー点数・口コミは目標以上が◯</div></div></div>
@@ -7730,7 +7732,7 @@ function wkAutoHtml(store,s){
     <div class="kpi"><div class="lb">週売上</div><div class="vl">${yen(st.sales)}</div><div class="yy">前年比 ${yy(st.sales,st.prevSales)}</div></div>
     <div class="kpi"><div class="lb">客数</div><div class="vl">${cnt(st.guests)}人</div><div class="yy">客単価 ${yen(st.spend)}</div></div>
     <div class="kpi"><div class="lb">FL率</div><div class="vl">${st.fl!=null?(st.fl*100).toFixed(1)+'%':'—'}</div><div class="yy">原価＋人件費</div></div>
-    <div class="kpi"><div class="lb">ダイニー再来店</div><div class="vl">${st.dinii!=null?st.dinii.toFixed(2):'—'}</div><div class="yy">${cnt(st.diniiCount)}件</div></div>
+    <div class="kpi"><div class="lb">ダイニー再来店</div><div class="vl">${st.dinii!=null?dnFmt(st.dinii):'—'}</div><div class="yy">${cnt(st.diniiCount)}件</div></div>
   </div>`;
 }
 // 自分の週報（KPI＋入力ボタン。入力は目標入力と同じくモーダルで行う）
@@ -8039,17 +8041,17 @@ function viewReview(){
       ranked.forEach((r2,i)=>{
         const nm=r2.nm, tot=r2.tot;
         const cells=buckets.map(bk=>diniiStats([nm],bk.start,bk.end));
-        h+=`<tr>${multi?`<td style="font-weight:700">${i+1}</td>`:''}<td>${esc(nm)}</td>${cells.map(c2=>`<td>${c2.count>0?c2.avg.toFixed(2)+'<br><span class="mut" style="font-size:10px">'+cnt(c2.count)+'件</span>':'<span class="mut">—</span>'}</td>`).join('')}
-          <td style="font-weight:700">${tot.count>0?tot.avg.toFixed(2)+'<br><span class="mut" style="font-size:10px;font-weight:400">'+cnt(tot.count)+'件</span>':'—'}</td></tr>`;
-        expDn.push([multi?i+1:'',nm].concat(cells.map(c2=>c2.count>0?c2.avg.toFixed(2)+'('+c2.count+'件)':'')).concat([tot.count>0?tot.avg.toFixed(2)+'('+tot.count+'件)':'']));
+        h+=`<tr>${multi?`<td style="font-weight:700">${i+1}</td>`:''}<td>${esc(nm)}</td>${cells.map(c2=>`<td>${c2.count>0?dnFmt(c2.avg)+'<br><span class="mut" style="font-size:10px">'+cnt(c2.count)+'件</span>':'<span class="mut">—</span>'}</td>`).join('')}
+          <td style="font-weight:700">${tot.count>0?dnFmt(tot.avg)+'<br><span class="mut" style="font-size:10px;font-weight:400">'+cnt(tot.count)+'件</span>':'—'}</td></tr>`;
+        expDn.push([multi?i+1:'',nm].concat(cells.map(c2=>c2.count>0?dnFmt(c2.avg)+'('+c2.count+'件)':'')).concat([tot.count>0?dnFmt(tot.avg)+'('+tot.count+'件)':'']));
       });
       if(multi){
         const tCells=buckets.map(bk=>diniiStats(baseTargets,bk.start,bk.end));
         const tTot=diniiStats(baseTargets,a,b);
         h+=`<tr class="total"><td></td><td>${sc.length===allStores().length?'全店平均':'担当店舗平均'}</td>
-          ${tCells.map(c2=>`<td>${c2.count>0?c2.avg.toFixed(2)+'<br><span class="mut" style="font-size:10px;font-weight:400">'+cnt(c2.count)+'件</span>':'—'}</td>`).join('')}
-          <td>${tTot.count>0?tTot.avg.toFixed(2)+'<br><span class="mut" style="font-size:10px;font-weight:400">'+cnt(tTot.count)+'件</span>':'—'}</td></tr>`;
-        expDn.push(['','全体'].concat(tCells.map(c2=>c2.count>0?c2.avg.toFixed(2)+'('+c2.count+'件)':'')).concat([tTot.count>0?tTot.avg.toFixed(2)+'('+tTot.count+'件)':'']));
+          ${tCells.map(c2=>`<td>${c2.count>0?dnFmt(c2.avg)+'<br><span class="mut" style="font-size:10px;font-weight:400">'+cnt(c2.count)+'件</span>':'—'}</td>`).join('')}
+          <td>${tTot.count>0?dnFmt(tTot.avg)+'<br><span class="mut" style="font-size:10px;font-weight:400">'+cnt(tTot.count)+'件</span>':'—'}</td></tr>`;
+        expDn.push(['','全体'].concat(tCells.map(c2=>c2.count>0?dnFmt(c2.avg)+'('+c2.count+'件)':'')).concat([tTot.count>0?dnFmt(tTot.avg)+'('+tTot.count+'件)':'']));
       }
       h+=`</tbody></table></div></div>`;
       EXPORT.push({ title:'ダイニー月別推移（'+label+'）', headers:['順位','店舗'].concat(buckets.map(bk=>bk.label)).concat(['期間計']), rows:expDn });
@@ -8062,9 +8064,9 @@ function viewReview(){
         const nm=r2.nm, sp=r2.tot;
         const sAll=diniiStats([nm],0,Infinity);
         tSP+=(sp.avg||0)*sp.count; tNP+=sp.count; tSA+=(sAll.avg||0)*sAll.count; tNA+=sAll.count;
-        h+=`<tr>${multi?`<td style="font-weight:700">${i+1}</td>`:''}<td>${esc(nm)}</td><td>${sp.avg!=null?sp.avg.toFixed(2):'—'}</td><td>${cnt(sp.count)}件</td>
-          <td>${sAll.avg!=null?sAll.avg.toFixed(2):'—'}</td><td>${cnt(sAll.count)}件</td></tr>`;
-        expDn.push([multi?i+1:'',nm,sp.avg!=null?sp.avg.toFixed(2):'',sp.count,sAll.avg!=null?sAll.avg.toFixed(2):'',sAll.count]);
+        h+=`<tr>${multi?`<td style="font-weight:700">${i+1}</td>`:''}<td>${esc(nm)}</td><td>${sp.avg!=null?dnFmt(sp.avg):'—'}</td><td>${cnt(sp.count)}件</td>
+          <td>${sAll.avg!=null?dnFmt(sAll.avg):'—'}</td><td>${cnt(sAll.count)}件</td></tr>`;
+        expDn.push([multi?i+1:'',nm,sp.avg!=null?dnFmt(sp.avg):'',sp.count,sAll.avg!=null?dnFmt(sAll.avg):'',sAll.count]);
       });
       if(multi){
         h+=`<tr class="total"><td></td><td>${sc.length===allStores().length?'全店平均':'担当店舗平均'}</td>
@@ -8281,7 +8283,7 @@ function viewReport(kind, dateStr, storeFilter, group){
     </div>
     ${(()=>{
       const pctTxt=(v)=>v!=null?(v*100).toFixed(1)+'%':'—';
-      const dnTxt=d.tot.dinii!=null?d.tot.dinii.toFixed(2):'—';
+      const dnTxt=d.tot.dinii!=null?dnFmt(d.tot.dinii):'—';
       const cards=[
         [(d.singleStore?'':'全店')+salesLabel,yen(d.tot.sales),'前年比 '+totYoy.t,totYoy.cls],
         ['客数',cnt(d.tot.guests)+'人','客単価 '+yen(spend),''],
@@ -8403,7 +8405,7 @@ function viewReport(kind, dateStr, storeFilter, group){
           <th style="text-align:right;padding:9px 12px;font-size:11.5px;color:#5c5348">累計前年比</th>`:''}
         </tr></thead><tbody>`;
   const rateCell=(v)=>v==null?'<span style="color:#a99f8c">—</span>':(v*100).toFixed(1)+'%';
-  const dnCell=(r)=>r.dinii==null?'<span style="color:#a99f8c">—</span>':`${r.dinii.toFixed(2)}<span style="color:#a99f8c;font-size:10px"> /${cnt(r.diniiCount)}</span>`;
+  const dnCell=(r)=>r.dinii==null?'<span style="color:#a99f8c">—</span>':`${dnFmt(r.dinii)}<span style="color:#a99f8c;font-size:10px"> /${cnt(r.diniiCount)}</span>`;
   d.rows.forEach((r,i)=>{
     const ry=yoy(r.sales,r.prevSales);
     h+=`<tr style="border-top:1px solid #efe9dd${i%2?';background:#fbf9f4':''}">
@@ -8425,7 +8427,7 @@ function viewReport(kind, dateStr, storeFilter, group){
       <td style="padding:9px 12px;font-size:12.5px;text-align:right;color:${totYoy.cls||'#5c5348'}">${totYoy.t}</td>
       <td style="padding:9px 12px;font-size:13px;text-align:right">${d.tot.fr!=null?(d.tot.fr*100).toFixed(1)+'%':'—'}</td>
       <td style="padding:9px 12px;font-size:13px;text-align:right">${d.tot.lr!=null?(d.tot.lr*100).toFixed(1)+'%':'—'}</td>
-      ${d.hasDinii?`<td style="padding:9px 12px;font-size:13px;text-align:right">${d.tot.dinii!=null?d.tot.dinii.toFixed(2):'—'}<span style="font-weight:400;color:#8c8375;font-size:10px"> /${cnt(d.tot.diniiCount)}</span></td>`:''}
+      ${d.hasDinii?`<td style="padding:9px 12px;font-size:13px;text-align:right">${d.tot.dinii!=null?dnFmt(d.tot.dinii):'—'}<span style="font-weight:400;color:#8c8375;font-size:10px"> /${cnt(d.tot.diniiCount)}</span></td>`:''}
       <td style="padding:9px 12px;font-size:13px;text-align:right">${cnt(d.tot.guests)}人</td>
       <td style="padding:9px 12px;font-size:13px;text-align:right">${yen(spend)}</td>
       ${kind!=='monthly'?`<td style="padding:9px 12px;font-size:13px;text-align:right">${yen(d.tot.cum)}</td>
