@@ -195,7 +195,7 @@ function buildText(d) {
   const headline = single ? `【${single} ${d.title}】${d.sub}` : `【${d.title}】${d.sub}`;
   const pctTxt = (v) => (v != null ? (v * 100).toFixed(1) + '%' : '—');
   // 日報の前年比は「前年同月の第N週・同曜日」（GAS reportDataBQ a7pb 以降は prevCmp が付く。画像日報と同じ定義）
-  const cmp = d.kind === 'daily' ? (d.prevCmp || null) : null;
+  const cmp = d.kind === 'daily' ? (d.prevCmp || (d.tot && d.tot.prevCmp) || null) : null;   // GAS は tot の中に入れて返す
   const yoyLabel = cmp ? '前年同月同週比' : '前年比';
   const cmpTxt = cmp ? (cmp.comparison_date ? `（比較対象 ${cmp.comparison_date.replace(/-/g, '/')}・${cmp.label}）` : `（前年同月に${cmp.label}なし）`) : '';
   const summary =
