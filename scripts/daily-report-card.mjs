@@ -119,7 +119,7 @@ function alerts(v) {
 function diniiText(v) {
   const sc = num(v.mtd_dinii_score), n = num(v.mtd_dinii_count);
   if (sc === null && n === null) return { main: '—', sub: '', na: true };
-  const score = sc === null ? '—' : (Number.isInteger(sc) ? String(sc) : sc.toFixed(2)) + '点';
+  const score = sc === null ? '—' : Math.round(sc) + '点';   // ユーザー指示 2026-11-06: 小数なし・四捨五入（55.3→55、55.5→56）
   return { main: score, sub: `（${n === null ? '—' : cnt(n)}件）`, na: sc === null };
 }
 function reviewText(v) {
