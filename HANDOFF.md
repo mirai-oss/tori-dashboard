@@ -153,6 +153,13 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 
 ## 5. 作業ログ
 
+### 2026-11-06 口コミタブの Supabase 直読み（GAS a7pc・貼替待ち）
+- 背景: Google口コミ取得をスプレッドシート経由から Supabase 直結（Places API → Edge Function `google-reviews-fetch` 毎朝 8 時 → `google_review_snapshots`）へ移行（ns-portal `docs/設計書_Google口コミSupabase直結_2026-11-06.md`）。日報画像は同日に切替済み。残っていた「ダッシュボード＝シート正本」を解消する分。
+- 変更: `gas/Code.gs` に `fetchReviewLog_(months)` を追加し、`getData` の key='review' でハブの View `google_review_log_v`（旧シート「口コミ推移ログ」と同じ 8 列。店舗名＝掲載名）を anon キーで読む。取れたらシートの値を上書き、失敗時はシートのまま（10 分キャッシュ）。`ping` ver → `a7pc`。**app.js は無変更**（`ingestReview` は列名で読む・「取得日−1 日」の扱いも同じ・看板の紐付けは REVIEW_CHILDREN/aliases のまま）。
+- 今後は毎日のスナップショットになるので、口コミタブの「期間内 増加」は週 1 回取得だった頃より日単位で正確になる。`reviewIncrease` の `Math.max(0,…)`（表示側の 0 丸め）はそのまま（データ側はマイナス保持。表示を変えるかは別途判断）。
+- 本番反映: ユーザーの貼替＋デプロイ更新（手順 `gas/貼替手順_2026-11-06_a7pc.md`）。反映後に `bash scripts/status.sh` で ping=a7pc を確認。
+- 旧 GAS（売上DB の口コミ取得・毎月 1/8/15/22/29）は 14 日並行の比較用に継続中。停止はユーザー判断後。
+
 ### 2026-11-05 Slack の日報を「画像 1 枚＋最小テキスト」に（店舗別日報カード・並行運用で開始）
 - 構成: ハブ kd_*（経営ダッシュボードの日次集計）→ RPC `daily_report_card_vm`（ns-portal `supabase/2026-11-05_daily_report_card.sql`）→ Edge Function `daily-report-card`（vm / upload）→ `scripts/daily-report-card.mjs`（検算・HTML テンプレート・puppeteer-core＋GitHub ランナーの Chrome で PNG 1080×約1500@2x）→ Storage `daily-report/<日付>/<店舗key>.png`（**非公開バケット・署名 URL 有効期限 1 年**。2026-11-05 に公開→非公開へ変更、古い日付フォルダは prepare ジョブの `prune` で 400 日後に削除）→ `notify-slack` へ Block Kit（見出し＋画像ブロック＋「管理システムで詳細確認」ボタン）。台帳 `notification_deliveries` に `ref_table=daily_report_card`・`dedupe_key=report_daily_card:<日付>:<channel_key>:<店舗>`。
 - 数字の正本: `kd_daily_store_full`（売上・客数・仕入・人件費・前年同曜日）、`dash_sales_target_daily`／`kd_target_monthly_v`（予算・目標率）、`kd_detail_hour_daily`（ランチ/ディナー。両方そろい合計±1%のときだけ表示）、月累計は日次の積み上げ。画像側で独自計算はしない（検算のみ）。
