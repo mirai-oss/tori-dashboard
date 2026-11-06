@@ -268,6 +268,8 @@ function slackBlocks(v, imageUrl) {
   const raw = await getVM();
   const v = normalize(raw);
   if (!v.has_data) throw new Error(`${v.store_name} ${v.date} の日次データがありません`);
+  // 売上も客数も 0 のままなら、レジ集計がまだハブに反映されていない（12:00 の同期前など）と見なして画像は作らない → 文章日報へ
+  if (!(num(v.sales_today) > 0) && !(num(v.guests_today) > 0)) throw new Error(`${v.store_name} ${v.date} の売上がまだ 0 円です（ハブ未反映の可能性）`);
   const issues = selfCheck(v);
   if (issues.length) throw new Error('検算エラー: ' + issues.join(' / '));
   const key = (v.file_key || ('store_' + v.store_no)).replace(/[^a-zA-Z0-9_-]/g, '');
@@ -300,7 +302,10 @@ function slackBlocks(v, imageUrl) {
     };
     const r = await fetch(SLACK_API, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-notify-secret': SECRET }, body: JSON.stringify(body) });
     const j = await r.json().catch(() => ({}));
-    if (!r.ok || !j.ok) throw new Error('Slack送信失敗: HTTP ' + r.status + ' ' + JSON.stringify(j).slice(0, 300));
+    if (!r.ok || !j.ok) {
+      const hint = j && j.error === 'invalid_blocks' ? '（Slack が画像 URL を取得できません。バケットの公開設定か署名 URL を確認）' : '';
+      throw new Error('Slack送信失敗: HTTP ' + r.status + ' ' + JSON.stringify(j).slice(0, 300) + hint);
+    }
     log(`✓ Slack ${channel} / ${j.status} / notification_id=${j.notification_id}`);
   }
   console.log(JSON.stringify({ ok: true, store: v.store_name, date: v.date, image_url: url, alerts: alerts(v).map((a) => a.t) }));
