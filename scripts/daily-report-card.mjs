@@ -115,8 +115,23 @@ function alerts(v) {
 }
 
 // ---------- 3. HTML テンプレート（白ベース・色は 緑=良い/赤=悪い/オレンジ=注意/青=ディナー/黄=ランチ） ----------
+// 口コミ件数（Google・月間増加）とダイニー点数（また来たい点数の平均＋回答件数）。画像側では計算せず表示だけ
+function diniiText(v) {
+  const sc = num(v.mtd_dinii_score), n = num(v.mtd_dinii_count);
+  if (sc === null && n === null) return { main: '—', sub: '', na: true };
+  const score = sc === null ? '—' : (Number.isInteger(sc) ? String(sc) : sc.toFixed(2)) + '点';
+  return { main: score, sub: `（${n === null ? '—' : cnt(n)}件）`, na: sc === null };
+}
+function reviewText(v) {
+  const inc = num(v.mtd_review_count ?? v.google_review_month_increase), total = num(v.google_review_total);
+  const ud = v.google_review_updated_at ? new Date(v.google_review_updated_at + 'T00:00:00+09:00') : null;
+  const upd = ud ? `最終取得 ${ud.getMonth() + 1}/${ud.getDate()}` : '';
+  if (inc === null && total === null) return { main: '—', sub: '', na: true };
+  return { main: inc === null ? '—' : (inc > 0 ? '+' : '') + cnt(inc) + '件', sub: [total === null ? '' : `累計 ${cnt(total)}件`, upd].filter(Boolean).join('・'), na: inc === null };
+}
 function buildHtml(v) {
   const d = new Date(v.date + 'T00:00:00+09:00');
+  const dn = diniiText(v), rv = reviewText(v);
   // 日付: 通常「11月4日（水）」／土日はそのまま「（土）」「（日）」／祝日は「（火・祝）」＋祝日名（祝日を日曜扱いにはしない）
   const dateJa = `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日（${v.weekday_ja}${v.holiday_name ? '・祝' : ''}）`;
   const holidayHtml = v.holiday_name ? `<div class="hol">${esc(v.holiday_name)}</div>` : '';
@@ -196,6 +211,7 @@ function buildHtml(v) {
   .mtd .l{font-size:19px;color:var(--gray);font-weight:700}
   .mtd .v{font-size:34px;font-weight:900;margin-top:6px;white-space:nowrap;letter-spacing:-0.5px}
   .mtd .v.sm{font-size:30px}
+  .mtd .v .sub{font-size:21px;font-weight:800;margin-left:2px;letter-spacing:0}
   .mtd .t{font-size:16px;color:var(--gray);margin-top:4px}
   .badge{display:inline-block;margin-top:8px;padding:6px 12px;border-radius:10px;font-size:20px;font-weight:800;background:#e7f6ec;color:var(--good)}
   .badge.bad{background:#fde9e7;color:var(--bad)}.badge.warn{background:#fff1e0;color:var(--warn)}.badge.na{background:#eef1f5;color:#9aa3ad}
@@ -241,8 +257,8 @@ ${ldBlock}
       <div class="badge ${cls(num(v.mtd_budget_ratio), 1, 0.9)}">予算比 ${pct(v.mtd_budget_ratio)}</div></div>
     <div class="cell"><div class="l">人件費率</div><div class="v sm ${rateCls(num(v.mtd_labor_ratio), tl)}">${pct(v.mtd_labor_ratio)}</div><div class="t">${tl === null ? '目標 未設定' : '（目標 ' + pct(tl) + '）'}</div></div>
     <div class="cell"><div class="l">原価率</div><div class="v sm ${rateCls(num(v.mtd_food_cost_ratio), tf)}">${pct(v.mtd_food_cost_ratio)}</div><div class="t">${tf === null ? '目標 未設定' : '（目標 ' + pct(tf) + '）'}</div></div>
-    <div class="cell"><div class="l">口コミ件数</div><div class="v sm ${num(v.mtd_review_count) === null ? 'na' : ''}">${num(v.mtd_review_count) === null ? '—' : cnt(v.mtd_review_count) + '件'}</div><div class="t">（当月累計）</div></div>
-    <div class="cell"><div class="l">ダイニー点数</div><div class="v sm ${num(v.mtd_dinii_score) === null ? 'na' : ''}">${num(v.mtd_dinii_score) === null ? '—' : num(v.mtd_dinii_score)}</div><div class="t">${num(v.target_dinii) === null ? '（当月最新）' : '（目標 ' + num(v.target_dinii) + '）'}</div></div>
+    <div class="cell"><div class="l">口コミ件数</div><div class="v sm ${rv.na ? 'na' : 'good'}">${rv.main}</div><div class="t">${esc(rv.sub || '（Google・当月増加）')}</div></div>
+    <div class="cell"><div class="l">ダイニー点数</div><div class="v sm ${dn.na ? 'na' : 'good'}">${dn.main}<span class="sub">${dn.sub}</span></div><div class="t">${num(v.target_dinii) === null ? '（また来たい点数の平均）' : '（目標 ' + num(v.target_dinii) + '）'}</div></div>
   </div>
 </section>
 
