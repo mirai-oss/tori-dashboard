@@ -128,8 +128,18 @@ function diniiText(v) {
 function reviewText(v) {
   const inc = num(v.mtd_review_count ?? v.google_review_month_increase), total = num(v.google_review_total);
   const upd = v.google_review_updated_at ? `最終取得 ${md(v.google_review_updated_at)}` : '';
-  if (inc === null && total === null) return { main: '—', sub: '', na: true };
-  return { main: inc === null ? '—' : (inc > 0 ? '+' : '') + cnt(inc) + '件', sub: [total === null ? '' : `累計 ${cnt(total)}件`, upd].filter(Boolean).join('・'), na: inc === null };
+  if (inc === null && total === null) return { main: '—', sub: '', na: true, lines: [] };
+  // 看板（Google掲載）ごとの内訳: 2看板以上のときだけ、最大3行＋「ほかN看板」（ユーザー指示 2026-11-06。画像側では計算しない）
+  const ls = Array.isArray(v.google_review_listings) ? v.google_review_listings : [];
+  let lines = [];
+  if (ls.length >= 2) {
+    lines = ls.slice(0, 3).map((l) => {
+      const li = num(l.month_increase), lt = num(l.total);
+      return `${l.label || l.name || '—'}${li === null ? ' —件' : (li > 0 ? '+' : '') + cnt(li) + '件'}${lt === null ? '' : `（${cnt(lt)}）`}`;
+    });
+    if (ls.length > 3) lines.push(`ほか${ls.length - 3}看板`);
+  }
+  return { main: inc === null ? '—' : (inc > 0 ? '+' : '') + cnt(inc) + '件', sub: [total === null ? '' : `累計 ${cnt(total)}件`, upd].filter(Boolean).join('・'), na: inc === null, lines };
 }
 function buildHtml(v) {
   const d = ymd(v.date);
@@ -207,7 +217,9 @@ function buildHtml(v) {
   .kpi .l{font-size:20px;color:var(--gray);font-weight:700}
   .kpi .v{font-size:44px;font-weight:900;margin-top:6px}
   .kpi .t{font-size:17px;color:var(--gray);margin-top:4px}
-  .mtd{display:grid;grid-template-columns:1.6fr 1fr 1fr 1fr 1fr;gap:10px;margin-top:18px}
+  .mtd{display:grid;grid-template-columns:1.5fr .9fr .9fr 1.45fr 1.05fr;gap:10px;margin-top:18px}
+  .mtd .lst{margin-top:4px}
+  .mtd .lst div{font-size:16px;font-weight:700;color:var(--ink);white-space:nowrap;line-height:1.35}
   .mtd .cell{padding:8px 10px;border-left:1px solid var(--line)}
   .mtd .cell:first-child{border-left:0;padding-left:0}
   .mtd .l{font-size:19px;color:var(--gray);font-weight:700}
@@ -259,7 +271,7 @@ ${ldBlock}
       <div class="badge ${cls(num(v.mtd_budget_ratio), 1, 0.9)}">予算比 ${pct(v.mtd_budget_ratio)}</div></div>
     <div class="cell"><div class="l">人件費率</div><div class="v sm ${rateCls(num(v.mtd_labor_ratio), tl)}">${pct(v.mtd_labor_ratio)}</div><div class="t">${tl === null ? '目標 未設定' : '（目標 ' + pct(tl) + '）'}</div></div>
     <div class="cell"><div class="l">原価率</div><div class="v sm ${rateCls(num(v.mtd_food_cost_ratio), tf)}">${pct(v.mtd_food_cost_ratio)}</div><div class="t">${tf === null ? '目標 未設定' : '（目標 ' + pct(tf) + '）'}</div></div>
-    <div class="cell"><div class="l">口コミ件数</div><div class="v sm ${rv.na ? 'na' : 'good'}">${rv.main}</div><div class="t">${esc(rv.sub || '（Google・当月増加）')}</div></div>
+    <div class="cell"><div class="l">口コミ件数</div><div class="v sm ${rv.na ? 'na' : 'good'}">${rv.main}</div>${rv.lines.length ? `<div class="lst">${rv.lines.map((x) => `<div>${esc(x)}</div>`).join('')}</div>` : ''}<div class="t">${esc(rv.sub || '（Google・当月増加）')}</div></div>
     <div class="cell"><div class="l">ダイニー点数</div><div class="v sm ${dn.na ? 'na' : 'good'}">${dn.main}<span class="sub">${dn.sub}</span></div><div class="t">${num(v.target_dinii) === null ? '（また来たい点数の平均）' : '（目標 ' + num(v.target_dinii) + '）'}</div></div>
   </div>
 </section>
