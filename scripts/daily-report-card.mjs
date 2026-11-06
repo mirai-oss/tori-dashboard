@@ -52,6 +52,9 @@ async function getVM() {
 
 // ---------- 2. 検算・整形ルール（計算は作らない。矛盾の検出と表示の判断だけ） ----------
 const num = (v) => (v === null || v === undefined || v === '' ? null : Number(v));
+// 前年比の比較対象日（共通関数・正本 shared/prev-year-date.js）。ハブ側 jp_prev_year_same_nth_weekday と一致することを検算で確認する
+const { createRequire } = await import('node:module');
+const { getPreviousYearComparableDate } = createRequire(import.meta.url)('../shared/prev-year-date.js');
 const yen = (v) => (num(v) === null ? '—' : Math.round(num(v)).toLocaleString('ja-JP') + '円');
 const cnt = (v) => (num(v) === null ? '—' : Math.round(num(v)).toLocaleString('ja-JP'));
 const pct = (v, d = 1) => (num(v) === null ? '—' : (num(v) * 100).toFixed(d) + '%');
@@ -70,6 +73,13 @@ function normalize(vm) {
   // 明細の「客数」はお通し数ベースでランチは 0 になる（レジの客数とも合わない）ため、ランチ/ディナーは 組数(伝票数) と 組単価 を出す
   if (v.show_ld) for (const x of [L, D]) x.per_check = num(x.checks) > 0 ? Math.round(num(x.sales) / num(x.checks)) : null;
   v.ld_note = v.show_ld ? '' : (D && !L ? 'ランチ営業なし／内訳は明細未整備のため省略' : '');
+  // 前年比 = 前年同月の第N週・同曜日（VM v2）。比較対象が無い／前年のデータが無いときは null → 「—」
+  v.cmp = getPreviousYearComparableDate(v.date);
+  v.yoy = v.ly_found && num(v.ly_sales) > 0 ? num(v.yoy_same_week_ratio) : null;
+  v.cmp_text = v.cmp ? (v.cmp.comparison_date ? `比較対象：${v.cmp.comparison_date.replace(/-/g, '/')}（${v.cmp.label}）` : `前年同月に${v.cmp.label}なし`) : '';
+  // イベント（新横浜エリアなど。無ければ空配列＝何も出さない）
+  v.events = Array.isArray(v.events) ? v.events : [];
+  v.events_total = num(v.events_total) ?? v.events.length;
   return v;
 }
 function selfCheck(v) {
@@ -81,6 +91,8 @@ function selfCheck(v) {
   if (num(v.mtd_budget) > 0 && num(v.mtd_budget_ratio) !== null && Math.abs(num(v.mtd_sales) / num(v.mtd_budget) - num(v.mtd_budget_ratio)) > 0.0005) issues.push('月累計予算比が一致しない');
   if (num(v.cogs_today) > 0 && num(v.food_cost_ratio_today) !== null && Math.abs(num(v.cogs_today) / S - num(v.food_cost_ratio_today)) > 0.0005) issues.push('原価率が一致しない');
   if (num(v.labor_today) > 0 && num(v.labor_ratio_today) !== null && Math.abs(num(v.labor_today) / S - num(v.labor_ratio_today)) > 0.0005) issues.push('人件費率が一致しない');
+  if (v.cmp && 'ly_comparison_date' in v && (v.cmp.comparison_date || null) !== (v.ly_comparison_date || null)) issues.push(`比較対象日が共通関数とハブで不一致（${v.cmp.comparison_date} ≠ ${v.ly_comparison_date}）`);
+  if (v.yoy !== null && num(v.ly_sales) > 0 && Math.abs(S / num(v.ly_sales) - v.yoy) > 0.0005) issues.push('前年同月同週比の再計算が一致しない');
   return issues;
 }
 // 本日のポイント: 優先 1.大きな異常 2.目標超過 3.売上未達 4.原価異常 5.良い点 ／ 最大 2 件
@@ -88,7 +100,7 @@ function alerts(v) {
   const out = [];
   const lr = num(v.labor_ratio_today), tl = num(v.target_labor_rate);
   const fr = num(v.food_cost_ratio_today), tf = num(v.target_food_cost_rate);
-  const br = num(v.budget_ratio_today), yr = num(v.yoy_same_weekday_ratio);
+  const br = num(v.budget_ratio_today), yr = v.yoy;
   if (lr !== null && tl !== null && lr - tl >= 0.10) out.push({ lv: 'bad', t: `人件費率 ${pct(lr)} が目標 ${pct(tl)} を大きく超過（+${((lr - tl) * 100).toFixed(1)}pt）` });
   if (fr !== null && tf !== null && fr - tf >= 0.10) out.push({ lv: 'bad', t: `原価率 ${pct(fr)} が目標 ${pct(tf)} を大きく超過（+${((fr - tf) * 100).toFixed(1)}pt）` });
   if (lr !== null && tl !== null && lr > tl && lr - tl < 0.10) out.push({ lv: 'warn', t: `人件費率が目標（${pct(tl)}）を +${((lr - tl) * 100).toFixed(1)}pt 超過` });
@@ -96,18 +108,25 @@ function alerts(v) {
   if (fr !== null && tf !== null && fr > tf && fr - tf < 0.10) out.push({ lv: 'warn', t: `原価率が目標（${pct(tf)}）を +${((fr - tf) * 100).toFixed(1)}pt 超過` });
   const good = [];
   if (br !== null && br >= 1) good.push(`予算比 ${pct(br)}`);
-  if (yr !== null && yr >= 1) good.push(`前年同曜日比 ${pct(yr)}`);
+  if (yr !== null && yr >= 1) good.push(`前年同月同週比 ${pct(yr)}`);
   if (good.length) out.push({ lv: 'good', t: `売上は ${good.join('、')} と好調` });
-  if (!out.length && yr !== null && yr < 0.9) out.push({ lv: 'warn', t: `前年同曜日比 ${pct(yr)}（前年を下回っています）` });
+  if (!out.length && yr !== null && yr < 0.9) out.push({ lv: 'warn', t: `前年同月同週比 ${pct(yr)}（前年を下回っています）` });
   return out.slice(0, 2);
 }
 
 // ---------- 3. HTML テンプレート（白ベース・色は 緑=良い/赤=悪い/オレンジ=注意/青=ディナー/黄=ランチ） ----------
 function buildHtml(v) {
   const d = new Date(v.date + 'T00:00:00+09:00');
-  const dateJa = `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日（${v.weekday_ja}）`;
+  // 日付: 通常「11月4日（水）」／土日はそのまま「（土）」「（日）」／祝日は「（火・祝）」＋祝日名（祝日を日曜扱いにはしない）
+  const dateJa = `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日（${v.weekday_ja}${v.holiday_name ? '・祝' : ''}）`;
+  const holidayHtml = v.holiday_name ? `<div class="hol">${esc(v.holiday_name)}</div>` : '';
+  // イベント: 対象店舗・対象日だけ。最大 2 件＋「ほかN件」。無ければブロック自体を出さない
+  const evs = v.events.slice(0, 2);
+  const evMore = Math.max(0, (v.events_total || v.events.length) - evs.length);
+  const evLine = (e) => `<div class="ev"><span class="evv">🎫 ${esc(e.venue || '会場')}</span><span class="evn">${esc(e.event_name)}</span>${e.start_time ? `<span class="evt">${esc(e.start_time)}〜</span>` : ''}</div>`;
+  const eventsHtml = evs.length ? `<div class="events">${evs.map(evLine).join('')}${evMore ? `<div class="ev more">ほか${evMore}件</div>` : ''}</div>` : '';
   const cls = (val, good, bad) => (val === null ? 'na' : val >= good ? 'good' : val < bad ? 'bad' : 'warn');
-  const br = num(v.budget_ratio_today), yr = num(v.yoy_same_weekday_ratio);
+  const br = num(v.budget_ratio_today), yr = v.yoy;
   const lr = num(v.labor_ratio_today), fr = num(v.food_cost_ratio_today), tl = num(v.target_labor_rate), tf = num(v.target_food_cost_rate);
   const rateCls = (r, t) => (r === null ? 'na' : t === null ? 'neutral' : r <= t ? 'good' : r - t < 0.03 ? 'warn' : 'bad');
   const al = alerts(v);
@@ -129,10 +148,18 @@ function buildHtml(v) {
   *{box-sizing:border-box;margin:0;padding:0}
   html,body{width:1080px;background:var(--bg);color:var(--ink);font-family:"Hiragino Sans","Hiragino Kaku Gothic ProN","Noto Sans CJK JP","Noto Sans JP","Yu Gothic",sans-serif;-webkit-font-smoothing:antialiased}
   .wrap{width:1080px;padding:0 0 36px}
-  header{background:linear-gradient(90deg,#1f2f4d,#2a4470);color:#fff;padding:30px 40px;display:flex;align-items:center;justify-content:space-between}
+  header{background:linear-gradient(90deg,#1f2f4d,#2a4470);color:#fff;padding:26px 40px;display:flex;align-items:center;justify-content:space-between;gap:24px}
+  header .left{min-width:0;flex:1}
+  header .events{margin-top:10px;display:flex;flex-direction:column;gap:6px}
+  header .ev{display:flex;align-items:center;gap:10px;background:rgba(124,139,255,.22);border:1px solid rgba(160,172,255,.45);border-radius:12px;padding:6px 14px;font-size:21px;font-weight:700;max-width:640px}
+  header .ev .evv{color:#dbe2ff;white-space:nowrap}
+  header .ev .evn{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+  header .ev .evt{color:#dbe2ff;white-space:nowrap;font-size:19px}
+  header .ev.more{background:transparent;border-color:transparent;padding:0 14px;font-size:18px;color:#dbe2ff}
+  header .rep{text-align:right;flex:none}
+  header .hol{margin-top:8px;font-size:22px;font-weight:800;color:#ffd166}
   header .store{font-size:44px;font-weight:800;letter-spacing:1px}
   header .store small{display:block;font-size:16px;font-weight:600;opacity:.75;letter-spacing:3px;margin-top:4px}
-  header .rep{text-align:right}
   header .rep .t{font-size:30px;font-weight:800}
   header .rep .t em{font-style:normal;font-size:20px;margin-left:10px;opacity:.9}
   header .rep .d{display:inline-block;margin-top:10px;background:rgba(255,255,255,.14);border-radius:12px;padding:8px 16px;font-size:22px;font-weight:700}
@@ -148,6 +175,8 @@ function buildHtml(v) {
   .sales .side{width:400px;display:flex;flex-direction:column;gap:14px;justify-content:center}
   .kv{display:flex;justify-content:space-between;align-items:center;background:#f6f8fb;border:1px solid var(--line);border-radius:16px;padding:16px 20px;font-size:24px;font-weight:700;color:var(--gray)}
   .kv b{font-size:34px;font-weight:900}
+  .kv.yoy{flex-wrap:wrap}
+  .kv .cmp{flex-basis:100%;font-size:16px;font-weight:600;color:#8a93a0;margin-top:4px;text-align:right}
   .good{color:var(--good)}.bad{color:var(--bad)}.warn{color:var(--warn)}.na{color:#9aa3ad}.neutral{color:var(--ink)}
   .row2{display:flex;gap:22px}
   .row2 .card{flex:1}
@@ -181,8 +210,8 @@ function buildHtml(v) {
   .gen{margin:14px 40px 0;color:#9aa3ad;font-size:15px;text-align:right}
 </style></head><body><div class="wrap">
 <header>
-  <div class="store">${esc(v.store_name)}<small>N-STYLE GROUP</small></div>
-  <div class="rep"><div class="t">Daily Report<em>日報</em></div><div class="d">${dateJa}</div></div>
+  <div class="left"><div class="store">${esc(v.store_name)}<small>N-STYLE GROUP</small></div>${eventsHtml}</div>
+  <div class="rep"><div class="t">Daily Report<em>日報</em></div><div class="d">${dateJa}</div>${holidayHtml}</div>
 </header>
 
 <section class="card sales">
@@ -190,7 +219,7 @@ function buildHtml(v) {
     <div class="num">${num(v.sales_today) === null ? '<span class="na">—</span>' : Math.round(num(v.sales_today)).toLocaleString('ja-JP') + '<small>円</small>'}</div></div>
   <div class="side">
     <div class="kv"><span>予算比</span><b class="${cls(br, 1, 0.9)}">${pct(br)}</b></div>
-    <div class="kv"><span>前年同曜日比</span><b class="${cls(yr, 1, 0.9)}">${pct(yr)}</b></div>
+    <div class="kv yoy"><span>前年同月同週比</span><b class="${cls(yr, 1, 0.9)}">${pct(yr)}</b>${v.cmp_text ? `<span class="cmp">${esc(v.cmp_text)}${yr === null && v.cmp && v.cmp.comparison_date ? '・前年データなし' : ''}</span>` : ''}</div>
   </div>
 </section>
 ${ldBlock}
@@ -258,7 +287,7 @@ function slackBlocks(v, imageUrl) {
     text: `${title}（画像が表示されない場合はこちら: ${imageUrl}）`,
     blocks: [
       { type: 'section', text: { type: 'mrkdwn', text: `*${title}*` } },
-      { type: 'image', image_url: imageUrl, alt_text: `${v.store_name} ${v.date} 日報` },
+      { type: 'image', image_url: imageUrl, alt_text: `${v.store_name} ${v.date} 日報${v.cmp_text ? '／' + v.cmp_text : ''}` },
       { type: 'actions', elements: [{ type: 'button', text: { type: 'plain_text', text: '管理システムで詳細確認', emoji: true }, url: PORTAL_URL, action_id: 'report.card.open' }] },
     ],
   };
@@ -270,6 +299,7 @@ function slackBlocks(v, imageUrl) {
   if (!v.has_data) throw new Error(`${v.store_name} ${v.date} の日次データがありません`);
   // 売上も客数も 0 のままなら、レジ集計がまだハブに反映されていない（12:00 の同期前など）と見なして画像は作らない → 文章日報へ
   if (!(num(v.sales_today) > 0) && !(num(v.guests_today) > 0)) throw new Error(`${v.store_name} ${v.date} の売上がまだ 0 円です（ハブ未反映の可能性）`);
+  if (v.cmp) log(`前年比較: target_date=${v.cmp.target_date} weekday=${v.cmp.weekday} week_index=${v.cmp.week_index} comparison_date=${v.cmp.comparison_date ?? 'null'}${v.cmp.reason ? ' reason=' + v.cmp.reason : ''} ly_sales=${v.ly_sales ?? 'null'} holiday=${v.holiday_name ?? '-'} events=${v.events.length}`);
   const issues = selfCheck(v);
   if (issues.length) throw new Error('検算エラー: ' + issues.join(' / '));
   const key = (v.file_key || ('store_' + v.store_no)).replace(/[^a-zA-Z0-9_-]/g, '');

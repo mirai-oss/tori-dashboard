@@ -194,8 +194,12 @@ function buildText(d) {
   const dnTxt = t.dinii != null ? t.dinii.toFixed(2) : '—';
   const headline = single ? `【${single} ${d.title}】${d.sub}` : `【${d.title}】${d.sub}`;
   const pctTxt = (v) => (v != null ? (v * 100).toFixed(1) + '%' : '—');
+  // 日報の前年比は「前年同月の第N週・同曜日」（GAS reportDataBQ a7pb 以降は prevCmp が付く。画像日報と同じ定義）
+  const cmp = d.kind === 'daily' ? (d.prevCmp || null) : null;
+  const yoyLabel = cmp ? '前年同月同週比' : '前年比';
+  const cmpTxt = cmp ? (cmp.comparison_date ? `（比較対象 ${cmp.comparison_date.replace(/-/g, '/')}・${cmp.label}）` : `（前年同月に${cmp.label}なし）`) : '';
   const summary =
-    `**${single ? '' : '全店'}${d.salesLabel} ${yen(t.sales)}**（前年比 ${yoy(t.sales, t.prevSales)}）\n` +
+    `**${single ? '' : '全店'}${d.salesLabel} ${yen(t.sales)}**（${yoyLabel} ${yoy(t.sales, t.prevSales)}）${cmpTxt}\n` +
     `客数 ${cnt(t.guests)}人 ／ 客単価 ${yen(spend)} ／ F率 ${frTxt} ／ L率 ${lrTxt}` +
     (d.hasDinii ? `\nダイニー再来店 **${dnTxt}**（${d.diniiRangeLabel}・${cnt(t.diniiCount)}件）` : '') +
     (d.kind === 'monthly' ? '' : `\n累計売上（月間） ${yen(t.cum)}（前年比 ${yoy(t.cum, t.cumPrev)}）`) +
