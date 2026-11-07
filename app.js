@@ -556,7 +556,8 @@ function ingestReview(rows){
     const c=rows[i]; const st=String(c[iS]||'').trim(); if(!st)continue;
     // 取得日は「前日までの実績」なので1日前に寄せる（例: 8/1取得 → 7/31の週の増加として集計）
     const t0=parseDateStr(c[iD]); const t=t0?dayMs(addD(new Date(t0),-1)):0;
-    recs.push({ store:st, t, count:num(c[iC]), star:num(c[iSt]), delta:num(c[iDl]) });
+    // ft=実際の取得日（表示用）。t=集計用の基準日（取得日−1）
+    recs.push({ store:st, t, ft:(t0?dayMs(new Date(t0)):0), count:num(c[iC]), star:num(c[iSt]), delta:num(c[iDl]) });
   }
   if(!recs.length){ D.diag.review='0件'; return false; }
   D.review=recs; D.diag.review='OK '+recs.length+'件'; return true;
@@ -8013,7 +8014,7 @@ function viewReview(){
       if(preSnap) inc=endSnap.count-preSnap.count;
       else { inc=0; for(const r of D.review){ if(r.store===nm&&r.t>=a&&r.t<=b) inc+=r.delta||0; } }
       const starDiff=preSnap?(endSnap.star-preSnap.star):null;
-      const dt=new Date(endSnap.t);
+      const dt=new Date(endSnap.ft||endSnap.t); // 表示は実際の取得日（集計は基準日=取得日−1のまま）
       h+=`<tr><td>${esc(nm)}${parentTag(nm)}</td><td>${endSnap.star.toFixed(2)}</td>
         <td class="${starDiff>0?'pos':starDiff<0?'neg':'mut'}">${starDiff==null?'—':(starDiff>=0?'+':'')+starDiff.toFixed(2)}</td>
         <td>${cnt(endSnap.count)}件</td><td class="${inc>0?'pos':'mut'}">${inc>0?'+'+inc:(inc===0?'—':inc)}</td>

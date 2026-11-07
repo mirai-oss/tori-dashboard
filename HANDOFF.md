@@ -153,6 +153,12 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 
 ## 5. 作業ログ
 
+### 2026-11-07 口コミタブ Supabase 直読みを本番確認・「最終取得日」を実際の取得日に（v=271）
+- ユーザーが GAS a7pc を貼替・デプロイ → `status.sh` で本番 ping=a7pc 一致を確認。口コミタブの数字は Supabase の当日値（うお蔵 694 件・11/7 08:00 取得）で表示された。
+- pg_cron（毎朝 08:00 JST）の本番初回も成功（11/7 08:00:03、12/12 成功、Text Search 0 回）。
+- 指摘: 「最終取得日」が 1 日前（11/6）で出る。原因は `ingestReview` が集計用に取得日−1 へ寄せた `t` を表示にも使っていたこと（旧シート時代からの挙動。毎日取得になって目立つようになった）。
+- 対応: `ingestReview` に実際の取得日 `ft` を追加し、サマリー表・CSV の「最終取得日」は `ft` を表示。集計（週・月の増加・期間末スナップショット）は従来どおり基準日 `t`（取得日−1）のまま。`index.html` v=271。
+
 ### 2026-11-06 口コミタブの Supabase 直読み（GAS a7pc・貼替待ち）
 - 背景: Google口コミ取得をスプレッドシート経由から Supabase 直結（Places API → Edge Function `google-reviews-fetch` 毎朝 8 時 → `google_review_snapshots`）へ移行（ns-portal `docs/設計書_Google口コミSupabase直結_2026-11-06.md`）。日報画像は同日に切替済み。残っていた「ダッシュボード＝シート正本」を解消する分。
 - 変更: `gas/Code.gs` に `fetchReviewLog_(months)` を追加し、`getData` の key='review' でハブの View `google_review_log_v`（旧シート「口コミ推移ログ」と同じ 8 列。店舗名＝掲載名）を anon キーで読む。取れたらシートの値を上書き、失敗時はシートのまま（10 分キャッシュ）。`ping` ver → `a7pc`。**app.js は無変更**（`ingestReview` は列名で読む・「取得日−1 日」の扱いも同じ・看板の紐付けは REVIEW_CHILDREN/aliases のまま）。
