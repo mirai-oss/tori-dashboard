@@ -153,6 +153,12 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 
 ## 5. 作業ログ
 
+### 2026-11-08 申請履歴に「勤怠の追加・修正」を追加・管理システムからも承認/却下（v=272）
+- ユーザー指示: 「Slack/kintai.html で作った勤怠申請のフォーム URL と申請を『申請履歴』『申請フォームURL』にも載せて。申請履歴も追いたいし、承認も管理システムからできるように」。
+- ハブ側（ns-portal）: SQL `supabase/2026-11-08_request_history_attendance.sql` で RPC `request_history` に kind=`attendance`（`sf_attendance_requests`。内容=Slack と同じ要約＋理由＋スマレジ反映の結果）、`request_pending_counts` に attendance の承認待ち件数を追加（**ユーザー適用待ち**）。EF `attendance-request` に `op=decide`（JWT のユーザー＝マスターのみ・RPC `sf_attendance_request_decide` p_via='portal' → Slack の承認依頼/申請ありメッセージを ✅/❌ に書換 → 承認なら `smaregi-attendance-fix` で書き戻し。Slack のボタンと同じ流れ・**要デプロイ**）。
+- app.js: `REQLOG_KIND_.attendance`／状態 `cancelled`／種類チップ「勤怠」／承認待ちバッジに attendance／行に「承認」「却下」ボタン（`App.kintaiReqDecide` → EF attendance-request op=decide。却下は理由を任意入力）／CSV 名／申請フォームURL タブに「⏰ 勤怠の追加・修正」カード（固定 URL `https://mirai-oss.github.io/ns-portal/kintai.html`・ポータルのログインが必要なので「URLを作り直す」なし）。
+- 注意: 承認/却下はハブの RPC が is_master を判定する（社長/本部でもマスターでなければ「マスターのみ」のエラー）。
+
 ### 2026-11-07 口コミタブ Supabase 直読みを本番確認・「最終取得日」を実際の取得日に（v=271）
 - ユーザーが GAS a7pc を貼替・デプロイ → `status.sh` で本番 ping=a7pc 一致を確認。口コミタブの数字は Supabase の当日値（うお蔵 694 件・11/7 08:00 取得）で表示された。
 - pg_cron（毎朝 08:00 JST）の本番初回も成功（11/7 08:00:03、12/12 成功、Text Search 0 回）。
