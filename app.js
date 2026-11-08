@@ -63,6 +63,22 @@ const DASH_SUMMARY_PL_LIVE_ = false;
 
 /* ---------------- 定数 ---------------- */
 const CANON_STORES = ['芝の鳥一代','鳥一代 はなれ','鳥一代 恵比寿','鳥一代 新橋','鳥一代 本店','鶏武者 新横浜','鶏武者 川崎店','黒霧屋 新横浜'];
+// 休業登録（2026-11-08追加・ユーザー指示「休業マークを昨日と今日の分に」）。表示期間と重なる休業があれば
+// 売上ダッシュボードの上部に「🔒 休業」のお知らせを出す（売上は0として集計済み）。休業が延びたら to を伸ばす。
+// keys=店舗名に含まれる文字（表記ゆれ「じんべえ/じんべぇ」対策で全部含むか判定）。from/to=営業日（両端含む）。
+const STORE_CLOSURES = [
+  { keys:['じんべ','新横浜'], label:'じんべえ 新横浜店', from:'2026-11-07', to:'2026-11-08', note:'休業中のため売上0' },
+];
+function closureNoticeHtml_(){
+  try{
+    const r=periodRange(); const a=dayMs(r.s), b=dayMs(r.e); const sel=selStoreName();
+    const pd=(s)=>{ const p=String(s).split('-'); return new Date(+p[0],+p[1]-1,+p[2]).getTime(); };
+    const md=(s)=>{ const p=String(s).split('-'); return (+p[1])+'/'+(+p[2]); };
+    const hits=STORE_CLOSURES.filter(c=>pd(c.to)>=a&&pd(c.from)<=b&&(!sel||c.keys.every(k=>String(sel).includes(k))));
+    if(!hits.length) return '';
+    return hits.map(c=>`<div class="panel" style="border-color:#e0b3a3;background:#fff4ef;padding:10px 14px;margin:6px 0"><b>🔒 休業</b>　${esc(c.label)}　${md(c.from)}${c.to!==c.from?'〜'+md(c.to):''}　<span class="mut">${esc(c.note)}</span></div>`).join('');
+  }catch(e){ return ''; }
+}
 const PALETTE = ['#3d5163','#b5502f','#5f7052','#c9a86a','#7d8b6f','#2a6f8f','#9a6a4a','#6a5f8f','#a99f8c','#4a7a6a'];
 const C_NOW='#3d5163', C_PREV='#c9b7a0', C_MID='#7d8b6f';
 const LS = { api:'toriApiUrl', sess:'toriSession', acc:'toriDemoAccounts', poll:'toriPollSec', months:'toriMonths', dailyBq:'toriDailySourceBq' };
@@ -3420,7 +3436,7 @@ function viewDashFast_(){
   // 2026-09-11修正: 一時的に常時表示だった期間、期間・店舗切替のコントロールバー
   // （periodCtrlHtml/storeSegHtml）が無く選べないとの指摘があったため追加。つなぎ専用に
   // 戻した後もD.daily到着までの一瞬だけ表示されるので、そのまま残す（実害なし）。
-  let h=periodCtrlHtml()+storeSegHtml();
+  let h=periodCtrlHtml()+storeSegHtml()+closureNoticeHtml_();
   h+=`<div class="mut" style="font-size:11px;margin:2px 0 8px">⚡ 速報値を表示中${hasFl?'（kd_直読み・SWR）':'（詳細データを読み込んでいます…）'}</div>`;
   h+=`<div class="kpi-grid">
     <div class="kpi"><div class="lb">当月累計売上</div><div class="vl">${yen(t.mtdSales)}</div><div class="yy mut">目標 ${yen(t.target)}（達成率 ${targetRateTxt}）</div></div>
@@ -3541,7 +3557,7 @@ function viewDash(){
     else dyy={t:'期間内 '+cnt(ds.count)+'件の平均（'+plb+'は回答なし）',cls:'mut'};
     kpis.push({ lb:'ダイニー再来店意向', vl: ds.avg!=null?dnFmt(ds.avg):'—', yy:dyy });
   }
-  let h=periodCtrlHtml()+storeSegHtml();
+  let h=periodCtrlHtml()+storeSegHtml()+closureNoticeHtml_();
   // 2026-08-22追加: このタブもD.daily経由でBigQueryトグル(推移分析タブ)の影響を受けるため、
   // BQモード中は管理者にだけ分かるよう小さく表示（トグル自体は推移分析タブに一本化）
   if(isAdminRole()&&S.useBqDaily) h+=`<div class="mut" style="font-size:11px;margin:2px 0 8px">🧪 データ元: BigQuery（推移分析タブのトグルで切替）</div>`;

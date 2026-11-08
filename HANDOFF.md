@@ -153,6 +153,11 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 
 ## 5. 作業ログ
 
+### 2026-11-08 売上ダッシュボードに「🔒 休業」表示を追加（v=275）
+- ユーザー指示: じんべえ 新横浜店が11/7・11/8休業 → 売上ダッシュボードに休業マーク。休業が延びたら共有される。
+- app.js: 定数 `STORE_CLOSURES`（CANON_STORES の直後。keys=店舗名に含まれる文字／from・to=営業日）と `closureNoticeHtml_()`。表示期間と重なる休業があれば、ダッシュボード（viewDash・viewDashFast_）の上部に「🔒 休業 店舗名 11/7〜11/8 休業中のため売上0」を出す。店舗を選んでいるときは該当店舗の時だけ。
+- **休業が延びたら `STORE_CLOSURES` の `to` を伸ばして v を+1**（ns-daily-import 側 `config.js` の `STORE_CLOSURES` も同じ期間に伸ばす＝取込の「3店舗そろわない」チェックを通すため）。
+
 ### 2026-11-08 申請履歴の「勤怠」にアラート由来の修正・打刻削除とスマレジ直接修正も表示（v=274）
 - ハブ側 SQL `ns-portal/supabase/2026-11-08_request_history_attendance2.sql`（`request_history` に `sf_attendance_alerts`（ref_id=`alert:<id>`）と `sf_attendance_smaregi_changes`（ref_id=`change:<id>`・状態 `unacked`/`direct`）を union。`request_pending_counts` の attendance にアラートの承認待ちを加算、`attendance_change` を追加）。**適用順**: 先に `2026-11-08_attendance_delete_request.sql`。
 - app.js: 状態 `unacked`=「確認待ち（Slack）」／`alert:` の行にも承認・却下ボタン（打刻削除なら「承認して削除」）→ EF attendance-request `op=decide {alert_id}`／`change:` の行はボタン無し（Slack の「○ 確認した」案内）／バッジに `attendance_change` は数えない。
