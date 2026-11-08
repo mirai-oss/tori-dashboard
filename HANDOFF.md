@@ -153,6 +153,10 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 
 ## 5. 作業ログ
 
+### 2026-11-08 申請履歴の「勤怠」にアラート由来の修正・打刻削除とスマレジ直接修正も表示（v=274）
+- ハブ側 SQL `ns-portal/supabase/2026-11-08_request_history_attendance2.sql`（`request_history` に `sf_attendance_alerts`（ref_id=`alert:<id>`）と `sf_attendance_smaregi_changes`（ref_id=`change:<id>`・状態 `unacked`/`direct`）を union。`request_pending_counts` の attendance にアラートの承認待ちを加算、`attendance_change` を追加）。**適用順**: 先に `2026-11-08_attendance_delete_request.sql`。
+- app.js: 状態 `unacked`=「確認待ち（Slack）」／`alert:` の行にも承認・却下ボタン（打刻削除なら「承認して削除」）→ EF attendance-request `op=decide {alert_id}`／`change:` の行はボタン無し（Slack の「○ 確認した」案内）／バッジに `attendance_change` は数えない。
+
 ### 2026-11-08 【緊急修正 v=273】v=272 で app.js が読み込み時に落ちて申請履歴が真っ白
 - 原因: `KINTAI_FORM_URL_`（const）を `REQFORMS_` より後ろで定義していたため、読み込み時に「Cannot access before initialization」で app.js 全体が止まった（`node -c` の構文チェックでは出ない・ユーザーが画面で発見）。定義を `REQFORMS_` の直前へ移動。
 - 再発防止: 定数を足したら、使う場所より前にあるかを確認する。`node -e` で app.js をスタブ環境に読み込ませる簡易チェック（HANDOFF のこの項参照）を `node -c` と併用する。
