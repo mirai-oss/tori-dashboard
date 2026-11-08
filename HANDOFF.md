@@ -153,6 +153,10 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 
 ## 5. 作業ログ
 
+### 2026-11-08 【緊急修正 v=273】v=272 で app.js が読み込み時に落ちて申請履歴が真っ白
+- 原因: `KINTAI_FORM_URL_`（const）を `REQFORMS_` より後ろで定義していたため、読み込み時に「Cannot access before initialization」で app.js 全体が止まった（`node -c` の構文チェックでは出ない・ユーザーが画面で発見）。定義を `REQFORMS_` の直前へ移動。
+- 再発防止: 定数を足したら、使う場所より前にあるかを確認する。`node -e` で app.js をスタブ環境に読み込ませる簡易チェック（HANDOFF のこの項参照）を `node -c` と併用する。
+
 ### 2026-11-08 申請履歴に「勤怠の追加・修正」を追加・管理システムからも承認/却下（v=272）
 - ユーザー指示: 「Slack/kintai.html で作った勤怠申請のフォーム URL と申請を『申請履歴』『申請フォームURL』にも載せて。申請履歴も追いたいし、承認も管理システムからできるように」。
 - ハブ側（ns-portal）: SQL `supabase/2026-11-08_request_history_attendance.sql` で RPC `request_history` に kind=`attendance`（`sf_attendance_requests`。内容=Slack と同じ要約＋理由＋スマレジ反映の結果）、`request_pending_counts` に attendance の承認待ち件数を追加（**ユーザー適用待ち**）。EF `attendance-request` に `op=decide`（JWT のユーザー＝マスターのみ・RPC `sf_attendance_request_decide` p_via='portal' → Slack の承認依頼/申請ありメッセージを ✅/❌ に書換 → 承認なら `smaregi-attendance-fix` で書き戻し。Slack のボタンと同じ流れ・**要デプロイ**）。

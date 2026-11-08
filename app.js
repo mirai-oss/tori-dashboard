@@ -7028,6 +7028,7 @@ function reqEditModal(){
 /* ---- 申請フォームURL（2026-10-05・社長/本部のみ）----
  * 退職申請・仕入れ移動・スポット人件費の「ログイン不要の申請フォーム」のURLを1か所にまとめる（何のURLか・誰が使うか・送信後どうなるか付き）。
  * URLの合言葉はSupabase RPCで取得/再発行（再発行すると古いURLは即無効）。 */
+const KINTAI_FORM_URL_='https://mirai-oss.github.io/ns-portal/kintai.html';   // 勤怠の追加・修正申請フォーム（ポータルのログインが必要・合言葉なし）
 const REQFORMS_=[
   { key:'retire', ico:'🚪', name:'退職申請', who:'店長・チーム長（現場の責任者）', what:'退職する従業員と退職日を申請します。', after:'本部が承認すると退職日が登録され、退職日の翌日にログインと打刻が止まります（承認・却下は「アカウント管理」の退職申請一覧）。',
     get:'hr_get_retire_form_token', rotate:'hr_rotate_retire_form_token', url:t=>'https://mirai-oss.github.io/nippo/retire-form.html?k='+t },
@@ -7098,7 +7099,6 @@ function viewRequestForms(){
 const REQLOG_KIND_={ expense:'経費申請', cost_transfer:'仕入れ移動（現場申請）', cost_transfer_direct:'仕入れ移動（管理者登録）', spot_labor:'スポット人件費（入力）', spot_labor_request:'スポット人件費（申請）', spot_labor_edit:'スポット人件費（申請の編集・削除）', cost_transfer_edit:'仕入れ移動（申請の編集・削除）', retirement:'退職申請', attendance:'勤怠の追加・修正' };   // attendance=2026-11-08（Slack/kintai.htmlからの勤怠申請・ハブ sf_attendance_requests）
 const NIPPO_RETIRE_URL_='https://mirai-oss.github.io/nippo/?page=admin&m=retire';   // 退職申請の承認・却下はnippoの画面（アカウント管理内）
 const REQLOG_STATUS_={ pending:'承認待ち', approved:'承認済み', rejected:'却下', cancelled:'取消', direct:'直接登録（承認なし）' };
-const KINTAI_FORM_URL_='https://mirai-oss.github.io/ns-portal/kintai.html';   // 勤怠の追加・修正申請フォーム（ポータルのログインが必要・合言葉なし）
 function reqLogMonth_(){ return S.reqLogYm||(()=>{ const d=new Date(Date.now()+9*3600000); return d.getUTCFullYear()+'-'+String(d.getUTCMonth()+1).padStart(2,'0'); })(); }
 // 承認待ち件数（未読バッジ）。Supabase RPC request_pending_counts（社長・本部のみ・GASを通さない）。取れない時はバッジなし。
 async function fetchReqPending_(){
