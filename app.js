@@ -487,6 +487,8 @@ D.diag = {};
  *  「人件費率が0.5%になる／アルバイト人件費が消える／店舗名が変わる」が更新のたびに起きていた。
  * 対策: kdで取れている間はGAS/シート由来の日次・入金で上書きしない。GASしか無い時（kd失敗時のフォールバック）は、
  *  店舗名をマスタ名（stores.name）へ正規化して取り込む。 */
+// kdで取れたPL・スポット人件費・借入返済元金も、GAS(action:data)のスプレッドシート由来で上書きしない（kd取込の呼び出し側だけが D._kdIngest で通す）
+function kdIngest_(fn){ D._kdIngest=true; try{ return fn(); } finally{ D._kdIngest=false; } }
 function kdOwnsDaily_(){ return !!(D.kdFullOk_&&D.dailySrc_==='kd'); }
 function kdOwnsDeposit_(){ return !!(D.kdFullOk_&&D.depositSrc_==='kd'); }
 const STORE_CANON_BUILTIN_=[ ['本厚木エース','エース 本厚木'],['ホルモンエース横浜本厚木','エース 本厚木'],['横濱ホルモン会館エース本厚木店','エース 本厚木'] ];   // alias表が取れない時の最低限（正本は DB の store_aliases）
@@ -1018,6 +1020,7 @@ function parsePLRows(rows){
   return { recs };
 }
 function ingestPL(rows){
+  if(D.kdPlOk_&&!D._kdIngest){ D.diag['PL']='OK kd（スプレッドシート由来は使用しません）'; return true; }
   const r=parsePLRows(rows);
   if(r.error){ D.diag['PL']=r.error; return false; }
   D.pl=r.recs; D.diag['PL']='OK '+r.recs.length+'件'; return true;
@@ -1042,6 +1045,7 @@ function ingestAdExclude(rows){
 // DB_スポット人件費（タイミー等の単発人件費）。日付は「日」単位（PLの月単位とは違う）。
 // 日別の人件費率にPA/社員と合算するためstat()から参照される（2026-08-23追加）。
 function ingestSpot(rows){
+  if(D.kdSpotOk_&&!D._kdIngest){ D.diag['スポット人件費']='OK kd（スプレッドシート由来は使用しません）'; return true; }
   let hi=-1;
   for(let i=0;i<Math.min(rows.length,10);i++){
     const line=rows[i].map(x=>String(x==null?'':x)).join(',');
@@ -1070,6 +1074,7 @@ function ingestSpot(rows){
 // ns-info-system（F-8）から毎日自動同期される専用シートで手入力は無い。PLタブの
 // 「簡易キャッシュフロー」セクションでのみ使う（DB_PLの費用行には一切含まれない）。
 function ingestLoanPrincipal(rows){
+  if(D.kdLoanOk_&&!D._kdIngest){ D.diag['借入返済元金']='OK kd（スプレッドシート由来は使用しません）'; return true; }
   let hi=-1;
   for(let i=0;i<Math.min(rows.length,5);i++){
     const line=rows[i].map(x=>String(x==null?'':x)).join(',');
@@ -2463,6 +2468,7 @@ function kdSnapshotAdTarget_(){
   const k={};
   if(D.kdAdOk_){ k.ad={ ad:D.ad, adfx:D.adfx, adSrc:D.adSrc, ex:D.adPlExclude }; }
   if(D.kdTargetOk_){ k.tg={ targets:D.targets, targetsM:D.targetsM }; }
+  k.en={}; if(D.kdPlOk_) k.en.pl=D.pl; if(D.kdSpotOk_) k.en.spot=D.spot; if(D.kdLoanOk_) k.en.loan=D.loanPrincipal;   // フル受信のリセット(D.pl=[]等)で消えないように
   return k;
 }
 function kdRestoreAdTarget_(k, sheets){
@@ -2472,6 +2478,7 @@ function kdRestoreAdTarget_(k, sheets){
     if(!has('広告効果')) D.adfx=k.ad.adfx;
     if(!has('広告除外設定')) D.adPlExclude=k.ad.ex;
   }
+  if(k.en){ if('pl' in k.en) D.pl=k.en.pl; if('spot' in k.en) D.spot=k.en.spot; if('loan' in k.en) D.loanPrincipal=k.en.loan; }
   if(k.tg){
     if(!has('目標')) D.targets=k.tg.targets;
     if(!has('目標月次')) D.targetsM=k.tg.targetsM;
@@ -2495,13 +2502,13 @@ async function fetchKdEntries_(){
   await Promise.all([
     job('pl_entries',0,{ from:'2023-01', to:'2029-12' },(rows)=>{
       const sh=[['年月','店舗名','勘定科目','区分','金額','メモ','補助科目']].concat(rows.map(r=>[ymSlash(r.year_month), nm(r), r.item, r.category, Number(r.amount||0), r.memo||'', r.sub_item||'']));
-      ingestSheets({ PL:sh }, true); D.plBqErr=''; D.bqFallback.PL=false; D.plBqLoading=false; mark('pl'); }),
+      kdIngest_(()=>ingestSheets({ PL:sh }, true)); D.kdPlOk_=true; D.plBqErr=''; D.bqFallback.PL=false; D.plBqLoading=false; mark('pl'); }),
     job('spot',36,null,(rows)=>{
       const sh=[['日付','店舗名','区分','金額','人数','メモ','入力者','入力日時','ID']].concat(rows.map(r=>[String(r.work_date||'').slice(0,10), nm(r), r.kind||'', Number(r.amount||0), r.headcount==null?'':Number(r.headcount), r.memo||'', r.entered_by||'', r.entered_at||'', r.spot_id||'']));
-      ingestSheets({ 'スポット人件費':sh }, true); D.spotBqErr=''; D.bqFallback['スポット人件費']=false; D.spotBqLoading=false; mark('spot'); }),
+      kdIngest_(()=>ingestSheets({ 'スポット人件費':sh }, true)); D.kdSpotOk_=true; D.spotBqErr=''; D.bqFallback['スポット人件費']=false; D.spotBqLoading=false; mark('spot'); }),
     job('loan',0,{ from:'2023-01', to:'2029-12' },(rows)=>{
       const sh=[['年月','店舗','法人','元金額','メモ']].concat(rows.map(r=>[r.year_month, nm(r), r.corp_name||'', Number(r.principal||0), r.memo||'']));
-      ingestSheets({ '借入返済元金':sh }, true); D.loanBqErr=''; D.bqFallback['借入返済元金']=false; D.loanBqLoading=false; mark('loan'); }),
+      kdIngest_(()=>ingestSheets({ '借入返済元金':sh }, true)); D.kdLoanOk_=true; D.loanBqErr=''; D.bqFallback['借入返済元金']=false; D.loanBqLoading=false; mark('loan'); }),
     ...((!KD_AD_||kdEditFresh_('ad',90*60000))?[]:[
       job('ad',36,null,(rows)=>{
         const b=kdBuildAd_(rows,nm);
@@ -2614,7 +2621,7 @@ async function fetchDataFast(opts){
   await ensureTabData_(S.tab, false, myRun, must);
   // PLタブは開く人が多く待たされやすいので、重い action:data(約20秒)より先にPL用(pl・loan)を読んでおく
   if(S.tab!=='pl'&&myTabs().includes('pl')) await ensureTabData_('pl', false, myRun, k=>k==='pl'||k==='loan'||k==='spot');
-  await gasRun_(async()=>{ if(myRun!==prefetchRun||!S.auth||!S.auth.token) return; if(!(opts&&opts.force)&&Date.now()-(D.dataAt_||0)<120000) return; const ex2=excl.slice(); if(kdOwnsDaily_()) ex2.push('daily'); if(kdOwnsDeposit_()) ex2.push('deposit'); if(D.kdAdOk_) ex2.push('広告','広告効果','広告除外設定'); if(D.kdTargetOk_) ex2.push('目標','目標月次'); await fetchData(true,{ exclude:ex2 }); D.dataAt_=Date.now(); });
+  await gasRun_(async()=>{ if(myRun!==prefetchRun||!S.auth||!S.auth.token) return; if(!(opts&&opts.force)&&Date.now()-(D.dataAt_||0)<120000) return; const ex2=excl.slice(); if(kdOwnsDaily_()) ex2.push('daily'); if(kdOwnsDeposit_()) ex2.push('deposit'); if(D.kdPlOk_) ex2.push('PL'); if(D.kdSpotOk_) ex2.push('スポット人件費'); if(D.kdLoanOk_) ex2.push('借入返済元金'); if(D.kdAdOk_) ex2.push('広告','広告効果','広告除外設定'); if(D.kdTargetOk_) ex2.push('目標','目標月次'); await fetchData(true,{ exclude:ex2 }); D.dataAt_=Date.now(); });
   await ensureTabData_(S.tab, false, myRun, k=>!must(k));
   if(myRun!==prefetchRun) return;
   if(!freshOk) await gasRun_(async()=>{ if(!S.gasSessionLost&&myRun===prefetchRun) await fetchFreshness(); });
