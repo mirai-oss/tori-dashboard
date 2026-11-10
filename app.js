@@ -480,21 +480,71 @@ const colAny = (H,kws)=>{ for(const kw of kws){ const i=colOf(H,kw); if(i>=0) re
 D.diag = {};
 
 /* ---------------- データ取込 ---------------- */
+/* ===== 日次・入金の「正本はkd（Supabase）」ロック＋店舗名の正規化（人件費・店舗名のブレ対策）=====
+ * 原因: kdで日次(D.daily)を取れた後でも、GAS(action:data)が返すスプレッドシート「分析_日別店舗」(dailyキー)を
+ *  ingestDaily()が無条件で上書きしていた（シートの版が変わるたび＝ポーリングで頻繁に発生）。シート側は人件費の計算・PA(API反映)が
+ *  kdと違い、店舗名もシートの表記（例「本厚木エース」「ホルモンエース横浜 本厚木」）のままなので、
+ *  「人件費率が0.5%になる／アルバイト人件費が消える／店舗名が変わる」が更新のたびに起きていた。
+ * 対策: kdで取れている間はGAS/シート由来の日次・入金で上書きしない。GASしか無い時（kd失敗時のフォールバック）は、
+ *  店舗名をマスタ名（stores.name）へ正規化して取り込む。 */
+function kdOwnsDaily_(){ return !!(D.kdFullOk_&&D.dailySrc_==='kd'); }
+function kdOwnsDeposit_(){ return !!(D.kdFullOk_&&D.depositSrc_==='kd'); }
+const STORE_CANON_BUILTIN_=[ ['本厚木エース','エース 本厚木'],['ホルモンエース横浜本厚木','エース 本厚木'],['横濱ホルモン会館エース本厚木店','エース 本厚木'] ];   // alias表が取れない時の最低限（正本は DB の store_aliases）
+function canonMapBuild_(){
+  const masters=((D.home&&D.home.stores)||[]).map(x=>x.storeName).filter(Boolean);
+  const map={}; masters.forEach(nm=>{ map[normStore(nm)]=nm; });
+  STORE_CANON_BUILTIN_.forEach(([a,m])=>{ if(masters.includes(m)) map[normStore(a)]=m; });
+  (D.storeAliasRows_||[]).forEach(r=>{ const nm=storeNameById_(r.store_id); if(nm) map[normStore(r.alias)]=nm; });
+  D.canonMap_=map; D.canonMasters_=masters; D.canonKey_=masters.length+'|'+(D.storeAliasRows_||[]).length;
+}
+// シート/BQ由来の店舗名 → マスタ名。完全一致・別名表(store_aliases)・「マスタ名の語がすべて含まれる店が1つだけ」の順。見つからなければ元の表記のまま
+function canonStore_(raw){
+  const s0=String(raw==null?'':raw).trim(); if(!s0) return s0;
+  const masters0=((D.home&&D.home.stores)||[]).length;
+  if(!masters0) return s0;
+  if(!D.canonMap_||D.canonKey_!==masters0+'|'+(D.storeAliasRows_||[]).length) canonMapBuild_();
+  const n=normStore(s0); if(D.canonMap_[n]) return D.canonMap_[n];
+  const hits=D.canonMasters_.filter(m=>{ const toks=String(m).split(/[\s　]+/).map(normStore).filter(Boolean); return toks.length>=2&&toks.every(t=>n.includes(t)); });
+  return hits.length===1?hits[0]:s0;
+}
+// DBの別名表（store_aliases・ログイン済みなら読める）を1回だけ取得し、すでに取り込んだGAS由来の行も正規化し直す
+async function loadStoreAliases_(){
+  if(D.storeAliasRowsReq_) return; D.storeAliasRowsReq_=true;
+  try{
+    const jwt=await portalAccessToken().catch(()=>null); if(!jwt) return;
+    const r=await fetch(SSO_SUPA_URL+'/rest/v1/store_aliases?select=alias,store_id&limit=1000',{ headers:{ apikey:SSO_SUPA_KEY, Authorization:'Bearer '+jwt } });
+    if(!r.ok) return; const rows=await r.json(); if(!Array.isArray(rows)) return;
+    D.storeAliasRows_=rows; D.canonMap_=null;
+    let n=0; if(D.dailySrc_==='gas') D.daily.forEach(x=>{ const c=canonStore_(x.store); if(c!==x.store){ x.store=c; n++; } });
+    if(D.depositSrc_==='gas') D.deposit.forEach(x=>{ const c=canonStore_(x.store); if(c!==x.store){ x.store=c; n++; } });
+    if(n&&!targetModalOpen_()) render();
+  }catch(e){ /* 取れなくても内蔵の対応表とマスタ名で動く */ }
+}
+// 金額列用の列探し: 「…率」「…比」の列は絶対に拾わない（人件費率0.5%の混入防止）。候補の順に完全一致→部分一致
+function colAmt_(H,kws){
+  const bad=(h)=>/[率比%％]/.test(String(h));
+  for(const kw of kws){ const i=H.findIndex(h=>String(h)===kw); if(i>=0) return i; }
+  for(const kw of kws){ const i=H.findIndex(h=>!bad(h)&&String(h).indexOf(kw)>=0); if(i>=0) return i; }
+  return -1;
+}
 function ingestDaily(rows){
+  if(kdOwnsDaily_()){ D.diag.daily='OK kd（スプレッドシート由来は使用しません）'; return true; }   // kd優先ロック（上のコメント参照）
   const hi=findHeader(rows,['店舗','純売上']);
   const H=rows[hi].map(h=>String(h).trim());
   const iD=colAny(H,['日付','営業日','勤務日','年月日']), iS=colAny(H,['店舗名','店舗']),
-        iSl=colAny(H,['純売上','総売上','売上']), iG=colAny(H,['総客数','客数','店内客数','人数']),
-        iPA=colAny(H,['アルバイト人件費','PA人件費','ＰＡ人件費']), iEmp=colAny(H,['社員人件費']),
-        iL=colAny(H,['人件費合計','人件費']), iC=colAny(H,['仕入金額','仕入','原価']), iCash=colAny(H,['現金']),
+        iSl=colAmt_(H,['純売上','総売上','売上']), iG=colAmt_(H,['総客数','客数','店内客数','人数']),
+        iPA=colAmt_(H,['アルバイト人件費','PA人件費','ＰＡ人件費']), iEmp=colAmt_(H,['社員人件費']),
+        iL0=colAmt_(H,['人件費合計','人件費']), iC=colAmt_(H,['仕入金額','仕入','原価']), iCash=colAmt_(H,['現金']),
         iEmpBase=colAny(H,['社員給与賞与']), iWelf=colAny(H,['法定福利費']), iComm=colAny(H,['通勤手当']),
         iGrp=colAny(H,['組数','客組数','会計組数','会計数']);
   if(iD<0||iS<0||iSl<0){ D.diag.daily='列が見つかりません（必要: 店舗名・日付/営業日・純売上）'; return false; }
+  // 人件費合計の列が「アルバイト人件費」「社員人件費」と同じ列を指してしまう場合は無効にし、PA＋社員の和を使う（部分一致の取り違え防止）
+  const iL=(iL0===iPA||iL0===iEmp)?-1:iL0;
   const recs=[]; let max=0;
   for(let i=hi+1;i<rows.length;i++){
-    const c=rows[i]; const st=String(c[iS]||'').trim(); const t=parseDateStr(c[iD]);
+    const c=rows[i]; const st=canonStore_(String(c[iS]||'').trim()); const t=parseDateStr(c[iD]);
     if(!st||!t) continue;
-    recs.push({ store:st, t, sales:num(c[iSl]), guests:num(c[iG]), pa:num(c[iPA]), emp:num(c[iEmp]), labor:num(c[iL]), cost:num(c[iC]), cash:num(c[iCash]),
+    recs.push({ store:st, t, sales:num(c[iSl]), guests:num(c[iG]), pa:num(c[iPA]), emp:num(c[iEmp]), labor:iL>=0?num(c[iL]):(num(c[iPA])+num(c[iEmp])), cost:num(c[iC]), cash:num(c[iCash]),
       groups:(iGrp>=0&&String(c[iGrp]).trim()!=='')?num(c[iGrp]):null,
       empBase:iEmpBase>=0?num(c[iEmpBase]):0, welfare:iWelf>=0?num(c[iWelf]):0, commute:iComm>=0?num(c[iComm]):0 });
     if(t>max)max=t;
@@ -544,18 +594,19 @@ function ingestDeliveryMedia(rows){
   return true;
 }
 function ingestDeposit(rows){
+  if(kdOwnsDeposit_()){ D.diag.deposit='OK kd（スプレッドシート由来は使用しません）'; return true; }   // kd優先ロック
   const hi=findHeader(rows,['店舗','入金']);
   const H=rows[hi].map(h=>String(h).trim());
   const iS=colAny(H,['店舗名','店舗']), iD=colAny(H,['日付','営業日','入金日']), iA=colAny(H,['入金額','入金合計','入金']);
   if(iS<0||iD<0||iA<0){ D.diag.deposit='列が見つかりません（必要: 店舗・日付/営業日・入金額/入金合計）'; return false; }
   const recs=[];
   for(let i=hi+1;i<rows.length;i++){
-    const c=rows[i]; const st=String(c[iS]||'').trim(); const t=parseDateStr(c[iD]);
+    const c=rows[i]; const st=canonStore_(String(c[iS]||'').trim()); const t=parseDateStr(c[iD]);
     if(!st||!t) continue;
     recs.push({ store:st, t, amount:num(c[iA]) });
   }
   if(!recs.length){ D.diag.deposit='0件'; return false; }
-  D.deposit=recs; D.diag.deposit='OK '+recs.length+'件'; return true;
+  D.deposit=recs; D.depositSrc_='gas'; D.diag.deposit='OK '+recs.length+'件'; return true;
 }
 function ingestReview(rows){
   const hi=findHeader(rows,['店舗','平均星']);
@@ -2508,7 +2559,7 @@ async function fetchKdFull_(){
     D.refDate=new Date(Math.min(max,jstYest));
     if(depDaily){
       D.deposit=depDaily.map(r=>{ const st=storeNameById_(r.store_id); const t=parseDateStr(r.date); return (st&&t)?{ store:st, t, amount:Number(r.deposit_amount||0) }:null; }).filter(x=>x&&x.amount);
-      D.diag.deposit='OK kd '+D.deposit.length+'件'; D.depositBqErr=''; D.depositBqLoading=false;
+      D.diag.deposit='OK kd '+D.deposit.length+'件'; D.depositSrc_='kd'; D.depositBqErr=''; D.depositBqLoading=false;
       (D.gasLoaded_||(D.gasLoaded_={})).deposit=true;
     }
     if(carry){
@@ -2538,6 +2589,7 @@ async function fetchDataFast(opts){
   // 2) Supabase直読み（GASではない）。完了しだい描画。
   const homeP_=gasOnly?null:fetchHomeApi_();
   if(!gasOnly) D.kdFullP_=homeP_.then(()=>fetchKdFull_());
+  if(!gasOnly) homeP_.then(()=>loadStoreAliases_());   // 店舗名の別名表（GASフォールバック時の表記ゆれ吸収）
   if(!gasOnly) homeP_.then(()=>{
     const curYm_=ymdStr(Date.now()).slice(0,7);
     fetchDashboardSummaryApi_('media', curYm_).then(d=>{ if(d){ D.mediaSummaryFast=d.rows; if(!targetModalOpen_()) render(); } });
@@ -2562,7 +2614,7 @@ async function fetchDataFast(opts){
   await ensureTabData_(S.tab, false, myRun, must);
   // PLタブは開く人が多く待たされやすいので、重い action:data(約20秒)より先にPL用(pl・loan)を読んでおく
   if(S.tab!=='pl'&&myTabs().includes('pl')) await ensureTabData_('pl', false, myRun, k=>k==='pl'||k==='loan'||k==='spot');
-  await gasRun_(async()=>{ if(myRun!==prefetchRun||!S.auth||!S.auth.token) return; if(!(opts&&opts.force)&&Date.now()-(D.dataAt_||0)<120000) return; const ex2=excl.slice(); if(D.kdAdOk_) ex2.push('広告','広告効果','広告除外設定'); if(D.kdTargetOk_) ex2.push('目標','目標月次'); await fetchData(true,{ exclude:ex2 }); D.dataAt_=Date.now(); });
+  await gasRun_(async()=>{ if(myRun!==prefetchRun||!S.auth||!S.auth.token) return; if(!(opts&&opts.force)&&Date.now()-(D.dataAt_||0)<120000) return; const ex2=excl.slice(); if(kdOwnsDaily_()) ex2.push('daily'); if(kdOwnsDeposit_()) ex2.push('deposit'); if(D.kdAdOk_) ex2.push('広告','広告効果','広告除外設定'); if(D.kdTargetOk_) ex2.push('目標','目標月次'); await fetchData(true,{ exclude:ex2 }); D.dataAt_=Date.now(); });
   await ensureTabData_(S.tab, false, myRun, k=>!must(k));
   if(myRun!==prefetchRun) return;
   if(!freshOk) await gasRun_(async()=>{ if(!S.gasSessionLost&&myRun===prefetchRun) await fetchFreshness(); });
