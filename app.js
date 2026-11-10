@@ -509,6 +509,22 @@ function canonStore_(raw){
   const hits=D.canonMasters_.filter(m=>{ const toks=String(m).split(/[\s　]+/).map(normStore).filter(Boolean); return toks.length>=2&&toks.every(t=>n.includes(t)); });
   return hits.length===1?hits[0]:s0;
 }
+/* ===== 未連携デリバリー（Uber Eats）の暫定表示（TK-252）=====
+ * delivery_store_map に「取込ジョブが無いチャネル（rocketnow以外）」が active の店は、デリバリー売上の一部が未取込。
+ * その店のF/L/FLは分母不足で過大になるため、画面に「暫定（Uber Eats未連携）」を明示し、正式な4段階評価は付けない（日報VMの hold と同じ方針）。 */
+function uberUnlinkedFor_(names){ const m=D.unlinkedDelivery_||{}; const hit=(names||[]).filter(n=>m[n]); return hit.length?[...new Set(hit.flatMap(n=>m[n]))]:[]; }
+function uberBadge_(names){ const ch=uberUnlinkedFor_(names); return ch.length?`<span title="デリバリー売上の一部（${esc(ch.join('・'))}）が未連携のため、F/L/FLは分母不足で過大です。正式な評価は付けません" style="display:inline-block;margin-left:6px;padding:1px 8px;border-radius:9px;font-size:11px;font-weight:700;color:#fff;background:#a2803f">暫定（${esc(ch.join('・'))}未連携）</span>`:''; }
+async function loadUnlinkedDelivery_(){
+  if(D.unlinkedDeliveryReq_) return; D.unlinkedDeliveryReq_=true;
+  try{
+    const jwt=await portalAccessToken().catch(()=>null); if(!jwt) return;
+    const r=await fetch(SSO_SUPA_URL+'/rest/v1/delivery_store_map?select=channel,store_id&active=eq.true&channel=neq.rocketnow&limit=200',{ headers:{ apikey:SSO_SUPA_KEY, Authorization:'Bearer '+jwt } });
+    if(!r.ok) return; const rows=await r.json(); if(!Array.isArray(rows)) return;
+    const label={ ubereats:'Uber Eats' }; const m={};
+    rows.forEach(x=>{ const nm=storeNameById_(x.store_id); if(nm) (m[nm]||(m[nm]=[])).push(label[x.channel]||x.channel); });
+    D.unlinkedDelivery_=m; if(Object.keys(m).length&&!targetModalOpen_()) render();
+  }catch(e){ /* 取れなくても表示は従来どおり */ }
+}
 // DBの別名表（store_aliases・ログイン済みなら読める）を1回だけ取得し、すでに取り込んだGAS由来の行も正規化し直す
 async function loadStoreAliases_(){
   if(D.storeAliasRowsReq_) return; D.storeAliasRowsReq_=true;
@@ -2603,7 +2619,7 @@ async function fetchDataFast(opts){
   // 2) Supabase直読み（GASではない）。完了しだい描画。
   const homeP_=gasOnly?null:fetchHomeApi_();
   if(!gasOnly) D.kdFullP_=homeP_.then(()=>fetchKdFull_());
-  if(!gasOnly) homeP_.then(()=>loadStoreAliases_());   // 店舗名の別名表（GASフォールバック時の表記ゆれ吸収）
+  if(!gasOnly) homeP_.then(()=>{ loadStoreAliases_(); loadUnlinkedDelivery_(); });   // 店舗名の別名表（GASフォールバック時の表記ゆれ吸収）
   if(!gasOnly) homeP_.then(()=>{
     const curYm_=ymdStr(Date.now()).slice(0,7);
     fetchDashboardSummaryApi_('media', curYm_).then(d=>{ if(d){ D.mediaSummaryFast=d.rows; if(!targetModalOpen_()) render(); } });
@@ -3601,7 +3617,7 @@ function viewDash(){
     { lb:(S.period==='day'?'日次':S.period==='week'?'週次':S.period==='month'?'月次':S.period==='year'?'累計':'期間')+'売上', vl:yen(Ssl), segsub:segSales, yy:y1 },
     { lb:'原価率 (F)', vl:Ssl>0?(foodR*100).toFixed(1)+'%':'—', sub:Ssl>0?yen(costT):'', yy:yF },
     { lb:'人件費率 (L)', vl:Ssl>0?(laborR*100).toFixed(1)+'%':'—', sub:Ssl>0?('PA '+yen(cur.pa)+' ／ 社員 '+yen(cur.emp)+(cur.spot?' ／ スポット '+yen(cur.spot):'')):'', yy:yL },
-    { lb:'FL合計', vl:Ssl>0?(flR*100).toFixed(1)+'%':'—', yy:yFL },
+    { lb:'FL合計', vl:Ssl>0?(flR*100).toFixed(1)+'%':'—', sub:uberUnlinkedFor_(selName?[selName]:sc).length?('暫定（'+uberUnlinkedFor_(selName?[selName]:sc).join('・')+'未連携・評価なし）'):'', yy:yFL },
     { lb:'客数', vl:cnt(cur.guests)+'人', segsub:segGuests, yy:yG },
     ...(checksKpi?[checksKpi]:[]),
     { lb:'客単価', vl:yen(spend), segsub:segSpend, yy:ySp },
@@ -3968,7 +3984,7 @@ function flPanel(cur,prev,SslIn,pSIn){
   }
   const fl=cur.cost+cur.labor, flR=fl/Ssl, pFlR=pS>0?(prev.cost+prev.labor)/pS:0;
   const profit=Ssl-fl;
-  let h=`<div class="panel"><div class="panel-head"><div><h3>FL（原価・人件費）内訳</h3><div class="sub">集約シート実績（人件費＝PA＋社員＋スポット）／比率の分母＝店内売上＋デリバリー（税抜換算）</div></div>${canUse('spot')?`<button class="icon-btn no-print" onclick="App.openSpotInput()">＋ スポット人件費</button>`:''}</div><div class="scroll-x"><table class="tbl"><thead><tr><th>項目</th><th>金額</th><th>比率</th><th>前年</th></tr></thead><tbody>`;
+  let h=`<div class="panel"><div class="panel-head"><div><h3>FL（原価・人件費）内訳${uberBadge_(selStoreName()?[selStoreName()]:scopeStores())}</h3><div class="sub">集約シート実績（人件費＝PA＋社員＋スポット）／比率の分母＝店内売上＋デリバリー（税抜換算）</div></div>${canUse('spot')?`<button class="icon-btn no-print" onclick="App.openSpotInput()">＋ スポット人件費</button>`:''}</div><div class="scroll-x"><table class="tbl"><thead><tr><th>項目</th><th>金額</th><th>比率</th><th>前年</th></tr></thead><tbody>`;
   rows.forEach(x=>{ const pt=ptStr(x.r,x.pr,true);
     h+=`<tr><td><span class="sw" style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${x.c};margin-right:8px"></span>${esc(x.nm)}</td><td>${yen(x.amt)}</td><td>${(x.r*100).toFixed(1)}%</td><td class="${pt.cls==='up'?'pos':pt.cls==='dn'?'neg':'mut'}">${pt.t}</td></tr>`; });
   const ptFL=ptStr(flR,pFlR,true);
@@ -4070,7 +4086,7 @@ function comparePanel(r,p,sc,selName){
       <td>${shortStoreTd(nm)}</td><td>${yen(c.sales)}</td>
       <td class="${yy.cls==='up'?'pos':yy.cls==='dn'?'neg':'mut'}">${yy.t}</td>
       <td>${fsx>0?(fr*100).toFixed(1)+'%':'—'}</td><td>${fsx>0?(lr*100).toFixed(1)+'%':'—'}</td>
-      <td class="${fl>0.6?'warn':''}">${fsx>0?(fl*100).toFixed(1)+'%':'—'}</td>
+      <td class="${fl>0.6?'warn':''}">${fsx>0?(fl*100).toFixed(1)+'%':'—'}${uberUnlinkedFor_([nm]).length?'<span title="Uber Eats未連携のため暫定（分母不足で過大）" style="color:#a2803f;font-weight:700"> ※暫定</span>':''}</td>
       <td>${cnt(c.guests)}人</td><td>${yen(sp)}</td>
       <td>${rv?rv.star.toFixed(2):'—'}</td><td>${rv?cnt(rv.count):'—'}</td></tr>`;
     expRows.push([nm,Math.round(c.sales),yy.t,(fr*100).toFixed(1)+'%',(lr*100).toFixed(1)+'%',(fl*100).toFixed(1)+'%',Math.round(c.guests),Math.round(sp),rv?rv.star.toFixed(2):'',rv?rv.count:'']);
