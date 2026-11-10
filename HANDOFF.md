@@ -153,6 +153,9 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 
 ## 5. 作業ログ
 
+### 2026-11-10 じんべえ 新横浜の休業を 11/11 まで延長（v=277）
+- `STORE_CLOSURES` の to を 2026-11-11 へ（app.js）。ns-daily-import `config.js` も同期済み。11/9 分の N-Style 支払い取込（2店舗）を実施。
+
 ### 2026-11-09 休業表示を「上部バナー」から「日別 明細の該当行」へ移動（v=276）
 - ユーザー指示: 上部ではなく、店舗別「日別 明細」の11/7・11/8の行そのものに休業とわかる表示を。
 - app.js: `closureNoticeHtml_()`（上部バナー）を廃止し、`closureFor_(店舗名, 日付ms)` を追加。`dailyStorePanel` で休業日の行に「🔒 休業」バッジ＋行の薄い赤背景（Excel出力は日付に「（休業）」）。`STORE_CLOSURES` の定義・延長手順は下の v=275 の記載どおり。
