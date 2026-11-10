@@ -225,7 +225,7 @@ const S = {
   revPeriod:'month', revMonth:'', revWeekIdx:null, revYear:'', revStart:'', revEnd:'',
   aMetric:'sales', aGran:'day', aBreak:'total', aRange:'30', aYoY:true, mediaMode:'media', detailTax:'excl',
   dPeriod:'month', dStore:'all', dRankMode:'sales', dBasis:'checkout', dDay:'', dMonth:'', dYear:'', dWeekIdx:null, dStart:'', dEnd:'',
-  tMonth:'', tStore:'',   // 目標管理タブ：対象月・対象店舗
+  tMonth:'', tStore:'', tSub:'', flYm:'', flDraft:{},   // 目標管理タブ：対象月・対象店舗
   aiQ:'', aiResult:null, dataVersion:'',
   reportMode:null, invite:null, inviteDone:false, wkWeek:'', wkFStore:'', wkFPos:'', wkFState:'', wkFQ:'',   // {kind:'daily'|'weekly'|'monthly', date:'YYYY-MM-DD'} Lark日報用の1枚カード表示
   accounts:null, accErr:'', modal:null, loginErr:'',
@@ -1545,6 +1545,13 @@ function requireFeature(feature){
 function selStoreName(){ return S.store==='all'?null:S.store; }
 
 /* ---------------- 集計 ---------------- */
+/* ===== F/L/FL 共通定義（TK-252 店舗日報v2・DBの fl_metrics_* / fl_delivery_tax_divisor() と同じ定義） =====
+ * FL計算用売上 = 店内売上 + デリバリー売上÷1.08（税込8%→税抜）。F率=原価÷FL計算用売上、L率=人件費÷FL計算用売上、FL比率=F+L。
+ * 売上KPI・予算比・前年比は変えない（店内売上のまま）。画面ごとに別式を持たず、F/L/FLの分母は必ずここを通す。 */
+const FL_DELIVERY_TAX_DIVISOR_=1.08;
+function flDvGross_(set,a,b,nm){ try{ const g=segSplit(set||new Set(),a,b,nm||null); return g&&g.hasV?g.vn:0; }catch(e){ return 0; } }
+function flSalesOf_(instore,dvGross){ return (Number(instore)||0)+(Number(dvGross)||0)/FL_DELIVERY_TAX_DIVISOR_; }
+function flRates_(flSales,cost,labor){ return flSales>0?{ fs:flSales, fr:cost/flSales, lr:labor/flSales, fl:(cost+labor)/flSales }:{ fs:flSales, fr:null, lr:null, fl:null }; }
 function stat(setNames, a, b, selName){
   const o={sales:0,guests:0,groups:0,hasGroups:false,cost:0,pa:0,emp:0,labor:0,cash:0,empBase:0,welfare:0,commute:0,spot:0};
   for(const r of D.daily){
@@ -3242,7 +3249,7 @@ function freshnessLine(){
   return `<div class="mut" style="font-size:11px;margin-top:2px">データ同期: ${esc(dt(f.syncedAt))}${f.syncedOk===false?' ⚠️':(f.syncedAt?' ✅':'')}</div>`;
 }
 function connBadge(){
-  if(S.connState==='live') return `<span class="st-live">● スプレッドシート連携中</span>（自動更新）<br>最終同期 ${esc(S.lastSync)}`+freshnessLine();
+  if(S.connState==='live') return `<span class="st-live">● データ連携中</span>（自動更新）<br>最終同期 ${esc(S.lastSync)}`+freshnessLine();
   if(S.connState==='livewarn') return `<span style="color:#b5502f">● 連携中（データ未取込）</span><br>最終同期 ${esc(S.lastSync)}`+freshnessLine();
   if(S.connState==='connecting'&&D.dailyProvisional) return `<span style="color:#a2803f">● 集計済みデータで表示中</span>（詳細を更新しています）`;
   if(S.connState==='connecting'){
@@ -3486,6 +3493,7 @@ function viewDashFast_(){
   const yoyTxt=t.priorYearSameWeekdayRatio!=null?(t.priorYearSameWeekdayRatio*100).toFixed(1)+'%':'—';
   const yoyCls=t.priorYearSameWeekdayRatio==null?'mut':t.priorYearSameWeekdayRatio>=1?'pos':'neg';
   const hasFl=t.mtdCost!=null;
+  const tFlS=t.mtdFlSales!=null?t.mtdFlSales:t.mtdSales;   // F/L/FLの分母（店内＋デリバリー税抜・keiei-api-home v TK-252。古い応答なら店内のまま）
   const pct1=(n2,d2)=>(d2>0?(n2/d2*100).toFixed(1)+'%':'—');
   // 2026-09-11修正: 一時的に常時表示だった期間、期間・店舗切替のコントロールバー
   // （periodCtrlHtml/storeSegHtml）が無く選べないとの指摘があったため追加。つなぎ専用に
@@ -3494,8 +3502,8 @@ function viewDashFast_(){
   h+=`<div class="mut" style="font-size:11px;margin:2px 0 8px">⚡ 速報値を表示中${hasFl?'（kd_直読み・SWR）':'（詳細データを読み込んでいます…）'}</div>`;
   h+=`<div class="kpi-grid">
     <div class="kpi"><div class="lb">当月累計売上</div><div class="vl">${yen(t.mtdSales)}</div><div class="yy mut">目標 ${yen(t.target)}（達成率 ${targetRateTxt}）</div></div>
-    ${hasFl?`<div class="kpi"><div class="lb">原価率 (F)</div><div class="vl">${pct1(t.mtdCost,t.mtdSales)}</div><div class="yy mut">${yen(t.mtdCost)}</div></div>
-    <div class="kpi"><div class="lb">人件費率 (L)</div><div class="vl">${pct1(t.mtdLabor,t.mtdSales)}</div><div class="yy mut">${yen(t.mtdLabor)}</div></div>
+    ${hasFl?`<div class="kpi"><div class="lb">原価率 (F)</div><div class="vl">${pct1(t.mtdCost,tFlS)}</div><div class="yy mut">${yen(t.mtdCost)}</div></div>
+    <div class="kpi"><div class="lb">人件費率 (L)</div><div class="vl">${pct1(t.mtdLabor,tFlS)}</div><div class="yy mut">${yen(t.mtdLabor)}</div></div>
     <div class="kpi"><div class="lb">FL合計</div><div class="vl">${t.mtdFlRate!=null?(t.mtdFlRate*100).toFixed(1)+'%':'—'}</div><div class="yy mut">粗利率 ${t.mtdGrossRate!=null?(t.mtdGrossRate*100).toFixed(1)+'%':'—'}</div></div>`:''}
     <div class="kpi"><div class="lb">${dl}売上</div><div class="vl">${yen(t.todaySales)}</div><div class="yy ${yoyCls}">前年同曜日比 ${yoyTxt}</div></div>
     <div class="kpi"><div class="lb">${dl}客数</div><div class="vl">${cnt(t.todayGuests)}人</div><div class="yy mut">客単価 ${yen(t.todayAvgCheck||0)}</div></div>
@@ -3506,7 +3514,7 @@ function viewDashFast_(){
     <div class="scroll-x"><table class="tbl"><thead><tr><th>店舗</th><th>当月累計</th>${hasFl?'<th>F率</th><th>L率</th><th>FL</th>':''}<th>達成率</th><th>${esc(ddl||'直近営業日')}売上</th><th>${esc(ddl||'直近営業日')}客数</th></tr></thead><tbody>`;
     stores.forEach(s=>{
       const rt=s.targetRate!=null?(s.targetRate*100).toFixed(1)+'%':'—';
-      h+=`<tr><td>${shortStoreTd(s.storeName)}</td><td>${yen(s.mtdSales)}</td>${hasFl?`<td>${pct1(s.mtdCost,s.mtdSales)}</td><td>${pct1(s.mtdLabor,s.mtdSales)}</td><td>${s.mtdFlRate!=null?(s.mtdFlRate*100).toFixed(1)+'%':'—'}</td>`:''}<td>${rt}</td><td>${yen(s.todaySales)}</td><td>${cnt(s.todayGuests)}人</td></tr>`;
+      h+=`<tr><td>${shortStoreTd(s.storeName)}</td><td>${yen(s.mtdSales)}</td>${hasFl?`<td>${pct1(s.mtdCost,s.mtdFlSales!=null?s.mtdFlSales:s.mtdSales)}</td><td>${pct1(s.mtdLabor,s.mtdFlSales!=null?s.mtdFlSales:s.mtdSales)}</td><td>${s.mtdFlRate!=null?(s.mtdFlRate*100).toFixed(1)+'%':'—'}</td>`:''}<td>${rt}</td><td>${yen(s.todaySales)}</td><td>${cnt(s.todayGuests)}人</td></tr>`;
     });
     h+=`</tbody></table></div></div>`;
   }
@@ -3537,7 +3545,8 @@ function viewDash(){
   // 原価率(F)・人件費率(L)・客単価もSsl由来のため、合算後の正しい売上を分母にした比率になる
   // （仕入原価は元々レジ経由でないため、デリバリー分の売上を含めた方が実態に近い比率になる）。
   const segCur_=segSplit(scopeSet,a,b,selName), segPrev_=segSplit(scopeSet,pa2,pb2,selName);
-  const Ssl=cur.sales+(segCur_.hasV?segCur_.vn:0);
+  const Ssl=cur.sales+(segCur_.hasV?segCur_.vn:0);   // 売上表示（従来どおりデリバリー込み）
+  const SslFL=flSalesOf_(cur.sales,segCur_.hasV?segCur_.vn:0);   // F/L/FLの分母（デリバリーは税抜換算・TK-252）
   // 2026-09-23追加（ユーザー報告: PL管理タブでは反映されている「仕入れ移動」等の手入力DB_PL経費(F区分)が
   // 経営ダッシュボードの原価率には反映されていない）: 従来はcur.cost（レジ・自動連携分のみ）だけで
   // 原価率を出しており、PL管理タブ(viewPL)が使っているplAgg()のDB_PL手入力F区分を一切含んでいなかった。
@@ -3546,8 +3555,8 @@ function viewDash(){
   const exCurF=plAgg(plScopeSet,plAggFlagDash,a,b,D.adPlExclude).catTotal.F;
   const exPrevF=plAgg(plScopeSet,plAggFlagDash,pa2,pb2,D.adPlExclude).catTotal.F;
   const costT=cur.cost+exCurF, costPrevT=prev.cost+exPrevF;
-  const foodR=Ssl>0?costT/Ssl:0, laborR=Ssl>0?cur.labor/Ssl:0, flR=foodR+laborR;
-  const pS=prev.sales+(segPrev_.hasV?segPrev_.vn:0), pFood=pS>0?costPrevT/pS:0, pLabor=pS>0?prev.labor/pS:0;
+  const foodR=SslFL>0?costT/SslFL:0, laborR=SslFL>0?cur.labor/SslFL:0, flR=foodR+laborR;
+  const pS=prev.sales+(segPrev_.hasV?segPrev_.vn:0), pSFL=flSalesOf_(prev.sales,segPrev_.hasV?segPrev_.vn:0), pFood=pSFL>0?costPrevT/pSFL:0, pLabor=pSFL>0?prev.labor/pSFL:0;
   const spend=cur.guests>0?Ssl/cur.guests:0, pSpend=prev.guests>0?pS/prev.guests:0;
 
   // 口コミ（対象店舗のスナップショット加重平均）— 期間末時点と前期間末時点を比較
@@ -3622,7 +3631,7 @@ function viewDash(){
 
   if(S.period==='month') h+=landingPanel(r,scopeSet,selName,sc);
   h+=dashChartPanel(r,scopeSet,selName);
-  h+=`<div class="grid2">${flPanel(cur,prev,Ssl,pS)}${mediaPanel(a,b,pa2,pb2,scopeSet,selName)}</div>`;
+  h+=`<div class="grid2">${flPanel(cur,prev,SslFL,pSFL)}${mediaPanel(a,b,pa2,pb2,scopeSet,selName)}</div>`;
   // 店舗を選んでいるときは「日別明細」、全店/合算のときは「店舗比較」
   h+= selName ? dailyStorePanel(r,selName) : comparePanel(r,p,sc,selName);
   return h;
@@ -3767,7 +3776,7 @@ function monthLanding(scopeSet, selName, y, m){
     }
   }
   const fSales=mtdSales+remSales, fGuests=mtdGuests+remGuests;
-  const flRate=mtdSales>0?(mtdCost+mtdLabor)/mtdSales:0;
+  const flRate=(()=>{ const fsL=flSalesOf_(mtdSales,flDvGross_(setArg,dayMs(new Date(y,m,1)),dayMs(new Date(y,m,cutoffDay||1)),selName)); return fsL>0?(mtdCost+mtdLabor)/fsL:0; })();   // TK-252: FL計算用売上基準
   const lyFull=lyMtd+lyRem;                       // 前年満月
   const pmFull=stat(setArg,dayMs(new Date(y,m-1,1)),dayMs(new Date(y,m,0)),selName).sales;
   return { ld,lastDay:cutoffDay,remDays, mtdSales,mtdGuests, remSales, fSales,fGuests, flRate, lyFull,pmFull, method, adj, yoyR: lyMtd>0?mtdSales/lyMtd:null };
@@ -3959,7 +3968,7 @@ function flPanel(cur,prev,SslIn,pSIn){
   }
   const fl=cur.cost+cur.labor, flR=fl/Ssl, pFlR=pS>0?(prev.cost+prev.labor)/pS:0;
   const profit=Ssl-fl;
-  let h=`<div class="panel"><div class="panel-head"><div><h3>FL（原価・人件費）内訳</h3><div class="sub">集約シート実績（人件費＝PA＋社員＋スポット）</div></div>${canUse('spot')?`<button class="icon-btn no-print" onclick="App.openSpotInput()">＋ スポット人件費</button>`:''}</div><div class="scroll-x"><table class="tbl"><thead><tr><th>項目</th><th>金額</th><th>比率</th><th>前年</th></tr></thead><tbody>`;
+  let h=`<div class="panel"><div class="panel-head"><div><h3>FL（原価・人件費）内訳</h3><div class="sub">集約シート実績（人件費＝PA＋社員＋スポット）／比率の分母＝店内売上＋デリバリー（税抜換算）</div></div>${canUse('spot')?`<button class="icon-btn no-print" onclick="App.openSpotInput()">＋ スポット人件費</button>`:''}</div><div class="scroll-x"><table class="tbl"><thead><tr><th>項目</th><th>金額</th><th>比率</th><th>前年</th></tr></thead><tbody>`;
   rows.forEach(x=>{ const pt=ptStr(x.r,x.pr,true);
     h+=`<tr><td><span class="sw" style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${x.c};margin-right:8px"></span>${esc(x.nm)}</td><td>${yen(x.amt)}</td><td>${(x.r*100).toFixed(1)}%</td><td class="${pt.cls==='up'?'pos':pt.cls==='dn'?'neg':'mut'}">${pt.t}</td></tr>`; });
   const ptFL=ptStr(flR,pFlR,true);
@@ -4051,21 +4060,22 @@ function comparePanel(r,p,sc,selName){
   sc.forEach(nm=>{
     const c=stat(null,a,b,nm), pv=stat(null,pa2,pb2,nm);
     const yy=yoyStr(c.sales,pv.sales,'');
-    const fr=c.sales>0?c.cost/c.sales:0, lr=c.sales>0?c.labor/c.sales:0, fl=fr+lr;
+    const dvG=flDvGross_(null,a,b,nm), fsx=flSalesOf_(c.sales,dvG);   // F/L/FLの分母（TK-252）
+    const fr=fsx>0?c.cost/fsx:0, lr=fsx>0?c.labor/fsx:0, fl=fr+lr;
     const sp=c.guests>0?c.sales/c.guests:0;
     const rv=revAgg(nm);
-    agg.sales+=c.sales;agg.cost+=c.cost;agg.labor+=c.labor;agg.guests+=c.guests;agg.psales+=pv.sales;
+    agg.sales+=c.sales;agg.fs=(agg.fs||0)+fsx;agg.cost+=c.cost;agg.labor+=c.labor;agg.guests+=c.guests;agg.psales+=pv.sales;
     if(rv&&rv.count>0){tws+=rv.star*rv.count;tcs+=rv.count;}
     h+=`<tr class="click ${selName===nm?'sel':''}" onclick="App.store(this.dataset.n)" data-n="${esc(nm)}">
       <td>${shortStoreTd(nm)}</td><td>${yen(c.sales)}</td>
       <td class="${yy.cls==='up'?'pos':yy.cls==='dn'?'neg':'mut'}">${yy.t}</td>
-      <td>${c.sales>0?(fr*100).toFixed(1)+'%':'—'}</td><td>${c.sales>0?(lr*100).toFixed(1)+'%':'—'}</td>
-      <td class="${fl>0.6?'warn':''}">${c.sales>0?(fl*100).toFixed(1)+'%':'—'}</td>
+      <td>${fsx>0?(fr*100).toFixed(1)+'%':'—'}</td><td>${fsx>0?(lr*100).toFixed(1)+'%':'—'}</td>
+      <td class="${fl>0.6?'warn':''}">${fsx>0?(fl*100).toFixed(1)+'%':'—'}</td>
       <td>${cnt(c.guests)}人</td><td>${yen(sp)}</td>
       <td>${rv?rv.star.toFixed(2):'—'}</td><td>${rv?cnt(rv.count):'—'}</td></tr>`;
     expRows.push([nm,Math.round(c.sales),yy.t,(fr*100).toFixed(1)+'%',(lr*100).toFixed(1)+'%',(fl*100).toFixed(1)+'%',Math.round(c.guests),Math.round(sp),rv?rv.star.toFixed(2):'',rv?rv.count:'']);
   });
-  const tf=agg.sales>0?agg.cost/agg.sales:0, tl=agg.sales>0?agg.labor/agg.sales:0;
+  const tf=agg.fs>0?agg.cost/agg.fs:0, tl=agg.fs>0?agg.labor/agg.fs:0;
   const tyy=yoyStr(agg.sales,agg.psales,'');
   h+=`<tr class="total"><td>${isAll?'全店合計':'担当店舗合計'}</td><td>${yen(agg.sales)}</td>
     <td class="${tyy.cls==='up'?'pos':'neg'}">${tyy.t}</td>
@@ -5429,6 +5439,87 @@ function extraSheetsHtml(){
 // 昨年同週同曜日 = 364日前（52週前の同じ曜日）
 const LY_MS=364*86400000;
 function dailySalesOf(storeSet, t){ let s=0; for(const r of D.daily){ if(r.t===t&&storeSet.has(r.store)) s+=r.sales; } return s; }
+/* ===== FL評価設定（TK-252・マスターのみ）=====
+ * 店舗×年月×指標（人件費率L・原価率F・FL比率）の3境界値（優秀≦／普通≦／要改善≦。超えると危険水準）を設定。単位は%。
+ * 保存はSupabase RPC（fl_thresholds_*・内部でis_master必須）。ボタン非表示だけでなく、RPC/RLSでマスター以外は拒否される。
+ * 目標値（GAS/シート）とは別データ。保存して初めて基準になる（初期提案は自動確定しない）。 */
+const FL_METRICS_=[['labor','人件費率 L'],['food','原価率 F'],['fl','FL比率']];
+async function loadFlMaster_(){
+  try{ D.flMaster_=!!(await plRpc_('me_is_master',{})); }catch(e){ D.flMaster_=false; }
+  D.flMasterReq_=false; if(S.tab==='target'&&D.flMaster_&&!targetModalOpen_()) render();
+}
+function flYm_(){ return S.flYm||((D.refDate||new Date()).getFullYear()+'-'+String((D.refDate||new Date()).getMonth()+1).padStart(2,'0')); }
+function flPrevYm_(ym){ const p=ym.split('-'); const d=new Date(+p[0],+p[1]-2,1); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); }
+async function flLoad_(){
+  const ym=flYm_(); D.flState={ ym, loading:true, rows:{}, missing:[], err:'' }; if(S.tSub==='fl'&&S.tab==='target') render();
+  try{
+    const [rows,missing]=await Promise.all([plRpc_('fl_thresholds_list',{ p_ym:ym }), plRpc_('fl_thresholds_missing',{ p_ym:ym })]);
+    const map={}; (rows||[]).forEach(r=>{ map[r.store_id+'|'+r.metric]=r; });
+    D.flState={ ym, loading:false, rows:map, missing:missing||[], err:'' };
+  }catch(e){ D.flState={ ym, loading:false, rows:{}, missing:[], err:String(e&&e.message||e) }; }
+  S.flDraft={}; if(S.tSub==='fl'&&S.tab==='target'&&!targetModalOpen_()) render();
+}
+// 保存前プレビュー用: 対象月の月間累計の実績（FL計算用売上基準＝日報と同じ定義）
+function flActual_(storeName,ym){
+  const p=ym.split('-'), y=+p[0], m=+p[1]-1, mS=dayMs(new Date(y,m,1)), today=dayMs(D.refDate||new Date()), e=Math.min(dayMs(new Date(y,m+1,0)),today);
+  if(e<mS) return null;
+  const c=stat(null,mS,e,storeName); const fs=flSalesOf_(c.sales,flDvGross_(null,mS,e,storeName)); const r=flRates_(fs,c.cost,c.labor);
+  return r.fs>0?{ labor:r.lr, food:r.fr, fl:r.fl }:null;
+}
+function flGradeOf_(ratio,t){ if(ratio==null||!t||t.some(x=>x==null||isNaN(x))) return 'unset'; const v=ratio*100; return v<=t[0]?'excellent':v<=t[1]?'normal':v<=t[2]?'warn':'danger'; }
+const FL_GRADE_LBL_={ excellent:['優秀','#127a31'], normal:['普通','#6fbf73'], warn:['要改善','#e07b00'], danger:['危険水準','#d9342b'], unset:['基準未設定','#9aa3ad'] };
+function flBadge_(g){ const l=FL_GRADE_LBL_[g]||FL_GRADE_LBL_.unset; return `<span style="display:inline-block;padding:1px 8px;border-radius:9px;font-size:11px;font-weight:700;color:#fff;background:${l[1]}">${l[0]}</span>`; }
+function flCur_(storeId,metric){   // 画面の入力値（下書き）→なければ保存済み
+  const d=S.flDraft&&S.flDraft[storeId+'|'+metric]; if(d) return d;
+  const r=D.flState&&D.flState.rows[storeId+'|'+metric]; return r?[String(r.excellent_max),String(r.normal_max),String(r.warn_max)]:['','',''];
+}
+function flSuggest_(storeName,ym){   // 初期提案: 目標入力のL率(PA+社員)・F率を「普通」、優秀=−2pt、要改善=+3pt。FLは L+F の合計
+  const p=ym.split('-'); let pa=0,emp=0,cost=0,n=0;
+  for(const r of D.targetsM){ const d2=new Date(r.t); if(d2.getFullYear()!==+p[0]||d2.getMonth()!==+p[1]-1||r.store!==storeName) continue; pa+=r.pa; emp+=r.emp; cost+=r.cost; n++; }
+  if(!n) return null;
+  const mk=(c)=>[(c-2).toFixed(1),c.toFixed(1),(c+3).toFixed(1)];
+  return { labor:mk(pa+emp), food:mk(cost), fl:mk(pa+emp+cost) };
+}
+function flPreviewRefresh_(storeId){
+  const row=document.querySelector(`tr[data-fl-store="${storeId}"]`); if(!row) return;
+  const act=flActual_(row.dataset.name,flYm_());
+  FL_METRICS_.forEach(([k])=>{ const t=flCur_(storeId,k).map(x=>x===''?null:Number(x)); const el=row.querySelector(`[data-pv="${k}"]`); if(el) el.innerHTML=(act?(act[k]*100).toFixed(1)+'% ':'— ')+flBadge_(flGradeOf_(act?act[k]:null,t)); });
+}
+function viewFlRating_(){
+  const ym=flYm_(); const st=D.flState;
+  if(!st||st.ym!==ym){ if(!D.flReq_){ D.flReq_=true; setTimeout(()=>{ flLoad_().finally(()=>{ D.flReq_=false; }); },0); } }
+  const stores=(D.home&&D.home.stores)||[];
+  let h=`<div class="ctrl-bar no-print"><button class="icon-btn" onclick="App.flClose()">← 目標管理へ戻る</button>
+    <input type="month" value="${esc(ym)}" onchange="App.flYm(this.value)">
+    <button class="icon-btn" onclick="App.flCopy(true)">前月（${esc(flPrevYm_(ym))}）からコピー…</button>
+    <button class="icon-btn primary" onclick="App.flSave()">保存</button>
+    <span class="period-label">FL評価設定（${esc(ym)}・マスターのみ）</span></div>`;
+  h+=`<div class="panel"><div class="panel-head"><div><h3>F/L/FL 評価基準（4段階）</h3><div class="sub">各指標に3つの境界値（%）を入力: <b>優秀 ≦ ○％</b>／<b>普通 ≦ ○％</b>／<b>要改善 ≦ ○％</b>（これを超えると危険水準）。判定は月間累計のみ・丸める前の値で行います。<b>保存して初めて基準になります</b>（提案値は入れただけでは確定しません）。右の「今月の実績」で保存前に評価を確認できます。チェックした店舗だけを前月コピーできます（無選択=全店）。</div></div></div>`;
+  if(!st||st.loading) return h+`<div class="empty" style="padding:30px;text-align:center">⏳ 読み込み中…</div></div>`;
+  if(st.err) return h+`<div class="empty" style="color:#b5502f;padding:20px">${esc(/forbidden|42501/.test(st.err)?'この操作はマスターのみ可能です':st.err)}</div></div>`;
+  h+=`<div class="scroll-x"><table class="tbl" style="font-size:12.5px"><thead><tr><th></th><th>店舗</th>${FL_METRICS_.map(([k,l])=>`<th colspan="2" style="text-align:center">${l}<br><span class="mut" style="font-size:10px">優秀≦ ／ 普通≦ ／ 要改善≦（%）</span></th>`).join('')}<th></th></tr></thead><tbody>`;
+  stores.forEach(s=>{
+    const sug=flSuggest_(s.storeName,ym);
+    h+=`<tr data-fl-store="${esc(s.storeId)}" data-name="${esc(s.storeName)}"><td><input type="checkbox" class="fl-sel" value="${esc(s.storeId)}"></td><td style="white-space:nowrap">${esc(shortStore(s.storeName))}</td>`;
+    FL_METRICS_.forEach(([k])=>{ const c=flCur_(s.storeId,k);
+      h+=`<td style="white-space:nowrap">${[0,1,2].map(i=>`<input type="number" step="0.1" min="0" value="${esc(c[i])}" style="width:56px" data-sid="${esc(s.storeId)}" data-k="${k}" data-i="${i}" oninput="App.flInput(this)">`).join(' ')}</td><td data-pv="${k}" style="white-space:nowrap"></td>`; });
+    h+=`<td style="white-space:nowrap">${sug?`<button class="icon-btn" style="font-size:11px" data-sid="${esc(s.storeId)}" onclick="App.flSuggest(this.dataset.sid)" title="目標入力のL率・F率を普通上限に、優秀=−2pt・要改善=+3ptで入力します（保存はしません）">提案を入れる</button>`:'<span class="mut" style="font-size:11px">目標未入力</span>'} <button class="icon-btn" style="font-size:11px" data-sid="${esc(s.storeId)}" onclick="App.flHist(this.dataset.sid)">履歴</button></td></tr>`;
+  });
+  h+=`</tbody></table></div>`;
+  const miss=st.missing||[];
+  h+=`<div style="margin-top:14px"><b>未設定の店舗（${esc(ym)}）</b>: ${miss.length?miss.map(m=>`<span style="display:inline-block;margin:2px 6px 2px 0;padding:2px 8px;border:1px solid #e0b9a9;border-radius:10px;font-size:12px">${esc(shortStore(m.store_name))}（${(m.missing||[]).map(x=>({labor:'L',food:'F',fl:'FL'}[x])).join('・')}）</span>`).join(''):'<span class="mut">なし（全店設定済み）</span>'}</div>`;
+  h+=`<div id="fl-hist" style="margin-top:14px">${flHistHtml_()}</div></div>`;
+  setTimeout(()=>stores.forEach(s=>flPreviewRefresh_(s.storeId)),0);
+  return h;
+}
+function flHistHtml_(){
+  const H=D.flHist; if(!H) return '';
+  if(H.loading) return '⏳ 履歴を読み込み中…';
+  if(H.err) return `<span style="color:#b5502f">${esc(H.err)}</span>`;
+  const nm=({labor:'人件費率L',food:'原価率F',fl:'FL比率'});
+  const t=(j)=>j?`${j.excellent_max}／${j.normal_max}／${j.warn_max}`:'—';
+  return `<b>変更履歴（${esc(H.name)}・${esc(H.ym)}）</b>${H.rows.length?`<table class="tbl" style="font-size:12px;margin-top:6px"><thead><tr><th>日時</th><th>指標</th><th>変更前</th><th>変更後</th><th>変更者</th></tr></thead><tbody>${H.rows.map(r=>`<tr><td>${esc(fmtJst_(r.changed_at))}</td><td>${esc(nm[r.metric]||r.metric)}</td><td>${t(r.before)}</td><td>${t(r.after)}</td><td>${esc(r.changed_by||'')}</td></tr>`).join('')}</tbody></table>`:'<div class="mut">履歴はありません</div>'}`;
+}
 function tgtMonthDate(){ if(S.tMonth){ const p=S.tMonth.split('-'); return new Date(+p[0],+p[1]-1,1); } const ref=D.refDate||new Date(); return new Date(ref.getFullYear(),ref.getMonth(),1); }
 // 口コミ件数の増加数（期間末スナップショット − 期間開始前スナップショット）
 function reviewIncrease(storeNames, a, b){
@@ -5444,6 +5535,8 @@ function reviewIncrease(storeNames, a, b){
   return has?Math.max(0,end-start):null;
 }
 function viewTarget(){
+  if(D.flMaster_===undefined&&!D.flMasterReq_){ D.flMasterReq_=true; setTimeout(()=>{ loadFlMaster_(); },0); }   // マスター判定（ポータル統合アカウント）
+  if(S.tSub==='fl'&&D.flMaster_) return viewFlRating_();
   const sc=scopeStores();
   const stores=sc;
   if(S.tStore && !stores.includes(S.tStore)) S.tStore='';
@@ -5463,7 +5556,7 @@ function viewTarget(){
     </select>
     ${ymSelect('tMonth', y, m)}
     ${canEdit?`<button class="icon-btn primary" onclick="App.openTargetInput()">✎ 目標を入力</button>
-    <button class="icon-btn" onclick="App.openEventInput('')">＋ イベント追加</button>`:''}
+    <button class="icon-btn" onclick="App.openEventInput('')">＋ イベント追加</button>${D.flMaster_?`<button class="icon-btn" onclick="App.flOpen()" title="F/L/FLの4段階評価の基準（マスターのみ）">FL評価設定</button>`:''}`:''}
     <span class="period-label">目標と実績（${mLabel} ／ ${selN?esc(selN):'合算'}）</span>
   </div>`;
   // 2026-08-22追加: このタブもD.daily経由でBigQueryトグル(推移分析タブ)の影響を受ける
@@ -5497,7 +5590,7 @@ function viewTarget(){
     <div class="kpi"><div class="lb">残り必要売上</div><div class="vl">${goalM>0?yen(Math.max(0,goalM-cur.sales)):'—'}</div><div class="yy">${goalM>0&&mE>today?('残り'+Math.round((mE-today)/86400000)+'日 ／ 日あたり '+yen(Math.max(0,goalM-cur.sales)/Math.max(1,Math.round((mE-today)/86400000)))):''}</div></div>
   </div>`;
   // その他目標。人件費・仕入は「売上に対する％」で設定（金額でなく率）。点数・口コミは実数。
-  const salesAct=cur.sales;
+  const salesAct=flSalesOf_(cur.sales,flDvGross_(scopeSet,mS,Math.min(mE,today),null));   // 人件費率・仕入原価率の分母＝FL計算用売上（店内＋デリバリー税抜・TK-252）。売上実績の表示は店内のまま
   const items=[
     {lb:'アルバイト人件費率', pct:true, goalPct:tm.pa, actAmt:cur.pa, invert:true},
     {lb:'社員人件費率', pct:true, goalPct:tm.emp, actAmt:cur.emp, invert:true},
@@ -7777,7 +7870,7 @@ function wkAutoStats(store,s){
   const dn=D.dinii.length?diniiStats(names,a,b):{avg:null,count:0};
   return { sales:cur.sales, prevSales:pv.sales, guests:cur.guests,
     spend:cur.guests>0?cur.sales/cur.guests:0,
-    fl:cur.sales>0?(cur.cost+cur.labor)/cur.sales:null, dinii:dn.avg, diniiCount:dn.count };
+    fl:(()=>{ const f=flSalesOf_(cur.sales,flDvGross_(store?null:set,a,b,store||null)); return f>0?(cur.cost+cur.labor)/f:null; })(), dinii:dn.avg, diniiCount:dn.count };
 }
 // 自分が見られる週報（同じ店舗なら全員／マネージャーは担当店舗／社長・本部は全店）
 function wkVisibleReports(weekT){
@@ -8290,17 +8383,18 @@ function reportData(kind, dateStr, storeFilter, group){
     const c=stat(null,a,b,nm), pv=stat(null,pa,pb,nm);
     const cum=stat(null,dayMs(mcS),b,nm), cumPv=stat(null,dayMs(sub1y(mcS)),dayMs(sub1y(e)),nm);
     const dn=hasDinii?diniiStats([nm],dnS,dnE):{avg:null,count:0};
-    return { store:nm, sales:c.sales, prevSales:pv.sales, guests:c.guests,
+    const fsx=flSalesOf_(c.sales,flDvGross_(null,a,b,nm));   // F/L/FLの分母＝FL計算用売上（店内＋デリバリー税抜・TK-252）。売上はsalesのまま
+    return { store:nm, sales:c.sales, fsales:fsx, prevSales:pv.sales, guests:c.guests,
       spend:c.guests>0?c.sales/c.guests:0, cost:c.cost, labor:c.labor,
-      fr:c.sales>0?c.cost/c.sales:null, lr:c.sales>0?c.labor/c.sales:null,
-      fl:c.sales>0?(c.cost+c.labor)/c.sales:null, dinii:dn.avg, diniiCount:dn.count,
+      fr:fsx>0?c.cost/fsx:null, lr:fsx>0?c.labor/fsx:null,
+      fl:fsx>0?(c.cost+c.labor)/fsx:null, dinii:dn.avg, diniiCount:dn.count,
       cum:cum.sales, cumPrev:cumPv.sales };
   }).sort((x,y)=>y.sales-x.sales);
-  const tot=rows.reduce((o,r)=>{o.sales+=r.sales;o.prevSales+=r.prevSales;o.guests+=r.guests;o.cost+=r.cost;o.labor+=r.labor;o.cum+=r.cum;o.cumPrev+=r.cumPrev;return o;},
-    {sales:0,prevSales:0,guests:0,cost:0,labor:0,cum:0,cumPrev:0});
-  tot.fl=tot.sales>0?(tot.cost+tot.labor)/tot.sales:null;
-  tot.fr=tot.sales>0?tot.cost/tot.sales:null;
-  tot.lr=tot.sales>0?tot.labor/tot.sales:null;
+  const tot=rows.reduce((o,r)=>{o.sales+=r.sales;o.fsales+=r.fsales;o.prevSales+=r.prevSales;o.guests+=r.guests;o.cost+=r.cost;o.labor+=r.labor;o.cum+=r.cum;o.cumPrev+=r.cumPrev;return o;},
+    {sales:0,fsales:0,prevSales:0,guests:0,cost:0,labor:0,cum:0,cumPrev:0});
+  tot.fl=tot.fsales>0?(tot.cost+tot.labor)/tot.fsales:null;
+  tot.fr=tot.fsales>0?tot.cost/tot.fsales:null;
+  tot.lr=tot.fsales>0?tot.labor/tot.fsales:null;
   const dnTot=hasDinii?diniiStats(stores,dnS,dnE):{avg:null,count:0};
   tot.dinii=dnTot.avg; tot.diniiCount=dnTot.count;
   const diniiRangeLabel=(kind==='daily')?(e.getMonth()+1)+'月（1日〜'+e.getDate()+'日）':'期間内';
@@ -8319,8 +8413,9 @@ function reportData(kind, dateStr, storeFilter, group){
     trend=reportTrend(singleStore, kind==='daily'?addD(e,-6):s, e);
     // 累計F率・L率（月間累計＝月初〜期間末日、月報のときは期間そのものと同じなので出さない）
     const cumStat=stat(null,dayMs(mcS),b,singleStore);
-    cumRate={ fr:cumStat.sales>0?cumStat.cost/cumStat.sales:null, lr:cumStat.sales>0?cumStat.labor/cumStat.sales:null,
-      fl:cumStat.sales>0?(cumStat.cost+cumStat.labor)/cumStat.sales:null };
+    const cumFS=flSalesOf_(cumStat.sales,flDvGross_(null,dayMs(mcS),b,singleStore));   // 累計の分母もFL計算用売上（TK-252）
+    cumRate={ fr:cumFS>0?cumStat.cost/cumFS:null, lr:cumFS>0?cumStat.labor/cumFS:null,
+      fl:cumFS>0?(cumStat.cost+cumStat.labor)/cumFS:null };
     // Google口コミ：現在の星・累計件数と、レポート期間内の増加件数
     const revEnd=reviewStatsAt(singleStore,b), revStart=reviewStatsAt(singleStore,dayMs(addD(s,-1)));
     if(revEnd) review={ star:revEnd.star, count:revEnd.count, inc:revStart?(revEnd.count-revStart.count):null };
@@ -8345,7 +8440,7 @@ function viewReport(kind, dateStr, storeFilter, group){
   const yoy=(c,p)=>{ if(!(p>0)) return {t:'—',cls:''}; const v=(c-p)/p*100; return {t:(v>=0?'+':'▲')+Math.abs(v).toFixed(1)+'%', cls:v>=0?'#4c7d5c':'#b5502f'}; };
   const totYoy=yoy(d.tot.sales,d.tot.prevSales), cumYoy=yoy(d.tot.cum,d.tot.cumPrev);
   const spend=d.tot.guests>0?d.tot.sales/d.tot.guests:0;
-  const fl=d.tot.sales>0?((d.tot.cost+d.tot.labor)/d.tot.sales*100).toFixed(1)+'%':'—';
+  const fl=d.tot.fsales>0?((d.tot.cost+d.tot.labor)/d.tot.fsales*100).toFixed(1)+'%':'—';
   const showFl=(kind!=='daily'||d.tot.cost>0||d.tot.labor>0);
   const salesLabel=kind==='monthly'?'月売上':kind==='weekly'?'週売上':'売上';
   // 単店舗：店舗比較チャートの代わりに直近推移チャート／全店・複数店舗：店舗別バーチャート（売上降順）
@@ -8614,21 +8709,23 @@ function answerQuery(q){
   let o={sales:0,guests:0,cost:0,labor:0,cash:0}, po={sales:0,guests:0};
   for(const r of D.daily){ if(!nameSet.has(r.store))continue; if(r.t>=a&&r.t<=b){o.sales+=r.sales;o.guests+=r.guests;o.cost+=r.cost;o.labor+=r.labor;o.cash+=r.cash;} if(r.t>=pa2&&r.t<=pb2){po.sales+=r.sales;po.guests+=r.guests;} }
   const S2=o.sales, sp=o.guests>0?S2/o.guests:0, psp=po.guests>0?po.sales/po.guests:0;
+  const FS2=flSalesOf_(S2,flDvGross_(nameSet,a,b,null));   // F/L/FLの分母（店内＋デリバリー税抜・TK-252）。売上はS2（店内）のまま
   const pct=n=>S2>0?(n/S2*100).toFixed(1)+'%':'—';
+  const pctFL=n=>FS2>0?(n/FS2*100).toFixed(1)+'%':'—';
   let hit=false, metric='sales'; const denied=[];
   if(want(/売上/)){ lines.push('　売上：'+yen(S2)+'（'+yy(S2,po.sales)+'）'); hit=true; metric='sales'; }
   if(want(/客数/)){ lines.push('　客数：'+cnt(o.guests)+'人（'+yy(o.guests,po.guests)+'）'); hit=true; metric='guests'; }
   if(want(/単価/)){ lines.push('　客単価：'+yen(sp)+'（'+yy(sp,psp)+'）'); hit=true; metric='spend'; }
-  if(want(/原価|仕入/)){ if(canPL){ lines.push('　原価率：'+pct(o.cost)+'（仕入 '+yen(o.cost)+'）'); hit=true; } else denied.push('原価'); }
-  if(want(/人件費/)){ if(canPL){ lines.push('　人件費率：'+pct(o.labor)); hit=true; } else denied.push('人件費'); }
-  if(want(/FL/i)){ if(canPL){ lines.push('　FL率：'+pct(o.cost+o.labor)); hit=true; } else denied.push('FL'); }
+  if(want(/原価|仕入/)){ if(canPL){ lines.push('　原価率：'+pctFL(o.cost)+'（仕入 '+yen(o.cost)+'）'); hit=true; } else denied.push('原価'); }
+  if(want(/人件費/)){ if(canPL){ lines.push('　人件費率：'+pctFL(o.labor)); hit=true; } else denied.push('人件費'); }
+  if(want(/FL/i)){ if(canPL){ lines.push('　FL率：'+pctFL(o.cost+o.labor)); hit=true; } else denied.push('FL'); }
   if(want(/利益/)){ if(canPL){ lines.push('　利益(FL後)：'+yen(S2-o.cost-o.labor)+'（'+pct(S2-o.cost-o.labor)+'）'); hit=true; } else denied.push('利益'); }
   if(want(/未入金|入金/)){ if(canDep){ let dep=0; for(const r of D.deposit){ if(nameSet.has(r.store)&&r.t>=a&&r.t<=b)dep+=r.amount; } lines.push('　現金売上：'+yen(o.cash)+' ／ 入金：'+yen(dep)+' ／ 未入金：'+yen(o.cash-dep)); hit=true; } else denied.push('入金'); }
   if(!hit&&!denied.length){
     lines.push('　売上：'+yen(S2)+'（'+yy(S2,po.sales)+'）');
     lines.push('　客数：'+cnt(o.guests)+'人 ／ 客単価：'+yen(sp));
     if(canPL){
-      lines.push('　原価率：'+pct(o.cost)+' ／ 人件費率：'+pct(o.labor)+' ／ FL：'+pct(o.cost+o.labor));
+      lines.push('　原価率：'+pctFL(o.cost)+' ／ 人件費率：'+pctFL(o.labor)+' ／ FL：'+pctFL(o.cost+o.labor));
       lines.push('　利益(FL後)：'+yen(S2-o.cost-o.labor));
     }
   }
@@ -10260,6 +10357,43 @@ window.App = {
   reqLogTo(v){ S.reqLogTo=v; reqLogRefreshBody_(); },
   reqLogClear(){ S.reqLogQ=''; S.reqLogWho=''; S.reqLogStore=''; S.reqLogFrom=''; S.reqLogTo=''; render(); },
   reqLogCsv(){ reqLogCsv_(); },
+  // ---- FL評価設定（マスターのみ・TK-252）----
+  flOpen(){ S.tSub='fl'; S.flDraft={}; D.flState=null; render(); },
+  flClose(){ S.tSub=''; render(); },
+  flYm(v){ if(/^\d{4}-\d{2}$/.test(v||'')){ S.flYm=v; S.flDraft={}; D.flState=null; D.flHist=null; render(); } },
+  flInput(el){ const k=el.dataset.sid+'|'+el.dataset.k; S.flDraft=S.flDraft||{}; const cur=flCur_(el.dataset.sid,el.dataset.k).slice(); cur[+el.dataset.i]=el.value; S.flDraft[k]=cur; flPreviewRefresh_(el.dataset.sid); },
+  flSuggest(sid){ const nm=((D.home.stores||[]).find(s=>s.storeId===sid)||{}).storeName; const sg=flSuggest_(nm,flYm_()); if(!sg){ toast('この月の目標が入力されていません'); return; }
+    S.flDraft=S.flDraft||{}; FL_METRICS_.forEach(([k])=>{ S.flDraft[sid+'|'+k]=sg[k]; }); render(); toast('提案値を入れました（保存するまで確定しません）'); },
+  async flSave(){
+    const ym=flYm_(); const rows=[]; const bad=[];
+    const ids=new Set(); document.querySelectorAll('tr[data-fl-store]').forEach(tr=>ids.add(tr.dataset.flStore));
+    ids.forEach(sid=>{ FL_METRICS_.forEach(([k,l])=>{ const c=flCur_(sid,k); const draft=S.flDraft&&S.flDraft[sid+'|'+k]; if(!draft) return;   // 触っていない行は送らない
+      if(c.every(x=>x==='')) return;   // 全て空=未設定のまま
+      const n=c.map(Number); const nm=((D.home.stores||[]).find(s=>s.storeId===sid)||{}).storeName||'';
+      if(c.some(x=>x==='')||n.some(x=>isNaN(x)||x<0)||!(n[0]<=n[1]&&n[1]<=n[2])){ bad.push(shortStore(nm)+' '+l); return; }
+      rows.push({ store_id:sid, year_month:ym, metric:k, excellent_max:n[0], normal_max:n[1], warn_max:n[2] }); }); });
+    if(bad.length){ toast('入力を確認してください（3つとも入力・優秀≦普通≦要改善）: '+bad.slice(0,4).join('、')); return; }
+    if(!rows.length){ toast('変更はありません'); return; }
+    if(!confirm(ym+' の評価基準を '+rows.length+' 件保存します。保存すると、この月の日報の評価がこの基準になります。よろしいですか？')) return;
+    try{ await plRpc_('fl_thresholds_upsert',{ p_rows:rows }); toast('保存しました（'+rows.length+'件）'); D.flState=null; S.flDraft={}; render(); }
+    catch(e){ toast('保存できませんでした: '+(/forbidden|42501/.test(String(e&&e.message))?'マスターのみ可能です':(e&&e.message||e))); }
+  },
+  async flCopy(dry){
+    const ym=flYm_(), from=flPrevYm_(ym); const sel=[...document.querySelectorAll('.fl-sel:checked')].map(x=>x.value);
+    try{
+      const r=await plRpc_('fl_thresholds_copy',{ p_from:from, p_to:ym, p_store_ids:sel.length?sel:null, p_dry_run:true, p_overwrite:false });
+      if(!r.new&&!r.skip){ toast(from+' に設定がありません'); return; }
+      const over=r.skip>0?confirm(`${from} → ${ym}（${sel.length?sel.length+'店舗':'全店'}）\n新規 ${r.new}件 ／ すでにある ${r.skip}件\n\nすでにある行も上書きしますか？\nOK=上書きする ／ キャンセル=すでにある行はそのまま`):false;
+      if(!confirm(`コピーを実行します。\n新規 ${r.new}件${over?' ／ 上書き '+r.skip+'件':''}`)) return;
+      await plRpc_('fl_thresholds_copy',{ p_from:from, p_to:ym, p_store_ids:sel.length?sel:null, p_dry_run:false, p_overwrite:over });
+      toast('コピーしました'); D.flState=null; S.flDraft={}; render();
+    }catch(e){ toast('コピーできませんでした: '+(e&&e.message||e)); }
+  },
+  async flHist(sid){
+    const nm=((D.home.stores||[]).find(s=>s.storeId===sid)||{}).storeName||''; D.flHist={ loading:true, name:shortStore(nm), ym:flYm_(), rows:[] }; const el=document.getElementById('fl-hist'); if(el) el.innerHTML=flHistHtml_();
+    try{ D.flHist.rows=await plRpc_('fl_threshold_history',{ p_store:sid, p_ym:flYm_() }); D.flHist.loading=false; }catch(e){ D.flHist.loading=false; D.flHist.err=String(e&&e.message||e); }
+    const el2=document.getElementById('fl-hist'); if(el2) el2.innerHTML=flHistHtml_();
+  },
   async quoteDecide(id, action, optId){
     try{
       let reason='';
