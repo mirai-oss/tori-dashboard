@@ -28,6 +28,11 @@ on:
         required: false
         default: ''
         type: string
+      dedupe_suffix:
+        description: '同じ日・同じ店舗をもう一度 Slack に送る時の目印（例 :resend1／空=通常。空のままだと二重送信防止で送られない）'
+        required: false
+        default: ''
+        type: string
   # schedule:
   #   - cron: '0 3 * * *'             # 日報 12:00 JST（予備・遅延あり）
   #   - cron: '10 3 1,8,15,22,29 * *' # 週報（予備）
@@ -262,6 +267,7 @@ jobs:
           #   image+text = 画像と従来の文章を両方送る（並行確認期間の既定）／ image = 画像だけ／ text = 従来どおり
           #   リポジトリの Variables に DAILY_CARD_MODE を作れば yml を触らずに切り替えられる。週報・月報は従来の文章のまま。
           DAILY_CARD_MODE: ${{ vars.DAILY_CARD_MODE || 'image' }}
+          REPORT_DEDUPE_SUFFIX: ${{ github.event.inputs.dedupe_suffix }}
           STORES: ${{ matrix.stores }}
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
