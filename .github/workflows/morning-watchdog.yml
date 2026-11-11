@@ -3,7 +3,7 @@ name: 朝の見張り番（売上・勤怠の取込確認）
 # ns-portal担当D（docs/実装指示書_担当D_勤怠給与監視_2026-08-24.md D-3）。
 # 8/23の「Mac mini停止に半日気づけなかった」障害の再発防止策。GitHub Actions（Mac miniと
 # 独立した場所）から、毎朝「昨日分の売上・勤怠がちゃんと入っているか」を確認し、
-# 入っていない時だけLarkへ警告する（正常時は無送信）。
+# 入っていない時だけSlack（#本部-開発システム）へ警告する（正常時は無送信）。※2026-11-11 Lark送信は廃止。
 #
 # 既存ファイル・app.js・GASは一切変更しない（新規ファイル追加のみ。担当A専任のため）。
 # 売上チェックは既存のGASアクション`reportDataBQ`（bq-diag.ymlと同じ軽量問い合わせパターン）を
@@ -119,16 +119,11 @@ jobs:
           COUNT=$(echo "$RES" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).openCount||0)}catch(e){console.log(0)}})")
           echo "count=$COUNT" >> "$GITHUB_OUTPUT"
 
-      - name: Larkへ警告（どれか欠けている/未解決件数がある時だけ・正常時は無送信）
+      - name: Slackへ警告（どれか欠けている/未解決件数がある時だけ・正常時は無送信）
         if: steps.sales.outputs.missing == 'true' || steps.attendance.outputs.missing == 'true' || steps.unresolved.outputs.count != '0'
         env:
-          LARK_WEBHOOK: ${{ secrets.LARK_WEBHOOK }}
           NOTIFY_SLACK_SECRET: ${{ secrets.NOTIFY_SLACK_SECRET }}
         run: |
-          if [ -z "$LARK_WEBHOOK" ]; then
-            echo "::error::LARK_WEBHOOK未設定のため警告を送信できません"
-            exit 1
-          fi
           PARTS=""
           if [ "${{ steps.sales.outputs.missing }}" = "true" ]; then PARTS="売上"; fi
           if [ "${{ steps.attendance.outputs.missing }}" = "true" ]; then
@@ -142,19 +137,17 @@ jobs:
           if [ "$COUNT" != "0" ] && [ -n "$COUNT" ]; then
             TEXT="${TEXT}$(printf '\n⚠️ 店舗名ゲートウェイで保留中のデータが %s 件あります（未知の店舗名でstore_aliasesに未登録のため取込を保留中）。store_aliasesへ登録すると自動的に解消します。' "$COUNT")"
           fi
-          BODY=$(TEXT="$TEXT" node -e "console.log(JSON.stringify({msg_type:'text', content:{text: process.env.TEXT}}))")
-          RES=$(curl -s -w "\n%{http_code}" -X POST "$LARK_WEBHOOK" -H "Content-Type: application/json" -d "$BODY")
-          echo "$RES"
-          HTTP_CODE=$(echo "$RES" | tail -1)
-          if [ "$HTTP_CODE" != "200" ]; then
-            echo "::error::Lark送信に失敗しました（HTTP $HTTP_CODE）"
+          # Slack #本部-開発システム へ送信（ns-portal notify-slack 経由・台帳に残る）。2026-11-11 Lark 送信は廃止（Slack 一本化）。
+          # 送信できなかったとき（秘密未設定・HTTP非200）はジョブを失敗にして気づけるようにする（Lark廃止後は黙って素通りしないため）
+          if [ -z "$NOTIFY_SLACK_SECRET" ]; then
+            echo "::error::NOTIFY_SLACK_SECRET 未設定のため Slack へ送信できません"
             exit 1
           fi
-          # 2026-11-04 Slack通知基盤 Phase 2: 同じ文面を Slack #本部-開発システム にも並行送信（ns-portal notify-slack 経由・台帳に残る）
-          if [ -n "$NOTIFY_SLACK_SECRET" ]; then
-            SBODY=$(TEXT="$TEXT" node -e "console.log(JSON.stringify({action:'send',channel_key:'hq.dev_system',text:process.env.TEXT,source:'tori-dashboard',event:'morning_watchdog',username:'監視'}))")
-            SRES=$(curl -s -X POST "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/notify-slack" -H "Content-Type: application/json" -H "x-notify-secret: $NOTIFY_SLACK_SECRET" -d "$SBODY")
-            echo "slack: $SRES"
-          else
-            echo "::notice::NOTIFY_SLACK_SECRET 未設定のため Slack へは送りません"
+          SBODY=$(TEXT="$TEXT" node -e "console.log(JSON.stringify({action:'send',channel_key:'hq.dev_system',text:process.env.TEXT,source:'tori-dashboard',event:'morning_watchdog',username:'監視'}))")
+          SRES=$(curl -s -w "\n%{http_code}" -X POST "https://uuvsxzhpxtghojoubjcc.supabase.co/functions/v1/notify-slack" -H "Content-Type: application/json" -H "x-notify-secret: $NOTIFY_SLACK_SECRET" -d "$SBODY")
+          SCODE=$(echo "$SRES" | tail -1)
+          if [ "$SCODE" != "200" ]; then
+            echo "::error::Slack送信に失敗しました（HTTP $SCODE）"
+            exit 1
           fi
+          echo "slack: sent"
