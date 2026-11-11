@@ -28,6 +28,17 @@ on:
         required: false
         default: ''
         type: string
+      all_stores_mode:
+        description: '全12店舗日報（TK-255）の手動実行: only=全店舗日報だけ送る／only_test=【テスト】付きで全店舗日報だけ送る／空=通常（店舗別の後に自動で送る）'
+        required: false
+        default: ''
+        type: choice
+        options: ['', only, only_test]
+      all_stores_date:
+        description: '全12店舗日報の営業日 YYYY-MM-DD（空=前日）'
+        required: false
+        default: ''
+        type: string
       dedupe_suffix:
         description: '同じ日・同じ店舗をもう一度 Slack に送る時の目印（例 :resend1／空=通常。空のままだと二重送信防止で送られない）'
         required: false
@@ -133,6 +144,7 @@ jobs:
   # 「配信グループ管理」）から毎回読み直す。コミット不要・グループ追加はnippo画面で完結する。
   # anonキーで読める匿名読み取り専用VIEW(report_channel_matrix_v)を使うため、GitHub Secretの追加は不要。
   prepare:
+    if: ${{ github.event.inputs.all_stores_mode == '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -392,3 +404,39 @@ jobs:
             echo "::error::${{ matrix.group }} で $FAIL 件送信できませんでした:$FAILED"
             exit 1
           fi
+
+  # ================= 全12店舗日報（TK-255）: 店舗別の配信が終わった後に1回だけ、専用チャンネルへ =================
+  #   親投稿＝「MM/DD 全店舗 日報／✅ 直営N/8店舗 配信成功」＋日次画像、スレッド返信＝月次累計画像。数字は店舗別日報と同じ VM（検算NGなら送らず失敗）。
+  #   同日の再実行は dedupe_key で二重投稿にならない（再送したい時だけ dedupe_suffix を付ける）。
+  all-stores-report:
+    needs: [prepare, group-report]
+    if: ${{ always() && github.event.inputs.only_group == '' && github.event.inputs.kind != 'weekly' && github.event.inputs.kind != 'monthly' && (github.event.inputs.all_stores_mode != '' || needs.prepare.result == 'success') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: 設定チェック
+        run: |
+          if [ -z "${{ secrets.NOTIFY_SLACK_SECRET }}" ]; then
+            echo "::notice::NOTIFY_SLACK_SECRET が未設定のためスキップ"; echo "SKIP=1" >> "$GITHUB_ENV"
+          fi
+      - name: 日本語フォントと Chromium 操作ライブラリ
+        if: env.SKIP != '1'
+        run: |
+          sudo apt-get update -qq >/dev/null && sudo apt-get install -y -qq fonts-noto-cjk >/dev/null
+          npm install --no-audit --no-fund --silent
+      - name: 全12店舗日報を生成して送信
+        if: env.SKIP != '1'
+        env:
+          NOTIFY_SLACK_SECRET: ${{ secrets.NOTIFY_SLACK_SECRET }}
+          REPORT_DEDUPE_SUFFIX: ${{ github.event.inputs.dedupe_suffix }}
+          IN_DATE: ${{ github.event.inputs.all_stores_date }}
+          IN_MODE: ${{ github.event.inputs.all_stores_mode }}
+        run: |
+          D="$IN_DATE"; [ -z "$D" ] && D=$(TZ=Asia/Tokyo date -d 'yesterday' +%F)
+          T=""; [ "$IN_MODE" = "only_test" ] && T="--test"
+          echo "営業日=$D mode=${IN_MODE:-通常}"
+          node scripts/all-stores-report-card.mjs --date "$D" --channel report.all-stores --out ./out-all $T
