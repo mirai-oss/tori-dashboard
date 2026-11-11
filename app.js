@@ -605,7 +605,7 @@ function ingestDeliveryMedia(rows){
   for(let i=hi+1;i<rows.length;i++){
     const c=rows[i]; const st=String(c[iS]||'').trim(); const t=parseDateStr(c[iD]);
     if(!st||!t) continue;
-    recs.push({ store:st, t, media:String(c[iM]||'').trim(), guests:num(c[iG]), groups:num(c[iGrp]), net:num(c[iN]) });
+    recs.push({ store:st, t, media:String(c[iM]||'').trim(), guests:num(c[iG]), groups:num(c[iGrp]), net:num(c[iN])/FL_DELIVERY_TAX_DIVISOR_ });   // 取込は税込(8%)のため、ここで税抜に換算（2026-11-11ユーザー指示：デリバリー売上は税抜で表示・集計）
   }
   D.media=D.media.filter(r=>r.media!=='ロケットナウ').concat(recs);
   D.diag['delivery']='OK '+recs.length+'件';
@@ -1566,7 +1566,7 @@ function selStoreName(){ return S.store==='all'?null:S.store; }
  * 売上KPI・予算比・前年比は変えない（店内売上のまま）。画面ごとに別式を持たず、F/L/FLの分母は必ずここを通す。 */
 const FL_DELIVERY_TAX_DIVISOR_=1.08;
 function flDvGross_(set,a,b,nm){ try{ const g=segSplit(set||new Set(),a,b,nm||null); return g&&g.hasV?g.vn:0; }catch(e){ return 0; } }
-function flSalesOf_(instore,dvGross){ return (Number(instore)||0)+(Number(dvGross)||0)/FL_DELIVERY_TAX_DIVISOR_; }
+function flSalesOf_(instore,dvNet){ return (Number(instore)||0)+(Number(dvNet)||0); }   // デリバリーは取込時に税抜換算済み（ingestDeliveryMedia）のでここでは割らない
 function flRates_(flSales,cost,labor){ return flSales>0?{ fs:flSales, fr:cost/flSales, lr:labor/flSales, fl:(cost+labor)/flSales }:{ fs:flSales, fr:null, lr:null, fl:null }; }
 function stat(setNames, a, b, selName){
   const o={sales:0,guests:0,groups:0,hasGroups:false,cost:0,pa:0,emp:0,labor:0,cash:0,empBase:0,welfare:0,commute:0,spot:0};
