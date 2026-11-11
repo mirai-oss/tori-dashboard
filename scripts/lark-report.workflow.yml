@@ -48,7 +48,9 @@ jobs:
     # only_group を指定した「1店舗だけ再送」の時は、全体レポートを二重送信しないようスキップ
     # 2026-11-12（ユーザー承認・27番）: 週報・月報は Slack（#経営-レポート・#経営-レポート-nstyle）に届くため、Lark 直送の全体レポートは日報だけにする
     #   （schedule 起動のときは inputs.kind が空＝従来の kind 判定に任せるため、kind が weekly/monthly と明示されたときだけ止める）
-    if: ${{ github.event.inputs.only_group == '' && github.event.inputs.kind != 'weekly' && github.event.inputs.kind != 'monthly' }}
+    # 2026-11-11（ユーザー指示）: Lark の日報（全体レポート＋第2レポート）を停止。日報は Slack の店舗別チャンネルへ画像で配信（group-report ジョブ）。戻す時は下の if を元の条件に戻す:
+    #   if: ${{ github.event.inputs.only_group == '' && github.event.inputs.kind != 'weekly' && github.event.inputs.kind != 'monthly' }}
+    if: ${{ false }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
