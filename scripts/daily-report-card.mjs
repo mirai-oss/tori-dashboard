@@ -197,7 +197,7 @@ function buildHtml(v) {
   // 通常店は常に2行（ランチ・ディナー）。営業のない区分は「—（営業なし）」、取れない日は「未取得」
   rows.push(irow(SVG.sun, 'ランチ', v.show_ld ? (v.ld_has_lunch ? yen(v.ld_lunch) : none) : miss));
   rows.push(irow(SVG.moon, 'ディナー', v.show_ld ? (v.ld_has_dinner ? yen(v.ld_dinner) : none) : miss));
-  if (dl.enabled) rows.push(irow(SVG.bike, 'デリバリー', dl.status === 'missing' ? '<span class="na">未取得</span>' : dl.status === 'zero' ? '¥0（注文なし）' : yen(dl.sales_gross != null ? dl.sales_gross : dl.sales), dl.budget_ratio));   // 画面(売上ダッシュボード)と同じ換算前の金額。FL計算用の税抜換算後は下の「FL用売上」に反映
+  if (dl.enabled) rows.push(irow(SVG.bike, 'デリバリー', dl.status === 'missing' ? '<span class="na">未取得</span>' : dl.status === 'zero' ? '¥0（注文なし）' : yen(dl.sales), dl.budget_ratio));   // 税抜換算後（取込は税込のため÷1.08。FL計算用と同じ）
   const bdBody = rows.join('');
   const flNote = dl.enabled ? `<span class="fln">FL用売上 ${num(v.fl_sales_today) === null ? '—' : yen(v.fl_sales_today)}</span>` : '';
   const ref = (f) => (f ? '<div class="refn">参考値</div>' : '');
