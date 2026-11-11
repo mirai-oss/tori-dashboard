@@ -99,7 +99,8 @@ function selfCheck(v) {
   if (num(v.budget_today) > 0 && num(v.budget_ratio_today) !== null && Math.abs(S / num(v.budget_today) - num(v.budget_ratio_today)) > 0.0005) issues.push('予算比の再計算が一致しない');
   if (num(v.mtd_budget) > 0 && num(v.mtd_budget_ratio) !== null && Math.abs(num(v.mtd_sales) / num(v.mtd_budget) - num(v.mtd_budget_ratio)) > 0.0005) issues.push('月累計予算比が一致しない');
   const FSd = num(v.fl_sales_today) > 0 ? num(v.fl_sales_today) : S;   // F/L/FLの分母＝FL計算用売上（店内＋デリバリー税抜・VM v6）。無い旧VMは店内のまま
-  if (num(v.cogs_today) > 0 && num(v.food_cost_ratio_today) !== null && Math.abs(num(v.cogs_today) / FSd - num(v.food_cost_ratio_today)) > 0.0005) issues.push('原価率が一致しない');
+  const costT = num(v.cost_today) !== null ? num(v.cost_today) : num(v.cogs_today);   // 店舗間移動込みの原価（VM v6.5）。無い旧VMは cogs のまま
+  if (num(v.cogs_today) > 0 && num(v.food_cost_ratio_today) !== null && Math.abs(costT / FSd - num(v.food_cost_ratio_today)) > 0.0005) issues.push('原価率が一致しない');
   if (num(v.labor_today) > 0 && num(v.labor_ratio_today) !== null && Math.abs(num(v.labor_today) / FSd - num(v.labor_ratio_today)) > 0.0005) issues.push('人件費率が一致しない');
   if (v.cmp && 'ly_comparison_date' in v && (v.cmp.comparison_date || null) !== (v.ly_comparison_date || null)) issues.push(`比較対象日が共通関数とハブで不一致（${v.cmp.comparison_date} ≠ ${v.ly_comparison_date}）`);
   if (v.yoy !== null && num(v.ly_sales) > 0 && Math.abs(S / num(v.ly_sales) - v.yoy) > 0.0005) issues.push('前年同月同週比の再計算が一致しない');
