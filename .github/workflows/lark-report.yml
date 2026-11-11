@@ -273,7 +273,8 @@ jobs:
 
           # Slack グループは、店舗別カードの前に「グループ全店の比較サマリ」を1通送る
           # （Lark の「第2レポート（鳥一代8店舗）」相当。only_stores で1店舗だけ再送する時は送らない）
-          if [ "$CHANNEL_KIND" = "slack" ] && [ -z "${STORES_OVERRIDE:-}" ]; then
+          # 店舗別チャンネル（channel_key が store. で始まる）には、グループの全店サマリ文章は送らない（日報画像だけ。TK-252 第3段階）
+          if [ "$CHANNEL_KIND" = "slack" ] && [ -z "${STORES_OVERRIDE:-}" ] && [[ "${SLACK_CHANNEL_KEY:-}" != store.* ]]; then
             echo "::group::グループ全店サマリ"
             NAMES=$(node -e 'console.log(process.env.STORES.split(",").map((e) => e.split("|")[0]).join(","))')
             rm -f report.png report-meta.json
