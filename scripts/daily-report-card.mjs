@@ -136,7 +136,7 @@ function alertList(v) {
   if (lr !== null && tl !== null && lr > tl) out.push({ lv: 'bad', t: `人件費率（月間）が目標${pct(tl)}を${((lr - tl) * 100).toFixed(1)}pt超過` });
   if (fr !== null && tf !== null && fr > tf) out.push({ lv: 'bad', t: `原価率（月間）が目標${pct(tf)}を${((fr - tf) * 100).toFixed(1)}pt超過` });
   if (br !== null && br < 1) out.push({ lv: 'warn', t: `本日の売上は予算比${pct(br)}（未達 ${yen(num(v.budget_today) - num(v.sales_today))}）` });
-  if (v.delivery && v.delivery.unlinked_note) out.push({ lv: 'warn', t: `${v.delivery.unlinked_note}のため、F/L/FLは参考値（評価は保留）` });   // 例「デリバリー売上の一部（Uber Eats）が未連携」（VM v6.3）
+  if (v.delivery && v.delivery.unlinked_note) out.push({ lv: 'warn', t: `${v.delivery.unlinked_note}のため、F/L/FLにはその分が入っていません（今ある数字で評価）` });   // 例「デリバリー売上の一部（Uber Eats）が未連携」（VM v6.3）
   else if (v.fl_reference_mtd || v.fl_reference_today) out.push({ lv: 'warn', t: 'デリバリー未取得のためF/L/FLは店内のみの参考値（評価は保留）' });
   if (!out.length) {
     const good = [];
@@ -197,7 +197,7 @@ function buildHtml(v) {
   // 通常店は常に2行（ランチ・ディナー）。営業のない区分は「—（営業なし）」、取れない日は「未取得」
   rows.push(irow(SVG.sun, 'ランチ', v.show_ld ? (v.ld_has_lunch ? yen(v.ld_lunch) : none) : miss));
   rows.push(irow(SVG.moon, 'ディナー', v.show_ld ? (v.ld_has_dinner ? yen(v.ld_dinner) : none) : miss));
-  if (dl.enabled) rows.push(irow(SVG.bike, 'デリバリー', dl.status === 'missing' ? '<span class="na">未取得</span>' : dl.status === 'zero' ? '¥0（注文なし）' : yen(dl.sales), dl.budget_ratio));
+  if (dl.enabled) rows.push(irow(SVG.bike, 'デリバリー', dl.status === 'missing' ? '<span class="na">未取得</span>' : dl.status === 'zero' ? '¥0（注文なし）' : yen(dl.sales_gross != null ? dl.sales_gross : dl.sales), dl.budget_ratio));   // 画面(売上ダッシュボード)と同じ換算前の金額。FL計算用の税抜換算後は下の「FL用売上」に反映
   const bdBody = rows.join('');
   const flNote = dl.enabled ? `<span class="fln">FL用売上 ${num(v.fl_sales_today) === null ? '—' : yen(v.fl_sales_today)}</span>` : '';
   const ref = (f) => (f ? '<div class="refn">参考値</div>' : '');
