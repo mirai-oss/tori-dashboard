@@ -119,8 +119,10 @@ jobs:
           COUNT=$(echo "$RES" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).openCount||0)}catch(e){console.log(0)}})")
           echo "count=$COUNT" >> "$GITHUB_OUTPUT"
 
-      - name: Slackへ警告（どれか欠けている/未解決件数がある時だけ・正常時は無送信）
-        if: steps.sales.outputs.missing == 'true' || steps.attendance.outputs.missing == 'true' || steps.unresolved.outputs.count != '0'
+      # 2026-11-11（ユーザー決定「正常の報告は出さない」）: 売上・勤怠の取込が欠けているときだけ送る。
+      #   未解決の店舗名の件数だけでは送らない（その件数は keiei-kd-refresh の通知で別に出ている。欠けの通知には今までどおり書き添える）。監視そのものは毎朝動く。
+      - name: Slackへ警告（売上・勤怠の取込が欠けている時だけ・正常時は無送信）
+        if: steps.sales.outputs.missing == 'true' || steps.attendance.outputs.missing == 'true'
         env:
           NOTIFY_SLACK_SECRET: ${{ secrets.NOTIFY_SLACK_SECRET }}
         run: |
