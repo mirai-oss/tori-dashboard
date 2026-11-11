@@ -261,7 +261,7 @@ jobs:
           # 2026-11-05 Slack の店舗別「日報」は画像カード（scripts/daily-report-card.mjs）。
           #   image+text = 画像と従来の文章を両方送る（並行確認期間の既定）／ image = 画像だけ／ text = 従来どおり
           #   リポジトリの Variables に DAILY_CARD_MODE を作れば yml を触らずに切り替えられる。週報・月報は従来の文章のまま。
-          DAILY_CARD_MODE: ${{ vars.DAILY_CARD_MODE || 'image+text' }}
+          DAILY_CARD_MODE: ${{ vars.DAILY_CARD_MODE || 'image' }}
           STORES: ${{ matrix.stores }}
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}

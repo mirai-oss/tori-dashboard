@@ -70,12 +70,18 @@ function normalize(vm) {
   if (num(v.sales_today) > 0 && !(num(v.labor_today) > 0)) v.labor_ratio_today = null;
   if (num(v.mtd_sales) > 0 && !(num(v.mtd_food_cost_ratio) > 0)) v.mtd_food_cost_ratio = null;
   if (num(v.mtd_sales) > 0 && !(num(v.mtd_labor_ratio) > 0)) v.mtd_labor_ratio = null;
+  // 原価か人件費のどちらかが未整備（率が「—」）の日は、片方だけのFL比率を出さない（FL＝F+L のため誤解を避ける）
+  if (v.food_cost_ratio_today === null || v.labor_ratio_today === null) v.fl_ratio_today = null;
+  if (v.mtd_food_cost_ratio === null || v.mtd_labor_ratio === null) v.mtd_fl_ratio = null;
   // ランチ/ディナー（明細ベース）は、両方そろい・合計が当日売上の ±1% 以内のときだけ出す
   const L = v.lunch, D = v.dinner, S = num(v.sales_today);
-  v.show_ld = !!(L && D && S > 0 && Math.abs(num(L.sales) + num(D.sales) - S) <= S * 0.01);
-  // 明細の「客数」はお通し数ベースでランチは 0 になる（レジの客数とも合わない）ため、ランチ/ディナーは 組数(伝票数) と 組単価 を出す
-  if (v.show_ld) for (const x of [L, D]) x.per_check = num(x.checks) > 0 ? Math.round(num(x.sales) / num(x.checks)) : null;
-  v.ld_note = v.show_ld ? '' : (D && !L ? 'ランチ営業なし／内訳は明細未整備のため省略' : '');
+  // 売上内訳の正本 = 経営ダッシュボードの「営業区分別売上」（VM v6.2: breakdown＝kd_media_daily を mediaClassOf と同じ規則でランチ／ディナーに分類）。
+  //   明細（kd_detail_hour_daily）での代用・按分は行わない。取れない日は「未取得」と明示。通常店は2行・デリバリー店は3行（デリバリーは別系統）
+  const B = v.breakdown;
+  v.show_ld = !!(B && B.status === 'ok' && num(B.total) !== null);
+  v.ld_lunch = v.show_ld ? (num(B.lunch) || 0) : 0; v.ld_dinner = v.show_ld ? (num(B.dinner) || 0) : 0;
+  v.ld_has_lunch = !!(B && B.has_lunch); v.ld_has_dinner = v.ld_dinner > 0;
+  v.ld_note = v.show_ld ? '' : '売上内訳（ランチ/ディナー）は未取得';
   // 前年比 = 前年同月の第N週・同曜日（VM v2）。比較対象が無い／前年のデータが無いときは null → 「—」
   v.cmp = getPreviousYearComparableDate(v.date);
   v.yoy = v.ly_found && num(v.ly_sales) > 0 ? num(v.yoy_same_week_ratio) : null;
@@ -89,200 +95,257 @@ function selfCheck(v) {
   const issues = [];
   const S = num(v.sales_today), G = num(v.guests_today);
   if (S !== null && G > 0 && num(v.avg_spend_today) !== null && Math.abs(S / G - num(v.avg_spend_today)) > 1) issues.push('客単価 ≠ 売上÷客数');
-  if (v.show_ld && Math.abs(num(v.lunch.sales) + num(v.dinner.sales) - S) > S * 0.01) issues.push('ランチ+ディナー ≠ 当日売上');
+  if (v.show_ld && Math.abs(v.ld_lunch + v.ld_dinner - S) > Math.max(1, S * 0.001)) issues.push('ランチ+ディナー（営業区分別売上）≠ 当日売上');   // 正本どうしなので一致するはず（差があればデータ不整合）
   if (num(v.budget_today) > 0 && num(v.budget_ratio_today) !== null && Math.abs(S / num(v.budget_today) - num(v.budget_ratio_today)) > 0.0005) issues.push('予算比の再計算が一致しない');
   if (num(v.mtd_budget) > 0 && num(v.mtd_budget_ratio) !== null && Math.abs(num(v.mtd_sales) / num(v.mtd_budget) - num(v.mtd_budget_ratio)) > 0.0005) issues.push('月累計予算比が一致しない');
-  if (num(v.cogs_today) > 0 && num(v.food_cost_ratio_today) !== null && Math.abs(num(v.cogs_today) / S - num(v.food_cost_ratio_today)) > 0.0005) issues.push('原価率が一致しない');
-  if (num(v.labor_today) > 0 && num(v.labor_ratio_today) !== null && Math.abs(num(v.labor_today) / S - num(v.labor_ratio_today)) > 0.0005) issues.push('人件費率が一致しない');
+  const FSd = num(v.fl_sales_today) > 0 ? num(v.fl_sales_today) : S;   // F/L/FLの分母＝FL計算用売上（店内＋デリバリー税抜・VM v6）。無い旧VMは店内のまま
+  if (num(v.cogs_today) > 0 && num(v.food_cost_ratio_today) !== null && Math.abs(num(v.cogs_today) / FSd - num(v.food_cost_ratio_today)) > 0.0005) issues.push('原価率が一致しない');
+  if (num(v.labor_today) > 0 && num(v.labor_ratio_today) !== null && Math.abs(num(v.labor_today) / FSd - num(v.labor_ratio_today)) > 0.0005) issues.push('人件費率が一致しない');
   if (v.cmp && 'ly_comparison_date' in v && (v.cmp.comparison_date || null) !== (v.ly_comparison_date || null)) issues.push(`比較対象日が共通関数とハブで不一致（${v.cmp.comparison_date} ≠ ${v.ly_comparison_date}）`);
   if (v.yoy !== null && num(v.ly_sales) > 0 && Math.abs(S / num(v.ly_sales) - v.yoy) > 0.0005) issues.push('前年同月同週比の再計算が一致しない');
   return issues;
 }
-// 本日のポイント: 優先 1.大きな異常 2.目標超過 3.売上未達 4.原価異常 5.良い点 ／ 最大 2 件
-function alerts(v) {
-  const out = [];
-  const lr = num(v.labor_ratio_today), tl = num(v.target_labor_rate);
-  const fr = num(v.food_cost_ratio_today), tf = num(v.target_food_cost_rate);
-  const br = num(v.budget_ratio_today), yr = v.yoy;
-  if (lr !== null && tl !== null && lr - tl >= 0.10) out.push({ lv: 'bad', t: `人件費率 ${pct(lr)} が目標 ${pct(tl)} を大きく超過（+${((lr - tl) * 100).toFixed(1)}pt）` });
-  if (fr !== null && tf !== null && fr - tf >= 0.10) out.push({ lv: 'bad', t: `原価率 ${pct(fr)} が目標 ${pct(tf)} を大きく超過（+${((fr - tf) * 100).toFixed(1)}pt）` });
-  if (lr !== null && tl !== null && lr > tl && lr - tl < 0.10) out.push({ lv: 'warn', t: `人件費率が目標（${pct(tl)}）を +${((lr - tl) * 100).toFixed(1)}pt 超過` });
-  if (br !== null && br < 1) out.push({ lv: 'warn', t: `売上は予算比 ${pct(br)}（未達 ${yen(num(v.budget_today) - num(v.sales_today))}）` });
-  if (fr !== null && tf !== null && fr > tf && fr - tf < 0.10) out.push({ lv: 'warn', t: `原価率が目標（${pct(tf)}）を +${((fr - tf) * 100).toFixed(1)}pt 超過` });
-  const good = [];
-  if (br !== null && br >= 1) good.push(`予算比 ${pct(br)}`);
-  if (yr !== null && yr >= 1) good.push(`前年同月同週比 ${pct(yr)}`);
-  if (good.length) out.push({ lv: 'good', t: `売上は ${good.join('、')} と好調` });
-  if (!out.length && yr !== null && yr < 0.9) out.push({ lv: 'warn', t: `前年同月同週比 ${pct(yr)}（前年を下回っています）` });
-  return out.slice(0, 2);
-}
-
-// ---------- 3. HTML テンプレート（白ベース・色は 緑=良い/赤=悪い/オレンジ=注意/青=ディナー/黄=ランチ） ----------
-// 口コミ件数（Google・月間増加）とダイニー点数（また来たい点数の平均＋回答件数）。画像側では計算せず表示だけ
+// ---------- 3. HTML テンプレート v2（確定デザイン 2026-11-10: 濃紺ヘッダー・白背景・イベント右上・売上内訳右下・最下段要確認） ----------
+// 画像側では計算しない（VM v6 の値を表示するだけ）。評価（優秀/普通/要改善/危険水準）はVMの ratings をそのまま表示。
+const GRADE = {
+  excellent: { label: '優秀', cls: 'g-ex' }, normal: { label: '普通', cls: 'g-no' },
+  warn: { label: '要改善', cls: 'g-wa' }, danger: { label: '危険水準', cls: 'g-da' }, unset: { label: '基準未設定', cls: 'g-un' },
+  hold: { label: '評価保留（デリバリー未取得）', cls: 'g-un' },   // デリバリー取扱店で期間内の取得が欠けている時（VM: ratings.*.grade='hold'）
+};
+const grade = (v, key) => GRADE[(v.ratings && v.ratings[key] && v.ratings[key].grade) || 'unset'] || GRADE.unset;
 function diniiText(v) {
-  const sc = num(v.mtd_dinii_score), n = num(v.mtd_dinii_count);
-  if (sc === null && n === null) return { main: '—', sub: '', na: true };
-  const score = sc === null ? '—' : Math.round(sc) + '点';   // ユーザー指示 2026-11-06: 小数なし・四捨五入（55.3→55、55.5→56）
-  return { main: score, sub: `（${n === null ? '—' : cnt(n)}件）`, na: sc === null };
+  const sc = num(v.mtd_dinii_score), n = num(v.mtd_dinii_count), tg = num(v.target_dinii);
+  if (sc === null) return { main: '—', unit: '', na: true, n };
+  // 小数なし・四捨五入（ユーザー指示 2026-11-06）。「58点 / 75点」の右は目標点（設定があれば）
+  return { main: String(Math.round(sc)), unit: '点' + (tg ? ` / ${Math.round(tg)}点` : ''), na: false, n };
 }
-function reviewText(v) {
-  const inc = num(v.mtd_review_count ?? v.google_review_month_increase), total = num(v.google_review_total);
-  const upd = v.google_review_updated_at ? `最終取得 ${md(v.google_review_updated_at)}` : '';
-  if (inc === null && total === null) return { main: '—', sub: '', na: true, lines: [] };
-  // 看板（Google掲載）ごとの内訳: 2看板以上のときだけ、最大3行＋「ほかN看板」（ユーザー指示 2026-11-06。画像側では計算しない）
-  const ls = Array.isArray(v.google_review_listings) ? v.google_review_listings : [];
-  let lines = [];
-  if (ls.length >= 2) {
-    lines = ls.slice(0, 3).map((l) => {
-      const li = num(l.month_increase), lt = num(l.total);
-      return `${l.label || l.name || '—'}${li === null ? ' —件' : (li > 0 ? '+' : '') + cnt(li) + '件'}${lt === null ? '' : `（${cnt(lt)}）`}`;
-    });
-    if (ls.length > 3) lines.push(`ほか${ls.length - 3}看板`);
+function reviewInc(v) {
+  const inc = num(v.mtd_review_count ?? v.google_review_month_increase);
+  return inc === null ? { main: '—', cls: 'na' } : { main: (inc > 0 ? '+' : '') + cnt(inc) + '件', cls: inc < 0 ? 'bad' : 'good' };
+}
+// 最下段の要確認: 優先順位＝危険水準（FL→L→F）＞月間の目標超過＞本日予算未達＞(デリバリー未取得の参考値)＞良い点。表示は最大2件、3件以上は「ほか○件」
+// 危険水準が3件以上のときは危険水準を優先して2件表示し「ほか○件（危険水準含む）」と明記する
+function alertList(v) {
+  const out = [];
+  const lr = num(v.mtd_labor_ratio), tl = num(v.target_labor_rate), fr = num(v.mtd_food_cost_ratio), tf = num(v.target_food_cost_rate);
+  const br = num(v.budget_ratio_today), yr = v.yoy;
+  let danger = 0;
+  for (const [k, name] of [['fl', 'FL比率'], ['labor', '人件費率'], ['food', '原価率']]) {
+    if (grade(v, k) === GRADE.danger) { out.push({ lv: 'bad', t: `${name}（月間）が危険水準です` }); danger++; }
   }
-  return { main: inc === null ? '—' : (inc > 0 ? '+' : '') + cnt(inc) + '件', sub: [total === null ? '' : `累計 ${cnt(total)}件`, upd].filter(Boolean).join('・'), na: inc === null, lines };
+  if (lr !== null && tl !== null && lr > tl) out.push({ lv: 'bad', t: `人件費率（月間）が目標${pct(tl)}を${((lr - tl) * 100).toFixed(1)}pt超過` });
+  if (fr !== null && tf !== null && fr > tf) out.push({ lv: 'bad', t: `原価率（月間）が目標${pct(tf)}を${((fr - tf) * 100).toFixed(1)}pt超過` });
+  if (br !== null && br < 1) out.push({ lv: 'warn', t: `本日の売上は予算比${pct(br)}（未達 ${yen(num(v.budget_today) - num(v.sales_today))}）` });
+  if (v.delivery && v.delivery.unlinked_note) out.push({ lv: 'warn', t: `${v.delivery.unlinked_note}のため、F/L/FLは参考値（評価は保留）` });   // 例「デリバリー売上の一部（Uber Eats）が未連携」（VM v6.3）
+  else if (v.fl_reference_mtd || v.fl_reference_today) out.push({ lv: 'warn', t: 'デリバリー未取得のためF/L/FLは店内のみの参考値（評価は保留）' });
+  if (!out.length) {
+    const good = [];
+    if (br !== null && br >= 1) good.push(`予算比${pct(br)}`);
+    if (yr !== null && yr >= 1) good.push(`前年比${pct(yr)}`);
+    out.push({ lv: 'good', t: good.length ? `売上は${good.join('、')}と好調` : '特記事項なし' });
+    return { shown: out, more: 0, moreNote: '' };
+  }
+  return { shown: out.slice(0, 2), more: Math.max(0, out.length - 2), moreNote: danger >= 3 ? '（危険水準含む）' : '' };
 }
+const SVG = {
+  bars: '<svg viewBox="0 0 24 24" width="34" height="34"><rect x="3" y="12" width="4" height="9" rx="1" fill="#1f2f4d"/><rect x="10" y="6" width="4" height="15" rx="1" fill="#1f2f4d"/><rect x="17" y="3" width="4" height="18" rx="1" fill="#1f2f4d"/></svg>',
+  cal: '<svg viewBox="0 0 24 24" width="34" height="34"><rect x="3" y="5" width="18" height="16" rx="2" fill="none" stroke="#1f2f4d" stroke-width="2"/><path d="M3 10h18M8 3v4M16 3v4" stroke="#1f2f4d" stroke-width="2"/></svg>',
+  mega: '<svg viewBox="0 0 24 24" width="34" height="34"><path d="M3 10v4l9 4V6L3 10zM14 8c3 1 3 7 0 8" fill="#1f2f4d" stroke="#1f2f4d" stroke-width="1.5"/></svg>',
+  star: '<svg viewBox="0 0 24 24" width="34" height="34"><path d="M12 2l3 7 7 .6-5.3 4.7 1.7 7.2L12 17.8 5.6 21.5l1.7-7.2L2 9.6 9 9z" fill="#1f2f4d"/></svg>',
+  fork: '<svg viewBox="0 0 24 24" width="34" height="34"><path d="M6 2v8M4 2v6a2 2 0 004 0V2M6 10v12M17 2c-2 2-2 8 0 9v11" fill="none" stroke="#1f2f4d" stroke-width="2"/></svg>',
+  warn: '<svg viewBox="0 0 24 24" width="60" height="60"><path d="M12 3l10 18H2z" fill="#d9342b"/><path d="M12 9v5M12 17v1.5" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/></svg>',
+  warns: '<svg viewBox="0 0 24 24" width="30" height="30"><path d="M12 3l10 18H2z" fill="currentColor"/><path d="M12 9v5M12 17v1.5" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/></svg>',
+  trophy: '<svg viewBox="0 0 24 24" width="32" height="32"><path d="M7 3h10v5a5 5 0 01-10 0V3zM7 5H3c0 4 2 6 4 6M17 5h4c0 4-2 6-4 6M9 21h6M12 14v7" fill="#1a8f3c" stroke="#1a8f3c" stroke-width="1.5"/></svg>',
+  sun: '<svg viewBox="0 0 24 24" width="40" height="40"><circle cx="12" cy="12" r="5" fill="#f6b100"/><path d="M12 1v3M12 20v3M1 12h3M20 12h3M4 4l2 2M18 18l2 2M4 20l2-2M18 6l2-2" stroke="#f6b100" stroke-width="2"/></svg>',
+  moon: '<svg viewBox="0 0 24 24" width="40" height="40"><path d="M20 14A8 8 0 019 3a9 9 0 1011 11z" fill="#2b5fb8"/></svg>',
+  bike: '<svg viewBox="0 0 24 24" width="40" height="40"><circle cx="6" cy="17" r="3.5" fill="none" stroke="#f05a1a" stroke-width="2"/><circle cx="18" cy="17" r="3.5" fill="none" stroke="#f05a1a" stroke-width="2"/><path d="M6 17l4-8h5l3 8M10 9H7" fill="none" stroke="#f05a1a" stroke-width="2"/></svg>',
+  stadium: '<svg viewBox="0 0 48 32" width="64" height="44"><ellipse cx="24" cy="10" rx="20" ry="6" fill="none" stroke="#1f2f4d" stroke-width="2"/><path d="M4 10v12c0 4 9 7 20 7s20-3 20-7V10" fill="none" stroke="#1f2f4d" stroke-width="2"/></svg>',
+};
+// 出力は全店・全条件で同一サイズ（基準画像と同じ 1230×1279 の論理px）。各セクションの高さは固定で、内容量で伸縮しない。
+// はみ出す文字は .fit（JSで段階縮小）か …（省略）で収める。可変は 店舗名・日付/祝日・数値・イベント・口コミ・内訳・評価/アラート のみ。
+const CANVAS = { w: 1230, h: 1279 };
 function buildHtml(v) {
   const d = ymd(v.date);
-  const dn = diniiText(v), rv = reviewText(v);
-  // 日付: 通常「11月4日（水）」／土日はそのまま「（土）」「（日）」／祝日は「（火・祝）」＋祝日名（祝日を日曜扱いにはしない）
   const dateJa = `${d.y}年${d.m}月${d.d}日（${v.weekday_ja}${v.holiday_name ? '・祝' : ''}）`;
-  const holidayHtml = v.holiday_name ? `<div class="hol">${esc(v.holiday_name)}</div>` : '';
-  // イベント: 対象店舗・対象日だけ。最大 2 件＋「ほかN件」。無ければブロック自体を出さない
-  const evs = v.events.slice(0, 2);
-  const evMore = Math.max(0, (v.events_total || v.events.length) - evs.length);
-  const evLine = (e) => `<div class="ev"><span class="evv">🎫 ${esc(e.venue || '会場')}</span><span class="evn">${esc(e.event_name)}</span>${e.start_time ? `<span class="evt">${esc(e.start_time)}〜</span>` : ''}</div>`;
-  const eventsHtml = evs.length ? `<div class="events">${evs.map(evLine).join('')}${evMore ? `<div class="ev more">ほか${evMore}件</div>` : ''}</div>` : '';
-  const cls = (val, good, bad) => (val === null ? 'na' : val >= good ? 'good' : val < bad ? 'bad' : 'warn');
+  const chips = [];
+  if (v.holiday_name) chips.push(`<span class="chip y">${esc(v.holiday_name)}</span>`);
+  if (v.is_holiday_eve) chips.push('<span class="chip y"><i>▦</i>祝前日</span>');
+  if (num(v.days_to_holiday) !== null && num(v.days_to_holiday) <= 14) chips.push(`<span class="chip o">祝日まであと${num(v.days_to_holiday)}日</span>`);
+  const evs = v.events.slice(0, 2), evMore = Math.max(0, (v.events_total || v.events.length) - evs.length);
+  const evHtml = !evs.length ? '<div class="evnone">本日のイベントなし</div>'
+    : evs.length === 1
+      ? `<div class="evbox"><div class="evtxt"><div class="e1 fit" data-max="25" data-min="16">● ${esc(evs[0].venue || '会場')}</div><div class="e2 fit" data-max="25" data-min="15">「${esc(evs[0].event_name)}」</div>${evs[0].start_time ? `<div class="e3 fit" data-max="25" data-min="16">（${esc(evs[0].start_time)}開演）</div>` : ''}</div><div class="evic">${SVG.stadium}</div></div>`
+      : `<div class="evbox two">${evs.map((e) => `<div class="ev2"><b>● ${esc(e.venue || '会場')}</b>「${esc(e.event_name)}」${e.start_time ? `（${esc(e.start_time)}開演）` : ''}</div>`).join('')}${evMore ? `<div class="ev2 more">ほか${evMore}件</div>` : ''}</div>`;
   const br = num(v.budget_ratio_today), yr = v.yoy;
   const lr = num(v.labor_ratio_today), fr = num(v.food_cost_ratio_today), tl = num(v.target_labor_rate), tf = num(v.target_food_cost_rate);
-  const rateCls = (r, t) => (r === null ? 'na' : t === null ? 'neutral' : r <= t ? 'good' : r - t < 0.03 ? 'warn' : 'bad');
-  const al = alerts(v);
-  const mtdFrom = md(v.mtd_from);
-  const mtdTo = md(v.date);
-  const ldBlock = v.show_ld ? `
-  <section class="row2">
-    <div class="card lunch"><div class="ttl"><span class="ic sun">☀</span>ランチ</div>
-      <div class="big">${yen(v.lunch.sales)}</div>
-      <div class="sub"><span>組数 <b>${cnt(v.lunch.checks)}組</b></span><span>組単価 <b>${yen(v.lunch.per_check)}</b></span></div></div>
-    <div class="card dinner"><div class="ttl"><span class="ic moon">☾</span>ディナー</div>
-      <div class="big">${yen(v.dinner.sales)}</div>
-      <div class="sub"><span>組数 <b>${cnt(v.dinner.checks)}組</b></span><span>組単価 <b>${yen(v.dinner.per_check)}</b></span></div></div>
-  </section>` : (v.ld_note ? `<section class="note">${esc(v.ld_note)}</section>` : '');
-  return `<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=1080">
+  const mlr = num(v.mtd_labor_ratio), mfr = num(v.mtd_food_cost_ratio);
+  const rateCls = (r, t) => (r === null ? 'na' : t === null ? 'neutral' : r <= t ? 'good' : 'bad');
+  const tileBg = (c) => (c === 'good' ? 'g' : c === 'bad' ? 'r' : '');
+  const tgt = (t) => (t === null ? '目標 未設定' : `（目標 ≦${pct(t)}）`);
+  const chk = (r, t) => (r !== null && t !== null && r <= t ? ' ✓' : '');
+  const dn = diniiText(v), rv = reviewInc(v), low = num(v.mtd_dinii_low_count);
+  const gl = grade(v, 'labor'), gf = grade(v, 'food'), gfl = grade(v, 'fl');
+  const dl = v.delivery || { enabled: false };
+  const mtdFrom = md(v.mtd_from), mtdTo = md(v.date), mtdStatus = v.mtd_status || '暫定';
+  const al = alertList(v);
+  const yenS = (n) => (num(n) === null ? '—' : '¥' + Math.round(num(n)).toLocaleString('ja-JP'));
+  const ratio = (r) => (num(r) === null ? '' : `<span class="rt">(${pct(r)})</span>`);
+  const irow = (icon, name, amount, r) => `<div class="irow"><span class="ico">${icon}</span><span class="nm">${name}</span><span class="am">${amount}</span>${ratio(r)}</div>`;
+  const rows = [];
+  const none = '<span class="na" style="font-size:24px">—（営業なし）</span>';
+  const miss = '<span class="na" style="font-size:24px">未取得</span>';
+  // 通常店は常に2行（ランチ・ディナー）。営業のない区分は「—（営業なし）」、取れない日は「未取得」
+  rows.push(irow(SVG.sun, 'ランチ', v.show_ld ? (v.ld_has_lunch ? yen(v.ld_lunch) : none) : miss));
+  rows.push(irow(SVG.moon, 'ディナー', v.show_ld ? (v.ld_has_dinner ? yen(v.ld_dinner) : none) : miss));
+  if (dl.enabled) rows.push(irow(SVG.bike, 'デリバリー', dl.status === 'missing' ? '<span class="na">未取得</span>' : dl.status === 'zero' ? '¥0（注文なし）' : yen(dl.sales), dl.budget_ratio));
+  const bdBody = rows.join('');
+  const flNote = dl.enabled ? `<span class="fln">FL用売上 ${num(v.fl_sales_today) === null ? '—' : yen(v.fl_sales_today)}</span>` : '';
+  const ref = (f) => (f ? '<div class="refn">参考値</div>' : '');
+  const holdLbl = (g) => (g === GRADE.hold ? '評価保留' : g.label);
+  const ntg = (n) => `<div class="al n${n}">`;
+  const alertHtml = al.shown.map((a, i) => {
+    const last = i === al.shown.length - 1;
+    const more = last && al.more ? `<span class="more">ほか${al.more}件${al.moreNote}</span>` : '';
+    return `<div class="al ${a.lv} k${al.shown.length}"><span class="tg">${a.lv === 'bad' ? (al.shown.length === 1 ? SVG.warn : SVG.warns) + '<b>要確認</b>' : a.lv === 'warn' ? '<b>注意</b>' : '<b>良い</b>'}</span><span class="tx">${esc(a.t)}${more}</span></div>`;
+  }).join('');
+  const sampleOrGen = v._sample
+    ? '<div class="sample">サンプルデータ（実データではありません）</div>'
+    : `<div class="gen">生成 ${new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}　正本: 経営ダッシュボード日次集計${dl.enabled ? '（FL＝店内＋デリバリー税抜）' : '（FL＝店内売上）'}</div>`;
+  const nmLen = String(v.store_name).length;
+  return `<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=${CANVAS.w}">
 <title>${esc(v.store_name)} 日報 ${esc(v.date)}</title>
 <style>
-  :root{--navy:#1f2f4d;--ink:#1a1a1a;--gray:#5b6470;--line:#e6e9ef;--bg:#f3f5f9;--good:#1a8f3c;--bad:#d9342b;--warn:#e07b00;--blue:#2b5fb8;--yellow:#f6b100;--orange:#f05a1a}
+  :root{--navy:#14213f;--ink:#1a1a1a;--gray:#5b6470;--line:#e3e7ee;--bg:#eef1f6;--good:#127a31;--bad:#d9342b;--warn:#e07b00}
   *{box-sizing:border-box;margin:0;padding:0}
-  html,body{width:1080px;background:var(--bg);color:var(--ink);font-family:"Hiragino Sans","Hiragino Kaku Gothic ProN","Noto Sans CJK JP","Noto Sans JP","Yu Gothic",sans-serif;-webkit-font-smoothing:antialiased}
-  .wrap{width:1080px;padding:0 0 36px}
-  header{background:linear-gradient(90deg,#1f2f4d,#2a4470);color:#fff;padding:26px 40px;display:flex;align-items:center;justify-content:space-between;gap:24px}
-  header .left{min-width:0;flex:1}
-  header .events{margin-top:10px;display:flex;flex-direction:column;gap:6px}
-  header .ev{display:flex;align-items:center;gap:10px;background:rgba(124,139,255,.22);border:1px solid rgba(160,172,255,.45);border-radius:12px;padding:6px 14px;font-size:21px;font-weight:700;max-width:640px}
-  header .ev .evv{color:#dbe2ff;white-space:nowrap}
-  header .ev .evn{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
-  header .ev .evt{color:#dbe2ff;white-space:nowrap;font-size:19px}
-  header .ev.more{background:transparent;border-color:transparent;padding:0 14px;font-size:18px;color:#dbe2ff}
-  header .rep{text-align:right;flex:none}
-  header .hol{margin-top:8px;font-size:22px;font-weight:800;color:#ffd166}
-  header .store{font-size:44px;font-weight:800;letter-spacing:1px}
-  header .store small{display:block;font-size:16px;font-weight:600;opacity:.75;letter-spacing:3px;margin-top:4px}
-  header .rep .t{font-size:30px;font-weight:800}
-  header .rep .t em{font-style:normal;font-size:20px;margin-left:10px;opacity:.9}
-  header .rep .d{display:inline-block;margin-top:10px;background:rgba(255,255,255,.14);border-radius:12px;padding:8px 16px;font-size:22px;font-weight:700}
-  section{margin:22px 40px 0}
-  .card{background:#fff;border-radius:22px;padding:26px 30px;box-shadow:0 2px 10px rgba(20,30,60,.06)}
-  .ttl{font-size:26px;font-weight:800;display:flex;align-items:center;gap:12px}
-  .ic{display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:10px;background:#eef1f7;font-size:22px;font-weight:900;color:#1f2f4d;font-family:"Hiragino Sans","Noto Sans CJK JP",sans-serif}
-  .ic.coin{background:#fff1d6}.ic.sun{background:#fff3c4}.ic.moon{background:#dfe8fb}.ic.kpi{background:#e3e9f5}.ic.cal{background:#e3e9f5}.ic.alert{background:#ffe3e0}
-  .sales{display:flex;gap:24px;align-items:stretch}
-  .sales .main{flex:1}
-  .sales .main .num{font-size:92px;font-weight:900;color:var(--orange);letter-spacing:-1px;line-height:1.1;margin-top:10px}
-  .sales .main .num small{font-size:40px;margin-left:4px}
-  .sales .side{width:400px;display:flex;flex-direction:column;gap:14px;justify-content:center}
-  .kv{display:flex;justify-content:space-between;align-items:center;background:#f6f8fb;border:1px solid var(--line);border-radius:16px;padding:16px 20px;font-size:24px;font-weight:700;color:var(--gray)}
-  .kv b{font-size:34px;font-weight:900}
-  .kv.yoy{flex-wrap:wrap}
-  .kv .cmp{flex-basis:100%;font-size:16px;font-weight:600;color:#8a93a0;margin-top:4px;text-align:right}
+  html,body{width:${CANVAS.w}px;height:${CANVAS.h}px;background:var(--navy);color:var(--ink);font-family:"Hiragino Sans","Hiragino Kaku Gothic ProN","Noto Sans CJK JP","Noto Sans JP","Yu Gothic",sans-serif;-webkit-font-smoothing:antialiased;overflow:hidden}
+  .page{width:${CANVAS.w}px;height:${CANVAS.h}px;position:relative;background:var(--navy);overflow:hidden}
+  .fit{display:block;width:100%;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+  .snum{min-width:0;width:100%}.scol1{min-width:0}.vv{min-width:0;width:100%}
+  /* ヘッダー（高さ140固定） */
+  header{position:absolute;left:0;top:0;width:100%;height:140px;color:#fff}
+  .store{position:absolute;left:48px;top:22px;width:395px;height:96px}
+  .store .nm{font-weight:900;letter-spacing:1px;line-height:62px;height:62px}
+  .store small{position:absolute;left:0;top:78px;font-size:17px;font-weight:700;letter-spacing:5px;opacity:.85}
+  .pill{position:absolute;left:462px;top:28px;width:346px;height:67px;border:2px solid rgba(255,255,255,.55);border-radius:34px;background:rgba(255,255,255,.08);display:flex;align-items:center;justify-content:center;font-size:34px;font-weight:800;white-space:nowrap}
+  .pill em{font-style:normal;margin-left:14px}
+  .date{position:absolute;right:20px;top:10px;width:362px;height:52px;border:2px solid rgba(255,255,255,.55);border-radius:26px;background:rgba(255,255,255,.08);display:flex;align-items:center;justify-content:center}
+  .chips{position:absolute;right:20px;top:72px;height:46px;display:flex;gap:14px;justify-content:flex-end}
+  .chip{height:46px;border-radius:23px;padding:0 20px;display:flex;align-items:center;font-size:26px;font-weight:900;white-space:nowrap}
+  .chip i{font-style:normal;margin-right:8px}.chip.y{background:#ffd23f;color:#1a1a1a}.chip.o{background:rgba(255,255,255,.1);border:2px solid rgba(255,255,255,.5);color:#fff;font-size:23px}
+  /* 本体（高さ固定の5段） */
+  .panel{position:absolute;left:5px;top:140px;width:1220px;height:1125px;background:var(--bg);border-radius:28px;padding:15px 15px 0;display:grid;grid-template-rows:185px 233px 255px 225px 108px;row-gap:16px}
+  .card{background:#fff;border-radius:22px;box-shadow:0 1px 6px rgba(20,30,60,.08);overflow:hidden;position:relative}
+  .ttl{font-size:32px;font-weight:900;display:flex;align-items:center;gap:12px;height:44px;white-space:nowrap}
+  .ttl small{font-size:24px;color:var(--gray);font-weight:700}
+  .r1{display:grid;grid-template-columns:753px 1fr;column-gap:17px}
+  .sales{padding:15px 28px 0}
+  .sgrid{display:grid;grid-template-columns:minmax(0,1fr) 218px 137px;column-gap:10px;height:140px}
+  .scol1{min-width:0;display:flex;flex-direction:column}
+  .snum{margin-top:14px;height:92px;display:flex;align-items:center}
+  .snum .fit{font-weight:900;letter-spacing:-1px;line-height:1.05}
+  .sbox{margin-top:-19px;height:117px;border-radius:16px;text-align:center;padding:10px 6px 0;flex:none;min-width:0}
+  .sbox.b{width:218px}.sbox.y{width:137px}
+  .sbox .l{font-size:27px;font-weight:800;line-height:32px}.sbox .vv{height:60px;display:flex;align-items:center;justify-content:center;margin-top:4px}.sbox .vv .fit{text-align:center;font-weight:900}
+  .sbox.good{background:#127a31;color:#fff}.sbox.warn{background:#fff1e0;color:var(--warn)}.sbox.bad{background:#fde9e7;color:var(--bad)}.sbox.na{background:#eef1f5;color:#9aa3ad}.sbox.gray{background:#eceff4;color:var(--ink)}
+  .events{background:#eef3ff;padding:15px 20px 0 22px}
+  .evbox{margin-top:12px;height:114px;background:#dfe9fb;border-radius:14px;padding:10px 16px;display:flex;align-items:center;gap:8px;overflow:hidden}
+  .evtxt{flex:1;min-width:0;font-size:25px;font-weight:700;line-height:1.3}.evtxt .e1{font-weight:900}.evtxt div{overflow:hidden;white-space:nowrap}
+  .evic{flex:none}
+  .evbox.two{flex-direction:column;align-items:stretch;justify-content:center;gap:4px}.ev2{font-size:21px;font-weight:700;line-height:1.3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ev2.more{color:var(--gray)}
+  .evnone{margin-top:30px;font-size:26px;color:#8a93a0;font-weight:700}
+  /* KPI・月間（タイル固定高） */
+  .kc{padding:15px 18px 0}
+  .tiles{display:grid;column-gap:12px;margin-top:6px;height:152px}
+  .t5{grid-template-columns:repeat(5,minmax(0,1fr))}
+  .tm{grid-template-columns:249fr 211fr 219fr 208fr 241fr}
+  .tile{border-radius:18px;background:#eceff4;text-align:center;padding:12px 8px 0;min-width:0;overflow:hidden}
+  .tile.g{background:#e8f7ec}.tile.r{background:#fdeceb}.tile.fl{background:#eaf8ee;border:3px solid #2f9e4f;padding-top:9px}
+  .tile .l{font-size:29px;font-weight:900;line-height:34px;white-space:nowrap}
+  .tile .vv{height:58px;display:flex;align-items:center;justify-content:center;margin-top:6px}.tile .vv .fit{text-align:center;font-weight:800}
+  .tile .t{font-size:21px;color:var(--gray);font-weight:700;line-height:24px;height:24px;white-space:nowrap}
+  .badge{display:inline-block;padding:3px 16px;border-radius:12px;font-size:21px;font-weight:900;color:#fff;line-height:26px;margin-top:2px}
+  .badge.sm{font-size:19px;padding:0 12px;line-height:24px;margin-top:4px}
+  .g-ex{background:#127a31}.g-no{background:#6fbf73}.g-wa{background:#e07b00}.g-da{background:#d9342b}.g-un{background:#9aa3ad}
+  .refn{font-size:17px;color:var(--warn);font-weight:800;line-height:20px}
+  /* 口コミ・内訳（高さ225固定） */
+  .r4{display:grid;grid-template-columns:692px 1fr;column-gap:15px}
+  .lc,.bc{padding:15px 28px 0}
+  .rvrow{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));margin-top:14px;height:130px}
+  .rvrow>div{text-align:center;border-left:2px solid var(--line);padding:0 6px}.rvrow>div:first-child{border-left:0}
+  .rvrow .l{font-size:28px;font-weight:900;line-height:36px;white-space:nowrap}.rvrow .vv{height:78px;display:flex;align-items:center;justify-content:center}.rvrow .vv .fit{text-align:center;font-weight:900}
+  .bc .ttl{justify-content:space-between}.fln{font-size:17px;color:var(--gray);font-weight:700}
+  .irows{height:150px;margin-top:6px;display:flex;flex-direction:column;gap:6px}
+  .irow{flex:1;min-height:0;display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:12px;padding:0 14px;font-size:27px;font-weight:800;white-space:nowrap;overflow:hidden}
+  .irow .ico{display:inline-flex;flex:none}.irow .nm{width:128px;flex:none}.irow .am{margin-left:auto;font-size:30px;font-weight:800}.irow .rt{font-size:22px;color:var(--gray);font-weight:700}
+  .note{margin-top:20px;font-size:22px;color:var(--gray)}
+  /* アラート（高さ108固定: 1件=大, 2件=小2本） */
+  .alz{display:flex;flex-direction:column;gap:8px}
+  .al{display:flex;align-items:center;border-radius:20px;overflow:hidden}
+  .al.k1{height:108px;padding:0 26px;gap:22px;font-size:40px}.al.k2{height:50px;padding:0 20px;gap:16px;font-size:27px;border-radius:14px}
+  .al .tg{display:flex;align-items:center;gap:12px;white-space:nowrap;padding-right:22px;border-right:2px solid rgba(0,0,0,.12);font-size:inherit}.al .tg b{font-weight:900}
+  .al.k1 .tg b{font-size:46px}.al.k2 .tg b{font-size:28px}
+  .al .tx{font-weight:800;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.al .more{margin-left:14px;font-size:.7em;color:var(--gray);font-weight:800}
+  .al.bad{background:#fde9e7;border:2px solid #f7c4be;color:var(--bad)}.al.warn{background:#fff1e0;border:2px solid #f6d3a6;color:var(--warn)}.al.good{background:#e8f7ec;border:2px solid #bfe3c9;color:var(--good)}
+  .al .tx{color:var(--ink)}
   .good{color:var(--good)}.bad{color:var(--bad)}.warn{color:var(--warn)}.na{color:#9aa3ad}.neutral{color:var(--ink)}
-  .row2{display:flex;gap:22px}
-  .row2 .card{flex:1}
-  .card.lunch{background:#fff9e6}.card.dinner{background:#eaf1fc}
-  .row2 .big{font-size:60px;font-weight:900;color:var(--orange);margin:10px 0 12px}
-  .row2 .sub{display:flex;gap:18px;font-size:22px;color:var(--gray);background:rgba(255,255,255,.7);border-radius:14px;padding:12px 16px}
-  .row2 .sub b{color:var(--ink);font-size:26px;margin-left:6px}
-  .note{color:var(--gray);font-size:18px;padding:0 6px}
-  .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-top:18px}
-  .kpi{background:#f6f8fb;border-radius:16px;padding:18px 14px;text-align:center}
-  .kpi .l{font-size:20px;color:var(--gray);font-weight:700}
-  .kpi .v{font-size:44px;font-weight:900;margin-top:6px}
-  .kpi .t{font-size:17px;color:var(--gray);margin-top:4px}
-  .mtd{display:grid;grid-template-columns:1.5fr .9fr .9fr 1.45fr 1.05fr;gap:10px;margin-top:18px}
-  .mtd .lst{margin-top:4px}
-  .mtd .lst div{font-size:16px;font-weight:700;color:var(--ink);white-space:nowrap;line-height:1.35}
-  .mtd .cell{padding:8px 10px;border-left:1px solid var(--line)}
-  .mtd .cell:first-child{border-left:0;padding-left:0}
-  .mtd .l{font-size:19px;color:var(--gray);font-weight:700}
-  .mtd .v{font-size:34px;font-weight:900;margin-top:6px;white-space:nowrap;letter-spacing:-0.5px}
-  .mtd .v.sm{font-size:30px}
-  .mtd .v .sub{font-size:21px;font-weight:800;margin-left:2px;letter-spacing:0}
-  .mtd .t{font-size:16px;color:var(--gray);margin-top:4px}
-  .badge{display:inline-block;margin-top:8px;padding:6px 12px;border-radius:10px;font-size:20px;font-weight:800;background:#e7f6ec;color:var(--good)}
-  .badge.bad{background:#fde9e7;color:var(--bad)}.badge.warn{background:#fff1e0;color:var(--warn)}.badge.na{background:#eef1f5;color:#9aa3ad}
-  .points{background:#fff4f2;border:1px solid #ffd9d4}
-  .points ul{list-style:none;margin-top:14px;display:flex;flex-direction:column;gap:10px}
-  .points li{font-size:24px;font-weight:700;display:flex;gap:12px;align-items:flex-start}
-  .points li .dot{flex:none;width:18px;height:18px;border-radius:50%;margin-top:9px}
-  .dot.bad{background:var(--bad)}.dot.warn{background:var(--warn)}.dot.good{background:var(--good)}
-  .points li .tag{font-size:18px;font-weight:800;border-radius:8px;padding:2px 8px;margin-right:4px}
-  .tag.bad{background:#fde9e7;color:var(--bad)}.tag.warn{background:#fff1e0;color:var(--warn)}.tag.good{background:#e7f6ec;color:var(--good)}
-  footer{margin:24px 40px 0;background:var(--navy);color:#fff;border-radius:18px;padding:22px;text-align:center;font-size:28px;font-weight:800}
-  .gen{margin:14px 40px 0;color:#9aa3ad;font-size:15px;text-align:right}
-</style></head><body><div class="wrap">
+  /* フッター帯（高さ54固定）: 通常=生成情報／サンプル=「サンプルデータ」帯 */
+  .foot{position:absolute;left:5px;top:1265px;width:1220px;height:14px}
+  .gen{position:absolute;right:30px;top:1229px;font-size:15px;color:#8e9bb5}
+  .sample{position:absolute;left:40px;right:40px;top:1230px;height:36px;background:#fff3b0;border:3px dashed #c98a00;color:#7a4b00;border-radius:12px;text-align:center;font-size:22px;font-weight:900;letter-spacing:2px;line-height:30px}
+</style></head><body><div class="page">
 <header>
-  <div class="left"><div class="store">${esc(v.store_name)}<small>N-STYLE GROUP</small></div>${eventsHtml}</div>
-  <div class="rep"><div class="t">Daily Report<em>日報</em></div><div class="d">${dateJa}</div>${holidayHtml}</div>
+  <div class="store"><div class="nm fit" data-max="${nmLen > 12 ? 40 : 58}" data-min="26">${esc(v.store_name)}</div><small>NSTYLE GROUP</small></div>
+  <div class="pill">日報<em>Daily Report</em></div>
+  <div class="date"><div class="fit" data-max="34" data-min="22" style="text-align:center;font-weight:900;width:340px">${dateJa}</div></div>
+  ${chips.length ? `<div class="chips">${chips.join('')}</div>` : ''}
 </header>
-
-<section class="card sales">
-  <div class="main"><div class="ttl"><span class="ic coin">¥</span>本日の売上</div>
-    <div class="num">${num(v.sales_today) === null ? '<span class="na">—</span>' : Math.round(num(v.sales_today)).toLocaleString('ja-JP') + '<small>円</small>'}</div></div>
-  <div class="side">
-    <div class="kv"><span>予算比</span><b class="${cls(br, 1, 0.9)}">${pct(br)}</b></div>
-    <div class="kv yoy"><span>前年同月同週比</span><b class="${cls(yr, 1, 0.9)}">${pct(yr)}</b>${v.cmp_text ? `<span class="cmp">${esc(v.cmp_text)}${yr === null && v.cmp && v.cmp.comparison_date ? '・前年データなし' : ''}</span>` : ''}</div>
+<div class="panel">
+  <div class="r1">
+    <section class="card sales"><div class="ttl">${SVG.bars}本日の売上</div>
+      <div class="sgrid">
+        <div class="scol1"><div class="snum"><div class="fit ${num(v.sales_today) === null ? 'na' : ''}" data-max="76" data-min="14" data-noell="1">${num(v.sales_today) === null ? '—' : yenS(v.sales_today)}</div></div></div>
+        <div class="sbox b ${br === null ? 'na' : br >= 1 ? 'good' : br >= 0.9 ? 'warn' : 'bad'}"><div class="l">予算比</div><div class="vv"><div class="fit" data-max="42" data-min="22">${pct(br)}${br !== null && br >= 1 ? ' ✓' : ''}</div></div></div>
+        <div class="sbox y gray"><div class="l">前年比</div><div class="vv"><div class="fit" data-max="38" data-min="20">${pct(yr)}</div></div></div>
+      </div></section>
+    <section class="card events"><div class="ttl">${SVG.mega}本日のイベント</div>${evHtml}</section>
   </div>
-</section>
-${ldBlock}
-<section class="card">
-  <div class="ttl"><span class="ic kpi">▮</span>本日のKPI</div>
-  <div class="kpis">
-    <div class="kpi"><div class="l">客数</div><div class="v good">${cnt(v.guests_today)}<span style="font-size:22px">名</span></div></div>
-    <div class="kpi"><div class="l">客単価</div><div class="v good">${num(v.avg_spend_today) === null ? '—' : Math.round(num(v.avg_spend_today)).toLocaleString('ja-JP') + '<span style="font-size:22px">円</span>'}</div></div>
-    <div class="kpi"><div class="l">人件費率</div><div class="v ${rateCls(lr, tl)}">${pct(lr)}</div><div class="t">${tl === null ? '目標 未設定' : '（目標 ' + pct(tl) + '）'}</div></div>
-    <div class="kpi"><div class="l">原価率</div><div class="v ${rateCls(fr, tf)}">${pct(fr)}</div><div class="t">${tf === null ? '目標 未設定' : '（目標 ' + pct(tf) + '）'}</div></div>
+  <section class="card kc"><div class="ttl">${SVG.bars}本日のKPI</div>
+    <div class="tiles t5">
+      <div class="tile"><div class="l">客数</div><div class="vv"><div class="fit" data-max="46" data-min="24">${cnt(v.guests_today)}人</div></div></div>
+      <div class="tile"><div class="l">客単価</div><div class="vv"><div class="fit" data-max="46" data-min="24">${yenS(v.avg_spend_today)}</div></div></div>
+      <div class="tile ${tileBg(rateCls(lr, tl))}"><div class="l">人件費率</div><div class="vv"><div class="fit ${rateCls(lr, tl)}" data-max="52" data-min="26">${pct(lr)}${chk(lr, tl)}</div></div><div class="t">${v.fl_reference_today ? '<span class="refn">参考値</span>　' : ''}${tgt(tl)}</div></div>
+      <div class="tile ${tileBg(rateCls(fr, tf))}"><div class="l">原価率</div><div class="vv"><div class="fit ${rateCls(fr, tf)}" data-max="52" data-min="26">${pct(fr)}${chk(fr, tf)}</div></div><div class="t">${v.fl_reference_today ? '<span class="refn">参考値</span>　' : ''}${tgt(tf)}</div></div>
+      <div class="tile"><div class="l">FL比率</div><div class="vv"><div class="fit" data-max="52" data-min="26">${pct(v.fl_ratio_today)}</div></div><div class="t">${v.fl_reference_today ? '<span class="refn">参考値（店内のみ）</span>' : ''}</div></div>
+    </div></section>
+  <section class="card kc"><div class="ttl">${SVG.cal}月間累計<small>（${mtdFrom}〜${mtdTo}・${esc(mtdStatus)}）</small></div>
+    <div class="tiles tm" style="height:170px">
+      <div class="tile"><div class="l">累計売上</div><div class="vv"><div class="fit" data-max="36" data-min="20">${yenS(v.mtd_sales)}</div></div></div>
+      <div class="tile ${num(v.mtd_budget_ratio) === null ? '' : num(v.mtd_budget_ratio) >= 1 ? 'g' : ''}"><div class="l ${num(v.mtd_budget_ratio) >= 1 ? 'good' : ''}">予算進捗</div><div class="vv"><div class="fit ${num(v.mtd_budget_ratio) === null ? 'na' : num(v.mtd_budget_ratio) >= 1 ? 'good' : 'warn'}" data-max="46" data-min="24">${pct(v.mtd_budget_ratio)}${num(v.mtd_budget_ratio) >= 1 ? ' ✓' : ''}</div></div></div>
+      <div class="tile ${tileBg(rateCls(mlr, tl))}"><div class="l">人件費率</div><div class="vv"><div class="fit ${rateCls(mlr, tl)}" data-max="46" data-min="24">${pct(mlr)}</div></div><div class="t">${tgt(tl)}</div>${ref(v.fl_reference_mtd)}<span class="badge sm ${gl.cls}">${holdLbl(gl)}</span></div>
+      <div class="tile ${tileBg(rateCls(mfr, tf))}"><div class="l">原価率</div><div class="vv"><div class="fit ${rateCls(mfr, tf)}" data-max="46" data-min="24">${pct(mfr)}</div></div><div class="t">${tgt(tf)}</div>${ref(v.fl_reference_mtd)}<span class="badge sm ${gf.cls}">${holdLbl(gf)}</span></div>
+      <div class="tile fl"><div class="l" style="display:flex;justify-content:center;align-items:center;gap:6px">${SVG.trophy}FL比率</div><div class="vv"><div class="fit" data-max="46" data-min="24">${pct(v.mtd_fl_ratio)}</div></div>${ref(v.fl_reference_mtd)}<span class="badge ${gfl.cls}" style="${gfl === GRADE.hold ? 'font-size:17px' : ''}">${gfl === GRADE.hold ? '評価保留（デリバリー未取得）' : gfl.label}</span></div>
+    </div></section>
+  <div class="r4">
+    <section class="card lc"><div class="ttl">${SVG.star}口コミ・評価</div>
+      <div class="rvrow">
+        <div><div class="l">口コミ増減</div><div class="vv"><div class="fit ${rv.cls}" data-max="60" data-min="28">${rv.main}</div></div></div>
+        <div><div class="l">ダイニー低評価</div><div class="vv"><div class="fit ${low === null ? 'na' : low > 0 ? 'bad' : 'good'}" data-max="60" data-min="28">${low === null ? '—' : low + '件'}</div></div></div>
+        <div><div class="l">ダイニー点数</div><div class="vv"><div class="fit ${dn.na ? 'na' : ''}" data-max="52" data-min="24">${dn.main}${dn.unit}</div></div></div>
+      </div></section>
+    <section class="card bc"><div class="ttl"><span style="display:flex;align-items:center;gap:12px">${SVG.fork}売上内訳</span>${flNote}</div><div class="irows">${bdBody}</div></section>
   </div>
-</section>
-
-<section class="card">
-  <div class="ttl"><span class="ic cal">▦</span>今月累計 <span style="font-size:20px;color:var(--gray);font-weight:700;margin-left:6px">（${mtdFrom}〜${mtdTo}）</span></div>
-  <div class="mtd">
-    <div class="cell"><div class="l">売上</div><div class="v">${yen(v.mtd_sales)}</div>
-      <div class="t">${num(v.mtd_budget) === null ? '予算 未設定' : '（予算 ' + yen(v.mtd_budget) + '）'}</div>
-      <div class="badge ${cls(num(v.mtd_budget_ratio), 1, 0.9)}">予算比 ${pct(v.mtd_budget_ratio)}</div></div>
-    <div class="cell"><div class="l">人件費率</div><div class="v sm ${rateCls(num(v.mtd_labor_ratio), tl)}">${pct(v.mtd_labor_ratio)}</div><div class="t">${tl === null ? '目標 未設定' : '（目標 ' + pct(tl) + '）'}</div></div>
-    <div class="cell"><div class="l">原価率</div><div class="v sm ${rateCls(num(v.mtd_food_cost_ratio), tf)}">${pct(v.mtd_food_cost_ratio)}</div><div class="t">${tf === null ? '目標 未設定' : '（目標 ' + pct(tf) + '）'}</div></div>
-    <div class="cell"><div class="l">口コミ件数</div><div class="v sm ${rv.na ? 'na' : 'good'}">${rv.main}</div>${rv.lines.length ? `<div class="lst">${rv.lines.map((x) => `<div>${esc(x)}</div>`).join('')}</div>` : ''}<div class="t">${esc(rv.sub || '（Google・当月増加）')}</div></div>
-    <div class="cell"><div class="l">ダイニー点数</div><div class="v sm ${dn.na ? 'na' : 'good'}">${dn.main}<span class="sub">${dn.sub}</span></div><div class="t">${num(v.target_dinii) === null ? '（また来たい点数の平均）' : '（目標 ' + num(v.target_dinii) + '）'}</div></div>
-  </div>
-</section>
-
-<section class="card points">
-  <div class="ttl"><span class="ic alert" style="color:#d9342b">!</span>本日のポイント</div>
-  <ul>${al.length ? al.map((a) => `<li><span class="dot ${a.lv}"></span><span><span class="tag ${a.lv}">${a.lv === 'bad' ? '要確認' : a.lv === 'warn' ? '注意' : '良い'}</span>${esc(a.t)}</span></li>`).join('') : '<li><span class="dot good"></span><span>特記事項なし</span></li>'}</ul>
-</section>
-
-<footer>管理システムで詳細確認 ↗</footer>
-<div class="gen">生成 ${new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}　正本: 経営ダッシュボード日次集計</div>
+  <div class="alz">${alertHtml}</div>
+</div>
+${sampleOrGen}
+<script>
+  // 数値・店名・日付は、枠に収まる最大の文字サイズに自動調整（はみ出し・切れ・重なりを防ぐ。枠のサイズ自体は固定）
+  document.querySelectorAll('.fit').forEach(function (el) {
+    var fs = +el.dataset.max || 40, mn = +el.dataset.min || 16;
+    el.style.fontSize = fs + 'px'; el.style.textOverflow = 'clip';   // 計測中は省略記号を切る（省略記号があると scrollWidth が狭く見えるため）
+    while (fs > mn && el.scrollWidth > el.clientWidth + 0.5) { fs -= 1; el.style.fontSize = fs + 'px'; }
+    if (!el.dataset.noell) el.style.textOverflow = 'ellipsis';   // 最小サイズでも収まらない時だけ … で省略（売上金額は省略しない＝data-noell）
+  });
+</script>
 </div></body></html>`;
 }
 
@@ -301,10 +364,10 @@ async function renderPng(html, outPng) {
   const browser = await puppeteer.launch({ executablePath: exe, headless: 'new', args: ['--no-sandbox', '--disable-setuid-sandbox', '--font-render-hinting=none', '--hide-scrollbars'] });
   try {
     const page = await browser.newPage();
-    await page.setViewport({ width: 1080, height: 1200, deviceScaleFactor: 2 }); // Retina 相当（実寸 2160px 幅）
+    await page.setViewport({ width: CANVAS.w, height: CANVAS.h, deviceScaleFactor: 1.5 }); // 基準画像と同じ 1230×1279（全店・全条件で同一サイズ）。実寸 1845×1919
     await page.setContent(html, { waitUntil: 'networkidle0' });
     await page.evaluate(() => document.fonts.ready);
-    const el = await page.$('.wrap');
+    const el = await page.$('.page');
     await el.screenshot({ path: outPng, type: 'png' });
   } finally { await browser.close(); }
 }
@@ -344,7 +407,7 @@ function slackBlocks(v, imageUrl) {
 
   let url = null;
   if (!args['no-upload']) {
-    const up = await api({ action: 'upload', date: v.date, store_key: key, png_base64: fs.readFileSync(pngPath).toString('base64') });
+    const up = await api({ action: 'upload', date: v.date, store_key: key, png_base64: fs.readFileSync(pngPath).toString('base64'), vm: raw });   // vm=配信時スナップショット（過去日報を当時の基準で再現。TK-252）
     url = up.url; log('Storage:', up.path, '→', url);
   }
   if (!args['no-send']) {
@@ -367,5 +430,5 @@ function slackBlocks(v, imageUrl) {
     }
     log(`✓ Slack ${channel} / ${j.status} / notification_id=${j.notification_id}`);
   }
-  console.log(JSON.stringify({ ok: true, store: v.store_name, date: v.date, image_url: url, alerts: alerts(v).map((a) => a.t) }));
+  console.log(JSON.stringify({ ok: true, store: v.store_name, date: v.date, image_url: url, alerts: alertList(v).shown.map((a) => a.t) }));
 })().catch((e) => { console.error('[daily-report-card] 失敗:', e.message || e); process.exit(1); });
