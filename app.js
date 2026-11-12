@@ -3568,7 +3568,8 @@ function viewDash(){
   // 原価率を出しており、PL管理タブ(viewPL)が使っているplAgg()のDB_PL手入力F区分を一切含んでいなかった。
   // viewPLと同じ考え方（plAggFlag=単一店舗選択時のみtrue=全社共通経費を含めない）でcostTに合算する。
   const plScopeSet=selName?new Set([selName]):scopeSet, plAggFlagDash=selName?true:null;
-  const exCurF=plAgg(plScopeSet,plAggFlagDash,a,b,D.adPlExclude).catTotal.F;
+  const exCurAgg_=plAgg(plScopeSet,plAggFlagDash,a,b,D.adPlExclude);
+  const exCurF=exCurAgg_.catTotal.F, exCurTr=(exCurAgg_.byCat.F||{})['店舗間移動']||0;   // 店舗間移動（原価率カードの小さな注記用・2026-11-12）
   const exPrevF=plAgg(plScopeSet,plAggFlagDash,pa2,pb2,D.adPlExclude).catTotal.F;
   const costT=cur.cost+exCurF, costPrevT=prev.cost+exPrevF;
   const foodR=SslFL>0?costT/SslFL:0, laborR=SslFL>0?cur.labor/SslFL:0, flR=foodR+laborR;
@@ -3615,7 +3616,7 @@ function viewDash(){
   }
   const kpis=[
     { lb:(S.period==='day'?'日次':S.period==='week'?'週次':S.period==='month'?'月次':S.period==='year'?'累計':'期間')+'売上', vl:yen(Ssl), segsub:segSales, yy:y1 },
-    { lb:'原価率 (F)', vl:Ssl>0?(foodR*100).toFixed(1)+'%':'—', sub:Ssl>0?yen(costT):'', yy:yF },
+    { lb:'原価率 (F)', vl:Ssl>0?(foodR*100).toFixed(1)+'%':'—', sub:Ssl>0?(yen(costT)+(exCurTr?' ／ 店舗間移動 '+(exCurTr<0?'▲':'+')+yen(Math.abs(exCurTr)):'')):'', yy:yF },   // 店舗間移動＝仕入の店舗間の付け替え分（移動元はマイナス・受け入れ側はプラス）。原価に含めた金額
     { lb:'人件費率 (L)', vl:Ssl>0?(laborR*100).toFixed(1)+'%':'—', sub:Ssl>0?('PA '+yen(cur.pa)+' ／ 社員 '+yen(cur.emp)+(cur.spot?' ／ スポット '+yen(cur.spot):'')):'', yy:yL },
     { lb:'FL合計', vl:Ssl>0?(flR*100).toFixed(1)+'%':'—', sub:uberUnlinkedFor_(selName?[selName]:sc).length?('暫定（'+uberUnlinkedFor_(selName?[selName]:sc).join('・')+'未連携・評価なし）'):'', yy:yFL },
     { lb:'客数', vl:cnt(cur.guests)+'人', segsub:segGuests, yy:yG },
