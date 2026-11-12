@@ -67,7 +67,7 @@ const CANON_STORES = ['芝の鳥一代','鳥一代 はなれ','鳥一代 恵比�
 // 店舗別の「日別 明細」表で、該当日の行に「🔒 休業」を出す（売上は0として集計済み）。休業が延びたら to を伸ばす。
 // keys=店舗名に含まれる文字（表記ゆれ「じんべえ/じんべぇ」対策で全部含むか判定）。from/to=営業日（両端含む）。
 const STORE_CLOSURES = [
-  { keys:['じんべ','新横浜'], label:'じんべえ 新横浜店', from:'2026-11-07', to:'2026-11-11', note:'休業中のため売上0' },
+  { keys:['じんべ','新横浜'], label:'じんべえ 新横浜店', from:'2026-11-07', to:'2026-11-15', note:'休業中のため売上0' },
 ];
 // 日別明細の行用: その店舗・その日が休業登録に当たれば登録を返す（なければ null）
 function closureFor_(storeName,t){
@@ -3888,7 +3888,7 @@ function dailyStorePanel(r,selName){
     const sp=c.guests>0?c.sales/c.guests:0;
     const yy=yoyStr(c.sales,pv.sales,'');
     const cumDiff=cumCur-cumPrev;
-    const clo=closureFor_(selName,t);
+    const clo=(c.sales===0)?closureFor_(selName,t):null; // 休業期間内でも売上が入っていれば営業扱い（売上0の日だけ休業表示）
     const cloBadge=clo?` <span style="display:inline-block;background:#b5502f;color:#fff;border-radius:4px;padding:1px 7px;font-size:11px;font-weight:700;margin-left:4px">🔒 休業</span>`:'';
     h+=`<tr${clo?' style="background:#fff4ef"':''}><td style="white-space:nowrap">${mdwH(d)}${cloBadge}</td><td style="white-space:nowrap">${wxCell(wxGet(selName,t))}</td><td>${yen(c.sales)}</td><td>${cnt(c.guests)}人</td><td>${yen(sp)}</td>
       <td>${ap(c.pa,c.sales)}</td><td>${ap(c.emp,c.sales)}</td><td>${ap(c.cost,c.sales)}</td>
