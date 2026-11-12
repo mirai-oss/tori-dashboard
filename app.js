@@ -3647,7 +3647,7 @@ function viewDash(){
 
   if(S.period==='month') h+=landingPanel(r,scopeSet,selName,sc);
   h+=dashChartPanel(r,scopeSet,selName);
-  h+=`<div class="grid2">${flPanel(cur,prev,SslFL,pSFL)}${mediaPanel(a,b,pa2,pb2,scopeSet,selName)}</div>`;
+  h+=`<div class="grid2">${flPanel(cur,prev,SslFL,pSFL,exCurF,exPrevF)}${mediaPanel(a,b,pa2,pb2,scopeSet,selName)}</div>`;
   // 店舗を選んでいるときは「日別明細」、全店/合算のときは「店舗比較」
   h+= selName ? dailyStorePanel(r,selName) : comparePanel(r,p,sc,selName);
   return h;
@@ -3792,7 +3792,7 @@ function monthLanding(scopeSet, selName, y, m){
     }
   }
   const fSales=mtdSales+remSales, fGuests=mtdGuests+remGuests;
-  const flRate=(()=>{ const fsL=flSalesOf_(mtdSales,flDvGross_(setArg,dayMs(new Date(y,m,1)),dayMs(new Date(y,m,cutoffDay||1)),selName)); return fsL>0?(mtdCost+mtdLabor)/fsL:0; })();   // TK-252: FL計算用売上基準
+  const flRate=(()=>{ const fsL=flSalesOf_(mtdSales,flDvGross_(setArg,dayMs(new Date(y,m,1)),dayMs(new Date(y,m,cutoffDay||1)),selName)); const exM=plAgg(selName?new Set([selName]):setArg,selName?true:null,dayMs(new Date(y,m,1)),dayMs(new Date(y,m,cutoffDay||1)),D.adPlExclude).catTotal.F; return fsL>0?(mtdCost+exM+mtdLabor)/fsL:0; })();   // TK-252: FL計算用売上基準
   const lyFull=lyMtd+lyRem;                       // 前年満月
   const pmFull=stat(setArg,dayMs(new Date(y,m-1,1)),dayMs(new Date(y,m,0)),selName).sales;
   return { ld,lastDay:cutoffDay,remDays, mtdSales,mtdGuests, remSales, fSales,fGuests, flRate, lyFull,pmFull, method, adj, yoyR: lyMtd>0?mtdSales/lyMtd:null };
@@ -3971,18 +3971,20 @@ function dashChartPanel(r,scopeSet,selName){
 // SslIn/pSIn（2026-09-17追加・省略可）: 呼び出し側で既にデリバリー込みの売上（viewDash()の
 // Ssl/pS）を計算済みならそれを渡す。省略時はcur.sales/prev.sales（デリバリー抜き）のまま
 // （このpanelを他の場所から呼ぶ既存の使い方を壊さないためのフォールバック）。
-function flPanel(cur,prev,SslIn,pSIn){
+// exF/pExF（2026-11-12追加）: 手入力PLのF区分（店舗間移動など）。経営ダッシュボードの原価率と同じく、原価に加算して表示する
+function flPanel(cur,prev,SslIn,pSIn,exF,pExF){
   const Ssl=SslIn!=null?SslIn:cur.sales, pS=pSIn!=null?pSIn:prev.sales;
+  const cCost=cur.cost+(exF||0), pCost=prev.cost+(pExF||0);
   if(!(Ssl>0)) return `<div class="panel"><h3>FL（原価・人件費）内訳</h3><div class="empty">対象期間のデータがありません</div></div>`;
   const rows=[
-    { nm:'仕入（原価 F）', c:'#b5502f', amt:cur.cost, r:cur.cost/Ssl, pr:pS>0?prev.cost/pS:0 },
+    { nm:'仕入（原価 F）', c:'#b5502f', amt:cCost, r:cCost/Ssl, pr:pS>0?pCost/pS:0 },
     { nm:'PA 人件費', c:'#5f7052', amt:cur.pa, r:cur.pa/Ssl, pr:pS>0?prev.pa/pS:0 },
     { nm:'社員 人件費', c:'#7d8b6f', amt:cur.emp, r:cur.emp/Ssl, pr:pS>0?prev.emp/pS:0 },
   ];
   if(cur.spot||prev.spot){   // スポット人件費（タイミー等）はデータがある期間だけ内訳に出す（2026-08-23追加）
     rows.push({ nm:'スポット人件費（タイミー等）', c:'#a98b5f', amt:cur.spot, r:cur.spot/Ssl, pr:pS>0?prev.spot/pS:0 });
   }
-  const fl=cur.cost+cur.labor, flR=fl/Ssl, pFlR=pS>0?(prev.cost+prev.labor)/pS:0;
+  const fl=cCost+cur.labor, flR=fl/Ssl, pFlR=pS>0?(pCost+prev.labor)/pS:0;
   const profit=Ssl-fl;
   let h=`<div class="panel"><div class="panel-head"><div><h3>FL（原価・人件費）内訳${uberBadge_(selStoreName()?[selStoreName()]:scopeStores())}</h3><div class="sub">集約シート実績（人件費＝PA＋社員＋スポット）／比率の分母＝店内売上＋デリバリー（税抜換算）</div></div>${canUse('spot')?`<button class="icon-btn no-print" onclick="App.openSpotInput()">＋ スポット人件費</button>`:''}</div><div class="scroll-x"><table class="tbl"><thead><tr><th>項目</th><th>金額</th><th>比率</th><th>前年</th></tr></thead><tbody>`;
   rows.forEach(x=>{ const pt=ptStr(x.r,x.pr,true);
@@ -4076,11 +4078,12 @@ function comparePanel(r,p,sc,selName){
   sc.forEach(nm=>{
     const c=stat(null,a,b,nm), pv=stat(null,pa2,pb2,nm);
     const yy=yoyStr(c.sales,pv.sales,'');
+    const exF=plAgg(new Set([nm]),true,a,b,D.adPlExclude).catTotal.F;   // 手入力PLのF区分（店舗間移動など）を原価に加算（経営ダッシュボードと同じ・2026-11-12）
     const dvG=flDvGross_(null,a,b,nm), fsx=flSalesOf_(c.sales,dvG);   // F/L/FLの分母（TK-252）
-    const fr=fsx>0?c.cost/fsx:0, lr=fsx>0?c.labor/fsx:0, fl=fr+lr;
+    const fr=fsx>0?(c.cost+exF)/fsx:0, lr=fsx>0?c.labor/fsx:0, fl=fr+lr;
     const sp=c.guests>0?c.sales/c.guests:0;
     const rv=revAgg(nm);
-    agg.sales+=c.sales;agg.fs=(agg.fs||0)+fsx;agg.cost+=c.cost;agg.labor+=c.labor;agg.guests+=c.guests;agg.psales+=pv.sales;
+    agg.sales+=c.sales;agg.fs=(agg.fs||0)+fsx;agg.cost+=c.cost+exF;agg.labor+=c.labor;agg.guests+=c.guests;agg.psales+=pv.sales;
     if(rv&&rv.count>0){tws+=rv.star*rv.count;tcs+=rv.count;}
     h+=`<tr class="click ${selName===nm?'sel':''}" onclick="App.store(this.dataset.n)" data-n="${esc(nm)}">
       <td>${shortStoreTd(nm)}</td><td>${yen(c.sales)}</td>
@@ -5479,7 +5482,7 @@ async function flLoad_(){
 function flActual_(storeName,ym){
   const p=ym.split('-'), y=+p[0], m=+p[1]-1, mS=dayMs(new Date(y,m,1)), today=dayMs(D.refDate||new Date()), e=Math.min(dayMs(new Date(y,m+1,0)),today);
   if(e<mS) return null;
-  const c=stat(null,mS,e,storeName); const fs=flSalesOf_(c.sales,flDvGross_(null,mS,e,storeName)); const r=flRates_(fs,c.cost,c.labor);
+  const c=stat(null,mS,e,storeName); const exF=plAgg(new Set([storeName]),true,mS,e,D.adPlExclude).catTotal.F; const fs=flSalesOf_(c.sales,flDvGross_(null,mS,e,storeName)); const r=flRates_(fs,c.cost+exF,c.labor);
   return r.fs>0?{ labor:r.lr, food:r.fr, fl:r.fl }:null;
 }
 function flGradeOf_(ratio,t){ if(ratio==null||!t||t.some(x=>x==null||isNaN(x))) return 'unset'; const v=ratio*100; return v<=t[0]?'excellent':v<=t[1]?'normal':v<=t[2]?'warn':'danger'; }
