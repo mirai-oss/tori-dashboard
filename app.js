@@ -7236,6 +7236,23 @@ const REQFORMS_=[
     fixed:'https://mirai-oss.github.io/ns-portal/requests.html', note:'ポータルのログインが必要です（合言葉のURLではありません）。' },
   { key:'expenseLogin', ico:'💴', name:'経費申請（ポータル画面）', who:'立て替えた人（ポータルにログインできる人）', what:'金額・用途・利用日・店舗・レシート写真を申請します。', after:'承認者に通知が届き、承認済みは月末に経費のタスクへ集計されます。',
     fixed:'https://mirai-oss.github.io/ns-portal/expenses.html', note:'ポータルのログインが必要です。ログインなしで使うURLは、上の「経費申請」のURLです。' },
+  // 2026-11-17: 入社・採用・従業員用（アルバイト／社員）の入口もここにまとめた（日報サイト nippo）
+  { key:'join', ico:'🧑‍💼', name:'入社登録（入社者の登録）', who:'入社が決まった人（本人）／発行するのは本部', what:'入社者が自分で、氏名・連絡先・口座などを登録します。入社者ごとに専用の招待リンクを発行して渡します（1人1本・期限あり・使えるのは1回だけ）。', after:'登録が終わると、入社手続きのSlackのスレッドに進み具合が出て、本部が賃金・スマレジ・交通費などを確認して反映します。',
+    fixed:'https://mirai-oss.github.io/nippo/?page=admin', note:'招待リンクの発行場所です。日報サイトの「アカウント管理（スタッフ）」で「🔗 招待リンクを発行」を押すと、その人専用のリンクができます（ログイン・権限が必要）。' },
+  { key:'recruit', ico:'🙋', name:'応募者の管理・採用の招待リンク', who:'本部（採用担当）', what:'応募者の一覧、LINEの返信、面接の設定、「採用・招待リンクを発行する」（採用が決まった人への入社登録リンク）ができます。', after:'採用が決まった人に招待リンクが届き、上の「入社登録」に進みます。',
+    fixed:'https://mirai-oss.github.io/nippo/?page=recruit', note:'日報サイトの採用画面です（ログイン・権限が必要）。応募者ごとのリンクは、この画面の応募者の詳細から作ります。' },
+  { key:'staff', ico:'📝', name:'日報サイト（アルバイト・社員の入口）', who:'アルバイト・社員・店長（全従業員）', what:'日報の入力、シフト・勤怠の確認、マニュアル、自分の書類など、従業員が普段使う入口です。', after:'日報・勤怠は管理システムに保存され、経営ダッシュボードにも反映されます。',
+    fixed:'https://mirai-oss.github.io/nippo/', note:'ログイン（LINEまたはメール）が必要です。店舗のスタッフへ渡す入口はこのURLです。' },
+  { key:'staffwrite', ico:'🗒', name:'日報を書く', who:'アルバイト・社員・店長', what:'今日の日報を入力します。', after:'日報サイトに保存されます。',
+    fixed:'https://mirai-oss.github.io/nippo/?page=write', note:'ログインが必要です。' },
+  { key:'staffshift', ico:'🕒', name:'シフト・勤怠', who:'アルバイト・社員・店長', what:'自分のシフトと勤怠の実績を確認します。', after:'',
+    fixed:'https://mirai-oss.github.io/nippo/?page=shift', note:'ログインが必要です。' },
+  { key:'cashhand', ico:'💴', name:'現金手渡し（給与の現金受け渡し）', who:'店長・本部', what:'現金で給与を渡した記録をつけます（取消は理由が必要）。', after:'記録は給与の支払方法の管理に反映されます。',
+    fixed:'https://mirai-oss.github.io/nippo/?page=cashhandoff', note:'ログインが必要です。' },
+  { key:'manuals', ico:'📚', name:'マニュアル', who:'アルバイト・社員・店長', what:'業務のマニュアルを見ます。', after:'',
+    fixed:'https://mirai-oss.github.io/nippo/?page=manuals', note:'ログインが必要です。' },
+  { key:'mydocs', ico:'📄', name:'自分の書類（給与明細など）', who:'アルバイト・社員', what:'自分宛の書類を確認します。', after:'',
+    fixed:'https://mirai-oss.github.io/nippo/?page=mydocs', note:'ログインが必要です。' },
 ];
 async function reqFormRpc_(name, args){
   const jwt=await portalAccessToken().catch(()=>null);
