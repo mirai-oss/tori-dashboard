@@ -7254,6 +7254,28 @@ const REQFORMS_=[
   { key:'mydocs', ico:'📄', name:'自分の書類（給与明細など）', who:'アルバイト・社員', what:'自分宛の書類を確認します。', after:'',
     fixed:'https://mirai-oss.github.io/nippo/?page=mydocs', note:'ログインが必要です。' },
 ];
+// 2026-11-17: 検索・カテゴリーで絞り込めるようにした（カテゴリー・言い換えの語を足す）
+const REQFORM_CAT_={ retire:'申請フォーム（ログイン不要）', transfer:'申請フォーム（ログイン不要）', spot:'申請フォーム（ログイン不要）', expense:'申請フォーム（ログイン不要）', quote:'申請フォーム（ログイン不要）',
+  kintai:'勤怠', staffshift:'勤怠', task:'本部タスク', taskslack:'本部タスク', change:'申請（ログインして使う）', expenseLogin:'申請（ログインして使う）',
+  join:'入社・採用', recruit:'入社・採用', staff:'従業員の入口（日報サイト）', staffwrite:'従業員の入口（日報サイト）', cashhand:'従業員の入口（日報サイト）', manuals:'従業員の入口（日報サイト）', mydocs:'従業員の入口（日報サイト）' };
+const REQFORM_KW_={ retire:'辞める 退社 やめる 離職', transfer:'移動 在庫 融通 原価', spot:'タイミー 人件費 日雇い 助っ人', expense:'立替 領収書 レシート 精算', quote:'見積 見積書 業者 相見積', kintai:'打刻 出勤 退勤 修正 追加 タイムカード', task:'タスク 仕事 依頼 やること 担当 期限', taskslack:'slack スラック タスク 依頼 担当 期限 通知',
+  change:'住所 口座 所属 変更 情報', expenseLogin:'立替 領収書 経費', join:'入社 新入社員 登録 招待 アルバイト 社員 バイト 採用決定', recruit:'応募 採用 面接 求人 インディード indeed line 招待', staff:'アルバイト バイト 社員 従業員 日報 ログイン スタッフ',
+  staffwrite:'日報 書く 入力 アルバイト 社員', staffshift:'シフト 勤怠 出勤 アルバイト 社員', cashhand:'現金 手渡し 給料 給与 支払', manuals:'マニュアル 手順 資料 研修', mydocs:'書類 給与明細 明細 契約書' };
+REQFORMS_.forEach(f=>{ f.cat=REQFORM_CAT_[f.key]||'その他'; f.kw=REQFORM_KW_[f.key]||''; });
+const REQFORM_CATS_=['申請フォーム（ログイン不要）','申請（ログインして使う）','勤怠','本部タスク','入社・採用','従業員の入口（日報サイト）'];
+const reqFormNorm_=s=>String(s||'').normalize('NFKC').toLowerCase();
+function reqFormMatch_(f){
+  if(D.reqFormsCat&&f.cat!==D.reqFormsCat) return false;
+  const terms=reqFormNorm_(D.reqFormsQ).split(/[\s、,]+/).filter(Boolean);
+  if(!terms.length) return true;
+  const hay=reqFormNorm_([f.name,f.who,f.what,f.after,f.note,f.cat,f.kw,f.fixed].join(' '));
+  return terms.every(w=>hay.includes(w));
+}
+function reqFormsSearchBar_(){
+  const chip=(c,label)=>`<button class="icon-btn${(D.reqFormsCat||'')===c?' primary':''}" style="margin:2px" onclick="App.reqFormsCat(${JSON.stringify(c).replace(/"/g,'&quot;')})">${esc(label)}</button>`;
+  return `<div style="margin:10px 0 6px"><input id="rf-q" type="search" value="${esc(D.reqFormsQ||'')}" placeholder="🔍 文章で探す（例：入社 登録 / 立替 レシート / バイトの日報 / 辞める）" style="width:100%;padding:8px 10px;font-size:13px" oninput="if(!event.isComposing)App.reqFormsQuery(this.value)" onchange="App.reqFormsQuery(this.value)" oncompositionend="App.reqFormsQuery(this.value)">
+    <div style="margin-top:6px">${chip('','すべて')}${REQFORM_CATS_.map(c=>chip(c,c)).join('')}</div></div>`;
+}
 async function reqFormRpc_(name, args){
   const jwt=await portalAccessToken().catch(()=>null);
   if(!jwt) throw new Error('統合アカウントでログインしてください（ポータルのログインが必要です）');
@@ -7278,7 +7300,10 @@ function viewRequestForms(){
   const L=D.reqForms||{ loading:true, tokens:{}, errs:{} };
   let h=`<div class="panel"><div class="panel-head"><div><h3>申請フォームURL</h3><div class="sub">申請フォームの入口を、ここに集めています（ログイン不要のURL・ポータルにログインして使う画面・Slackのフォーム）。現場に渡すURLを、ここから確認・コピーできます。送っただけでは何も変わらず、本部が確認（承認）してから反映されます。</div></div>
     <div><button class="icon-btn" onclick="App.reqFormsReload()">↻ 更新</button></div></div>`;
-  REQFORMS_.forEach(f=>{
+  const shown=REQFORMS_.filter(reqFormMatch_);
+  h+=reqFormsSearchBar_()+`<div class="mut" style="font-size:12px;margin:2px 0">${shown.length} 件${(D.reqFormsQ||D.reqFormsCat)?`（全 ${REQFORMS_.length} 件のうち）`:''}</div>`;
+  if(!shown.length) h+=`<div class="empty">該当する入口がありません。言葉を変えるか、カテゴリーを「すべて」にしてください。</div>`;
+  shown.forEach(f=>{
     const t=L.tokens[f.key], err=L.errs[f.key];
     const url=f.fixed?f.fixed:(t?f.url(t):'');
     if(f.fixed){
@@ -10553,6 +10578,8 @@ window.App = {
     }catch(e){ toast('処理できませんでした: '+(e&&e.message||e)); }
   },
   reqFormsReload(){ loadRequestForms_(); },
+  reqFormsQuery(v){ if(D.reqFormsQ===v) return; const el=document.getElementById('rf-q'); const pos=el?el.selectionStart:null; D.reqFormsQ=v; render(); const e2=document.getElementById('rf-q'); if(e2){ e2.focus(); try{ e2.setSelectionRange(pos==null?v.length:pos,pos==null?v.length:pos); }catch(e){} } },
+  reqFormsCat(c){ D.reqFormsCat=c||''; render(); },
   reqFormCopy(key){
     const el=$('rf-'+key); if(!el) return; el.select();
     try{ navigator.clipboard.writeText(el.value).then(()=>toast('URLをコピーしました')).catch(()=>{ document.execCommand('copy'); toast('URLをコピーしました'); }); }catch(e){ try{ document.execCommand('copy'); toast('URLをコピーしました'); }catch(e2){ toast('コピーできませんでした。URLを選択して⌘Cで貼り付けてください'); } }
