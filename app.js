@@ -7227,6 +7227,15 @@ const REQFORMS_=[
     kind:'quote', url:t=>'https://mirai-oss.github.io/tori-dashboard/quote-form.html?k='+t },
   { key:'kintai', ico:'⏰', name:'勤怠の追加・修正', who:'店長・チーム長（打刻の漏れや間違いに気づいた人）', what:'「勤怠追加」か「勤怠修正」を選び、店舗→従業員（名前で検索）→勤務日・出勤・退勤・休憩・理由を送ります。', after:'マスターの Slack に承認依頼が届き、承認すると管理システムの勤怠実績とスマレジ・タイムカードの勤務実績に反映されます（「申請履歴」の勤怠タブからも承認・却下できます）。',
     fixed:KINTAI_FORM_URL_, note:'このフォームはポータルのログインが必要です（合言葉のURLではありません）。' },
+  // 2026-11-17: 散らばっていたフォーム・申請の入口もここにまとめた（ポータルにログインして使う画面／Slackのフォーム）
+  { key:'task', ico:'📌', name:'本部タスクを作る', who:'本部・社長・店長', what:'やること・法人・担当者・期限（日付と時刻）・詳細を入れてタスクを付けます。工程ごとの担当者・期限・写真の要否も決められます。', after:'担当者の個人DM（Slack）に通知が届き、期限前・期限当日・超過のアラートも届きます。完了すると作った人に通知が届きます。',
+    fixed:'https://mirai-oss.github.io/ns-portal/tasks.html', note:'管理システムの「本部タスク」画面から作る場合のURLです（ポータルのログインが必要）。Slackからは、役員チャットの「＋ タスクを作る」ボタンからも作れます。' },
+  { key:'taskslack', ico:'💬', name:'本部タスクを作る（Slack）', who:'本部・社長・店長', what:'Slackの役員チャットに置いた「＋ タスクを作る」ボタンから、入力フォームを開いてタスクを付けます。作ったあとは、スレッドのカードから編集・工程ごとの設定ができます。', after:'親投稿＋スレッドの詳細カードがチャンネルに残り、担当者のDMに通知が届きます。',
+    fixed:'https://ns-xbl1793.slack.com/archives/C0C7ZH7G1ME/p1794883008160279', note:'Slackのリンクです（Slackにログインしている人だけ開けます）。開くと、役員チャットのボタンの位置に飛びます。' },
+  { key:'change', ico:'🔁', name:'従業員情報の変更', who:'従業員本人・店長・本部', what:'住所・口座・所属などの変更を申請します。', after:'本部（権限のある人）が承認すると、管理システムとスマレジに反映されます。',
+    fixed:'https://mirai-oss.github.io/ns-portal/requests.html', note:'ポータルのログインが必要です（合言葉のURLではありません）。' },
+  { key:'expenseLogin', ico:'💴', name:'経費申請（ポータル画面）', who:'立て替えた人（ポータルにログインできる人）', what:'金額・用途・利用日・店舗・レシート写真を申請します。', after:'承認者に通知が届き、承認済みは月末に経費のタスクへ集計されます。',
+    fixed:'https://mirai-oss.github.io/ns-portal/expenses.html', note:'ポータルのログインが必要です。ログインなしで使うURLは、上の「経費申請」のURLです。' },
 ];
 async function reqFormRpc_(name, args){
   const jwt=await portalAccessToken().catch(()=>null);
@@ -7250,7 +7259,7 @@ function viewRequestForms(){
   if(!isAdminRole()) return `<div class="panel"><div class="empty">この画面は社長・本部のみ見られます</div></div>`;
   if(!D.reqForms&&!D.reqFormsReq_){ D.reqFormsReq_=true; setTimeout(()=>{ loadRequestForms_().finally(()=>{ D.reqFormsReq_=false; }); },0); }
   const L=D.reqForms||{ loading:true, tokens:{}, errs:{} };
-  let h=`<div class="panel"><div class="panel-head"><div><h3>申請フォームURL</h3><div class="sub">ログイン不要で申請できるフォームのURLです。現場に渡すURLを、ここから確認・コピーできます。送っただけでは何も変わらず、本部が確認（承認）してから反映されます。</div></div>
+  let h=`<div class="panel"><div class="panel-head"><div><h3>申請フォームURL</h3><div class="sub">申請フォームの入口を、ここに集めています（ログイン不要のURL・ポータルにログインして使う画面・Slackのフォーム）。現場に渡すURLを、ここから確認・コピーできます。送っただけでは何も変わらず、本部が確認（承認）してから反映されます。</div></div>
     <div><button class="icon-btn" onclick="App.reqFormsReload()">↻ 更新</button></div></div>`;
   REQFORMS_.forEach(f=>{
     const t=L.tokens[f.key], err=L.errs[f.key];
