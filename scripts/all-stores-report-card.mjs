@@ -259,13 +259,25 @@ async function renderPngs(jobs) {
   const browser = await puppeteer.launch({ executablePath: exe, headless: 'new', args: ['--no-sandbox', '--disable-setuid-sandbox', '--font-render-hinting=none', '--hide-scrollbars'] });
   try {
     for (const j of jobs) {
-      const page = await browser.newPage();
-      await page.setViewport({ width: W, height: 1500, deviceScaleFactor: 1.5 });
-      await page.setContent(j.html, { waitUntil: 'networkidle0' });
-      await page.evaluate(() => document.fonts.ready);
-      const el = await page.$('.page');
-      await el.screenshot({ path: j.png, type: 'png' });
-      await page.close();
+      // 2026-11-18: 描画を最大 3 回までやり直す（外部の読み込みが長引いて 30 秒で失敗することがあるため。2 回目以降は load で進める・待ちは 60 秒まで）
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        const page = await browser.newPage();
+        try {
+          await page.setViewport({ width: W, height: 1500, deviceScaleFactor: 1.5 });
+          await page.setContent(j.html, { waitUntil: attempt === 1 ? 'networkidle0' : 'load', timeout: 60000 });
+          await Promise.race([page.evaluate(() => document.fonts.ready), new Promise((r) => setTimeout(r, 15000))]);
+          const el = await page.$('.page');
+          if (!el) throw new Error('.page が見つかりません');
+          await el.screenshot({ path: j.png, type: 'png' });
+          await page.close().catch(() => {});
+          break;
+        } catch (e) {
+          console.error(`[all-stores-report-card] 描画に失敗（${attempt}/3）: ${e && e.message}`);
+          await page.close().catch(() => {});
+          if (attempt === 3) throw e;
+          await new Promise((r) => setTimeout(r, 3000));
+        }
+      }
     }
   } finally { await browser.close(); }
 }

@@ -20,6 +20,7 @@
  * 失敗したら exit 1（呼び出し側の workflow が従来の文章日報へフォールバックする）。画像生成 AI は使わない。
  * 画像側で独自の計算はしない（検算だけ）。数字の正本は ViewModel（＝管理システムと同じ表）。
  */
+import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -358,18 +359,36 @@ function chromePath() {
     : ['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium-browser', '/usr/bin/chromium'];
   return cands.find((p) => fs.existsSync(p)) || null;
 }
+function hasCjkFont() {   // 2026-11-18: 日本語フォントが無いまま描くと文字が四角になる。その場合は画像を作らず、文章の日報に切り替えさせる
+  try { return /./.test(execSync('fc-list :lang=ja family', { encoding: 'utf8', timeout: 15000 })); } catch { return true; }   // fc-list が使えない環境（手元の Mac など）は止めない
+}
 async function renderPng(html, outPng) {
+  if (process.env.GITHUB_ACTIONS === 'true' && !hasCjkFont()) throw new Error('日本語フォントがありません（画像日報は作りません）');   // 手元の Mac では確認しない
   const { default: puppeteer } = await import('puppeteer-core');
   const exe = chromePath();
   if (!exe) throw new Error('Chrome が見つかりません（CHROME_PATH を指定）');
   const browser = await puppeteer.launch({ executablePath: exe, headless: 'new', args: ['--no-sandbox', '--disable-setuid-sandbox', '--font-render-hinting=none', '--hide-scrollbars'] });
   try {
-    const page = await browser.newPage();
-    await page.setViewport({ width: CANVAS.w, height: CANVAS.h, deviceScaleFactor: 1.5 }); // 基準画像と同じ 1230×1279（全店・全条件で同一サイズ）。実寸 1845×1919
-    await page.setContent(html, { waitUntil: 'networkidle0' });
-    await page.evaluate(() => document.fonts.ready);
-    const el = await page.$('.page');
-    await el.screenshot({ path: outPng, type: 'png' });
+    // 2026-11-18: 描画を最大 3 回までやり直す（11/17 に「Navigation timeout of 30000 ms exceeded」で川崎店の画像日報だけ失敗→文章に切り替わった）。
+    //   1 回目は通信が落ち着くまで待つ（networkidle0）が、外部の読み込みが長引くと進まないため、2 回目以降は「読み込み完了（load）」で進める。待ちは 60 秒まで。
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const page = await browser.newPage();
+      try {
+        await page.setViewport({ width: CANVAS.w, height: CANVAS.h, deviceScaleFactor: 1.5 }); // 基準画像と同じ 1230×1279（全店・全条件で同一サイズ）。実寸 1845×1919
+        await page.setContent(html, { waitUntil: attempt === 1 ? 'networkidle0' : 'load', timeout: 60000 });
+        await Promise.race([page.evaluate(() => document.fonts.ready), new Promise((r) => setTimeout(r, 15000))]);
+        const el = await page.$('.page');
+        if (!el) throw new Error('.page が見つかりません');
+        await el.screenshot({ path: outPng, type: 'png' });
+        await page.close().catch(() => {});
+        return;
+      } catch (e) {
+        console.error(`[daily-report-card] 描画に失敗（${attempt}/3）: ${e && e.message}`);
+        await page.close().catch(() => {});
+        if (attempt === 3) throw e;
+        await new Promise((r) => setTimeout(r, 3000));
+      }
+    }
   } finally { await browser.close(); }
 }
 

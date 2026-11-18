@@ -259,10 +259,20 @@ jobs:
           echo "REPORT_KIND=$K" >> "$GITHUB_ENV"
 
       - name: Slack 画像日報の準備（日本語フォントと Chromium 操作ライブラリ）
+        timeout-minutes: 8
+        continue-on-error: true
         if: env.SKIP != '1' && matrix.kind == 'slack'
         run: |
-          sudo apt-get update -qq >/dev/null && sudo apt-get install -y -qq fonts-noto-cjk >/dev/null
-          npm install --no-audit --no-fund --silent
+          # 2026-11-18: 日本語フォントの導入を安全に。11/18 に apt の取得が 19 分止まり（通常 10〜40 秒）、店舗の日報が大きく遅れた。
+          #   すでにあれば入れない／各回に時間の上限（timeout）／最大 2 回まで／それでも入らなければ止まらず先へ（画像日報の側で日本語フォントを確認し、
+          #   無ければ画像を作らず文章の日報に切り替える）。
+          if ! fc-list :lang=ja family 2>/dev/null | grep -q .; then
+            for i in 1 2; do
+              if timeout 150 sudo apt-get update -qq >/dev/null 2>&1 && timeout 240 sudo apt-get install -y -qq fonts-noto-cjk >/dev/null 2>&1; then break; fi
+              echo "::warning::日本語フォントの導入に失敗（$i/2）"; sleep 5
+            done
+          fi
+          timeout 240 npm install --no-audit --no-fund --silent
           echo "chrome: $(google-chrome --version 2>/dev/null || echo 'なし')"
 
       - name: 店舗ごとに生成して送信
@@ -424,10 +434,20 @@ jobs:
             echo "::notice::NOTIFY_SLACK_SECRET が未設定のためスキップ"; echo "SKIP=1" >> "$GITHUB_ENV"
           fi
       - name: 日本語フォントと Chromium 操作ライブラリ
+        timeout-minutes: 8
+        continue-on-error: true
         if: env.SKIP != '1'
         run: |
-          sudo apt-get update -qq >/dev/null && sudo apt-get install -y -qq fonts-noto-cjk >/dev/null
-          npm install --no-audit --no-fund --silent
+          # 2026-11-18: 日本語フォントの導入を安全に。11/18 に apt の取得が 19 分止まり（通常 10〜40 秒）、店舗の日報が大きく遅れた。
+          #   すでにあれば入れない／各回に時間の上限（timeout）／最大 2 回まで／それでも入らなければ止まらず先へ（画像日報の側で日本語フォントを確認し、
+          #   無ければ画像を作らず文章の日報に切り替える）。
+          if ! fc-list :lang=ja family 2>/dev/null | grep -q .; then
+            for i in 1 2; do
+              if timeout 150 sudo apt-get update -qq >/dev/null 2>&1 && timeout 240 sudo apt-get install -y -qq fonts-noto-cjk >/dev/null 2>&1; then break; fi
+              echo "::warning::日本語フォントの導入に失敗（$i/2）"; sleep 5
+            done
+          fi
+          timeout 240 npm install --no-audit --no-fund --silent
       - name: 全12店舗日報を生成して送信
         if: env.SKIP != '1'
         env:
