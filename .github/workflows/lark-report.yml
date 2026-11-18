@@ -258,6 +258,12 @@ jobs:
           [ -z "$K" ] && K=daily
           echo "REPORT_KIND=$K" >> "$GITHUB_ENV"
 
+      - name: 日本語フォントのキャッシュを戻す
+        if: env.SKIP != '1' && matrix.kind == 'slack'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/noto-cjk
+          key: noto-cjk-v1
       - name: Slack 画像日報の準備（日本語フォントと Chromium 操作ライブラリ）
         timeout-minutes: 8
         continue-on-error: true
@@ -266,11 +272,20 @@ jobs:
           # 2026-11-18: 日本語フォントの導入を安全に。11/18 に apt の取得が 19 分止まり（通常 10〜40 秒）、店舗の日報が大きく遅れた。
           #   すでにあれば入れない／各回に時間の上限（timeout）／最大 2 回まで／それでも入らなければ止まらず先へ（画像日報の側で日本語フォントを確認し、
           #   無ければ画像を作らず文章の日報に切り替える）。
+          # 2026-11-18: フォントのキャッシュ。直前のステップ（actions/cache）が ~/.cache/noto-cjk に前回のフォントを戻している。
+          #   あれば ~/.local/share/fonts にコピーして使う（apt なし・数秒）。無いときだけ apt で入れ、入れたフォントを ~/.cache/noto-cjk に保存して次回に回す。
+          if [ -d "$HOME/.cache/noto-cjk" ]; then
+            mkdir -p "$HOME/.local/share/fonts" && cp -f "$HOME"/.cache/noto-cjk/* "$HOME/.local/share/fonts/" 2>/dev/null && fc-cache -f >/dev/null 2>&1
+            echo "フォントをキャッシュから復元"
+          fi
           if ! fc-list :lang=ja family 2>/dev/null | grep -q .; then
             for i in 1 2; do
               if timeout 150 sudo apt-get update -qq >/dev/null 2>&1 && timeout 240 sudo apt-get install -y -qq fonts-noto-cjk >/dev/null 2>&1; then break; fi
               echo "::warning::日本語フォントの導入に失敗（$i/2）"; sleep 5
             done
+            if fc-list :lang=ja family 2>/dev/null | grep -q . && ls /usr/share/fonts/opentype/noto/*.ttc >/dev/null 2>&1; then
+              mkdir -p "$HOME/.cache/noto-cjk" && cp -f /usr/share/fonts/opentype/noto/*.ttc "$HOME/.cache/noto-cjk/" && echo "フォントをキャッシュ用に保存"
+            fi
           fi
           timeout 240 npm install --no-audit --no-fund --silent
           echo "chrome: $(google-chrome --version 2>/dev/null || echo 'なし')"
@@ -433,6 +448,12 @@ jobs:
           if [ -z "${{ secrets.NOTIFY_SLACK_SECRET }}" ]; then
             echo "::notice::NOTIFY_SLACK_SECRET が未設定のためスキップ"; echo "SKIP=1" >> "$GITHUB_ENV"
           fi
+      - name: 日本語フォントのキャッシュを戻す
+        if: env.SKIP != '1'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/noto-cjk
+          key: noto-cjk-v1
       - name: 日本語フォントと Chromium 操作ライブラリ
         timeout-minutes: 8
         continue-on-error: true
@@ -441,11 +462,20 @@ jobs:
           # 2026-11-18: 日本語フォントの導入を安全に。11/18 に apt の取得が 19 分止まり（通常 10〜40 秒）、店舗の日報が大きく遅れた。
           #   すでにあれば入れない／各回に時間の上限（timeout）／最大 2 回まで／それでも入らなければ止まらず先へ（画像日報の側で日本語フォントを確認し、
           #   無ければ画像を作らず文章の日報に切り替える）。
+          # 2026-11-18: フォントのキャッシュ。直前のステップ（actions/cache）が ~/.cache/noto-cjk に前回のフォントを戻している。
+          #   あれば ~/.local/share/fonts にコピーして使う（apt なし・数秒）。無いときだけ apt で入れ、入れたフォントを ~/.cache/noto-cjk に保存して次回に回す。
+          if [ -d "$HOME/.cache/noto-cjk" ]; then
+            mkdir -p "$HOME/.local/share/fonts" && cp -f "$HOME"/.cache/noto-cjk/* "$HOME/.local/share/fonts/" 2>/dev/null && fc-cache -f >/dev/null 2>&1
+            echo "フォントをキャッシュから復元"
+          fi
           if ! fc-list :lang=ja family 2>/dev/null | grep -q .; then
             for i in 1 2; do
               if timeout 150 sudo apt-get update -qq >/dev/null 2>&1 && timeout 240 sudo apt-get install -y -qq fonts-noto-cjk >/dev/null 2>&1; then break; fi
               echo "::warning::日本語フォントの導入に失敗（$i/2）"; sleep 5
             done
+            if fc-list :lang=ja family 2>/dev/null | grep -q . && ls /usr/share/fonts/opentype/noto/*.ttc >/dev/null 2>&1; then
+              mkdir -p "$HOME/.cache/noto-cjk" && cp -f /usr/share/fonts/opentype/noto/*.ttc "$HOME/.cache/noto-cjk/" && echo "フォントをキャッシュ用に保存"
+            fi
           fi
           timeout 240 npm install --no-audit --no-fund --silent
       - name: 全12店舗日報を生成して送信

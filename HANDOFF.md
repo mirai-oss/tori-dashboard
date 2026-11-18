@@ -158,7 +158,8 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 - 原因①: 画像の描画（puppeteer）が `Navigation timeout of 30000 ms exceeded`。`page.setContent(…, {waitUntil:'networkidle0'})` が 30 秒で諦める。フォールバックの文章日報は送られた（`report_daily`）。
 - 原因②: matrix（max-parallel:1＝1店ずつ）の 鳥一代 はなれ の「Slack 画像日報の準備」ステップ（apt-get で日本語フォント fonts-noto-cjk を導入）が **19分** かかった（通常 10〜40秒。11/16・11/17 は最長39秒）。apt のミラーの遅れ。1店ずつ順番なので、残りの店も全部その分遅れた。データや設定の問題ではない。
 - 対策（このコミット）: `scripts/daily-report-card.mjs`・`scripts/all-stores-report-card.mjs` の描画を最大3回までやり直し（2回目以降は load で進める・待ちは60秒まで・fonts.ready は15秒で見切る）／日本語フォントが無いとき（GitHub Actions 上）は画像を作らず文章にフォールバック。`lark-report.yml`（と `scripts/lark-report.workflow.yml`・同一内容）: フォントはすでにあれば入れない・各回に timeout（update 150秒／install 240秒）・最大2回・ステップ自体に timeout-minutes: 8 と continue-on-error・`npm install` に timeout 240。
-- 注意: 同じ症状が続くなら、フォントを actions/cache に載せる／max-parallel を 2 にする（slack は GAS ログインを使わないので並列でも問題ない見込み）を検討。
+- 追加（同日・ユーザー指示）: フォントを actions/cache（key `noto-cjk-v1`・保存先 `~/.cache/noto-cjk`）に載せた。ジョブ開始時にキャッシュを戻し、`~/.local/share/fonts` にコピー＋`fc-cache` で使う（sudo 不要・apt なし）。キャッシュが無い／日本語フォントが無いときだけ従来どおり apt で導入し、入れた `/usr/share/fonts/opentype/noto/*.ttc` を `~/.cache/noto-cjk` に保存→ジョブ成功時に自動保存。初回の実行で保存され、2回目以降が速くなる。フォント構成を変えたいときは key を `noto-cjk-v2` に上げる。AI は使っていない（puppeteer の画面撮影のみ）。
+- 注意: それでも遅れるなら max-parallel を 2 にする（slack は GAS ログインを使わないので並列でも問題ない見込み）を検討。
 
 ### 2026-11-12 じんべえ 新横浜の休業を 11/15 まで延長＋「売上0の日だけ休業表示」に変更（v=283）
 - ユーザー指示: 休業が延長。今週は取り込んで売上0なら休業扱いに。`STORE_CLOSURES` の to を 2026-11-15 へ。日別明細のバッジは売上0の日だけ表示（売上が入った日は営業扱い）。ns-daily-import `config.js` も同期（0件でも失敗にしない）。
