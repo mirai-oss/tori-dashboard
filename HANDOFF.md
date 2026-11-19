@@ -153,11 +153,16 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 
 ## 5. 作業ログ
 
-### 2026-11-19 tori-dashboard の人件費をポータル「経営」と同じ判定に（`ping`=`...-a7pd`・GAS貼替＋再デプロイ待ち）
+### 2026-11-19 tori-dashboard の人件費をポータル「経営」と同じ判定に（`ping`=`...-a7pf`・本番反映・実測で一致確認済み）
 - きっかけ: 社員人件費に賃金＋通勤＋インセンティブ（＋法定福利15%）が入っているかの確認。ポータル「経営」(`kd_daily_store_full`)は配分(sf_payroll_allocations)と全店×10・11月で1円まで一致。tori-dashboard(GAS→BQ `fact_daily_store`)は **10月の鳥一代 本店だけ**ずれていた（PA 1,841,909／社員 1,365,727 ←→ 経営は PA 2,120,527／社員 1,050,700）。原因: GAS は role(SHAIN/TENCHO)で社員判定、経営は「その日に月給か」(employee_wage_settings)で判定。10月はアルバイトで11/1から月給の AYE THIRI ZAW の10月分が社員側に入っていた（11/15 に経営側だけ直した件の残り）。
 - 変更（`gas/Code.gs`）: 新設 `bqFetchLaborSplit_`（Supabase RPC `labor_split_daily` を service key で呼ぶ・Range ページング・失敗/0件は null）／`bqBuildApiLaborCostMap_` の戻り値に `split` を追加／`bqApplyApiLaborCostRow_` は **2026-10-01以降の日付は split をそのまま採用**（PA・給与・法定福利・通勤・社員計・合計。無い日は0＝経営と同じ）。split が取れないとき・9月以前は従来計算のまま。`ping` ver を `a7pd` へ。
 - 反映手順（ユーザー作業）: `gas/Code.gs` を貼り替え→デプロイを管理→編集(鉛筆)→新バージョン→デプロイ。その後 `bqSyncSales`（BQ同期）が走ると fact_daily_store の10月本店が直る（毎朝の morning-refresh か手動）。
 - 確認: `curl -sL '<GAS_URL>?action=ping'` で ver、ログイン後 `bqDailyStore` の 2026/10 鳥一代 本店が PA 2,120,527／社員 1,050,700 になること。
+
+- 経緯（a7pd→a7pe→a7pf・貼替3回）: ①a7pd を貼替→`bqSyncSales` を手動実行しても 10月本店が直らなかった（古い計算のまま）。`bqFetchLaborSplit_` は失敗しても握りつぶして従来計算に戻す作りで、画面にもログにも出ないため原因が外から見えなかった。②a7pe: `bqFetchLaborSplit_` の結果メモ（`LABOR_SPLIT_DIAG_`）を `bqSyncSales` の応答の `fact_daily_store.laborSplit` に載せた。実行すると `例外 LABOR_SPLIT_FROM is not defined`。③a7pf: **原因は変数名の打ち間違い**（定義は `LABOR_SPLIT_FROM_`（末尾の `_` あり）なのに、RPC の引数だけ `LABOR_SPLIT_FROM`）。`node` の構文チェック（`new Function`）は未定義の変数を検出できず、`try/catch` に包んでいたため同期も止まらなかった。直して再貼替→`laborSplit: "OK 取得549行 / キー549"`。
+- 結果（2026-11-19 実測）: `bqSyncSales` 後、tori-dashboard（`bqDailyStore`）とポータル `kd_daily_store_full` を 2026-10・11 の全店（24店舗月）で突合→差0円。10月鳥一代 本店 = PA 2,120,527／社員 1,050,700（給与 890,000＋法定福利 133,500＋通勤 27,200）／合計 3,171,227。社員人件費＝（基本給＋インセンティブ＋賞与）×1.15＋通勤手当（日割り）で、ユーザー確認済み（本部の配分は店舗に入れない・じんべぇ/エース/肉寿司は人件費0円のまま、いずれも了承済み）。
+- 教訓・運用: ①「失敗したら従来計算にフォールバック」の処理を足すときは、**使えたかどうかを応答に出す**こと（`laborSplit` はそのため残してある。`bqSyncSales` の応答でいつでも確認できる。`OK …` 以外なら split が効いていない）。②GAS の構文チェックだけでは未定義の変数は見つからない。新しい識別子を使ったら `grep -c` で定義と参照の数を確かめ、可能なら本番で応答を実測する。③`bqDailyStore` はキャッシュされる（`months` を変えるとキャッシュを避けて実測できる）。
+- 確認コマンド: `curl -sL '<GAS_URL>?action=ping'` で ver が `a7pf` 以上／`bqSyncSales`（`ns-daily-import` の `lib/gas.js` の `bqSyncSales()`）の応答 `results[table=fact_daily_store].laborSplit` が `OK 取得…`。
 
 ### 2026-11-18 Slack 日報カードの遅れ・1件失敗の原因調査と対策（GitHub Actions・lark-report.yml／画像描画スクリプト）
 - 症状: ①11/17 の日報で 鶏武者 川崎店 の画像カードだけ失敗し、文章の日報に切り替わった（配信が1件失敗）。②11/18 の日報が、12:09 の起動から30分たっても全店そろわない（8店のうち4店だけ）。
