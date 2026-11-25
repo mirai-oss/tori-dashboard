@@ -235,7 +235,11 @@ function buildHtml(v) {
   .chip{height:46px;border-radius:23px;padding:0 20px;display:flex;align-items:center;font-size:26px;font-weight:900;white-space:nowrap}
   .chip i{font-style:normal;margin-right:8px}.chip.y{background:#ffd23f;color:#1a1a1a}.chip.o{background:rgba(255,255,255,.1);border:2px solid rgba(255,255,255,.5);color:#fff;font-size:23px}
   /* 本体（高さ固定の5段） */
-  .panel{position:absolute;left:5px;top:140px;width:1220px;height:1125px;background:var(--bg);border-radius:28px;padding:15px 15px 0;display:grid;grid-template-rows:185px 233px 255px 225px 108px;row-gap:16px}
+  .panel{position:absolute;left:5px;top:140px;width:1220px;height:1125px;background:var(--bg);border-radius:28px;padding:15px 15px 0;display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:185px 233px 255px 225px 108px;row-gap:16px}
+  /* 2026-11-25: 列幅を minmax(0,1fr) に固定。指定が無いと注意バナーの長い1行（nowrap）が列を押し広げ、パネル全体が右にはみ出して右側が切れた（11/23 鳥一代 はなれ）。長い文は .tx の省略記号で収める */
+  .alz{min-width:0}
+  /* 注意バナーが1件のときは文が長いことがある（Uber Eats 未連携の定型文など）。省略記号で大事な後半が消えないよう、2行まで折り返して少し小さくする */
+  .al.k1 .tx{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;line-height:1.25;font-size:34px}
   .card{background:#fff;border-radius:22px;box-shadow:0 1px 6px rgba(20,30,60,.08);overflow:hidden;position:relative}
   .ttl{font-size:32px;font-weight:900;display:flex;align-items:center;gap:12px;height:44px;white-space:nowrap}
   .ttl small{font-size:24px;color:var(--gray);font-weight:700}

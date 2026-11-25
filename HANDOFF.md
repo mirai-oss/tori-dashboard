@@ -153,6 +153,13 @@ Browser toolの`screenshot`は`window.scrollTo`を反映しないことがあり
 
 ## 5. 作業ログ
 
+### 2026-11-25 Slack 日報カード（鳥一代 はなれ）の右側が切れる不具合を修正（`scripts/daily-report-card.mjs`）
+- 症状（ユーザー報告・11/23 分）: はなれの画像日報だけ、右端が切れる（本日のイベント・人件費率・売上内訳・注意バナーが途中で切れた）。他店は正常。
+- 再現: `NOTIFY_SLACK_SECRET="$(cat ~/.config/ns-portal/notify_slack_secret)" node scripts/daily-report-card.mjs --store "鳥一代 はなれ" --date 2026-11-23 --out <dir> --no-upload --no-send`（送らずに PNG だけ作れる）。
+- 原因: `.panel`（display:grid）に列幅の指定が無く、注意バナー（Uber Eats 未連携の定型文・40px・nowrap）の長い1行が列を押し広げてパネルが右にはみ出し、キャンバス(1230px)で切れていた。はなれは注意が1件で文が長いため目立った（注意が複数・短い店舗では起きにくい＝他店でも長い1件の注意が出れば同じ症状になり得た）。
+- 修正: `.panel` に `grid-template-columns:minmax(0,1fr)`、`.alz{min-width:0}`。注意バナーが1件のとき（`.al.k1 .tx`）は省略記号をやめ、34px・2行まで折り返し（大事な後半「F/L/FLにはその分が入っていません」が消えないように）。画像サイズは従来どおり 1845×1919（本店・黒霧屋・川崎も再描画して同サイズ・崩れなしを確認）。全店舗日報カード（all-stores-report-card.mjs）は別レイアウトで未変更。
+- 反映: push 後の次回の日報から（毎回 main のスクリプトで描画）。過去分の画像は作り直さない。
+
 ### 2026-11-19 tori-dashboard の人件費をポータル「経営」と同じ判定に（`ping`=`...-a7pf`・本番反映・実測で一致確認済み）
 - きっかけ: 社員人件費に賃金＋通勤＋インセンティブ（＋法定福利15%）が入っているかの確認。ポータル「経営」(`kd_daily_store_full`)は配分(sf_payroll_allocations)と全店×10・11月で1円まで一致。tori-dashboard(GAS→BQ `fact_daily_store`)は **10月の鳥一代 本店だけ**ずれていた（PA 1,841,909／社員 1,365,727 ←→ 経営は PA 2,120,527／社員 1,050,700）。原因: GAS は role(SHAIN/TENCHO)で社員判定、経営は「その日に月給か」(employee_wage_settings)で判定。10月はアルバイトで11/1から月給の AYE THIRI ZAW の10月分が社員側に入っていた（11/15 に経営側だけ直した件の残り）。
 - 変更（`gas/Code.gs`）: 新設 `bqFetchLaborSplit_`（Supabase RPC `labor_split_daily` を service key で呼ぶ・Range ページング・失敗/0件は null）／`bqBuildApiLaborCostMap_` の戻り値に `split` を追加／`bqApplyApiLaborCostRow_` は **2026-10-01以降の日付は split をそのまま採用**（PA・給与・法定福利・通勤・社員計・合計。無い日は0＝経営と同じ）。split が取れないとき・9月以前は従来計算のまま。`ping` ver を `a7pd` へ。
