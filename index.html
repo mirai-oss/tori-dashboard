@@ -48,7 +48,8 @@ a{color:var(--navy)}
 .conn-pill.on .dot{background:#5f9e6f}
 
 /* ---------- app frame ---------- */
-.app{max-width:1360px;margin:0 auto;padding:0 26px 60px}
+/* 2026-11-26: PCの広い画面でも両端が余らないよう、横幅の上限をなくして画面いっぱいに使う（ユーザー要望） */
+.app{max-width:none;margin:0 auto;padding:0 28px 60px}
 header.top{display:flex;align-items:center;gap:16px;padding:20px 0 14px;flex-wrap:wrap}
 .logo-sq{width:40px;height:40px;border-radius:10px;background:var(--dark);display:flex;align-items:center;justify-content:center;
   font-family:var(--serif);font-size:21px;color:var(--gold)}
