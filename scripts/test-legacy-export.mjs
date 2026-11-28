@@ -58,7 +58,12 @@ const ctx = {
   },
 };
 vm.createContext(ctx);
-vm.runInContext(readFileSync(join(here, '../gas/LegacyDepositExport.gs'), 'utf8'), ctx);
+const full = readFileSync(join(here, '../gas/Code.gs'), 'utf8');
+const sec = full.slice(full.indexOf('// ===== legacyDepositExport 開始'), full.indexOf('// ===== legacyDepositExport 終了'));
+ok('Code.gs の末尾に、取り出しの処理が 1 か所だけ入っている', sec.length > 500 && full.split('function legacyDepositExport(').length === 2);
+ok('呼び出し口が depositCarry の行のすぐ下にある', /action === 'depositCarry'[^\n]*\n\s*if \(action === 'legacyDepositExport'\)/.test(full));
+ok('ping の版表示が末尾 -lde1', full.includes("ver: 'token-336h-v1-c19-pllock-a7pg-lde1'"));
+vm.runInContext(sec, ctx);
 const call = (p, role = '社長') => vm.runInContext('legacyDepositExport', ctx)(p, { role });
 
 console.log('\n■ 旧入金DBの取り出し（読み取り専用）');
