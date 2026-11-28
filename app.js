@@ -9554,7 +9554,7 @@ function mfImportModal(){
 const DASH_SHEET_URL='https://docs.google.com/spreadsheets/d/1OuaAQBeXHxJZtDXEbQx-V7w56fCWW5jpDmZvBpkfIbQ/edit';
 const PL_ITEM_CAT={
   '役員報酬':'L','法定福利費':'L','通勤手当':'L','旅費交通費':'O','賞与積立':'L','退職金等':'L',   // 2026-11-03: 旅費交通費=O（MFの考え方・通勤手当=L）
-  '家賃':'R','リース料':'R','家賃更新按分':'R','広告宣伝費':'A','販売促進費':'A',
+  '地代家賃':'R','リース料':'R','家賃更新按分':'R','広告宣伝費':'A','販売促進費':'A',
   '水道光熱費':'O','通信費':'O','備品・消耗品費':'O','修繕費':'O','衛生管理費':'O','カード手数料':'O','支払手数料':'O','支払報酬料':'O','採用教育費':'O','接待交際費':'O','会議費':'O','慶弔見舞費':'O','保険料':'O','租税公課':'O','減価償却費':'O','福利厚生費':'O','諸会費':'O','雑費':'O','本部経費（按分）':'O',
   'その他売上':'S','銀行返済':'X','仕入高':'F'
 };
@@ -9640,11 +9640,11 @@ function plInputModal(){
     </div>
     <div style="margin-top:14px;border-top:1px dashed var(--line2);padding-top:12px">
       <div style="font-weight:700;font-size:13px">📅 期間一括計上（毎月同じ経費をまとめて入力）</div>
-      <div class="sub" style="margin:3px 0 8px">例：家賃 500,000円を 2026/01〜2026/12 に一括計上。期間内の各月に同じ科目×補助科目の行を作成します（既にある同じ科目×補助科目の行は上書き／<b>金額を空欄にして実行すると期間内のその科目を削除</b>）。店舗は上で選択中の「${isCommon?'全社共通':esc(st)}」に計上します。</div>
+      <div class="sub" style="margin:3px 0 8px">例：地代家賃 500,000円を 2026/01〜2026/12 に一括計上。期間内の各月に同じ科目×補助科目の行を作成します（既にある同じ科目×補助科目の行は上書き／<b>金額を空欄にして実行すると期間内のその科目を削除</b>）。店舗は上で選択中の「${isCommon?'全社共通':esc(st)}」に計上します。</div>
       <div class="form-grid">
         <div><label>開始月</label><input type="month" id="plb-ym1" value="${m.ym}"></div>
         <div><label>終了月</label><input type="month" id="plb-ym2" value="${m.ym}"></div>
-        <div><label>勘定科目</label><input id="plb-item" list="pl-items" placeholder="例 家賃" onchange="const c=PL_ITEM_CAT[this.value.trim()];if(c)$('plb-cat').value=c;"></div>
+        <div><label>勘定科目</label><input id="plb-item" list="pl-items" placeholder="例 地代家賃" onchange="const c=PL_ITEM_CAT[this.value.trim()];if(c)$('plb-cat').value=c;"></div>
         <div><label>区分</label><select id="plb-cat">${[['F','F 仕入'],['L','L 人件費'],['A','A 広告'],['R','R 家賃'],['O','O 他'],['S','S 売上'],['X','X PL外']].map(c=>`<option value="${c[0]}" ${c[0]==='R'?'selected':''}>${c[1]}</option>`).join('')}</select></div>
         <div><label>補助科目（任意）</label><input id="plb-sub" list="pl-items-sub-all" placeholder="例 電気料金"></div>
         <div><label>金額（円／月）</label><input type="number" id="plb-amt" placeholder="例 500000" style="text-align:right"></div>
